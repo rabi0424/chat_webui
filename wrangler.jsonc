@@ -1,0 +1,28 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chat-webui",
+	"compatibility_date": "2026-07-05",
+	"main": "./workers/app.ts",
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"compatibility_flags": [
+		"nodejs_compat"
+	]
+	/**
+	 * Secrets (never committed):
+	 *   OPENROUTER_API_KEY - set locally in .dev.vars (copy .dev.vars.example),
+	 *   in production via: npx wrangler secret put OPENROUTER_API_KEY
+	 */
+	/**
+	 * D1 (conversation storage) and R2 (attachments) bindings will be added
+	 * in a later phase:
+	 * "d1_databases": [ { "binding": "DB", "database_name": "chat-webui", "database_id": "..." } ],
+	 * "r2_buckets": [ { "binding": "FILES", "bucket_name": "chat-webui-files" } ]
+	 */
+}

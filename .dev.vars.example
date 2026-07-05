@@ -1,0 +1,3 @@
+# Copy this file to .dev.vars and fill in your own values.
+# .dev.vars is gitignored and must never be committed.
+OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
