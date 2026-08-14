@@ -576,6 +576,67 @@ export async function requestStop(
     .run();
 }
 
+/**
+ * メッセージの一括削除。削除ノードはツリーから「抜き取り」、
+ * その子は最も近い生き残りの祖先へ繋ぎ直す（前後の会話は保たれる）。
+ * 表示中リーフが削除された場合は生き残りの祖先へ移動する。
+ */
+export async function deleteMessages(
+  conversationId: string,
+  ids: string[],
+): Promise<void> {
+  if (ids.length === 0) return;
+  const conversation = await getConversation(conversationId);
+  if (!conversation) return;
+  const all = await loadMessages(conversationId);
+  const byId = new Map(all.map((m) => [m.id, m]));
+  const deleteSet = new Set(ids.filter((id) => byId.has(id)));
+  if (deleteSet.size === 0) return;
+
+  // 最も近い「削除されない」祖先を探す
+  const surviveParent = (startParentId: string | null): string | null => {
+    let cursor = startParentId;
+    while (cursor && deleteSet.has(cursor)) {
+      cursor = byId.get(cursor)?.parent_id ?? null;
+    }
+    return cursor;
+  };
+
+  const d = await db();
+  const statements: D1PreparedStatement[] = [];
+
+  // 生き残る子の親を繋ぎ直す
+  for (const m of all) {
+    if (deleteSet.has(m.id)) continue;
+    if (m.parent_id && deleteSet.has(m.parent_id)) {
+      statements.push(
+        d
+          .prepare("UPDATE messages SET parent_id = ? WHERE id = ?")
+          .bind(surviveParent(m.parent_id), m.id),
+      );
+    }
+  }
+
+  // リーフの付け替え
+  const leafId = conversation.current_leaf_message_id;
+  if (leafId && deleteSet.has(leafId)) {
+    const newLeaf = surviveParent(byId.get(leafId)?.parent_id ?? null);
+    statements.push(
+      d
+        .prepare(
+          "UPDATE conversations SET current_leaf_message_id = ? WHERE id = ?",
+        )
+        .bind(newLeaf, conversationId),
+    );
+  }
+
+  for (const id of deleteSet) {
+    statements.push(d.prepare("DELETE FROM messages WHERE id = ?").bind(id));
+  }
+
+  await d.batch(statements);
+}
+
 /** ポーリング用: 単一メッセージの現在状態を返す。 */
 export async function getMessage(
   conversationId: string,

@@ -1,6 +1,9 @@
 @import "tailwindcss" source(".");
 @plugin "@tailwindcss/typography";
 
+/* テーマは .dark クラスで制御（ライト/ダーク/システムのトグル対応） */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Hiragino Sans",
     "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif,
@@ -10,8 +13,8 @@
 html,
 body {
   @apply bg-white dark:bg-gray-950;
+}
 
-  @media (prefers-color-scheme: dark) {
-    color-scheme: dark;
-  }
+.dark {
+  color-scheme: dark;
 }
