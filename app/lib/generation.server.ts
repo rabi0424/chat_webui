@@ -13,6 +13,49 @@ import { finalizeGeneration, flushGeneration } from "./db.server";
 
 const FLUSH_INTERVAL_MS = 900;
 
+/**
+ * プロンプトキャッシングの適用。
+ *
+ * OpenAI / Gemini / DeepSeek などは自動でキャッシュされるが、
+ * Anthropic (Claude) は cache_control ブレークポイントの明示が必要。
+ * チャットは毎ターン同じ履歴を先頭から送り直すため、
+ * システムプロンプトと直近2つのユーザーメッセージに印を付けると
+ * 前ターンまでの前置きがキャッシュ読取（0.1倍課金）になる。
+ */
+function applyPromptCaching(
+  model: string,
+  messages: ChatMessage[],
+): unknown[] {
+  if (!model.startsWith("anthropic/")) return messages;
+
+  const marked = new Set<number>();
+  messages.forEach((m, i) => {
+    if (m.role === "system") marked.add(i);
+  });
+  let userMarks = 0;
+  for (let i = messages.length - 1; i >= 0 && userMarks < 2; i--) {
+    if (messages[i].role === "user") {
+      marked.add(i);
+      userMarks++;
+    }
+  }
+
+  return messages.map((m, i) =>
+    marked.has(i)
+      ? {
+          role: m.role,
+          content: [
+            {
+              type: "text",
+              text: m.content,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+        }
+      : m,
+  );
+}
+
 export interface GenerationJob {
   conversationId: string;
   assistantMessageId: string;
@@ -30,7 +73,7 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
   try {
     upstream = await openRouterChatRequest({
       model,
-      messages: job.messages,
+      messages: applyPromptCaching(job.model, job.messages),
       stream: true,
       usage: { include: true },
       ...buildGenerationPayload(job.paramsState),
@@ -97,6 +140,8 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
               prompt_tokens?: number;
               completion_tokens?: number;
               cost?: number;
+              prompt_tokens_details?: { cached_tokens?: number };
+              completion_tokens_details?: { reasoning_tokens?: number };
             };
           };
           const choice = chunk.choices?.[0];
@@ -112,6 +157,11 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
               promptTokens: chunk.usage.prompt_tokens ?? 0,
               completionTokens: chunk.usage.completion_tokens ?? 0,
               cost: chunk.usage.cost,
+              cachedTokens:
+                chunk.usage.prompt_tokens_details?.cached_tokens ?? undefined,
+              reasoningTokens:
+                chunk.usage.completion_tokens_details?.reasoning_tokens ??
+                undefined,
             });
           }
         } catch {
