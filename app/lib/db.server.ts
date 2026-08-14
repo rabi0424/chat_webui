@@ -71,6 +71,19 @@ ALTER TABLE messages ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0;
   `
 ALTER TABLE messages ADD COLUMN flushed_at INTEGER;
 `,
+  // v6: フォルダ + ピン留めの並べ替え
+  `
+CREATE TABLE IF NOT EXISTS folders (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+ALTER TABLE conversations ADD COLUMN folder_id TEXT;
+ALTER TABLE conversations ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -114,6 +127,17 @@ export interface ConversationRow {
   bot_icon: string | null;
   system_prompt: string | null;
   params_json: string | null;
+  folder_id: string | null;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface FolderRow {
+  id: string;
+  name: string;
+  pinned: number;
+  sort_order: number;
   created_at: number;
   updated_at: number;
 }
@@ -224,6 +248,8 @@ export async function createConversation(params: {
     bot_icon: bot?.icon ?? null,
     system_prompt: bot ? bot.system_prompt : null,
     params_json: bot?.params_json ?? null,
+    folder_id: null,
+    sort_order: 0,
     created_at: now,
     updated_at: now,
   };
@@ -278,6 +304,140 @@ export async function updateConversationParams(
     .prepare("UPDATE conversations SET params_json = ? WHERE id = ?")
     .bind(paramsJson, id)
     .run();
+}
+
+// --- Folders / サイドバー整理 ---------------------------------------------
+
+export async function listFolders(): Promise<FolderRow[]> {
+  const d = await db();
+  const { results } = await d
+    .prepare("SELECT * FROM folders ORDER BY sort_order, created_at")
+    .all<FolderRow>();
+  return results;
+}
+
+export async function createFolder(name: string): Promise<FolderRow> {
+  const d = await db();
+  const now = Date.now();
+  const row: FolderRow = {
+    id: crypto.randomUUID(),
+    name,
+    pinned: 0,
+    sort_order: 0,
+    created_at: now,
+    updated_at: now,
+  };
+  await d
+    .prepare(
+      "INSERT INTO folders (id, name, pinned, sort_order, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)",
+    )
+    .bind(row.id, row.name, now, now)
+    .run();
+  return row;
+}
+
+export async function updateFolder(
+  id: string,
+  fields: { name?: string; pinned?: boolean },
+): Promise<void> {
+  const d = await db();
+  const sets: string[] = ["updated_at = ?"];
+  const binds: unknown[] = [Date.now()];
+  if (fields.name !== undefined) {
+    sets.unshift("name = ?");
+    binds.unshift(fields.name);
+  }
+  if (fields.pinned !== undefined) {
+    sets.unshift("pinned = ?");
+    binds.unshift(fields.pinned ? 1 : 0);
+  }
+  binds.push(id);
+  await d
+    .prepare(`UPDATE folders SET ${sets.join(", ")} WHERE id = ?`)
+    .bind(...binds)
+    .run();
+}
+
+/** フォルダ削除。中の会話はフォルダなしに戻る（会話自体は消えない）。 */
+export async function deleteFolder(id: string): Promise<void> {
+  const d = await db();
+  await d.batch([
+    d.prepare("UPDATE conversations SET folder_id = NULL WHERE folder_id = ?").bind(id),
+    d.prepare("DELETE FROM folders WHERE id = ?").bind(id),
+  ]);
+}
+
+export async function updateConversationMeta(
+  id: string,
+  fields: { title?: string; pinned?: boolean; folderId?: string | null },
+): Promise<void> {
+  const d = await db();
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  if (fields.title !== undefined) {
+    sets.push("title = ?");
+    binds.push(fields.title);
+  }
+  if (fields.pinned !== undefined) {
+    sets.push("pinned = ?");
+    binds.push(fields.pinned ? 1 : 0);
+  }
+  if (fields.folderId !== undefined) {
+    sets.push("folder_id = ?");
+    binds.push(fields.folderId);
+  }
+  if (sets.length === 0) return;
+  binds.push(id);
+  await d
+    .prepare(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`)
+    .bind(...binds)
+    .run();
+}
+
+/**
+ * ピン留め一覧（フォルダ + 会話の混在）の中で項目を上下に移動する。
+ * sort_order を 1..n に正規化してから隣と入れ替える。
+ */
+export async function movePinnedItem(
+  type: "conversation" | "folder",
+  id: string,
+  direction: "up" | "down",
+): Promise<void> {
+  const d = await db();
+  const [folders, conversations] = await Promise.all([
+    listFolders(),
+    listConversations(),
+  ]);
+  const items = [
+    ...folders.filter((f) => f.pinned).map((f) => ({ type: "folder" as const, row: f })),
+    ...conversations.filter((c) => c.pinned).map((c) => ({ type: "conversation" as const, row: c })),
+  ].sort(
+    (a, b) => a.row.sort_order - b.row.sort_order || a.row.created_at - b.row.created_at,
+  );
+
+  const index = items.findIndex((it) => it.type === type && it.row.id === id);
+  if (index === -1) return;
+  const target = direction === "up" ? index - 1 : index + 1;
+  if (target < 0 || target >= items.length) return;
+
+  [items[index], items[target]] = [items[target], items[index]];
+
+  const statements: D1PreparedStatement[] = [];
+  items.forEach((it, i) => {
+    const order = i + 1;
+    if (it.row.sort_order !== order) {
+      statements.push(
+        d
+          .prepare(
+            it.type === "folder"
+              ? "UPDATE folders SET sort_order = ? WHERE id = ?"
+              : "UPDATE conversations SET sort_order = ? WHERE id = ?",
+          )
+          .bind(order, it.row.id),
+      );
+    }
+  });
+  if (statements.length > 0) await d.batch(statements);
 }
 
 // --- Bots -----------------------------------------------------------------

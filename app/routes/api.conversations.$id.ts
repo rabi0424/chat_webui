@@ -2,6 +2,7 @@ import type { Route } from "./+types/api.conversations.$id";
 import {
   deleteConversation,
   getConversation,
+  updateConversationMeta,
   updateConversationModel,
   updateConversationParams,
 } from "../lib/db.server";
@@ -18,7 +19,13 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 
   if (request.method === "PATCH") {
-    let body: { modelId?: string; params?: Record<string, unknown> | null };
+    let body: {
+      modelId?: string;
+      params?: Record<string, unknown> | null;
+      title?: string;
+      pinned?: boolean;
+      folderId?: string | null;
+    };
     try {
       body = (await request.json()) as typeof body;
     } catch {
@@ -26,6 +33,17 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     if (body.modelId) {
       await updateConversationModel(params.id, body.modelId);
+    }
+    if (
+      body.title !== undefined ||
+      body.pinned !== undefined ||
+      body.folderId !== undefined
+    ) {
+      await updateConversationMeta(params.id, {
+        title: body.title?.trim().slice(0, 60),
+        pinned: body.pinned,
+        folderId: body.folderId,
+      });
     }
     if (body.params !== undefined) {
       await updateConversationParams(
