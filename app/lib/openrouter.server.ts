@@ -70,6 +70,47 @@ export interface ChatMessage {
   content: string;
 }
 
+/** Cheap model used for auto-generating conversation titles. */
+const TITLE_MODEL = "openai/gpt-4o-mini";
+
+/**
+ * Generates a short conversation title from the first exchange.
+ * Returns null on any failure — a title is nice-to-have, never worth an error.
+ */
+export async function generateTitle(params: {
+  userText: string;
+  assistantText: string;
+}): Promise<string | null> {
+  try {
+    const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: TITLE_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: `次の会話に、内容を要約した短いタイトルを付けてください。タイトルは15文字以内、会話と同じ言語で、タイトル文字列のみを出力してください。引用符や句点は不要です。\n\n---\nユーザー: ${params.userText.slice(0, 1000)}\n\nアシスタント: ${params.assistantText.slice(0, 1000)}`,
+          },
+        ],
+        max_tokens: 50,
+      }),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const title = body.choices?.[0]?.message?.content?.trim();
+    if (!title) return null;
+    return title.replace(/^["「『]|["」』]$/g, "").slice(0, 60);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Proxies a streaming chat completion to OpenRouter and returns the raw SSE
  * response. The API key never leaves the server.

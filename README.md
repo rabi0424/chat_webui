@@ -26,13 +26,17 @@ npm run dev
 
 ## デプロイ（Cloudflare Workers）
 
-```bash
-# 本番用シークレットの登録（初回のみ）
-npx wrangler secret put OPENROUTER_API_KEY
+初回のみ、以下のセットアップが必要:
 
-# デプロイ
-npm run deploy
-```
+1. **D1データベースの作成**: Cloudflareダッシュボード → Storage & Databases → D1 →
+   Create Database（名前: `chat-webui`）。作成後に表示される **Database ID** を
+   `wrangler.jsonc` の `database_id` に設定する。
+   テーブルは初回アクセス時に自動作成される（マイグレーションコマンド不要）。
+2. **シークレットの登録**: ダッシュボードのWorker設定（Variables and Secrets）で
+   `OPENROUTER_API_KEY` を設定、または `npx wrangler secret put OPENROUTER_API_KEY`。
+
+デプロイはGitHub連携（mainブランチへのpushで自動デプロイ）、
+または手動で `npm run deploy`。
 
 デプロイ後は Cloudflare Access で本人のみアクセス可能にすること（要件定義書 2.2 参照）。
 
