@@ -2,9 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiMessage } from "../lib/types";
+import { paramsForRequest } from "../lib/params";
 import { parseSSE } from "../lib/sse";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
+
+/** この会話に適用されるボット設定（会話開始時のスナップショット）。 */
+export interface BotContext {
+  id: string | null;
+  name: string;
+  icon: string;
+  systemPrompt: string | null;
+  params: Record<string, number> | null;
+}
 
 const MODEL_STORAGE_KEY = "chat-webui:model";
 const WEB_STORAGE_KEY = "chat-webui:web-search";
@@ -52,15 +62,21 @@ function BranchPager({
 export function Chat({
   conversationId,
   initialMessages,
+  bot = null,
+  initialModel = null,
+  emptyState,
 }: {
   conversationId: string | null;
   initialMessages: UiMessage[];
+  bot?: BotContext | null;
+  initialModel?: string | null;
+  emptyState?: React.ReactNode;
 }) {
   const { models, openSidebar } = useOutletContext<ShellContext>();
   const navigate = useNavigate();
   const revalidator = useRevalidator();
 
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [model, setModel] = useState(initialModel ?? DEFAULT_MODEL);
   const [webSearch, setWebSearch] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>(initialMessages);
   const [input, setInput] = useState("");
@@ -79,18 +95,29 @@ export function Chat({
   const epochRef = useRef(0);
 
   useEffect(() => {
-    const saved = localStorage.getItem(MODEL_STORAGE_KEY);
-    if (saved && models.some((m) => m.id === saved)) {
-      setModel(saved);
-    } else if (!models.some((m) => m.id === DEFAULT_MODEL) && models[0]) {
-      setModel(models[0].id);
+    // 会話やボットが持つモデルを優先。なければ前回使ったモデルを復元
+    if (!initialModel) {
+      const saved = localStorage.getItem(MODEL_STORAGE_KEY);
+      if (saved && models.some((m) => m.id === saved)) {
+        setModel(saved);
+      } else if (!models.some((m) => m.id === DEFAULT_MODEL) && models[0]) {
+        setModel(models[0].id);
+      }
     }
     setWebSearch(localStorage.getItem(WEB_STORAGE_KEY) === "1");
-  }, [models]);
+  }, [models, initialModel]);
 
   const selectModel = (id: string) => {
     setModel(id);
     localStorage.setItem(MODEL_STORAGE_KEY, id);
+    // 会話ごとの選択モデルを記憶（リロード・別端末でも維持）
+    if (conversationId) {
+      void fetch(`/api/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId: id }),
+      }).catch(() => {});
+    }
   };
 
   const toggleWebSearch = () => {
@@ -141,6 +168,7 @@ export function Chat({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             modelId: model,
+            botId: bot?.id ?? undefined,
             title: (firstUser?.content ?? "新しいチャット").slice(0, 40),
           }),
         });
@@ -219,7 +247,13 @@ export function Chat({
         body: JSON.stringify({
           model,
           web: webSearch,
-          messages: history.map(({ role, content }) => ({ role, content })),
+          params: paramsForRequest(bot?.params),
+          messages: [
+            ...(bot?.systemPrompt
+              ? [{ role: "system", content: bot.systemPrompt }]
+              : []),
+            ...history.map(({ role, content }) => ({ role, content })),
+          ],
         }),
         signal: controller.signal,
       });
@@ -401,14 +435,25 @@ export function Chat({
             />
           </svg>
         </button>
+        {bot && (
+          <span
+            className="flex min-w-0 shrink items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1.5 text-sm font-medium dark:bg-gray-800"
+            title={bot.systemPrompt ?? undefined}
+          >
+            <span aria-hidden>{bot.icon}</span>
+            <span className="truncate">{bot.name}</span>
+          </span>
+        )}
         <ModelPicker models={models} value={model} onChange={selectModel} />
       </header>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-3xl px-4 py-6">
           {messages.length === 0 && (
-            <div className="flex h-[60vh] items-center justify-center text-gray-300 dark:text-gray-600">
-              <p className="text-lg">モデルを選んでメッセージを送信</p>
+            <div className="flex min-h-[60vh] items-center justify-center text-gray-300 dark:text-gray-600">
+              {emptyState ?? (
+                <p className="text-lg">モデルを選んでメッセージを送信</p>
+              )}
             </div>
           )}
           <div className="space-y-6">

@@ -24,11 +24,25 @@ export async function loader({ params }: Route.LoaderArgs) {
 
 export default function ChatRoute({ loaderData }: Route.ComponentProps) {
   const { conversation, messages } = loaderData;
+  const bot =
+    conversation.bot_name != null
+      ? {
+          id: conversation.bot_id,
+          name: conversation.bot_name,
+          icon: conversation.bot_icon ?? "🤖",
+          systemPrompt: conversation.system_prompt,
+          params: conversation.params_json
+            ? JSON.parse(conversation.params_json)
+            : null,
+        }
+      : null;
   return (
     <Chat
       key={conversation.id}
       conversationId={conversation.id}
       initialMessages={messages}
+      bot={bot}
+      initialModel={conversation.model_id}
     />
   );
 }
