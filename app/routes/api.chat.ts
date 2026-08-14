@@ -3,7 +3,7 @@ import {
   streamChatCompletion,
   type ChatMessage,
 } from "../lib/openrouter.server";
-import { ALLOWED_PARAM_KEYS } from "../lib/params";
+import { buildGenerationPayload, type ParamsState } from "../lib/params";
 
 interface ChatRequestBody {
   model: string;
@@ -31,14 +31,8 @@ export async function action({ request }: Route.ActionArgs) {
     );
   }
 
-  const generation: Record<string, number> = {};
-  if (body.params && typeof body.params === "object") {
-    for (const [key, value] of Object.entries(body.params)) {
-      if (ALLOWED_PARAM_KEYS.has(key) && typeof value === "number") {
-        generation[key] = value;
-      }
-    }
-  }
+  // buildGenerationPayload が許可リスト検査と型変換を兼ねる
+  const generation = buildGenerationPayload(body.params as ParamsState);
 
   return streamChatCompletion({
     model: body.model,

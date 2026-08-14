@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useOutletContext } from "react-router";
 import type { Route } from "./+types/home";
 import type { ShellContext } from "./shell";
+import { parseParamsJson } from "../lib/params";
 import { Chat, type BotContext } from "../components/Chat";
 
 export function meta({}: Route.MetaArgs) {
@@ -30,7 +31,7 @@ export default function Home() {
                   name: b.name,
                   icon: b.icon,
                   systemPrompt: b.system_prompt,
-                  params: b.params_json ? JSON.parse(b.params_json) : null,
+                  params: parseParamsJson(b.params_json),
                 });
                 setSelectedModel(b.model_id);
               }}

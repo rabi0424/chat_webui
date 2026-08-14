@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiMessage } from "../lib/types";
-import { paramsForRequest } from "../lib/params";
+import { type ParamsState } from "../lib/params";
 import { parseSSE } from "../lib/sse";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
+import { ParamsEditor } from "./ParamsEditor";
 
 /** この会話に適用されるボット設定（会話開始時のスナップショット）。 */
 export interface BotContext {
@@ -13,7 +14,36 @@ export interface BotContext {
   name: string;
   icon: string;
   systemPrompt: string | null;
-  params: Record<string, number> | null;
+  params: ParamsState | null;
+}
+
+/** thinking対応モデルの思考内容の折りたたみ表示。 */
+function ReasoningBlock({
+  reasoning,
+  streaming,
+}: {
+  reasoning: string;
+  streaming: boolean;
+}) {
+  const [open, setOpen] = useState(streaming);
+  const show = open || streaming;
+  return (
+    <div className="mb-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+      >
+        <span aria-hidden>💭</span>
+        {streaming ? "思考中…" : show ? "思考プロセスを隠す" : "思考プロセスを表示"}
+      </button>
+      {show && (
+        <div className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-500 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400">
+          {reasoning}
+        </div>
+      )}
+    </div>
+  );
 }
 
 const MODEL_STORAGE_KEY = "chat-webui:model";
@@ -64,12 +94,15 @@ export function Chat({
   initialMessages,
   bot = null,
   initialModel = null,
+  initialParams = null,
   emptyState,
 }: {
   conversationId: string | null;
   initialMessages: UiMessage[];
   bot?: BotContext | null;
   initialModel?: string | null;
+  /** この会話の生成パラメータ（会話 or ボットのスナップショット）。 */
+  initialParams?: ParamsState | null;
   emptyState?: React.ReactNode;
 }) {
   const { models, openSidebar } = useOutletContext<ShellContext>();
@@ -78,6 +111,10 @@ export function Chat({
 
   const [model, setModel] = useState(initialModel ?? DEFAULT_MODEL);
   const [webSearch, setWebSearch] = useState(false);
+  const [params, setParams] = useState<ParamsState>(
+    initialParams ?? bot?.params ?? {},
+  );
+  const [paramsOpen, setParamsOpen] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>(initialMessages);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -87,6 +124,7 @@ export function Chat({
   );
 
   const abortRef = useRef<AbortController | null>(null);
+  const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // 保存処理の直列化用（連投時に順序が崩れないように）
@@ -125,6 +163,31 @@ export function Chat({
       localStorage.setItem(WEB_STORAGE_KEY, v ? "0" : "1");
       return !v;
     });
+  };
+
+  /** ⚙パネルでの変更を反映し、既存の会話にはデバウンスして保存する。 */
+  const changeParams = (next: ParamsState) => {
+    setParams(next);
+    if (!conversationId) return;
+    if (paramsSaveTimer.current) clearTimeout(paramsSaveTimer.current);
+    paramsSaveTimer.current = setTimeout(() => {
+      void fetch(`/api/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ params: next }),
+      }).catch(() => {});
+    }, 600);
+  };
+
+  const resetParams = () => {
+    if (
+      !confirm(
+        "生成パラメータを初期設定（すべて自動 = モデル既定値）に戻します。よろしいですか？",
+      )
+    ) {
+      return;
+    }
+    changeParams({});
   };
 
   useEffect(() => {
@@ -169,6 +232,7 @@ export function Chat({
           body: JSON.stringify({
             modelId: model,
             botId: bot?.id ?? undefined,
+            params: Object.keys(params).length > 0 ? params : undefined,
             title: (firstUser?.content ?? "新しいチャット").slice(0, 40),
           }),
         });
@@ -186,6 +250,7 @@ export function Chat({
             content: m.content,
             modelId: m.role === "assistant" ? model : undefined,
             usageJson: m.usage ? JSON.stringify(m.usage) : undefined,
+            reasoning: m.reasoning,
           })),
         }),
       });
@@ -247,7 +312,7 @@ export function Chat({
         body: JSON.stringify({
           model,
           web: webSearch,
-          params: paramsForRequest(bot?.params),
+          params,
           messages: [
             ...(bot?.systemPrompt
               ? [{ role: "system", content: bot.systemPrompt }]
@@ -267,12 +332,13 @@ export function Chat({
       if (!res.body) throw new Error("応答が空でした");
 
       let content = "";
+      let reasoningText = "";
       let usage: UiMessage["usage"];
       let finishReason: string | undefined;
       for await (const data of parseSSE(res.body)) {
         let chunk: {
           choices?: {
-            delta?: { content?: string };
+            delta?: { content?: string; reasoning?: string | null };
             finish_reason?: string | null;
           }[];
           usage?: {
@@ -293,6 +359,9 @@ export function Chat({
         if (choice?.finish_reason) finishReason = choice.finish_reason;
         const delta = choice?.delta?.content;
         if (delta) content += delta;
+        if (typeof choice?.delta?.reasoning === "string") {
+          reasoningText += choice.delta.reasoning;
+        }
         if (chunk.usage) {
           usage = {
             promptTokens: chunk.usage.prompt_tokens ?? 0,
@@ -300,7 +369,15 @@ export function Chat({
             cost: chunk.usage.cost,
           };
         }
-        finalMessages = [...history, { role: "assistant", content, usage }];
+        finalMessages = [
+          ...history,
+          {
+            role: "assistant",
+            content,
+            usage,
+            reasoning: reasoningText || undefined,
+          },
+        ];
         if (epochRef.current === epoch) setMessages(finalMessages);
       }
 
@@ -445,7 +522,57 @@ export function Chat({
           </span>
         )}
         <ModelPicker models={models} value={model} onChange={selectModel} />
+        <div className="ml-auto">
+          <button
+            type="button"
+            onClick={() => setParamsOpen((v) => !v)}
+            aria-label="生成パラメータ"
+            title="生成パラメータ（この会話にのみ適用）"
+            className={`rounded-lg p-2 ${
+              Object.keys(params).length > 0
+                ? "text-indigo-500 hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950"
+                : "text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+            }`}
+          >
+            <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path
+                fillRule="evenodd"
+                d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
+        </div>
       </header>
+
+      {paramsOpen && (
+        <div className="fixed inset-0 z-20" onClick={() => setParamsOpen(false)}>
+          <div
+            className="absolute right-2 top-14 max-h-[70vh] w-[min(94vw,26rem)] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-700 dark:bg-gray-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-sm font-semibold">生成パラメータ</p>
+              <button
+                type="button"
+                onClick={resetParams}
+                className="rounded-lg px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+              >
+                初期設定に戻す
+              </button>
+            </div>
+            <p className="mb-3 text-xs text-gray-400 dark:text-gray-500">
+              この会話にのみ適用されます
+              {bot ? "（ボットの設定が初期状態です）" : ""}
+            </p>
+            <ParamsEditor
+              model={models.find((m) => m.id === model)}
+              value={params}
+              onChange={changeParams}
+            />
+          </div>
+        </div>
+      )}
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-3xl px-4 py-6">
@@ -521,6 +648,15 @@ export function Chat({
                 </div>
               ) : (
                 <div key={m.id ?? `a${i}`} className="group/msg">
+                  {m.reasoning && (
+                    <ReasoningBlock
+                      key={`r${m.id ?? i}`}
+                      reasoning={m.reasoning}
+                      streaming={
+                        isStreaming && i === messages.length - 1 && !m.content
+                      }
+                    />
+                  )}
                   <Markdown>{m.content}</Markdown>
                   {isStreaming && i === messages.length - 1 && (
                     <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-gray-400 align-text-bottom dark:bg-gray-500" />

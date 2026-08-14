@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router";
 import type { BotRow } from "../lib/db.server";
 import type { ModelInfo } from "../lib/openrouter.server";
-import { defaultParams, paramsForModel } from "../lib/params";
+import { parseParamsJson, type ParamsState } from "../lib/params";
 import { ModelPicker } from "./ModelPicker";
+import { ParamsEditor } from "./ParamsEditor";
 
 export function BotForm({
   models,
@@ -21,41 +22,23 @@ export function BotForm({
   const [systemPrompt, setSystemPrompt] = useState(
     initial?.system_prompt ?? "",
   );
-  const model = models.find((m) => m.id === modelId);
-  const paramDefs = useMemo(
-    () => paramsForModel(model?.supportedParameters ?? []),
-    [model],
+  const [params, setParams] = useState<ParamsState>(() =>
+    parseParamsJson(initial?.params_json),
   );
-  const [params, setParams] = useState<Record<string, number>>(() => {
-    const base = defaultParams(model?.supportedParameters ?? []);
-    if (initial?.params_json) {
-      try {
-        return { ...base, ...JSON.parse(initial.params_json) };
-      } catch {
-        return base;
-      }
-    }
-    return base;
-  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function changeModel(id: string) {
-    setModelId(id);
-    const supported = models.find((m) => m.id === id)?.supportedParameters ?? [];
-    // 新モデルで対応するパラメータ: 既存の値は引き継ぎ、新規は既定値で埋める
-    setParams((prev) => {
-      const next = defaultParams(supported);
-      for (const key of Object.keys(next)) {
-        if (key in prev) next[key] = prev[key];
-      }
-      return next;
-    });
-  }
+  const model = models.find((m) => m.id === modelId);
 
   function resetParams() {
-    if (!confirm("生成パラメータを初期設定に戻します。よろしいですか？")) return;
-    setParams(defaultParams(model?.supportedParameters ?? []));
+    if (
+      !confirm(
+        "生成パラメータを初期設定（すべて自動 = モデル既定値）に戻します。よろしいですか？",
+      )
+    ) {
+      return;
+    }
+    setParams({});
   }
 
   async function save() {
@@ -68,7 +51,7 @@ export function BotForm({
         icon: icon.trim() || "🤖",
         modelId,
         systemPrompt,
-        params,
+        params: Object.keys(params).length > 0 ? params : null,
       });
       const res = initial
         ? await fetch(`/api/bots/${initial.id}`, {
@@ -129,7 +112,7 @@ export function BotForm({
           モデル *
         </label>
         <div className="rounded-xl border border-gray-200 p-1 dark:border-gray-700">
-          <ModelPicker models={models} value={modelId} onChange={changeModel} />
+          <ModelPicker models={models} value={modelId} onChange={setModelId} />
         </div>
       </div>
 
@@ -160,39 +143,7 @@ export function BotForm({
             初期設定に戻す
           </button>
         </div>
-        {paramDefs.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-gray-200 px-4 py-3 text-sm text-gray-400 dark:border-gray-700 dark:text-gray-500">
-            このモデルの対応パラメータ情報がありません
-          </p>
-        ) : (
-          <div className="space-y-3 rounded-xl border border-gray-200 p-4 dark:border-gray-700">
-            {paramDefs.map((def) => (
-              <div key={def.key} className="flex items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{def.label}</p>
-                  <p className="truncate text-xs text-gray-400 dark:text-gray-500">
-                    {def.description}（既定: {def.defaultValue}）
-                  </p>
-                </div>
-                <input
-                  type="number"
-                  value={params[def.key] ?? def.defaultValue}
-                  min={def.min}
-                  max={def.max}
-                  step={def.step}
-                  onChange={(e) =>
-                    setParams((prev) => ({
-                      ...prev,
-                      [def.key]: Number(e.target.value),
-                    }))
-                  }
-                  aria-label={def.label}
-                  className="w-24 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-right text-sm outline-none focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900"
-                />
-              </div>
-            ))}
-          </div>
-        )}
+        <ParamsEditor model={model} value={params} onChange={setParams} />
       </div>
 
       {error && (

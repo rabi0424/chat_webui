@@ -4,6 +4,8 @@ export interface UiMessage {
   id?: string;
   role: "user" | "assistant" | "system";
   content: string;
+  /** thinking対応モデルの思考内容（あれば折りたたみ表示する）。 */
+  reasoning?: string;
   usage?: { promptTokens: number; completionTokens: number; cost?: number };
   /** この位置の兄弟ブランチ（自分を含む、作成順）。分岐点でのみ2件以上になる。 */
   siblingIds?: string[];

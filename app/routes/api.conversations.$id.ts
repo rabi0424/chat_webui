@@ -3,6 +3,7 @@ import {
   deleteConversation,
   getConversation,
   updateConversationModel,
+  updateConversationParams,
 } from "../lib/db.server";
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -17,7 +18,7 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 
   if (request.method === "PATCH") {
-    let body: { modelId?: string };
+    let body: { modelId?: string; params?: Record<string, unknown> | null };
     try {
       body = (await request.json()) as typeof body;
     } catch {
@@ -25,6 +26,14 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     if (body.modelId) {
       await updateConversationModel(params.id, body.modelId);
+    }
+    if (body.params !== undefined) {
+      await updateConversationParams(
+        params.id,
+        body.params && Object.keys(body.params).length > 0
+          ? JSON.stringify(body.params)
+          : null,
+      );
     }
     return Response.json({ ok: true });
   }
