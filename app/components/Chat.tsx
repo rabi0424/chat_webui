@@ -241,6 +241,9 @@ export function Chat({
   // スマートスクロール: 最下部付近にいるときだけ自動追従する
   const stickToBottomRef = useRef(true);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ガラス面フッターの高さ（コンテンツ下部の余白に使う）
+  const footerRef = useRef<HTMLElement>(null);
+  const [footerHeight, setFooterHeight] = useState(88);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // 古い非同期処理が新しいストリームの表示を上書きしないための世代カウンタ
@@ -333,23 +336,15 @@ export function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 入力欄の高さを内容に合わせる（入力時・下書き復元時の両方をカバー）
+  // フッター（ガラス面）の高さを測り、コンテンツ下部の余白に反映する
   useEffect(() => {
-    const el = textareaRef.current;
+    const el = footerRef.current;
     if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-  }, [input]);
-
-  const changeInput = (value: string) => {
-    setInput(value);
-    try {
-      if (value) localStorage.setItem(draftKey, value);
-      else localStorage.removeItem(draftKey);
-    } catch {
-      // ストレージ不可でも入力自体は妨げない
-    }
-  };
+    const observer = new ResizeObserver(() => setFooterHeight(el.offsetHeight));
+    observer.observe(el);
+    setFooterHeight(el.offsetHeight);
+    return () => observer.disconnect();
+  }, []);
 
   // スマホではプレースホルダを短縮する
   const [isNarrow, setIsNarrow] = useState(false);
@@ -360,6 +355,25 @@ export function Chat({
     mq.addEventListener("change", update);
     return () => mq.removeEventListener("change", update);
   }, []);
+
+  // 入力欄の高さを内容に合わせる（入力時・下書き復元時・
+  // プレースホルダ切替時をカバー。空のときは最小高さに任せる）
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    if (input) el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [input, isNarrow]);
+
+  const changeInput = (value: string) => {
+    setInput(value);
+    try {
+      if (value) localStorage.setItem(draftKey, value);
+      else localStorage.removeItem(draftKey);
+    } catch {
+      // ストレージ不可でも入力自体は妨げない
+    }
+  };
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -711,8 +725,8 @@ export function Chat({
   const lastMessage = messages[messages.length - 1];
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-1 border-b border-gray-100 px-3 py-2 dark:border-gray-800">
+    <div className="relative h-full">
+      <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b border-gray-200/60 bg-white/60 px-3 py-2 backdrop-blur-xl backdrop-saturate-150 dark:border-gray-800/60 dark:bg-gray-950/55">
         <button
           type="button"
           onClick={openSidebar}
@@ -792,9 +806,12 @@ export function Chat({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="absolute inset-0 overflow-y-auto"
       >
-        <div className="mx-auto max-w-3xl px-4 py-6">
+        <div
+          className="mx-auto max-w-3xl px-4 pt-20"
+          style={{ paddingBottom: footerHeight + 24 }}
+        >
           {messages.length === 0 && (
             <div className="flex min-h-[60vh] items-center justify-center text-gray-300 dark:text-gray-600">
               {emptyState ?? (
@@ -1013,7 +1030,9 @@ export function Chat({
         </div>
       </div>
 
-      <footer className="shrink-0 border-t border-gray-100 px-4 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 dark:border-gray-800">
+      <footer
+        ref={footerRef}
+        className="absolute inset-x-0 bottom-0 z-20 border-t border-gray-200/60 bg-white/60 px-4 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 backdrop-blur-xl backdrop-saturate-150 dark:border-gray-800/60 dark:bg-gray-950/55">
         {selecting ? (
           <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
             <span className="text-sm text-gray-500 dark:text-gray-400">
@@ -1051,7 +1070,7 @@ export function Chat({
                   ? "Web検索: オン（検索1回ごとに数円の追加料金がかかります）"
                   : "Web検索: オフ"
             }
-            className={`grid h-11 w-11 shrink-0 place-items-center rounded-full border transition active:scale-90 disabled:opacity-30 ${
+            className={`grid h-10 w-10 shrink-0 place-items-center rounded-full border transition active:scale-90 disabled:opacity-30 sm:h-11 sm:w-11 ${
               webSearch
                 ? "border-indigo-400 bg-indigo-50 text-indigo-600 dark:border-indigo-600 dark:bg-indigo-950 dark:text-indigo-300"
                 : "border-gray-200 text-gray-400 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-500 dark:hover:bg-gray-900"
@@ -1081,13 +1100,13 @@ export function Chat({
             placeholder={
               isNarrow ? "メッセージ" : "メッセージを入力…（Shift+Enterで改行）"
             }
-            className="max-h-[200px] min-h-[44px] flex-1 resize-none rounded-2xl border border-gray-200 bg-gray-50 px-4 py-2.5 outline-none placeholder:text-gray-400 focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900 dark:focus:border-indigo-500"
+            className="max-h-[200px] min-h-[40px] flex-1 resize-none rounded-2xl border border-gray-200/80 bg-white/70 px-4 py-2 leading-6 outline-none placeholder:text-gray-400 focus:border-indigo-400 dark:border-gray-700/80 dark:bg-gray-900/60 dark:focus:border-indigo-500"
           />
           {isStreaming ? (
             <button
               type="button"
               onClick={stop}
-              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-gray-900 text-white transition hover:bg-gray-700 active:scale-90 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-gray-900 text-white transition hover:bg-gray-700 active:scale-90 sm:h-11 sm:w-11 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
               aria-label="停止"
             >
               <span className="block h-3.5 w-3.5 rounded-sm bg-current" />
@@ -1097,7 +1116,7 @@ export function Chat({
               type="button"
               onClick={send}
               disabled={!input.trim()}
-              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-indigo-600 text-white transition hover:bg-indigo-500 active:scale-90 disabled:opacity-30"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-indigo-600 text-white transition hover:bg-indigo-500 active:scale-90 disabled:opacity-30 sm:h-11 sm:w-11"
               aria-label="送信"
             >
               <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
