@@ -24,6 +24,17 @@ export async function loader() {
 export default function Shell({ loaderData }: Route.ComponentProps) {
   const { models, conversations, bots, folders } = loaderData;
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarClosing, setSidebarClosing] = useState(false);
+
+  /** 閉じるときも開くときと同じ滑らかさで（退場アニメーション後にアンマウント）。 */
+  const closeSidebar = () => {
+    if (sidebarClosing) return;
+    setSidebarClosing(true);
+    setTimeout(() => {
+      setSidebarOpen(false);
+      setSidebarClosing(false);
+    }, 220);
+  };
 
   return (
     <div className="flex h-dvh overflow-x-hidden bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
@@ -36,14 +47,20 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       {sidebarOpen && (
         <div className="fixed inset-0 z-30 md:hidden">
           <div
-            className="absolute inset-0 bg-black/40 backdrop-blur-sm animate-fade"
-            onClick={() => setSidebarOpen(false)}
+            className={`absolute inset-0 bg-black/40 backdrop-blur-sm ${
+              sidebarClosing ? "animate-fade-out" : "animate-fade"
+            }`}
+            onClick={closeSidebar}
           />
-          <div className="absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl animate-drawer dark:bg-gray-950">
+          <div
+            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl dark:bg-gray-950 ${
+              sidebarClosing ? "animate-drawer-out" : "animate-drawer"
+            }`}
+          >
             <Sidebar
               conversations={conversations}
               folders={folders}
-              onNavigate={() => setSidebarOpen(false)}
+              onNavigate={closeSidebar}
             />
           </div>
         </div>

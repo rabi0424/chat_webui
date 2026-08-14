@@ -12,7 +12,9 @@
   /* ポップオーバー等の出現。トリガー起点に軽いスプリング感で立ち上がる */
   --animate-pop: pop 0.16s cubic-bezier(0.2, 0.8, 0.3, 1.08) both;
   --animate-fade: fade 0.15s ease-out both;
+  --animate-fade-out: fade-out 0.2s ease-in both;
   --animate-drawer: drawer 0.24s cubic-bezier(0.32, 0.72, 0, 1) both;
+  --animate-drawer-out: drawer-out 0.22s cubic-bezier(0.32, 0.72, 0, 1) both;
 }
 
 @keyframes pop {
@@ -41,6 +43,24 @@
   }
   to {
     transform: none;
+  }
+}
+
+@keyframes drawer-out {
+  from {
+    transform: none;
+  }
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
   }
 }
 
