@@ -3,39 +3,48 @@ import { buildGenerationPayload, type ParamsState } from "./params";
 import { finalizeGeneration, flushGeneration } from "./db.server";
 
 /**
- * サーバー側生成。
+ * サーバー側生成のジョブ実行。
  *
- * 上流（OpenRouter）のSSEを読みながら、
- *  - クライアントへそのまま中継し（接続が生きている間だけ）、
- *  - 一定間隔でD1へ部分保存する。
- * クライアントが切断されても ctx.waitUntil 経由で読み取りを続けるため、
- * リロードや別端末からはD1のポーリングで生成過程を閲覧できる。
+ * Durable Object のアラームハンドラ内から呼ばれ、上流（OpenRouter）の
+ * SSEを読みながら一定間隔でD1へ部分保存し、終了時に確定させる。
+ * クライアントへの直接中継は行わず、すべての画面がD1のポーリングで
+ * 生成過程を閲覧する（イベントとして完了まで実行が保証される）。
  */
 
 const FLUSH_INTERVAL_MS = 900;
 
-export interface GenerationHandle {
-  /** クライアントへ中継するSSEストリーム。 */
-  stream: ReadableStream<Uint8Array>;
-  /** ctx.waitUntil に渡す、生成完了までのプロミス。 */
-  done: Promise<void>;
-}
-
-export async function startGeneration(params: {
+export interface GenerationJob {
+  conversationId: string;
   assistantMessageId: string;
   model: string;
   web: boolean;
   paramsState: ParamsState | null;
   messages: ChatMessage[];
-}): Promise<{ error: string; status: number } | GenerationHandle> {
-  const model = params.web ? `${params.model}:online` : params.model;
-  const upstream = await openRouterChatRequest({
-    model,
-    messages: params.messages,
-    stream: true,
-    usage: { include: true },
-    ...buildGenerationPayload(params.paramsState),
-  });
+}
+
+/** 例外を投げず、必ずメッセージ行を確定させて終了する。 */
+export async function runGenerationJob(job: GenerationJob): Promise<void> {
+  const model = job.web ? `${job.model}:online` : job.model;
+
+  let upstream: Response;
+  try {
+    upstream = await openRouterChatRequest({
+      model,
+      messages: job.messages,
+      stream: true,
+      usage: { include: true },
+      ...buildGenerationPayload(job.paramsState),
+    });
+  } catch (e) {
+    await finalizeGeneration(job.assistantMessageId, {
+      content: "",
+      reasoning: null,
+      usageJson: null,
+      status: "error",
+      error: `OpenRouterへの接続に失敗しました: ${(e as Error).message}`,
+    });
+    return;
+  }
 
   if (!upstream.ok || !upstream.body) {
     let detail = "";
@@ -45,38 +54,23 @@ export async function startGeneration(params: {
     } catch {
       // ステータスコードだけで十分
     }
-    const message = detail || `OpenRouter APIエラー (${upstream.status})`;
-    await finalizeGeneration(params.assistantMessageId, {
+    await finalizeGeneration(job.assistantMessageId, {
       content: "",
       reasoning: null,
       usageJson: null,
       status: "error",
-      error: message,
+      error: detail || `OpenRouter APIエラー (${upstream.status})`,
     });
-    return { error: message, status: upstream.status };
+    return;
   }
 
-  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
-  const writer = writable.getWriter();
-  return {
-    stream: readable,
-    done: pump(upstream.body, writer, params.assistantMessageId),
-  };
-}
-
-async function pump(
-  body: ReadableStream<Uint8Array>,
-  writer: WritableStreamDefaultWriter<Uint8Array>,
-  messageId: string,
-): Promise<void> {
-  const reader = body.getReader();
+  const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let content = "";
   let reasoning = "";
   let usageJson: string | null = null;
   let finishReason: string | undefined;
-  let clientGone = false;
   let stopped = false;
   let lastFlush = Date.now();
 
@@ -84,15 +78,6 @@ async function pump(
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-
-      if (!clientGone && value) {
-        try {
-          await writer.write(value);
-        } catch {
-          // クライアント切断。以降はD1への保存のみ続ける
-          clientGone = true;
-        }
-      }
 
       buffer += decoder.decode(value, { stream: true });
       let idx: number;
@@ -136,7 +121,7 @@ async function pump(
 
       if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
         lastFlush = Date.now();
-        const { stopRequested } = await flushGeneration(messageId, {
+        const { stopRequested } = await flushGeneration(job.assistantMessageId, {
           content,
           reasoning: reasoning || null,
         });
@@ -156,7 +141,7 @@ async function pump(
   }
 
   const empty = content === "";
-  await finalizeGeneration(messageId, {
+  await finalizeGeneration(job.assistantMessageId, {
     content,
     reasoning: reasoning || null,
     usageJson,
@@ -169,10 +154,4 @@ async function pump(
           }`
       : null,
   });
-
-  try {
-    await writer.close();
-  } catch {
-    // クライアント切断済みなら無視
-  }
 }

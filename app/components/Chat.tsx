@@ -3,7 +3,6 @@ import { useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
-import { parseSSE } from "../lib/sse";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
@@ -20,7 +19,7 @@ export interface BotContext {
 const MODEL_STORAGE_KEY = "chat-webui:model";
 const WEB_STORAGE_KEY = "chat-webui:web-search";
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
-const POLL_INTERVAL_MS = 700;
+const POLL_INTERVAL_MS = 500;
 
 /** thinking対応モデルの思考内容の折りたたみ表示。 */
 function ReasoningBlock({
@@ -325,9 +324,9 @@ export function Chat({
   }
 
   /**
-   * 生成を開始する。サーバーがユーザーメッセージ・応答を保存するため、
-   * このクライアントは表示に専念する。SSEが切れてもポーリングに切り替えて
-   * 追いかける（生成はサーバー側で続いている）。
+   * 生成を開始する。生成はサーバー（Durable Object）側で進行・保存され、
+   * このクライアントはポーリングで表示を追いかけるだけ。
+   * リロード・別端末・タブ閉じのどれにも影響されない。
    */
   async function runGeneration(
     history: UiMessage[],
@@ -390,8 +389,10 @@ export function Chat({
         throw new Error(body?.error ?? `エラーが発生しました (${res.status})`);
       }
 
-      const userMessageId = res.headers.get("X-User-Message-Id") || null;
-      const assistantMessageId = res.headers.get("X-Assistant-Message-Id")!;
+      const { userMessageId, assistantMessageId } = (await res.json()) as {
+        userMessageId: string | null;
+        assistantMessageId: string;
+      };
 
       // サーバーが採番したIDをローカル状態へ反映
       setMessages((prev) => {
@@ -411,53 +412,7 @@ export function Chat({
         return next;
       });
 
-      let content = "";
-      let reasoningText = "";
-      let usage: UiMessage["usage"];
-      try {
-        if (!res.body) throw new Error("stream unavailable");
-        for await (const data of parseSSE(res.body)) {
-          let chunk: {
-            choices?: {
-              delta?: { content?: string; reasoning?: string | null };
-            }[];
-            usage?: {
-              prompt_tokens?: number;
-              completion_tokens?: number;
-              cost?: number;
-            };
-          };
-          try {
-            chunk = JSON.parse(data);
-          } catch {
-            continue;
-          }
-          const delta = chunk.choices?.[0]?.delta;
-          if (typeof delta?.content === "string") content += delta.content;
-          if (typeof delta?.reasoning === "string")
-            reasoningText += delta.reasoning;
-          if (chunk.usage) {
-            usage = {
-              promptTokens: chunk.usage.prompt_tokens ?? 0,
-              completionTokens: chunk.usage.completion_tokens ?? 0,
-              cost: chunk.usage.cost,
-            };
-          }
-          if (epochRef.current === epoch) {
-            applyRemoteState({
-              content,
-              reasoning: reasoningText || null,
-              status: "streaming",
-              error: null,
-              usage: usage ?? null,
-            });
-          }
-        }
-      } catch {
-        // ストリームが切れても生成はサーバーで続いている → ポーリングへ
-      }
-
-      // 最終状態はサーバーを正とする（停止・エラー・usageの確定を含む）
+      // 生成過程・最終状態はサーバーを正とし、ポーリングで追いかける
       await pollUntilDone(convId, assistantMessageId, epoch);
 
       if (epochRef.current === epoch) {

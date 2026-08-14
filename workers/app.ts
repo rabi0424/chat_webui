@@ -1,30 +1,59 @@
 import { DurableObject } from "cloudflare:workers";
 import { createRequestHandler, RouterContextProvider } from "react-router";
 import { cloudflareContext } from "../app/lib/cloudflare-context";
-import { startGeneration } from "../app/lib/generation.server";
+import { finalizeGeneration, getMessage } from "../app/lib/db.server";
+import {
+  runGenerationJob,
+  type GenerationJob,
+} from "../app/lib/generation.server";
 
 /**
  * バックグラウンド生成の実行体。
  *
- * Workerの waitUntil はクライアント切断後およそ30秒しか猶予がないため、
- * 生成はこのDurable Objectの中で実行する。DOは進行中の非同期処理がある
- * 限り生き続けるので、ブラウザを閉じても生成とD1への保存は完了まで続く。
+ * 生成はDOの「アラームハンドラ」内で実行する。アラームは独立した
+ * イベントとして完了まで実行が保証され（at-least-once）、リクエストや
+ * クライアントの切断に寿命が引きずられない。waitUntil頼みの方式は
+ * 本番環境で切断後に処理が落ちることがあったため廃止した。
  */
 export class GenerationRunner extends DurableObject {
   override async fetch(request: Request): Promise<Response> {
-    const body = (await request.json()) as Parameters<typeof startGeneration>[0];
-    const result = await startGeneration(body);
-    if ("error" in result) {
-      return Response.json({ error: result.error }, { status: result.status });
+    const job = (await request.json()) as GenerationJob;
+    await this.ctx.storage.put("job", job);
+    await this.ctx.storage.setAlarm(Date.now() + 50);
+    return Response.json({ ok: true }, { status: 202 });
+  }
+
+  override async alarm(): Promise<void> {
+    const job = await this.ctx.storage.get<GenerationJob>("job");
+    if (!job) return;
+    try {
+      const row = await getMessage(job.conversationId, job.assistantMessageId);
+      if (row && row.status === "streaming") {
+        if (row.content !== "") {
+          // 前回の実行が途中で失われた後の再試行。二重課金を避けるため、
+          // ここまでの部分内容で確定させる
+          await finalizeGeneration(job.assistantMessageId, {
+            content: row.content,
+            reasoning: row.reasoning,
+            usageJson: row.usage_json,
+            status: "done",
+            error: null,
+          });
+        } else {
+          await runGenerationJob(job);
+        }
+      }
+    } catch (e) {
+      // 想定外の失敗は行を確定させてUIの固まりを防ぐ
+      await finalizeGeneration(job.assistantMessageId, {
+        content: "",
+        reasoning: null,
+        usageJson: null,
+        status: "error",
+        error: `生成処理が失敗しました: ${(e as Error).message}`,
+      }).catch(() => {});
     }
-    // DOを生成完了まで維持する
-    this.ctx.waitUntil(result.done);
-    return new Response(result.stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-      },
-    });
+    await this.ctx.storage.delete("job");
   }
 }
 
