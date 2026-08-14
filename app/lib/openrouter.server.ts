@@ -1,6 +1,10 @@
 import { env } from "cloudflare:workers";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+const POE_BASE = "https://api.poe.com/v1";
+
+/** Poeモデルは "poe:" プレフィックス付きのIDで扱う。 */
+export const POE_PREFIX = "poe:";
 
 /** Subset of the OpenRouter model metadata we expose to the client. */
 export interface ModelInfo {
@@ -16,6 +20,8 @@ export interface ModelInfo {
   inputModalities: string[];
   /** OpenRouterが返す、このモデルが対応する生成パラメータ名の一覧。 */
   supportedParameters: string[];
+  /** 提供元。poe はサブスクのポイントで課金される。 */
+  provider: "openrouter" | "poe";
   createdAt: number;
 }
 
@@ -31,12 +37,44 @@ const MODELS_TTL_MS = 60 * 60 * 1000; // 1 hour
 // simply causes a refetch.
 let modelsCache: ModelsCache | null = null;
 
+/** Poeのモデル一覧。キー未設定・失敗時は空配列（Poe対応は任意機能）。 */
+async function fetchPoeModels(): Promise<ModelInfo[]> {
+  if (!env.POE_API_KEY) return [];
+  try {
+    const res = await fetch(`${POE_BASE}/models`, {
+      headers: { Authorization: `Bearer ${env.POE_API_KEY}` },
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { data?: Record<string, unknown>[] };
+    return (body.data ?? []).map(
+      (m): ModelInfo => ({
+        id: `${POE_PREFIX}${String(m.id)}`,
+        name: String(m.id),
+        description: "Poe（サブスクのポイントで課金）",
+        contextLength: 0,
+        promptPrice: "0",
+        completionPrice: "0",
+        inputModalities: ["text"],
+        // Poeはモデル別の対応パラメータを公開していないため空にする
+        supportedParameters: [],
+        provider: "poe",
+        createdAt: Number(m.created ?? 0),
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchModels(): Promise<ModelInfo[]> {
   if (modelsCache && Date.now() - modelsCache.fetchedAt < MODELS_TTL_MS) {
     return modelsCache.models;
   }
 
-  const res = await fetch(`${OPENROUTER_BASE}/models`);
+  const [res, poeModels] = await Promise.all([
+    fetch(`${OPENROUTER_BASE}/models`),
+    fetchPoeModels(),
+  ]);
   if (!res.ok) {
     // Serve stale data instead of failing if we have any.
     if (modelsCache) return modelsCache.models;
@@ -59,13 +97,18 @@ export async function fetchModels(): Promise<ModelInfo[]> {
         completionPrice: pricing.completion ?? "0",
         inputModalities: (architecture.input_modalities as string[]) ?? ["text"],
         supportedParameters: (m.supported_parameters as string[]) ?? [],
+        provider: "openrouter" as const,
         createdAt: Number(m.created ?? 0),
       };
     })
     .sort((a, b) => b.createdAt - a.createdAt);
 
-  modelsCache = { models, fetchedAt: Date.now() };
-  return models;
+  const merged = [
+    ...models,
+    ...poeModels.sort((a, b) => a.name.localeCompare(b.name)),
+  ];
+  modelsCache = { models: merged, fetchedAt: Date.now() };
+  return merged;
 }
 
 export interface ChatMessage {
@@ -117,6 +160,20 @@ export async function generateTitle(params: {
 /**
  * OpenRouterの chat/completions へのリクエスト。APIキーはサーバー側のみ。
  */
+/** Poeの chat/completions（OpenAI互換）へのリクエスト。 */
+export async function poeChatRequest(
+  body: Record<string, unknown>,
+): Promise<Response> {
+  return await fetch(`${POE_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.POE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function openRouterChatRequest(
   body: Record<string, unknown>,
   signal?: AbortSignal,

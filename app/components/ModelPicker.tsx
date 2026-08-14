@@ -126,21 +126,34 @@ export function ModelPicker({
                     <span className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
                       {m.name}
                     </span>
-                    {m.inputModalities.includes("image") && (
-                      <span className="shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300">
-                        画像
-                      </span>
-                    )}
+                    <span className="flex shrink-0 gap-1">
+                      {m.provider === "poe" && (
+                        <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-600 dark:bg-violet-950 dark:text-violet-300">
+                          Poe
+                        </span>
+                      )}
+                      {m.inputModalities.includes("image") && (
+                        <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300">
+                          画像
+                        </span>
+                      )}
+                    </span>
                   </div>
                   <div className="mt-0.5 flex gap-3 text-xs text-gray-400 dark:text-gray-500">
                     <span className="truncate">{m.id}</span>
                   </div>
                   <div className="mt-0.5 flex gap-3 text-xs text-gray-500 dark:text-gray-400">
-                    <span>{formatContext(m.contextLength)} ctx</span>
-                    <span>
-                      入 {formatPricePerMillion(m.promptPrice)}/M · 出{" "}
-                      {formatPricePerMillion(m.completionPrice)}/M
-                    </span>
+                    {m.provider === "poe" ? (
+                      <span>サブスクのポイントで課金</span>
+                    ) : (
+                      <>
+                        <span>{formatContext(m.contextLength)} ctx</span>
+                        <span>
+                          入 {formatPricePerMillion(m.promptPrice)}/M · 出{" "}
+                          {formatPricePerMillion(m.completionPrice)}/M
+                        </span>
+                      </>
+                    )}
                   </div>
                 </button>
               </li>

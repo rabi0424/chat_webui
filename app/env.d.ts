@@ -3,5 +3,7 @@
 declare namespace Cloudflare {
   interface Env {
     OPENROUTER_API_KEY: string;
+    /** 任意: 設定するとPoeのモデルが一覧に追加される。 */
+    POE_API_KEY?: string;
   }
 }
