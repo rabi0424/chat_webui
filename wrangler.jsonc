@@ -24,7 +24,7 @@
 		{
 			"binding": "DB",
 			"database_name": "chat-webui",
-			"database_id": "REPLACE_WITH_D1_DATABASE_ID"
+			"database_id": "17428e1b-1fd4-4de1-aab9-8771fae4e06a"
 		}
 	]
 	/**
