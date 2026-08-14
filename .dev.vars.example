@@ -1,3 +1,5 @@
 # Copy this file to .dev.vars and fill in your own values.
 # .dev.vars is gitignored and must never be committed.
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# 任意: Poe API（poe.com/api_key で取得。設定するとPoeモデルが使える）
+# POE_API_KEY=poe-xxxxxxxxxxxx

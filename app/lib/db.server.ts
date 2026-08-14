@@ -306,6 +306,84 @@ export async function updateConversationParams(
     .run();
 }
 
+// --- 検索 -----------------------------------------------------------------
+
+export interface SearchResult {
+  id: string;
+  title: string;
+  /** 本文がヒットした場合の抜粋（タイトルのみヒット時は null）。 */
+  snippet: string | null;
+}
+
+/** LIKE用エスケープ（% _ \ を無効化）。 */
+function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/**
+ * 会話検索。スペース区切りの各語について、タイトルまたは本文への
+ * 部分一致を要求する（AND）。先頭に "-" を付けた語は除外条件になり、
+ * タイトル・本文のどこにも含まれない会話だけがヒットする。
+ */
+export async function searchConversations(
+  query: string,
+): Promise<SearchResult[]> {
+  const terms = query.split(/[\s　]+/).filter(Boolean);
+  const positives = terms.filter((t) => !t.startsWith("-"));
+  const negatives = terms
+    .filter((t) => t.startsWith("-"))
+    .map((t) => t.slice(1))
+    .filter(Boolean);
+  if (positives.length === 0) return [];
+
+  const d = await db();
+  let sql = "SELECT c.id, c.title FROM conversations c WHERE 1=1";
+  const binds: string[] = [];
+  const matchClause =
+    "(c.title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\'))";
+  for (const t of positives) {
+    sql += ` AND ${matchClause}`;
+    const like = `%${escapeLike(t)}%`;
+    binds.push(like, like);
+  }
+  for (const t of negatives) {
+    sql += ` AND NOT ${matchClause}`;
+    const like = `%${escapeLike(t)}%`;
+    binds.push(like, like);
+  }
+  sql += " ORDER BY c.updated_at DESC LIMIT 50";
+
+  const { results } = await d
+    .prepare(sql)
+    .bind(...binds)
+    .all<{ id: string; title: string }>();
+
+  // 抜粋: 最初の検索語が本文にヒットした位置の前後を切り出す
+  const firstLike = `%${escapeLike(positives[0])}%`;
+  const out: SearchResult[] = [];
+  for (const row of results) {
+    const hit = await d
+      .prepare(
+        "SELECT content FROM messages WHERE conversation_id = ? AND content LIKE ? ESCAPE '\\' LIMIT 1",
+      )
+      .bind(row.id, firstLike)
+      .first<{ content: string }>();
+    let snippet: string | null = null;
+    if (hit) {
+      const idx = hit.content
+        .toLowerCase()
+        .indexOf(positives[0].toLowerCase());
+      const start = Math.max(0, idx - 30);
+      snippet =
+        (start > 0 ? "…" : "") +
+        hit.content.slice(start, start + 90).replace(/\n/g, " ") +
+        (start + 90 < hit.content.length ? "…" : "");
+    }
+    out.push({ id: row.id, title: row.title, snippet });
+  }
+  return out;
+}
+
 // --- Folders / サイドバー整理 ---------------------------------------------
 
 export async function listFolders(): Promise<FolderRow[]> {

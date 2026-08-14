@@ -1042,13 +1042,16 @@ export function Chat({
           <button
             type="button"
             onClick={toggleWebSearch}
+            disabled={model.startsWith("poe:")}
             aria-pressed={webSearch}
             title={
-              webSearch
-                ? "Web検索: オン（検索1回ごとに数円の追加料金がかかります）"
-                : "Web検索: オフ"
+              model.startsWith("poe:")
+                ? "Web検索はOpenRouterのモデルでのみ利用できます"
+                : webSearch
+                  ? "Web検索: オン（検索1回ごとに数円の追加料金がかかります）"
+                  : "Web検索: オフ"
             }
-            className={`grid h-11 w-11 shrink-0 place-items-center rounded-full border transition active:scale-90 ${
+            className={`grid h-11 w-11 shrink-0 place-items-center rounded-full border transition active:scale-90 disabled:opacity-30 ${
               webSearch
                 ? "border-indigo-400 bg-indigo-50 text-indigo-600 dark:border-indigo-600 dark:bg-indigo-950 dark:text-indigo-300"
                 : "border-gray-200 text-gray-400 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-500 dark:hover:bg-gray-900"

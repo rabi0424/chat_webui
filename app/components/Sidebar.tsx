@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
-import type { ConversationRow, FolderRow } from "../lib/db.server";
+import type { ConversationRow, FolderRow, SearchResult } from "../lib/db.server";
 import { ThemeToggle } from "./ThemeToggle";
 
 type MenuTarget =
@@ -27,6 +27,37 @@ export function Sidebar({
   /** フォルダ移動モーダルの対象会話ID */
   const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
+
+  // --- 検索（タイトル + 本文、"-語"で除外） ------------------------------
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[] | null>(
+    null,
+  );
+  const [searching, setSearching] = useState(false);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    const q = searchQuery.trim();
+    if (!q) {
+      setSearchResults(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    searchTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+        if (!res.ok) throw new Error();
+        const { results } = (await res.json()) as { results: SearchResult[] };
+        setSearchResults(results);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+  }, [searchQuery]);
 
   const viewFolder = view ? folders.find((f) => f.id === view) ?? null : null;
 
@@ -345,8 +376,76 @@ export function Sidebar({
         </NavLink>
       </div>
 
+      <div className="relative px-3 pb-2">
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="検索（-語 で除外）"
+          aria-label="会話を検索"
+          className="w-full rounded-xl border border-gray-200 bg-gray-50 py-2 pl-8 pr-7 text-base outline-none placeholder:text-gray-400 focus:border-indigo-400 sm:text-sm dark:border-gray-700 dark:bg-gray-900"
+        />
+        <svg
+          className="pointer-events-none absolute left-5.5 top-1/2 h-4 w-4 -translate-y-[60%] text-gray-400"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+        >
+          <path
+            fillRule="evenodd"
+            d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
+            clipRule="evenodd"
+          />
+        </svg>
+        {searchQuery && (
+          <button
+            type="button"
+            onClick={() => setSearchQuery("")}
+            aria-label="検索をクリア"
+            className="absolute right-5 top-1/2 -translate-y-[60%] rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+            </svg>
+          </button>
+        )}
+      </div>
+
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        {viewFolder ? (
+        {searchQuery.trim() ? (
+          /* --- 検索結果 --- */
+          <>
+            <p className="px-3 pb-1 pt-1 text-[11px] font-medium text-gray-400 dark:text-gray-600">
+              {searching
+                ? "検索中…"
+                : `検索結果 ${searchResults?.length ?? 0}件`}
+            </p>
+            <ul className="space-y-0.5">
+              {(searchResults ?? []).map((r) => (
+                <li key={r.id}>
+                  <NavLink
+                    to={`/chat/${r.id}`}
+                    onClick={onNavigate}
+                    className="block rounded-lg px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-900"
+                  >
+                    <span className="block truncate text-sm text-gray-700 dark:text-gray-200">
+                      {r.title}
+                    </span>
+                    {r.snippet && (
+                      <span className="mt-0.5 block truncate text-xs text-gray-400 dark:text-gray-500">
+                        {r.snippet}
+                      </span>
+                    )}
+                  </NavLink>
+                </li>
+              ))}
+              {!searching && searchResults?.length === 0 && (
+                <li className="px-3 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
+                  見つかりませんでした
+                </li>
+              )}
+            </ul>
+          </>
+        ) : viewFolder ? (
           /* --- フォルダ階層表示 --- */
           <>
             <div className="mb-1 flex items-center gap-1 px-1">

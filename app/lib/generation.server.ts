@@ -1,4 +1,4 @@
-import { openRouterChatRequest, type ChatMessage } from "./openrouter.server";
+import { openRouterChatRequest, poeChatRequest, POE_PREFIX, type ChatMessage } from "./openrouter.server";
 import { buildGenerationPayload, type ParamsState } from "./params";
 import { finalizeGeneration, flushGeneration } from "./db.server";
 
@@ -67,24 +67,35 @@ export interface GenerationJob {
 
 /** 例外を投げず、必ずメッセージ行を確定させて終了する。 */
 export async function runGenerationJob(job: GenerationJob): Promise<void> {
-  const model = job.web ? `${job.model}:online` : job.model;
+  const isPoe = job.model.startsWith(POE_PREFIX);
+  const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
+  // Web検索プラグイン（:online）はOpenRouter専用
+  const model = !isPoe && job.web ? `${modelName}:online` : modelName;
 
   let upstream: Response;
   try {
-    upstream = await openRouterChatRequest({
-      model,
-      messages: applyPromptCaching(job.model, job.messages),
-      stream: true,
-      usage: { include: true },
-      ...buildGenerationPayload(job.paramsState),
-    });
+    upstream = isPoe
+      ? await poeChatRequest({
+          model,
+          messages: job.messages,
+          stream: true,
+          stream_options: { include_usage: true },
+          ...buildGenerationPayload(job.paramsState),
+        })
+      : await openRouterChatRequest({
+          model,
+          messages: applyPromptCaching(job.model, job.messages),
+          stream: true,
+          usage: { include: true },
+          ...buildGenerationPayload(job.paramsState),
+        });
   } catch (e) {
     await finalizeGeneration(job.assistantMessageId, {
       content: "",
       reasoning: null,
       usageJson: null,
       status: "error",
-      error: `OpenRouterへの接続に失敗しました: ${(e as Error).message}`,
+      error: `${isPoe ? "Poe" : "OpenRouter"}への接続に失敗しました: ${(e as Error).message}`,
     });
     return;
   }
@@ -102,7 +113,7 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
       reasoning: null,
       usageJson: null,
       status: "error",
-      error: detail || `OpenRouter APIエラー (${upstream.status})`,
+      error: detail || `${isPoe ? "Poe" : "OpenRouter"} APIエラー (${upstream.status})`,
     });
     return;
   }
