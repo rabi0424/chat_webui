@@ -17,6 +17,11 @@ export interface BotContext {
   params: ParamsState | null;
 }
 
+const MODEL_STORAGE_KEY = "chat-webui:model";
+const WEB_STORAGE_KEY = "chat-webui:web-search";
+const DEFAULT_MODEL = "openai/gpt-4o-mini";
+const POLL_INTERVAL_MS = 700;
+
 /** thinking対応モデルの思考内容の折りたたみ表示。 */
 function ReasoningBlock({
   reasoning,
@@ -45,10 +50,6 @@ function ReasoningBlock({
     </div>
   );
 }
-
-const MODEL_STORAGE_KEY = "chat-webui:model";
-const WEB_STORAGE_KEY = "chat-webui:web-search";
-const DEFAULT_MODEL = "openai/gpt-4o-mini";
 
 /** 分岐点に表示する ‹ 2/3 › 型の控えめなページャ。 */
 function BranchPager({
@@ -123,17 +124,15 @@ export function Chat({
     null,
   );
 
-  const abortRef = useRef<AbortController | null>(null);
+  // 新規チャットで送信した時点で会話IDが確定するため ref で保持する
+  const convIdRef = useRef<string | null>(conversationId);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // 保存処理の直列化用（連投時に順序が崩れないように）
-  const persistChain = useRef<Promise<void>>(Promise.resolve());
   // 古い非同期処理が新しいストリームの表示を上書きしないための世代カウンタ
   const epochRef = useRef(0);
 
   useEffect(() => {
-    // 会話やボットが持つモデルを優先。なければ前回使ったモデルを復元
     if (!initialModel) {
       const saved = localStorage.getItem(MODEL_STORAGE_KEY);
       if (saved && models.some((m) => m.id === saved)) {
@@ -145,12 +144,28 @@ export function Chat({
     setWebSearch(localStorage.getItem(WEB_STORAGE_KEY) === "1");
   }, [models, initialModel]);
 
+  // 別端末やリロードで開いたとき、生成中の応答があればポーリングで追いかける
+  useEffect(() => {
+    const last = initialMessages[initialMessages.length - 1];
+    if (last?.status === "streaming" && last.id && conversationId) {
+      const epoch = ++epochRef.current;
+      setIsStreaming(true);
+      void pollUntilDone(conversationId, last.id, epoch).then(() => {
+        if (epochRef.current === epoch) {
+          setIsStreaming(false);
+          void refreshPath(conversationId, epoch);
+        }
+      });
+    }
+    // 初回マウント時のみ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const selectModel = (id: string) => {
     setModel(id);
     localStorage.setItem(MODEL_STORAGE_KEY, id);
-    // 会話ごとの選択モデルを記憶（リロード・別端末でも維持）
-    if (conversationId) {
-      void fetch(`/api/conversations/${conversationId}`, {
+    if (convIdRef.current) {
+      void fetch(`/api/conversations/${convIdRef.current}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ modelId: id }),
@@ -168,10 +183,11 @@ export function Chat({
   /** ⚙パネルでの変更を反映し、既存の会話にはデバウンスして保存する。 */
   const changeParams = (next: ParamsState) => {
     setParams(next);
-    if (!conversationId) return;
+    const convId = convIdRef.current;
+    if (!convId) return;
     if (paramsSaveTimer.current) clearTimeout(paramsSaveTimer.current);
     paramsSaveTimer.current = setTimeout(() => {
-      void fetch(`/api/conversations/${conversationId}`, {
+      void fetch(`/api/conversations/${convId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ params: next }),
@@ -194,7 +210,7 @@ export function Chat({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
-  /** 現在のパスをサーバーから取り直す（ページャ情報の更新用）。 */
+  /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */
   async function refreshPath(convId: string, epoch: number) {
     try {
       const res = await fetch(`/api/conversations/${convId}/path`);
@@ -208,24 +224,75 @@ export function Chat({
     }
   }
 
+  /** 最後のアシスタントメッセージをサーバーの状態で置き換える。 */
+  function applyRemoteState(remote: {
+    content: string;
+    reasoning: string | null;
+    status: string;
+    error: string | null;
+    usage: UiMessage["usage"] | null;
+  }) {
+    setMessages((prev) => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      if (last?.role !== "assistant") return prev;
+      next[next.length - 1] = {
+        ...last,
+        content: remote.content,
+        reasoning: remote.reasoning ?? undefined,
+        status: remote.status === "done" ? undefined : (remote.status as UiMessage["status"]),
+        error: remote.error ?? undefined,
+        usage: remote.usage ?? last.usage,
+      };
+      return next;
+    });
+  }
+
+  /** 生成中メッセージをポーリングで追いかける（生成完了で返る）。 */
+  async function pollUntilDone(convId: string, messageId: string, epoch: number) {
+    for (;;) {
+      if (epochRef.current !== epoch) return;
+      try {
+        const res = await fetch(
+          `/api/conversations/${convId}/messages/${messageId}`,
+        );
+        if (!res.ok) return;
+        const remote = (await res.json()) as {
+          content: string;
+          reasoning: string | null;
+          status: string;
+          error: string | null;
+          usage: UiMessage["usage"] | null;
+        };
+        if (epochRef.current !== epoch) return;
+        applyRemoteState(remote);
+        if (remote.status !== "streaming") return;
+      } catch {
+        // 一時的な失敗はリトライ
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    }
+  }
+
   /**
-   * 表示中リストの末尾にある未保存メッセージをDBへ保存する。
-   * 直前の保存済みメッセージが親になる（編集・再生成時は自動的に分岐になる）。
+   * 生成を開始する。サーバーがユーザーメッセージ・応答を保存するため、
+   * このクライアントは表示に専念する。SSEが切れてもポーリングに切り替えて
+   * 追いかける（生成はサーバー側で続いている）。
    */
-  async function persist(finalMessages: UiMessage[], epoch: number) {
-    const firstUnsaved = finalMessages.findIndex((m) => !m.id);
-    if (firstUnsaved === -1) return;
-    const tail = finalMessages
-      .slice(firstUnsaved)
-      .filter((m) => m.content !== "");
-    if (tail.length === 0) return;
-    const parentId = finalMessages[firstUnsaved - 1]?.id ?? null;
+  async function runGeneration(
+    history: UiMessage[],
+    persistInfo: { parentId: string | null; userContent: string | null },
+  ) {
+    setError(null);
+    setIsStreaming(true);
+    const epoch = ++epochRef.current;
 
     try {
-      let convId = conversationId;
-      const isNew = !convId;
+      // 新規チャットなら先に会話を作る
+      let convId = convIdRef.current;
+      let isNew = false;
       if (!convId) {
-        const firstUser = tail.find((m) => m.role === "user");
+        const firstUser = history.find((m) => m.role === "user");
         const res = await fetch("/api/conversations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -236,83 +303,27 @@ export function Chat({
             title: (firstUser?.content ?? "新しいチャット").slice(0, 40),
           }),
         });
-        if (!res.ok) throw new Error();
+        if (!res.ok) throw new Error("会話の作成に失敗しました");
         convId = ((await res.json()) as { id: string }).id;
+        convIdRef.current = convId;
+        isNew = true;
+        revalidator.revalidate(); // サイドバーに即反映
       }
 
-      const res = await fetch(`/api/conversations/${convId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          parentId,
-          messages: tail.map((m) => ({
-            role: m.role,
-            content: m.content,
-            modelId: m.role === "assistant" ? model : undefined,
-            usageJson: m.usage ? JSON.stringify(m.usage) : undefined,
-            reasoning: m.reasoning,
-          })),
-        }),
-      });
-      if (!res.ok) throw new Error();
-      const { ids } = (await res.json()) as { ids: string[] };
+      setMessages([
+        ...history,
+        { role: "assistant", content: "", status: "streaming" },
+      ]);
 
-      // 採番されたIDをローカル状態に反映
-      setMessages((prev) => {
-        const next = [...prev];
-        let k = 0;
-        for (let i = 0; i < next.length && k < tail.length; i++) {
-          if (!next[i].id && next[i].content === tail[k].content) {
-            next[i] = { ...next[i], id: ids[k] };
-            k++;
-          }
-        }
-        return next;
-      });
-
-      if (isNew) {
-        const user = tail.find((m) => m.role === "user");
-        const assistant = tail.find((m) => m.role === "assistant");
-        if (user && assistant) {
-          await fetch(`/api/conversations/${convId}/title`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              userText: user.content,
-              assistantText: assistant.content,
-            }),
-          }).catch(() => {});
-        }
-        navigate(`/chat/${convId}`, { replace: true });
-      } else {
-        // 分岐点のページャ表示を最新化しつつ、サイドバーの並びも更新
-        await refreshPath(convId, epoch);
-        revalidator.revalidate();
-      }
-    } catch {
-      setError(
-        "会話の保存に失敗しました。次のメッセージ送信時に再保存を試みます。",
-      );
-    }
-  }
-
-  async function runCompletion(history: UiMessage[]) {
-    setError(null);
-    setIsStreaming(true);
-    const epoch = ++epochRef.current;
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setMessages([...history, { role: "assistant", content: "" }]);
-
-    let finalMessages: UiMessage[] = history;
-    try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch(`/api/conversations/${convId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model,
           web: webSearch,
           params,
+          parentId: persistInfo.parentId,
+          userContent: persistInfo.userContent,
           messages: [
             ...(bot?.systemPrompt
               ? [{ role: "system", content: bot.systemPrompt }]
@@ -320,7 +331,6 @@ export function Chat({
             ...history.map(({ role, content }) => ({ role, content })),
           ],
         }),
-        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -329,90 +339,116 @@ export function Chat({
           | null;
         throw new Error(body?.error ?? `エラーが発生しました (${res.status})`);
       }
-      if (!res.body) throw new Error("応答が空でした");
+
+      const userMessageId = res.headers.get("X-User-Message-Id") || null;
+      const assistantMessageId = res.headers.get("X-Assistant-Message-Id")!;
+
+      // サーバーが採番したIDをローカル状態へ反映
+      setMessages((prev) => {
+        const next = [...prev];
+        const asst = next[next.length - 1];
+        if (asst?.role === "assistant") {
+          next[next.length - 1] = { ...asst, id: assistantMessageId };
+        }
+        if (userMessageId) {
+          for (let i = next.length - 1; i >= 0; i--) {
+            if (next[i].role === "user" && !next[i].id) {
+              next[i] = { ...next[i], id: userMessageId };
+              break;
+            }
+          }
+        }
+        return next;
+      });
 
       let content = "";
       let reasoningText = "";
       let usage: UiMessage["usage"];
-      let finishReason: string | undefined;
-      for await (const data of parseSSE(res.body)) {
-        let chunk: {
-          choices?: {
-            delta?: { content?: string; reasoning?: string | null };
-            finish_reason?: string | null;
-          }[];
-          usage?: {
-            prompt_tokens?: number;
-            completion_tokens?: number;
-            cost?: number;
+      try {
+        if (!res.body) throw new Error("stream unavailable");
+        for await (const data of parseSSE(res.body)) {
+          let chunk: {
+            choices?: {
+              delta?: { content?: string; reasoning?: string | null };
+            }[];
+            usage?: {
+              prompt_tokens?: number;
+              completion_tokens?: number;
+              cost?: number;
+            };
           };
-          error?: { message?: string };
-        };
-        try {
-          chunk = JSON.parse(data);
-        } catch {
-          continue;
+          try {
+            chunk = JSON.parse(data);
+          } catch {
+            continue;
+          }
+          const delta = chunk.choices?.[0]?.delta;
+          if (typeof delta?.content === "string") content += delta.content;
+          if (typeof delta?.reasoning === "string")
+            reasoningText += delta.reasoning;
+          if (chunk.usage) {
+            usage = {
+              promptTokens: chunk.usage.prompt_tokens ?? 0,
+              completionTokens: chunk.usage.completion_tokens ?? 0,
+              cost: chunk.usage.cost,
+            };
+          }
+          if (epochRef.current === epoch) {
+            applyRemoteState({
+              content,
+              reasoning: reasoningText || null,
+              status: "streaming",
+              error: null,
+              usage: usage ?? null,
+            });
+          }
         }
-        if (chunk.error?.message) throw new Error(chunk.error.message);
-
-        const choice = chunk.choices?.[0];
-        if (choice?.finish_reason) finishReason = choice.finish_reason;
-        const delta = choice?.delta?.content;
-        if (delta) content += delta;
-        if (typeof choice?.delta?.reasoning === "string") {
-          reasoningText += choice.delta.reasoning;
-        }
-        if (chunk.usage) {
-          usage = {
-            promptTokens: chunk.usage.prompt_tokens ?? 0,
-            completionTokens: chunk.usage.completion_tokens ?? 0,
-            cost: chunk.usage.cost,
-          };
-        }
-        finalMessages = [
-          ...history,
-          {
-            role: "assistant",
-            content,
-            usage,
-            reasoning: reasoningText || undefined,
-          },
-        ];
-        if (epochRef.current === epoch) setMessages(finalMessages);
+      } catch {
+        // ストリームが切れても生成はサーバーで続いている → ポーリングへ
       }
 
-      // ストリームは正常終了したが本文が空（ツール呼び出しの試行や
-      // セーフティ判定などで起きる）。空の吹き出しを残さず理由を表示する。
-      if (content === "") {
-        finalMessages = history;
-        if (epochRef.current === epoch) setMessages(finalMessages);
-        setError(
-          `モデルから本文のない応答が返りました${
-            finishReason ? `（finish_reason: ${finishReason}）` : ""
-          }。モデルを変えるか、もう一度お試しください。`,
-        );
+      // 最終状態はサーバーを正とする（停止・エラー・usageの確定を含む）
+      await pollUntilDone(convId, assistantMessageId, epoch);
+
+      if (epochRef.current === epoch) {
+        setIsStreaming(false);
+        if (isNew) {
+          // タイトル生成 → 会話ページへ
+          const finalRes = await fetch(
+            `/api/conversations/${convId}/messages/${assistantMessageId}`,
+          ).catch(() => null);
+          const finalBody = finalRes?.ok
+            ? ((await finalRes.json()) as { content: string })
+            : null;
+          if (persistInfo.userContent && finalBody?.content) {
+            await fetch(`/api/conversations/${convId}/title`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                userText: persistInfo.userContent,
+                assistantText: finalBody.content,
+              }),
+            }).catch(() => {});
+          }
+          await navigate(`/chat/${convId}`, { replace: true });
+        } else {
+          await refreshPath(convId, epoch);
+          revalidator.revalidate();
+        }
       }
     } catch (e) {
-      if ((e as Error).name !== "AbortError") {
+      if (epochRef.current === epoch) {
         setError((e as Error).message);
-        // 中身のないアシスタントメッセージは表示から取り除く
-        finalMessages = finalMessages.filter(
-          (m, i) =>
-            !(
-              i === finalMessages.length - 1 &&
-              m.role === "assistant" &&
-              m.content === ""
-            ),
+        setIsStreaming(false);
+        // 開始できなかった場合は空のプレースホルダを取り除く
+        setMessages((prev) =>
+          prev[prev.length - 1]?.role === "assistant" &&
+          prev[prev.length - 1].content === "" &&
+          prev[prev.length - 1].status === "streaming"
+            ? prev.slice(0, -1)
+            : prev,
         );
-        if (epochRef.current === epoch) setMessages(finalMessages);
       }
-    } finally {
-      setIsStreaming(false);
-      abortRef.current = null;
-      const toPersist = finalMessages;
-      persistChain.current = persistChain.current.then(() =>
-        persist(toPersist, epoch),
-      );
     }
   }
 
@@ -421,11 +457,22 @@ export function Chat({
     if (!text || isStreaming) return;
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-    void runCompletion([...messages, { role: "user", content: text }]);
+    const parentId = messages[messages.length - 1]?.id ?? null;
+    void runGeneration([...messages, { role: "user", content: text }], {
+      parentId,
+      userContent: text,
+    });
   }
 
   function stop() {
-    abortRef.current?.abort();
+    const convId = convIdRef.current;
+    const last = messages[messages.length - 1];
+    if (!convId || !last?.id || last.role !== "assistant") return;
+    void fetch(`/api/conversations/${convId}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId: last.id }),
+    }).catch(() => {});
   }
 
   function regenerate() {
@@ -435,7 +482,10 @@ export function Chat({
       history.pop();
     }
     if (history.length === 0) return;
-    void runCompletion(history);
+    void runGeneration(history, {
+      parentId: history[history.length - 1]?.id ?? null,
+      userContent: null,
+    });
   }
 
   /** 過去メッセージの編集・再送信（同一会話内で分岐を作る）。 */
@@ -448,14 +498,18 @@ export function Chat({
       { role: "user" as const, content: text },
     ];
     setEditing(null);
-    void runCompletion(history);
+    void runGeneration(history, {
+      parentId: messages[editing.index - 1]?.id ?? null,
+      userContent: text,
+    });
   }
 
   /** ブランチ切替（ページャ）。 */
   async function switchBranch(targetId: string) {
-    if (isStreaming || !conversationId) return;
+    const convId = convIdRef.current;
+    if (isStreaming || !convId) return;
     try {
-      const res = await fetch(`/api/conversations/${conversationId}/path`, {
+      const res = await fetch(`/api/conversations/${convId}/path`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messageId: targetId }),
@@ -473,7 +527,8 @@ export function Chat({
 
   /** ここから分岐: この地点までの履歴で独立した新会話を作る。 */
   async function fork(messageId: string) {
-    if (isStreaming || !conversationId) return;
+    const convId = convIdRef.current;
+    if (isStreaming || !convId) return;
     if (
       !confirm(
         "ここまでの履歴をコピーして、独立した新しい会話を作成します。よろしいですか？",
@@ -482,7 +537,7 @@ export function Chat({
       return;
     }
     try {
-      const res = await fetch(`/api/conversations/${conversationId}/fork`, {
+      const res = await fetch(`/api/conversations/${convId}/fork`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messageId }),
@@ -494,6 +549,8 @@ export function Chat({
       setError("分岐の作成に失敗しました。");
     }
   }
+
+  const lastMessage = messages[messages.length - 1];
 
   return (
     <div className="flex h-full flex-col">
@@ -657,7 +714,24 @@ export function Chat({
                       }
                     />
                   )}
-                  <Markdown>{m.content}</Markdown>
+                  {m.status === "error" ? (
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+                      <span className="break-all">
+                        {m.error ?? "生成に失敗しました"}
+                      </span>
+                      {i === messages.length - 1 && !isStreaming && (
+                        <button
+                          type="button"
+                          onClick={regenerate}
+                          className="shrink-0 rounded-lg border border-red-300 px-3 py-1 hover:bg-red-100 dark:border-red-800 dark:hover:bg-red-900"
+                        >
+                          再試行
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <Markdown>{m.content}</Markdown>
+                  )}
                   {isStreaming && i === messages.length - 1 && (
                     <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-gray-400 align-text-bottom dark:bg-gray-500" />
                   )}
@@ -673,7 +747,7 @@ export function Chat({
                         {m.usage.cost != null && ` · $${m.usage.cost.toFixed(6)}`}
                       </span>
                     )}
-                    {m.id && !isStreaming && (
+                    {m.id && !isStreaming && m.status !== "error" && (
                       <button
                         type="button"
                         onClick={() => void fork(m.id!)}
@@ -704,7 +778,8 @@ export function Chat({
 
           {!isStreaming &&
             !error &&
-            messages[messages.length - 1]?.role === "assistant" && (
+            lastMessage?.role === "assistant" &&
+            lastMessage.status !== "error" && (
               <div className="mt-3">
                 <button
                   type="button"

@@ -7,6 +7,8 @@ export function toUiMessage(m: PathMessage): UiMessage {
     role: m.role,
     content: m.content,
     reasoning: m.reasoning ?? undefined,
+    status: m.status === "done" ? undefined : m.status,
+    error: m.error ?? undefined,
     usage: m.usage_json ? JSON.parse(m.usage_json) : undefined,
     siblingIds: m.sibling_ids.length > 1 ? m.sibling_ids : undefined,
     siblingIndex: m.sibling_ids.length > 1 ? m.sibling_index : undefined,

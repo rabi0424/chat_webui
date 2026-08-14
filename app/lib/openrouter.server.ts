@@ -115,20 +115,13 @@ export async function generateTitle(params: {
 }
 
 /**
- * Proxies a streaming chat completion to OpenRouter and returns the raw SSE
- * response. The API key never leaves the server.
+ * OpenRouterの chat/completions へのリクエスト。APIキーはサーバー側のみ。
  */
-export async function streamChatCompletion(params: {
-  model: string;
-  messages: ChatMessage[];
-  /** OpenRouterのWeb検索プラグイン（:online）を有効化する。 */
-  web?: boolean;
-  /** 生成パラメータ（buildGenerationPayload で検査・変換済みのもの）。 */
-  generation?: Record<string, unknown>;
-  signal: AbortSignal;
-}): Promise<Response> {
-  const model = params.web ? `${params.model}:online` : params.model;
-  const upstream = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+export async function openRouterChatRequest(
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return await fetch(`${OPENROUTER_BASE}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
@@ -137,36 +130,7 @@ export async function streamChatCompletion(params: {
       "HTTP-Referer": "https://github.com/rabi0424/chat_webui",
       "X-Title": "chat_webui",
     },
-    body: JSON.stringify({
-      model,
-      messages: params.messages,
-      stream: true,
-      usage: { include: true },
-      ...params.generation,
-    }),
-    signal: params.signal,
-  });
-
-  if (!upstream.ok || !upstream.body) {
-    let detail = "";
-    try {
-      const err = (await upstream.json()) as {
-        error?: { message?: string };
-      };
-      detail = err.error?.message ?? "";
-    } catch {
-      // ignore parse failures; status code alone is enough
-    }
-    return Response.json(
-      { error: detail || `OpenRouter APIエラー (${upstream.status})` },
-      { status: upstream.status },
-    );
-  }
-
-  return new Response(upstream.body, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-    },
+    body: JSON.stringify(body),
+    signal,
   });
 }
