@@ -1,20 +1,52 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
+import type { UiMessage } from "../lib/types";
 import { parseSSE } from "../lib/sse";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 
-export interface UiMessage {
-  /** DB上のID。未保存メッセージでは undefined。 */
-  id?: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  usage?: { promptTokens: number; completionTokens: number; cost?: number };
-}
-
 const MODEL_STORAGE_KEY = "chat-webui:model";
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
+
+/** 分岐点に表示する ‹ 2/3 › 型の控えめなページャ。 */
+function BranchPager({
+  message,
+  disabled,
+  onSwitch,
+}: {
+  message: UiMessage;
+  disabled: boolean;
+  onSwitch: (targetId: string) => void;
+}) {
+  const { siblingIds, siblingIndex } = message;
+  if (!siblingIds || siblingIds.length < 2 || siblingIndex == null) return null;
+  return (
+    <span className="inline-flex items-center gap-0.5 text-xs text-gray-400 dark:text-gray-500">
+      <button
+        type="button"
+        disabled={disabled || siblingIndex === 0}
+        onClick={() => onSwitch(siblingIds[siblingIndex - 1])}
+        className="rounded px-1 hover:bg-gray-100 hover:text-gray-600 disabled:opacity-30 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+        aria-label="前のブランチ"
+      >
+        ‹
+      </button>
+      <span className="tabular-nums">
+        {siblingIndex + 1}/{siblingIds.length}
+      </span>
+      <button
+        type="button"
+        disabled={disabled || siblingIndex === siblingIds.length - 1}
+        onClick={() => onSwitch(siblingIds[siblingIndex + 1])}
+        className="rounded px-1 hover:bg-gray-100 hover:text-gray-600 disabled:opacity-30 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+        aria-label="次のブランチ"
+      >
+        ›
+      </button>
+    </span>
+  );
+}
 
 export function Chat({
   conversationId,
@@ -32,12 +64,17 @@ export function Chat({
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ index: number; text: string } | null>(
+    null,
+  );
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // 保存処理の直列化用（連投時に順序が崩れないように）
   const persistChain = useRef<Promise<void>>(Promise.resolve());
+  // 古い非同期処理が新しいストリームの表示を上書きしないための世代カウンタ
+  const epochRef = useRef(0);
 
   useEffect(() => {
     const saved = localStorage.getItem(MODEL_STORAGE_KEY);
@@ -57,11 +94,25 @@ export function Chat({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
+  /** 現在のパスをサーバーから取り直す（ページャ情報の更新用）。 */
+  async function refreshPath(convId: string, epoch: number) {
+    try {
+      const res = await fetch(`/api/conversations/${convId}/path`);
+      if (!res.ok) return;
+      const { messages: fresh } = (await res.json()) as {
+        messages: UiMessage[];
+      };
+      if (epochRef.current === epoch) setMessages(fresh);
+    } catch {
+      // 表示更新に失敗しても実害はない
+    }
+  }
+
   /**
    * 表示中リストの末尾にある未保存メッセージをDBへ保存する。
-   * 直前の保存済みメッセージが親になる（再生成時は自動的に分岐になる）。
+   * 直前の保存済みメッセージが親になる（編集・再生成時は自動的に分岐になる）。
    */
-  async function persist(finalMessages: UiMessage[]) {
+  async function persist(finalMessages: UiMessage[], epoch: number) {
     const firstUnsaved = finalMessages.findIndex((m) => !m.id);
     if (firstUnsaved === -1) return;
     const tail = finalMessages
@@ -131,6 +182,8 @@ export function Chat({
         }
         navigate(`/chat/${convId}`, { replace: true });
       } else {
+        // 分岐点のページャ表示を最新化しつつ、サイドバーの並びも更新
+        await refreshPath(convId, epoch);
         revalidator.revalidate();
       }
     } catch {
@@ -143,6 +196,7 @@ export function Chat({
   async function runCompletion(history: UiMessage[]) {
     setError(null);
     setIsStreaming(true);
+    const epoch = ++epochRef.current;
     const controller = new AbortController();
     abortRef.current = controller;
     setMessages([...history, { role: "assistant", content: "" }]);
@@ -195,11 +249,8 @@ export function Chat({
             cost: chunk.usage.cost,
           };
         }
-        finalMessages = [
-          ...history,
-          { role: "assistant", content, usage },
-        ];
-        setMessages(finalMessages);
+        finalMessages = [...history, { role: "assistant", content, usage }];
+        if (epochRef.current === epoch) setMessages(finalMessages);
       }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
@@ -207,16 +258,20 @@ export function Chat({
         // 中身のないアシスタントメッセージは表示から取り除く
         finalMessages = finalMessages.filter(
           (m, i) =>
-            !(i === finalMessages.length - 1 && m.role === "assistant" && m.content === ""),
+            !(
+              i === finalMessages.length - 1 &&
+              m.role === "assistant" &&
+              m.content === ""
+            ),
         );
-        setMessages(finalMessages);
+        if (epochRef.current === epoch) setMessages(finalMessages);
       }
     } finally {
       setIsStreaming(false);
       abortRef.current = null;
       const toPersist = finalMessages;
       persistChain.current = persistChain.current.then(() =>
-        persist(toPersist),
+        persist(toPersist, epoch),
       );
     }
   }
@@ -241,6 +296,56 @@ export function Chat({
     }
     if (history.length === 0) return;
     void runCompletion(history);
+  }
+
+  /** 過去メッセージの編集・再送信（同一会話内で分岐を作る）。 */
+  function submitEdit() {
+    if (!editing || isStreaming) return;
+    const text = editing.text.trim();
+    if (!text) return;
+    const history = [
+      ...messages.slice(0, editing.index),
+      { role: "user" as const, content: text },
+    ];
+    setEditing(null);
+    void runCompletion(history);
+  }
+
+  /** ブランチ切替（ページャ）。 */
+  async function switchBranch(targetId: string) {
+    if (isStreaming || !conversationId) return;
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}/path`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messageId: targetId }),
+      });
+      if (!res.ok) throw new Error();
+      const { messages: fresh } = (await res.json()) as {
+        messages: UiMessage[];
+      };
+      setMessages(fresh);
+      setError(null);
+    } catch {
+      setError("ブランチの切替に失敗しました。");
+    }
+  }
+
+  /** ここから分岐: この地点までの履歴で独立した新会話を作る。 */
+  async function fork(messageId: string) {
+    if (isStreaming || !conversationId) return;
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}/fork`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messageId }),
+      });
+      if (!res.ok) throw new Error();
+      const { id } = (await res.json()) as { id: string };
+      navigate(`/chat/${id}`);
+    } catch {
+      setError("分岐の作成に失敗しました。");
+    }
   }
 
   return (
@@ -273,23 +378,95 @@ export function Chat({
           <div className="space-y-6">
             {messages.map((m, i) =>
               m.role === "user" ? (
-                <div key={m.id ?? `u${i}`} className="flex justify-end">
-                  <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-600 px-4 py-2.5 text-white">
-                    {m.content}
-                  </div>
+                <div key={m.id ?? `u${i}`} className="group/msg">
+                  {editing?.index === i ? (
+                    <div className="rounded-2xl border border-indigo-300 bg-gray-50 p-3 dark:border-indigo-700 dark:bg-gray-900">
+                      <textarea
+                        value={editing.text}
+                        onChange={(e) =>
+                          setEditing({ index: i, text: e.target.value })
+                        }
+                        rows={3}
+                        autoFocus
+                        className="w-full resize-y bg-transparent outline-none"
+                      />
+                      <div className="mt-2 flex justify-end gap-2 text-sm">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(null)}
+                          className="rounded-lg px-3 py-1.5 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                        >
+                          キャンセル
+                        </button>
+                        <button
+                          type="button"
+                          onClick={submitEdit}
+                          disabled={!editing.text.trim()}
+                          className="rounded-lg bg-indigo-600 px-3 py-1.5 text-white hover:bg-indigo-500 disabled:opacity-30"
+                        >
+                          送信
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex justify-end">
+                        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-600 px-4 py-2.5 text-white">
+                          {m.content}
+                        </div>
+                      </div>
+                      <div className="mt-1 flex items-center justify-end gap-2">
+                        <BranchPager
+                          message={m}
+                          disabled={isStreaming}
+                          onSwitch={switchBranch}
+                        />
+                        {m.id && !isStreaming && (
+                          <button
+                            type="button"
+                            onClick={() => setEditing({ index: i, text: m.content })}
+                            aria-label="編集して再送信"
+                            title="編集して再送信（分岐を作成）"
+                            className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+                          >
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                              <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
-                <div key={m.id ?? `a${i}`}>
+                <div key={m.id ?? `a${i}`} className="group/msg">
                   <Markdown>{m.content}</Markdown>
                   {isStreaming && i === messages.length - 1 && (
                     <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-gray-400 align-text-bottom dark:bg-gray-500" />
                   )}
-                  {m.usage && (
-                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-                      {m.usage.promptTokens} in / {m.usage.completionTokens} out
-                      {m.usage.cost != null && ` · $${m.usage.cost.toFixed(6)}`}
-                    </p>
-                  )}
+                  <div className="mt-1 flex items-center gap-3">
+                    <BranchPager
+                      message={m}
+                      disabled={isStreaming}
+                      onSwitch={switchBranch}
+                    />
+                    {m.usage && (
+                      <span className="text-xs text-gray-400 dark:text-gray-500">
+                        {m.usage.promptTokens} in / {m.usage.completionTokens} out
+                        {m.usage.cost != null && ` · $${m.usage.cost.toFixed(6)}`}
+                      </span>
+                    )}
+                    {m.id && !isStreaming && (
+                      <button
+                        type="button"
+                        onClick={() => void fork(m.id!)}
+                        title="ここから分岐（独立した新しい会話を作成）"
+                        className="rounded px-1.5 py-0.5 text-xs text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+                      >
+                        ⑂ ここから分岐
+                      </button>
+                    )}
+                  </div>
                 </div>
               ),
             )}

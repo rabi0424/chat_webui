@@ -1,6 +1,7 @@
 import type { Route } from "./+types/chat.$id";
 import { getConversation, getConversationPath } from "../lib/db.server";
-import { Chat, type UiMessage } from "../components/Chat";
+import { toUiMessage } from "../lib/serialize.server";
+import { Chat } from "../components/Chat";
 
 export function meta({ loaderData }: Route.MetaArgs) {
   return [
@@ -18,13 +19,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     throw new Response("会話が見つかりません", { status: 404 });
   }
   const path = await getConversationPath(conversation);
-  const messages: UiMessage[] = path.map((m) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    usage: m.usage_json ? JSON.parse(m.usage_json) : undefined,
-  }));
-  return { conversation, messages };
+  return { conversation, messages: path.map(toUiMessage) };
 }
 
 export default function ChatRoute({ loaderData }: Route.ComponentProps) {

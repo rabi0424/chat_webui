@@ -128,28 +128,147 @@ export async function deleteConversation(id: string): Promise<void> {
   ]);
 }
 
-/**
- * Returns the messages on the currently displayed path (root ->
- * current_leaf), in display order.
- */
-export async function getConversationPath(
-  conversation: ConversationRow,
-): Promise<MessageRow[]> {
-  if (!conversation.current_leaf_message_id) return [];
+export interface PathMessage extends MessageRow {
+  /** 同じ親を持つ兄弟（自分含む、作成順）。 */
+  sibling_ids: string[];
+  sibling_index: number;
+}
+
+async function loadMessages(conversationId: string): Promise<MessageRow[]> {
   const d = await db();
   const { results } = await d
     .prepare("SELECT * FROM messages WHERE conversation_id = ?")
-    .bind(conversation.id)
+    .bind(conversationId)
     .all<MessageRow>();
+  return results;
+}
 
-  const byId = new Map(results.map((m) => [m.id, m]));
-  const path: MessageRow[] = [];
+function childrenByParent(all: MessageRow[]): Map<string | null, MessageRow[]> {
+  const map = new Map<string | null, MessageRow[]>();
+  for (const m of all) {
+    const list = map.get(m.parent_id) ?? [];
+    list.push(m);
+    map.set(m.parent_id, list);
+  }
+  for (const list of map.values()) {
+    list.sort((a, b) => a.created_at - b.created_at);
+  }
+  return map;
+}
+
+/**
+ * Returns the messages on the currently displayed path (root ->
+ * current_leaf) in display order, each annotated with its siblings so the
+ * UI can render branch pagers.
+ */
+export async function getConversationPath(
+  conversation: ConversationRow,
+): Promise<PathMessage[]> {
+  if (!conversation.current_leaf_message_id) return [];
+  const all = await loadMessages(conversation.id);
+  const byId = new Map(all.map((m) => [m.id, m]));
+  const children = childrenByParent(all);
+
+  const path: PathMessage[] = [];
   let cursor = byId.get(conversation.current_leaf_message_id);
+  while (cursor) {
+    const current = cursor;
+    const siblings = children.get(current.parent_id) ?? [current];
+    path.push({
+      ...current,
+      sibling_ids: siblings.map((s) => s.id),
+      sibling_index: siblings.findIndex((s) => s.id === current.id),
+    });
+    cursor = current.parent_id ? byId.get(current.parent_id) : undefined;
+  }
+  return path.reverse();
+}
+
+/**
+ * Moves the conversation's current leaf to the given message's subtree,
+ * descending to the most recently created descendant. Used when switching
+ * branches. Returns false when the message doesn't belong to the
+ * conversation.
+ */
+export async function switchToBranch(
+  conversation: ConversationRow,
+  messageId: string,
+): Promise<boolean> {
+  const all = await loadMessages(conversation.id);
+  if (!all.some((m) => m.id === messageId)) return false;
+  const children = childrenByParent(all);
+
+  let leafId = messageId;
+  for (;;) {
+    const kids = children.get(leafId);
+    if (!kids || kids.length === 0) break;
+    leafId = kids[kids.length - 1].id; // 最新の子を辿る
+  }
+
+  const d = await db();
+  await d
+    .prepare("UPDATE conversations SET current_leaf_message_id = ? WHERE id = ?")
+    .bind(leafId, conversation.id)
+    .run();
+  return true;
+}
+
+/**
+ * Copies the path (root -> messageId) into a brand-new conversation.
+ * Sibling branches are not copied. Returns the new conversation's id, or
+ * null when the message doesn't belong to the conversation.
+ */
+export async function forkConversation(
+  conversation: ConversationRow,
+  messageId: string,
+): Promise<string | null> {
+  const all = await loadMessages(conversation.id);
+  const byId = new Map(all.map((m) => [m.id, m]));
+  if (!byId.has(messageId)) return null;
+
+  const path: MessageRow[] = [];
+  let cursor = byId.get(messageId);
   while (cursor) {
     path.push(cursor);
     cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined;
   }
-  return path.reverse();
+  path.reverse();
+
+  const d = await db();
+  const now = Date.now();
+  const newConvId = crypto.randomUUID();
+  const title = `${conversation.title}（分岐）`.slice(0, 60);
+
+  const statements: D1PreparedStatement[] = [
+    d
+      .prepare(
+        "INSERT INTO conversations (id, title, model_id, pinned, current_leaf_message_id, created_at, updated_at) VALUES (?, ?, ?, 0, NULL, ?, ?)",
+      )
+      .bind(newConvId, title, conversation.model_id, now, now),
+  ];
+
+  let parent: string | null = null;
+  let lastId: string | null = null;
+  for (const [i, m] of path.entries()) {
+    const id = crypto.randomUUID();
+    statements.push(
+      d
+        .prepare(
+          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id, newConvId, parent, m.role, m.content, m.model_id, m.usage_json, now + i),
+    );
+    parent = id;
+    lastId = id;
+  }
+  statements.push(
+    d
+      .prepare("UPDATE conversations SET current_leaf_message_id = ? WHERE id = ?")
+      .bind(lastId, newConvId),
+  );
+
+  await d.batch(statements);
+  return newConvId;
 }
 
 export interface NewMessage {
