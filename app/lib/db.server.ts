@@ -57,6 +57,10 @@ ALTER TABLE conversations ADD COLUMN bot_icon TEXT;
 ALTER TABLE conversations ADD COLUMN system_prompt TEXT;
 ALTER TABLE conversations ADD COLUMN params_json TEXT;
 `,
+  // v3: 思考（reasoning）内容の保存
+  `
+ALTER TABLE messages ADD COLUMN reasoning TEXT;
+`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -123,6 +127,7 @@ export interface MessageRow {
   content: string;
   model_id: string | null;
   usage_json: string | null;
+  reasoning: string | null;
   created_at: number;
 }
 
@@ -208,6 +213,17 @@ export async function updateConversationModel(
   await d
     .prepare("UPDATE conversations SET model_id = ? WHERE id = ?")
     .bind(modelId, id)
+    .run();
+}
+
+export async function updateConversationParams(
+  id: string,
+  paramsJson: string | null,
+): Promise<void> {
+  const d = await db();
+  await d
+    .prepare("UPDATE conversations SET params_json = ? WHERE id = ?")
+    .bind(paramsJson, id)
     .run();
 }
 
@@ -442,6 +458,7 @@ export interface NewMessage {
   content: string;
   modelId?: string;
   usageJson?: string;
+  reasoning?: string;
 }
 
 /**
@@ -467,7 +484,7 @@ export async function appendMessages(params: {
     statements.push(
       d
         .prepare(
-          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(
           id,
@@ -477,6 +494,7 @@ export async function appendMessages(params: {
           m.content,
           m.modelId ?? null,
           m.usageJson ?? null,
+          m.reasoning ?? null,
           now + i,
         ),
     );

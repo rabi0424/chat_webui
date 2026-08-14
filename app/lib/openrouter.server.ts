@@ -123,8 +123,8 @@ export async function streamChatCompletion(params: {
   messages: ChatMessage[];
   /** OpenRouterのWeb検索プラグイン（:online）を有効化する。 */
   web?: boolean;
-  /** 生成パラメータ（許可リスト検査済みのもののみ渡すこと）。 */
-  generation?: Record<string, number>;
+  /** 生成パラメータ（buildGenerationPayload で検査・変換済みのもの）。 */
+  generation?: Record<string, unknown>;
   signal: AbortSignal;
 }): Promise<Response> {
   const model = params.web ? `${params.model}:online` : params.model;

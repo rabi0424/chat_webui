@@ -1,12 +1,21 @@
 import type { Route } from "./+types/api.conversations";
-import { createConversation, getBot } from "../lib/db.server";
+import {
+  createConversation,
+  getBot,
+  updateConversationParams,
+} from "../lib/db.server";
 
 export async function action({ request }: Route.ActionArgs) {
   if (request.method !== "POST") {
     return Response.json({ error: "Method Not Allowed" }, { status: 405 });
   }
 
-  let body: { title?: string; modelId?: string; botId?: string };
+  let body: {
+    title?: string;
+    modelId?: string;
+    botId?: string;
+    params?: Record<string, unknown> | null;
+  };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -24,5 +33,13 @@ export async function action({ request }: Route.ActionArgs) {
     modelId: body.modelId,
     bot,
   });
+
+  // 開始前に⚙パネルで調整済みの場合はそちらを優先して保存
+  if (body.params && Object.keys(body.params).length > 0) {
+    await updateConversationParams(
+      conversation.id,
+      JSON.stringify(body.params),
+    );
+  }
   return Response.json({ id: conversation.id });
 }
