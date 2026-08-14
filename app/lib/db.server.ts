@@ -10,7 +10,13 @@ import { env } from "cloudflare:workers";
  * The schema is applied lazily at runtime so no CLI migration step is needed.
  */
 
-const SCHEMA = `
+/**
+ * バージョン管理付きのランタイムマイグレーション。配列に追記していく。
+ * 適用済みバージョンは meta テーブルに記録される。
+ */
+const MIGRATIONS: string[] = [
+  // v1: 初期スキーマ
+  `
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -32,13 +38,52 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
-`;
+`,
+  // v2: ボット + 会話へのボットスナップショット
+  `
+CREATE TABLE IF NOT EXISTS bots (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  icon TEXT NOT NULL DEFAULT '🤖',
+  model_id TEXT NOT NULL,
+  system_prompt TEXT NOT NULL DEFAULT '',
+  params_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+ALTER TABLE conversations ADD COLUMN bot_id TEXT;
+ALTER TABLE conversations ADD COLUMN bot_name TEXT;
+ALTER TABLE conversations ADD COLUMN bot_icon TEXT;
+ALTER TABLE conversations ADD COLUMN system_prompt TEXT;
+ALTER TABLE conversations ADD COLUMN params_json TEXT;
+`,
+];
 
 let schemaReady: Promise<void> | null = null;
 
+async function runMigrations(): Promise<void> {
+  await env.DB.exec(
+    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+  );
+  const row = await env.DB.prepare(
+    "SELECT value FROM meta WHERE key = 'schema_version'",
+  ).first<{ value: string }>();
+  let version = row ? Number(row.value) : 0;
+
+  while (version < MIGRATIONS.length) {
+    await env.DB.exec(MIGRATIONS[version].replace(/\n/g, " "));
+    version++;
+    await env.DB.prepare(
+      "INSERT INTO meta (key, value) VALUES ('schema_version', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1",
+    )
+      .bind(String(version))
+      .run();
+  }
+}
+
 async function db(): Promise<D1Database> {
   if (!schemaReady) {
-    schemaReady = env.DB.exec(SCHEMA.replace(/\n/g, " ")).then(() => {});
+    schemaReady = runMigrations();
   }
   await schemaReady;
   return env.DB;
@@ -50,6 +95,22 @@ export interface ConversationRow {
   model_id: string | null;
   pinned: number;
   current_leaf_message_id: string | null;
+  bot_id: string | null;
+  bot_name: string | null;
+  bot_icon: string | null;
+  system_prompt: string | null;
+  params_json: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface BotRow {
+  id: string;
+  name: string;
+  icon: string;
+  model_id: string;
+  system_prompt: string;
+  params_json: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -88,23 +149,42 @@ export async function getConversation(
 export async function createConversation(params: {
   title: string;
   modelId: string;
+  /** ボット開始時はボットの設定をスナップショットして保持する。 */
+  bot?: BotRow | null;
 }): Promise<ConversationRow> {
   const d = await db();
   const now = Date.now();
+  const bot = params.bot ?? null;
   const row: ConversationRow = {
     id: crypto.randomUUID(),
     title: params.title,
     model_id: params.modelId,
     pinned: 0,
     current_leaf_message_id: null,
+    bot_id: bot?.id ?? null,
+    bot_name: bot?.name ?? null,
+    bot_icon: bot?.icon ?? null,
+    system_prompt: bot ? bot.system_prompt : null,
+    params_json: bot?.params_json ?? null,
     created_at: now,
     updated_at: now,
   };
   await d
     .prepare(
-      "INSERT INTO conversations (id, title, model_id, pinned, current_leaf_message_id, created_at, updated_at) VALUES (?, ?, ?, 0, NULL, ?, ?)",
+      "INSERT INTO conversations (id, title, model_id, pinned, current_leaf_message_id, bot_id, bot_name, bot_icon, system_prompt, params_json, created_at, updated_at) VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(row.id, row.title, row.model_id, now, now)
+    .bind(
+      row.id,
+      row.title,
+      row.model_id,
+      row.bot_id,
+      row.bot_name,
+      row.bot_icon,
+      row.system_prompt,
+      row.params_json,
+      now,
+      now,
+    )
     .run();
   return row;
 }
@@ -118,6 +198,92 @@ export async function updateConversationTitle(
     .prepare("UPDATE conversations SET title = ? WHERE id = ?")
     .bind(title, id)
     .run();
+}
+
+export async function updateConversationModel(
+  id: string,
+  modelId: string,
+): Promise<void> {
+  const d = await db();
+  await d
+    .prepare("UPDATE conversations SET model_id = ? WHERE id = ?")
+    .bind(modelId, id)
+    .run();
+}
+
+// --- Bots -----------------------------------------------------------------
+
+export async function listBots(): Promise<BotRow[]> {
+  const d = await db();
+  const { results } = await d
+    .prepare("SELECT * FROM bots ORDER BY updated_at DESC")
+    .all<BotRow>();
+  return results;
+}
+
+export async function getBot(id: string): Promise<BotRow | null> {
+  const d = await db();
+  return await d.prepare("SELECT * FROM bots WHERE id = ?").bind(id).first<BotRow>();
+}
+
+export async function createBot(params: {
+  name: string;
+  icon: string;
+  modelId: string;
+  systemPrompt: string;
+  paramsJson: string | null;
+}): Promise<BotRow> {
+  const d = await db();
+  const now = Date.now();
+  const row: BotRow = {
+    id: crypto.randomUUID(),
+    name: params.name,
+    icon: params.icon,
+    model_id: params.modelId,
+    system_prompt: params.systemPrompt,
+    params_json: params.paramsJson,
+    created_at: now,
+    updated_at: now,
+  };
+  await d
+    .prepare(
+      "INSERT INTO bots (id, name, icon, model_id, system_prompt, params_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(row.id, row.name, row.icon, row.model_id, row.system_prompt, row.params_json, now, now)
+    .run();
+  return row;
+}
+
+export async function updateBot(
+  id: string,
+  params: {
+    name: string;
+    icon: string;
+    modelId: string;
+    systemPrompt: string;
+    paramsJson: string | null;
+  },
+): Promise<void> {
+  const d = await db();
+  await d
+    .prepare(
+      "UPDATE bots SET name = ?, icon = ?, model_id = ?, system_prompt = ?, params_json = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(
+      params.name,
+      params.icon,
+      params.modelId,
+      params.systemPrompt,
+      params.paramsJson,
+      Date.now(),
+      id,
+    )
+    .run();
+}
+
+export async function deleteBot(id: string): Promise<void> {
+  const d = await db();
+  await d.prepare("DELETE FROM bots WHERE id = ?").bind(id).run();
 }
 
 export async function deleteConversation(id: string): Promise<void> {

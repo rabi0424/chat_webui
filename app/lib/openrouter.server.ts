@@ -14,6 +14,8 @@ export interface ModelInfo {
   completionPrice: string;
   /** e.g. ["text", "image"] */
   inputModalities: string[];
+  /** OpenRouterが返す、このモデルが対応する生成パラメータ名の一覧。 */
+  supportedParameters: string[];
   createdAt: number;
 }
 
@@ -56,6 +58,7 @@ export async function fetchModels(): Promise<ModelInfo[]> {
         promptPrice: pricing.prompt ?? "0",
         completionPrice: pricing.completion ?? "0",
         inputModalities: (architecture.input_modalities as string[]) ?? ["text"],
+        supportedParameters: (m.supported_parameters as string[]) ?? [],
         createdAt: Number(m.created ?? 0),
       };
     })
@@ -120,6 +123,8 @@ export async function streamChatCompletion(params: {
   messages: ChatMessage[];
   /** OpenRouterのWeb検索プラグイン（:online）を有効化する。 */
   web?: boolean;
+  /** 生成パラメータ（許可リスト検査済みのもののみ渡すこと）。 */
+  generation?: Record<string, number>;
   signal: AbortSignal;
 }): Promise<Response> {
   const model = params.web ? `${params.model}:online` : params.model;
@@ -137,6 +142,7 @@ export async function streamChatCompletion(params: {
       messages: params.messages,
       stream: true,
       usage: { include: true },
+      ...params.generation,
     }),
     signal: params.signal,
   });

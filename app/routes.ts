@@ -4,6 +4,9 @@ export default [
   layout("routes/shell.tsx", [
     index("routes/home.tsx"),
     route("chat/:id", "routes/chat.$id.tsx"),
+    route("bots", "routes/bots.tsx"),
+    route("bots/new", "routes/bots.new.tsx"),
+    route("bots/:id/edit", "routes/bots.$id.edit.tsx"),
   ]),
   route("api/models", "routes/api.models.ts"),
   route("api/chat", "routes/api.chat.ts"),
@@ -13,4 +16,6 @@ export default [
   route("api/conversations/:id/title", "routes/api.conversations.$id.title.ts"),
   route("api/conversations/:id/path", "routes/api.conversations.$id.path.ts"),
   route("api/conversations/:id/fork", "routes/api.conversations.$id.fork.ts"),
+  route("api/bots", "routes/api.bots.ts"),
+  route("api/bots/:id", "routes/api.bots.$id.ts"),
 ] satisfies RouteConfig;

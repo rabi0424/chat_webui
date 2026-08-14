@@ -25,7 +25,7 @@ export function Sidebar({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="p-3">
+      <div className="space-y-1.5 p-3">
         <NavLink
           to="/"
           onClick={onNavigate}
@@ -35,6 +35,20 @@ export function Sidebar({
             <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
           </svg>
           新規チャット
+        </NavLink>
+        <NavLink
+          to="/bots"
+          onClick={onNavigate}
+          className={({ isActive }) =>
+            `flex items-center gap-2 rounded-xl px-3 py-2 text-sm ${
+              isActive
+                ? "bg-gray-100 font-medium text-gray-900 dark:bg-gray-800 dark:text-gray-50"
+                : "text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-900"
+            }`
+          }
+        >
+          <span aria-hidden>🤖</span>
+          ボット管理
         </NavLink>
       </div>
 

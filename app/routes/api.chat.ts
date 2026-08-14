@@ -3,11 +3,13 @@ import {
   streamChatCompletion,
   type ChatMessage,
 } from "../lib/openrouter.server";
+import { ALLOWED_PARAM_KEYS } from "../lib/params";
 
 interface ChatRequestBody {
   model: string;
   messages: ChatMessage[];
   web?: boolean;
+  params?: Record<string, unknown>;
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -29,10 +31,20 @@ export async function action({ request }: Route.ActionArgs) {
     );
   }
 
+  const generation: Record<string, number> = {};
+  if (body.params && typeof body.params === "object") {
+    for (const [key, value] of Object.entries(body.params)) {
+      if (ALLOWED_PARAM_KEYS.has(key) && typeof value === "number") {
+        generation[key] = value;
+      }
+    }
+  }
+
   return streamChatCompletion({
     model: body.model,
     messages: body.messages,
     web: body.web === true,
+    generation,
     signal: request.signal,
   });
 }

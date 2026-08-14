@@ -1,25 +1,27 @@
 import { useState } from "react";
 import { Outlet } from "react-router";
 import type { Route } from "./+types/shell";
-import { listConversations } from "../lib/db.server";
+import { listBots, listConversations, type BotRow } from "../lib/db.server";
 import { fetchModels, type ModelInfo } from "../lib/openrouter.server";
 import { Sidebar } from "../components/Sidebar";
 
 export interface ShellContext {
   models: ModelInfo[];
+  bots: BotRow[];
   openSidebar: () => void;
 }
 
 export async function loader() {
-  const [models, conversations] = await Promise.all([
+  const [models, conversations, bots] = await Promise.all([
     fetchModels(),
     listConversations(),
+    listBots(),
   ]);
-  return { models, conversations };
+  return { models, conversations, bots };
 }
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { models, conversations } = loaderData;
+  const { models, conversations, bots } = loaderData;
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
@@ -50,6 +52,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
           context={
             {
               models,
+              bots,
               openSidebar: () => setSidebarOpen(true),
             } satisfies ShellContext
           }
