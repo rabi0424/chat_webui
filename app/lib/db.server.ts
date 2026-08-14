@@ -61,6 +61,12 @@ ALTER TABLE conversations ADD COLUMN params_json TEXT;
   `
 ALTER TABLE messages ADD COLUMN reasoning TEXT;
 `,
+  // v4: サーバー側生成（生成中ステータス・エラー・停止フラグ）
+  `
+ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'done';
+ALTER TABLE messages ADD COLUMN error TEXT;
+ALTER TABLE messages ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0;
+`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -119,6 +125,8 @@ export interface BotRow {
   updated_at: number;
 }
 
+export type MessageStatus = "streaming" | "done" | "error";
+
 export interface MessageRow {
   id: string;
   conversation_id: string;
@@ -128,6 +136,9 @@ export interface MessageRow {
   model_id: string | null;
   usage_json: string | null;
   reasoning: string | null;
+  status: MessageStatus;
+  error: string | null;
+  stop_requested: number;
   created_at: number;
 }
 
@@ -453,61 +464,127 @@ export async function forkConversation(
   return newConvId;
 }
 
-export interface NewMessage {
-  role: "user" | "assistant" | "system";
-  content: string;
-  modelId?: string;
-  usageJson?: string;
-  reasoning?: string;
-}
+// --- サーバー側生成 -------------------------------------------------------
 
 /**
- * Appends a chain of messages under parentId (null = new root) and moves the
- * conversation's current leaf to the last appended message. Returns the new
- * message IDs in order.
+ * 生成開始時の書き込み: ユーザーメッセージ（あれば）と、生成中ステータスの
+ * アシスタントプレースホルダを親の下に挿入し、リーフを移動する。
  */
-export async function appendMessages(params: {
+export async function beginGeneration(params: {
   conversationId: string;
   parentId: string | null;
-  messages: NewMessage[];
-}): Promise<string[]> {
-  if (params.messages.length === 0) return [];
+  userContent: string | null;
+  modelId: string;
+}): Promise<{ userMessageId: string | null; assistantMessageId: string }> {
   const d = await db();
   const now = Date.now();
-
-  const ids: string[] = [];
   const statements: D1PreparedStatement[] = [];
+
   let parent = params.parentId;
-  for (const [i, m] of params.messages.entries()) {
-    const id = crypto.randomUUID();
-    ids.push(id);
+  let userMessageId: string | null = null;
+  if (params.userContent != null) {
+    userMessageId = crypto.randomUUID();
     statements.push(
       d
         .prepare(
-          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO messages (id, conversation_id, parent_id, role, content, status, created_at) VALUES (?, ?, ?, 'user', ?, 'done', ?)",
         )
-        .bind(
-          id,
-          params.conversationId,
-          parent,
-          m.role,
-          m.content,
-          m.modelId ?? null,
-          m.usageJson ?? null,
-          m.reasoning ?? null,
-          now + i,
-        ),
+        .bind(userMessageId, params.conversationId, parent, params.userContent, now),
     );
-    parent = id;
+    parent = userMessageId;
   }
+
+  const assistantMessageId = crypto.randomUUID();
+  statements.push(
+    d
+      .prepare(
+        "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, status, created_at) VALUES (?, ?, ?, 'assistant', '', ?, 'streaming', ?)",
+      )
+      .bind(assistantMessageId, params.conversationId, parent, params.modelId, now + 1),
+  );
   statements.push(
     d
       .prepare(
         "UPDATE conversations SET current_leaf_message_id = ?, updated_at = ? WHERE id = ?",
       )
-      .bind(ids[ids.length - 1], now, params.conversationId),
+      .bind(assistantMessageId, now, params.conversationId),
   );
 
   await d.batch(statements);
-  return ids;
+  return { userMessageId, assistantMessageId };
 }
+
+/**
+ * 生成中の部分保存。停止要求が入っていれば true を返す。
+ */
+export async function flushGeneration(
+  messageId: string,
+  partial: { content: string; reasoning: string | null },
+): Promise<{ stopRequested: boolean }> {
+  const d = await db();
+  await d
+    .prepare(
+      "UPDATE messages SET content = ?, reasoning = ? WHERE id = ? AND status = 'streaming'",
+    )
+    .bind(partial.content, partial.reasoning, messageId)
+    .run();
+  const row = await d
+    .prepare("SELECT stop_requested FROM messages WHERE id = ?")
+    .bind(messageId)
+    .first<{ stop_requested: number }>();
+  return { stopRequested: (row?.stop_requested ?? 0) === 1 };
+}
+
+/** 生成の完了・エラー・停止を確定させる。 */
+export async function finalizeGeneration(
+  messageId: string,
+  result: {
+    content: string;
+    reasoning: string | null;
+    usageJson: string | null;
+    status: "done" | "error";
+    error?: string | null;
+  },
+): Promise<void> {
+  const d = await db();
+  await d
+    .prepare(
+      "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ? WHERE id = ?",
+    )
+    .bind(
+      result.content,
+      result.reasoning,
+      result.usageJson,
+      result.status,
+      result.error ?? null,
+      messageId,
+    )
+    .run();
+}
+
+/** 生成停止を要求する（次のフラッシュ時に生成側が検知する）。 */
+export async function requestStop(
+  conversationId: string,
+  messageId: string,
+): Promise<void> {
+  const d = await db();
+  await d
+    .prepare(
+      "UPDATE messages SET stop_requested = 1 WHERE id = ? AND conversation_id = ? AND status = 'streaming'",
+    )
+    .bind(messageId, conversationId)
+    .run();
+}
+
+/** ポーリング用: 単一メッセージの現在状態を返す。 */
+export async function getMessage(
+  conversationId: string,
+  messageId: string,
+): Promise<MessageRow | null> {
+  const d = await db();
+  return await d
+    .prepare("SELECT * FROM messages WHERE id = ? AND conversation_id = ?")
+    .bind(messageId, conversationId)
+    .first<MessageRow>();
+}
+
