@@ -35,7 +35,7 @@ export default function Home() {
                 });
                 setSelectedModel(b.model_id);
               }}
-              className="rounded-2xl border border-gray-200 px-3 py-4 text-center hover:border-indigo-300 hover:bg-indigo-50/50 dark:border-gray-700 dark:hover:border-indigo-700 dark:hover:bg-indigo-950/30"
+              className="rounded-2xl border border-gray-200 px-3 py-4 text-center transition hover:border-indigo-300 hover:bg-indigo-50/50 active:scale-[0.97] dark:border-gray-700 dark:hover:border-indigo-700 dark:hover:bg-indigo-950/30"
             >
               <span className="block text-3xl" aria-hidden>
                 {b.icon}

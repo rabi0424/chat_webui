@@ -145,7 +145,7 @@ function MessageDetails({ message }: { message: UiMessage }) {
       {open && (
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <span className="absolute bottom-7 left-0 z-40 block w-64 rounded-xl border border-gray-200 bg-white p-3 text-xs shadow-lg dark:border-gray-700 dark:bg-gray-900">
+          <span className="absolute bottom-7 left-0 z-40 block w-64 origin-bottom-left rounded-xl border border-gray-200 bg-white/95 p-3 text-xs shadow-lg backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95">
             {rows.map(([k, v]) => (
               <span key={k} className="flex justify-between gap-3 py-0.5">
                 <span className="shrink-0 text-gray-400 dark:text-gray-500">{k}</span>
@@ -763,7 +763,7 @@ export function Chat({
       {paramsOpen && (
         <div className="fixed inset-0 z-20" onClick={() => setParamsOpen(false)}>
           <div
-            className="absolute right-2 top-14 max-h-[70vh] w-[min(94vw,26rem)] overflow-y-auto rounded-2xl border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-700 dark:bg-gray-900"
+            className="absolute right-2 top-14 max-h-[70vh] w-[min(94vw,26rem)] origin-top-right overflow-y-auto rounded-2xl border border-gray-200 bg-white/95 p-4 shadow-xl backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-2 flex items-center justify-between">
@@ -1048,7 +1048,7 @@ export function Chat({
                 ? "Web検索: オン（検索1回ごとに数円の追加料金がかかります）"
                 : "Web検索: オフ"
             }
-            className={`grid h-11 w-11 shrink-0 place-items-center rounded-full border transition-colors ${
+            className={`grid h-11 w-11 shrink-0 place-items-center rounded-full border transition active:scale-90 ${
               webSearch
                 ? "border-indigo-400 bg-indigo-50 text-indigo-600 dark:border-indigo-600 dark:bg-indigo-950 dark:text-indigo-300"
                 : "border-gray-200 text-gray-400 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-500 dark:hover:bg-gray-900"
@@ -1084,7 +1084,7 @@ export function Chat({
             <button
               type="button"
               onClick={stop}
-              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-gray-900 text-white hover:bg-gray-700 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-gray-900 text-white transition hover:bg-gray-700 active:scale-90 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
               aria-label="停止"
             >
               <span className="block h-3.5 w-3.5 rounded-sm bg-current" />
@@ -1094,7 +1094,7 @@ export function Chat({
               type="button"
               onClick={send}
               disabled={!input.trim()}
-              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-30"
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-indigo-600 text-white transition hover:bg-indigo-500 active:scale-90 disabled:opacity-30"
               aria-label="送信"
             >
               <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">

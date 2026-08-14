@@ -161,7 +161,7 @@ export function Sidebar({
       const c = conversations.find((x) => x.id === target.id);
       if (!c) return null;
       return (
-        <div className="absolute right-1 top-8 z-40 w-44 rounded-xl border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+        <div className="absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl border border-gray-200 bg-white/95 p-1 shadow-lg backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95">
           <button type="button" className={itemClass} onClick={() => { close(); renameConversation(c); }}>
             名前を変更
           </button>
@@ -195,7 +195,7 @@ export function Sidebar({
     const f = folders.find((x) => x.id === target.id);
     if (!f) return null;
     return (
-      <div className="absolute right-1 top-8 z-40 w-44 rounded-xl border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+      <div className="absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl border border-gray-200 bg-white/95 p-1 shadow-lg backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95">
         <button type="button" className={itemClass} onClick={() => { close(); renameFolder(f); }}>
           名前を変更
         </button>
@@ -448,11 +448,11 @@ export function Sidebar({
       {/* フォルダ移動モーダル */}
       {moveConv && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm animate-fade"
           onClick={() => setMoveTarget(null)}
         >
           <div
-            className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl dark:bg-gray-900"
+            className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl animate-pop dark:bg-gray-900"
             onClick={(e) => e.stopPropagation()}
           >
             <p className="mb-3 text-sm font-semibold">

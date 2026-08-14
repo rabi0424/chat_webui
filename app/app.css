@@ -8,6 +8,50 @@
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Hiragino Sans",
     "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif,
     "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+
+  /* ポップオーバー等の出現。トリガー起点に軽いスプリング感で立ち上がる */
+  --animate-pop: pop 0.16s cubic-bezier(0.2, 0.8, 0.3, 1.08) both;
+  --animate-fade: fade 0.15s ease-out both;
+  --animate-drawer: drawer 0.24s cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes drawer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* 動きを減らす設定の尊重: アニメーションは実質無効化しフェードのみに */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 html,

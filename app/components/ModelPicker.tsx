@@ -24,10 +24,22 @@ export function ModelPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  /** モバイルでは画面幅にフィットするfixed配置にする（横はみ出し防止）。 */
+  const [mobileTop, setMobileTop] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const selected = models.find((m) => m.id === value);
+
+  const openPicker = () => {
+    if (window.innerWidth < 640) {
+      const rect = containerRef.current?.getBoundingClientRect();
+      setMobileTop((rect?.bottom ?? 56) + 6);
+    } else {
+      setMobileTop(null);
+    }
+    setOpen(true);
+  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -59,8 +71,8 @@ export function ModelPicker({
     <div ref={containerRef} className="relative min-w-0">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+        onClick={() => (open ? setOpen(false) : openPicker())}
+        className="flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 active:scale-[0.98] dark:text-gray-200 dark:hover:bg-gray-800"
       >
         <span className="truncate">{selected?.name ?? value ?? "モデルを選択"}</span>
         <svg className="h-4 w-4 shrink-0 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
@@ -73,7 +85,14 @@ export function ModelPicker({
       </button>
 
       {open && (
-        <div className="absolute left-0 z-20 mt-1 flex max-h-[60vh] w-[min(90vw,26rem)] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900">
+        <div
+          style={mobileTop != null ? { top: mobileTop } : undefined}
+          className={`z-30 flex max-h-[60vh] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white/95 shadow-lg backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95 ${
+            mobileTop != null
+              ? "fixed inset-x-2 origin-top"
+              : "absolute left-0 mt-1 w-[min(90vw,26rem)] origin-top-left"
+          }`}
+        >
           <div className="border-b border-gray-100 p-2 dark:border-gray-800">
             <input
               ref={searchRef}
