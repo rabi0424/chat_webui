@@ -26,7 +26,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="flex h-dvh bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+    <div className="flex h-dvh overflow-x-hidden bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
       {/* デスクトップ: 常設サイドバー */}
       <div className="hidden w-64 shrink-0 border-r border-gray-100 md:block dark:border-gray-800">
         <Sidebar conversations={conversations} folders={folders} />
@@ -36,10 +36,10 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       {sidebarOpen && (
         <div className="fixed inset-0 z-30 md:hidden">
           <div
-            className="absolute inset-0 bg-black/40"
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm animate-fade"
             onClick={() => setSidebarOpen(false)}
           />
-          <div className="absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl dark:bg-gray-950">
+          <div className="absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl animate-drawer dark:bg-gray-950">
             <Sidebar
               conversations={conversations}
               folders={folders}
