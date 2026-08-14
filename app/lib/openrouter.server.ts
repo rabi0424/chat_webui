@@ -118,8 +118,11 @@ export async function generateTitle(params: {
 export async function streamChatCompletion(params: {
   model: string;
   messages: ChatMessage[];
+  /** OpenRouterのWeb検索プラグイン（:online）を有効化する。 */
+  web?: boolean;
   signal: AbortSignal;
 }): Promise<Response> {
+  const model = params.web ? `${params.model}:online` : params.model;
   const upstream = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
     method: "POST",
     headers: {
@@ -130,7 +133,7 @@ export async function streamChatCompletion(params: {
       "X-Title": "chat_webui",
     },
     body: JSON.stringify({
-      model: params.model,
+      model,
       messages: params.messages,
       stream: true,
       usage: { include: true },

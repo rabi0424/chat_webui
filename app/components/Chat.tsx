@@ -7,6 +7,7 @@ import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 
 const MODEL_STORAGE_KEY = "chat-webui:model";
+const WEB_STORAGE_KEY = "chat-webui:web-search";
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
 
 /** 分岐点に表示する ‹ 2/3 › 型の控えめなページャ。 */
@@ -60,6 +61,7 @@ export function Chat({
   const revalidator = useRevalidator();
 
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [webSearch, setWebSearch] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>(initialMessages);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -83,11 +85,19 @@ export function Chat({
     } else if (!models.some((m) => m.id === DEFAULT_MODEL) && models[0]) {
       setModel(models[0].id);
     }
+    setWebSearch(localStorage.getItem(WEB_STORAGE_KEY) === "1");
   }, [models]);
 
   const selectModel = (id: string) => {
     setModel(id);
     localStorage.setItem(MODEL_STORAGE_KEY, id);
+  };
+
+  const toggleWebSearch = () => {
+    setWebSearch((v) => {
+      localStorage.setItem(WEB_STORAGE_KEY, v ? "0" : "1");
+      return !v;
+    });
   };
 
   useEffect(() => {
@@ -208,6 +218,7 @@ export function Chat({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model,
+          web: webSearch,
           messages: history.map(({ role, content }) => ({ role, content })),
         }),
         signal: controller.signal,
@@ -223,9 +234,13 @@ export function Chat({
 
       let content = "";
       let usage: UiMessage["usage"];
+      let finishReason: string | undefined;
       for await (const data of parseSSE(res.body)) {
         let chunk: {
-          choices?: { delta?: { content?: string } }[];
+          choices?: {
+            delta?: { content?: string };
+            finish_reason?: string | null;
+          }[];
           usage?: {
             prompt_tokens?: number;
             completion_tokens?: number;
@@ -240,7 +255,9 @@ export function Chat({
         }
         if (chunk.error?.message) throw new Error(chunk.error.message);
 
-        const delta = chunk.choices?.[0]?.delta?.content;
+        const choice = chunk.choices?.[0];
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        const delta = choice?.delta?.content;
         if (delta) content += delta;
         if (chunk.usage) {
           usage = {
@@ -251,6 +268,18 @@ export function Chat({
         }
         finalMessages = [...history, { role: "assistant", content, usage }];
         if (epochRef.current === epoch) setMessages(finalMessages);
+      }
+
+      // ストリームは正常終了したが本文が空（ツール呼び出しの試行や
+      // セーフティ判定などで起きる）。空の吹き出しを残さず理由を表示する。
+      if (content === "") {
+        finalMessages = history;
+        if (epochRef.current === epoch) setMessages(finalMessages);
+        setError(
+          `モデルから本文のない応答が返りました${
+            finishReason ? `（finish_reason: ${finishReason}）` : ""
+          }。モデルを変えるか、もう一度お試しください。`,
+        );
       }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
@@ -334,6 +363,13 @@ export function Chat({
   /** ここから分岐: この地点までの履歴で独立した新会話を作る。 */
   async function fork(messageId: string) {
     if (isStreaming || !conversationId) return;
+    if (
+      !confirm(
+        "ここまでの履歴をコピーして、独立した新しい会話を作成します。よろしいですか？",
+      )
+    ) {
+      return;
+    }
     try {
       const res = await fetch(`/api/conversations/${conversationId}/fork`, {
         method: "POST",
@@ -342,7 +378,7 @@ export function Chat({
       });
       if (!res.ok) throw new Error();
       const { id } = (await res.json()) as { id: string };
-      navigate(`/chat/${id}`);
+      await navigate(`/chat/${id}`);
     } catch {
       setError("分岐の作成に失敗しました。");
     }
@@ -503,6 +539,30 @@ export function Chat({
 
       <footer className="shrink-0 border-t border-gray-100 px-4 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 dark:border-gray-800">
         <div className="mx-auto flex max-w-3xl items-end gap-2">
+          <button
+            type="button"
+            onClick={toggleWebSearch}
+            aria-pressed={webSearch}
+            title={
+              webSearch
+                ? "Web検索: オン（検索1回ごとに数円の追加料金がかかります）"
+                : "Web検索: オフ"
+            }
+            className={`grid h-11 w-11 shrink-0 place-items-center rounded-full border transition-colors ${
+              webSearch
+                ? "border-indigo-400 bg-indigo-50 text-indigo-600 dark:border-indigo-600 dark:bg-indigo-950 dark:text-indigo-300"
+                : "border-gray-200 text-gray-400 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-500 dark:hover:bg-gray-900"
+            }`}
+            aria-label="Web検索の切替"
+          >
+            <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path
+                fillRule="evenodd"
+                d="M10 18a8 8 0 100-16 8 8 0 000 16zM6.262 6.072a8.25 8.25 0 1010.562-.766 4.5 4.5 0 01-1.318 1.357L14.25 7.5l.165.33a.809.809 0 01-1.086 1.085l-.604-.302a1.125 1.125 0 00-1.298.21l-.132.131c-.439.44-.439 1.152 0 1.591l.296.296c.256.257.622.374.98.314l1.17-.195c.323-.054.654.036.905.245l1.33 1.108c.32.267.46.694.358 1.1a8.7 8.7 0 01-2.288 4.04l-.723.724a1.125 1.125 0 01-1.298.21l-.153-.076a1.125 1.125 0 01-.622-1.006v-1.089c0-.298-.119-.585-.33-.796l-1.347-1.347a1.125 1.125 0 01-.21-1.298L9.75 12l-1.64-1.64a6 6 0 01-1.676-3.257l-.172-1.03z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
           <textarea
             ref={textareaRef}
             value={input}
