@@ -67,6 +67,10 @@ ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'done';
 ALTER TABLE messages ADD COLUMN error TEXT;
 ALTER TABLE messages ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0;
 `,
+  // v5: 生成中の最終更新時刻（中断検知・自動復旧用）
+  `
+ALTER TABLE messages ADD COLUMN flushed_at INTEGER;
+`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -139,7 +143,45 @@ export interface MessageRow {
   status: MessageStatus;
   error: string | null;
   stop_requested: number;
+  /** 生成中の最終フラッシュ時刻。中断検知に使う。 */
+  flushed_at: number | null;
   created_at: number;
+}
+
+/**
+ * 「生成中」のまま一定時間更新がない行を、中断とみなして確定させる。
+ * 生成プロセスが不慮に落ちてもUIが永久に固まらないための保険。
+ * 対象行は渡された配列内でも書き換えて返す。
+ */
+const STALE_STREAMING_MS = 60 * 1000;
+
+async function sweepStaleStreaming(rows: MessageRow[]): Promise<void> {
+  const now = Date.now();
+  const stale = rows.filter(
+    (m) =>
+      m.status === "streaming" &&
+      now - (m.flushed_at ?? m.created_at) > STALE_STREAMING_MS,
+  );
+  if (stale.length === 0) return;
+  const d = await db();
+  const statements: D1PreparedStatement[] = [];
+  for (const m of stale) {
+    if (m.content !== "") {
+      m.status = "done";
+      m.error = null;
+    } else {
+      m.status = "error";
+      m.error = "生成が中断されました。再試行してください。";
+    }
+    statements.push(
+      d
+        .prepare(
+          "UPDATE messages SET status = ?, error = ? WHERE id = ? AND status = 'streaming'",
+        )
+        .bind(m.status, m.error, m.id),
+    );
+  }
+  await d.batch(statements);
 }
 
 export async function listConversations(): Promise<ConversationRow[]> {
@@ -359,6 +401,7 @@ export async function getConversationPath(
 ): Promise<PathMessage[]> {
   if (!conversation.current_leaf_message_id) return [];
   const all = await loadMessages(conversation.id);
+  await sweepStaleStreaming(all);
   const byId = new Map(all.map((m) => [m.id, m]));
   const children = childrenByParent(all);
 
@@ -498,9 +541,9 @@ export async function beginGeneration(params: {
   statements.push(
     d
       .prepare(
-        "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, status, created_at) VALUES (?, ?, ?, 'assistant', '', ?, 'streaming', ?)",
+        "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, status, flushed_at, created_at) VALUES (?, ?, ?, 'assistant', '', ?, 'streaming', ?, ?)",
       )
-      .bind(assistantMessageId, params.conversationId, parent, params.modelId, now + 1),
+      .bind(assistantMessageId, params.conversationId, parent, params.modelId, now, now + 1),
   );
   statements.push(
     d
@@ -524,9 +567,9 @@ export async function flushGeneration(
   const d = await db();
   await d
     .prepare(
-      "UPDATE messages SET content = ?, reasoning = ? WHERE id = ? AND status = 'streaming'",
+      "UPDATE messages SET content = ?, reasoning = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'",
     )
-    .bind(partial.content, partial.reasoning, messageId)
+    .bind(partial.content, partial.reasoning, Date.now(), messageId)
     .run();
   const row = await d
     .prepare("SELECT stop_requested FROM messages WHERE id = ?")
@@ -549,7 +592,7 @@ export async function finalizeGeneration(
   const d = await db();
   await d
     .prepare(
-      "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ? WHERE id = ?",
+      "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, flushed_at = ? WHERE id = ?",
     )
     .bind(
       result.content,
@@ -557,6 +600,7 @@ export async function finalizeGeneration(
       result.usageJson,
       result.status,
       result.error ?? null,
+      Date.now(),
       messageId,
     )
     .run();
@@ -637,15 +681,17 @@ export async function deleteMessages(
   await d.batch(statements);
 }
 
-/** ポーリング用: 単一メッセージの現在状態を返す。 */
+/** ポーリング用: 単一メッセージの現在状態を返す（中断検知つき）。 */
 export async function getMessage(
   conversationId: string,
   messageId: string,
 ): Promise<MessageRow | null> {
   const d = await db();
-  return await d
+  const row = await d
     .prepare("SELECT * FROM messages WHERE id = ? AND conversation_id = ?")
     .bind(messageId, conversationId)
     .first<MessageRow>();
+  if (row) await sweepStaleStreaming([row]);
+  return row;
 }
 
