@@ -91,7 +91,7 @@ export function ParamsEditor({
                       })
                     }
                     aria-label={def.label}
-                    className="w-24 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-right text-sm outline-none focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900"
+                    className="w-24 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-right text-base outline-none focus:border-indigo-400 sm:text-sm dark:border-gray-700 dark:bg-gray-900"
                   />
                 )}
                 {def.kind === "select" && (
@@ -101,7 +101,7 @@ export function ParamsEditor({
                       onChange({ ...value, [def.key]: e.target.value })
                     }
                     aria-label={def.label}
-                    className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-sm outline-none focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900"
+                    className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-base outline-none focus:border-indigo-400 sm:text-sm dark:border-gray-700 dark:bg-gray-900"
                   >
                     {def.options.map((o) => (
                       <option key={o.value} value={o.value}>
@@ -119,7 +119,7 @@ export function ParamsEditor({
                       onChange({ ...value, [def.key]: e.target.value })
                     }
                     aria-label={def.label}
-                    className="w-36 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-sm outline-none focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900"
+                    className="w-36 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-base outline-none focus:border-indigo-400 sm:text-sm dark:border-gray-700 dark:bg-gray-900"
                   />
                 )}
                 <button

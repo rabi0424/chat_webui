@@ -10,7 +10,15 @@ export interface UiMessage {
   status?: "streaming" | "error";
   /** status === "error" のときのエラーメッセージ。 */
   error?: string;
-  usage?: { promptTokens: number; completionTokens: number; cost?: number };
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    cost?: number;
+    /** キャッシュから読み取られた入力トークン数（プロンプトキャッシング）。 */
+    cachedTokens?: number;
+    /** 思考（reasoning）に使われた出力トークン数。 */
+    reasoningTokens?: number;
+  };
   /** 応答生成に使ったモデルID（アシスタントのみ）。 */
   modelId?: string;
   /** 作成時刻（生成開始時刻）。 */

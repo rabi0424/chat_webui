@@ -81,7 +81,7 @@ export function ModelPicker({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="モデルを検索…"
-              className="w-full rounded-lg bg-gray-100 px-3 py-2 text-sm outline-none placeholder:text-gray-400 dark:bg-gray-800 dark:text-gray-100"
+              className="w-full rounded-lg bg-gray-100 px-3 py-2 text-base outline-none placeholder:text-gray-400 sm:text-sm dark:bg-gray-800 dark:text-gray-100"
             />
           </div>
           <ul className="overflow-y-auto overscroll-contain p-1">

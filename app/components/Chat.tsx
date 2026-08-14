@@ -104,7 +104,16 @@ function MessageDetails({ message }: { message: UiMessage }) {
   if (message.modelId) rows.push(["モデル", message.modelId]);
   if (u) {
     rows.push(["入力トークン", u.promptTokens.toLocaleString()]);
+    if (u.cachedTokens != null && u.cachedTokens > 0) {
+      rows.push([
+        "うちキャッシュ読取",
+        `${u.cachedTokens.toLocaleString()}（割引適用）`,
+      ]);
+    }
     rows.push(["出力トークン", u.completionTokens.toLocaleString()]);
+    if (u.reasoningTokens != null && u.reasoningTokens > 0) {
+      rows.push(["うち思考トークン", u.reasoningTokens.toLocaleString()]);
+    }
     if (u.cost != null) rows.push(["コスト", `$${u.cost.toFixed(6)}`]);
   }
   if (message.createdAt) {
@@ -314,6 +323,16 @@ export function Chat({
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
     }
   }, [messages]);
+
+  // スマホではプレースホルダを短縮する
+  const [isNarrow, setIsNarrow] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639px)");
+    const update = () => setIsNarrow(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -780,6 +799,7 @@ export function Chat({
                         }
                         rows={3}
                         autoFocus
+                        translate="no"
                         className="w-full resize-y bg-transparent outline-none"
                       />
                       <div className="mt-2 flex justify-end gap-2 text-sm">
@@ -1030,7 +1050,10 @@ export function Chat({
               }
             }}
             rows={1}
-            placeholder="メッセージを入力…（Shift+Enterで改行）"
+            translate="no"
+            placeholder={
+              isNarrow ? "メッセージ" : "メッセージを入力…（Shift+Enterで改行）"
+            }
             className="max-h-[200px] min-h-[44px] flex-1 resize-none rounded-2xl border border-gray-200 bg-gray-50 px-4 py-2.5 outline-none placeholder:text-gray-400 focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900 dark:focus:border-indigo-500"
           />
           {isStreaming ? (

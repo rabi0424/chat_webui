@@ -497,7 +497,7 @@ export function Sidebar({
                 value={newFolderName}
                 onChange={(e) => setNewFolderName(e.target.value)}
                 placeholder="新しいフォルダ名"
-                className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-800"
+                className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-base outline-none focus:border-indigo-400 sm:text-sm dark:border-gray-700 dark:bg-gray-800"
               />
               <button
                 type="button"
