@@ -18,6 +18,9 @@ export default [
   route("api/conversations/:id/path", "routes/api.conversations.$id.path.ts"),
   route("api/conversations/:id/fork", "routes/api.conversations.$id.fork.ts"),
   route("api/conversations/:id/delete-messages", "routes/api.conversations.$id.delete-messages.ts"),
+  route("api/folders", "routes/api.folders.ts"),
+  route("api/folders/:id", "routes/api.folders.$id.ts"),
+  route("api/sidebar/move", "routes/api.sidebar.move.ts"),
   route("api/bots", "routes/api.bots.ts"),
   route("api/bots/:id", "routes/api.bots.$id.ts"),
 ] satisfies RouteConfig;

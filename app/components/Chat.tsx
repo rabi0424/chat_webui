@@ -87,6 +87,69 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+/** 応答の詳細情報（トークン・金額・時刻・所要時間・速度）のポップオーバー。 */
+function MessageDetails({ message }: { message: UiMessage }) {
+  const [open, setOpen] = useState(false);
+  const u = message.usage;
+  const durationMs =
+    message.finishedAt && message.createdAt
+      ? message.finishedAt - message.createdAt
+      : null;
+  const tokensPerSec =
+    durationMs && durationMs > 0 && u
+      ? (u.completionTokens / (durationMs / 1000)).toFixed(1)
+      : null;
+
+  const rows: [string, string][] = [];
+  if (message.modelId) rows.push(["モデル", message.modelId]);
+  if (u) {
+    rows.push(["入力トークン", u.promptTokens.toLocaleString()]);
+    rows.push(["出力トークン", u.completionTokens.toLocaleString()]);
+    if (u.cost != null) rows.push(["コスト", `$${u.cost.toFixed(6)}`]);
+  }
+  if (message.createdAt) {
+    rows.push(["時刻", new Date(message.createdAt).toLocaleString("ja-JP")]);
+  }
+  if (durationMs != null) {
+    rows.push(["所要時間", `${(durationMs / 1000).toFixed(1)}秒`]);
+  }
+  if (tokensPerSec) rows.push(["速度", `${tokensPerSec} tok/秒`]);
+  if (rows.length === 0) return null;
+
+  return (
+    <span className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label="詳細"
+        title="この応答の詳細"
+        className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+      >
+        <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+          <path
+            fillRule="evenodd"
+            d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z"
+            clipRule="evenodd"
+          />
+        </svg>
+      </button>
+      {open && (
+        <>
+          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <span className="absolute bottom-7 left-0 z-40 block w-64 rounded-xl border border-gray-200 bg-white p-3 text-xs shadow-lg dark:border-gray-700 dark:bg-gray-900">
+            {rows.map(([k, v]) => (
+              <span key={k} className="flex justify-between gap-3 py-0.5">
+                <span className="shrink-0 text-gray-400 dark:text-gray-500">{k}</span>
+                <span className="break-all text-right text-gray-700 dark:text-gray-200">{v}</span>
+              </span>
+            ))}
+          </span>
+        </>
+      )}
+    </span>
+  );
+}
+
 /** 分岐点に表示する ‹ 2/3 › 型の控えめなページャ。 */
 function BranchPager({
   message,
@@ -837,6 +900,7 @@ export function Chat({
                         </span>
                       )}
                       <CopyButton text={m.content} />
+                      <MessageDetails message={m} />
                       {m.id && !isStreaming && m.status !== "error" && (
                         <button
                           type="button"
