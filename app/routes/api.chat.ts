@@ -7,6 +7,7 @@ import {
 interface ChatRequestBody {
   model: string;
   messages: ChatMessage[];
+  web?: boolean;
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -31,6 +32,7 @@ export async function action({ request }: Route.ActionArgs) {
   return streamChatCompletion({
     model: body.model,
     messages: body.messages,
+    web: body.web === true,
     signal: request.signal,
   });
 }
