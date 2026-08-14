@@ -51,6 +51,43 @@ function ReasoningBlock({
   );
 }
 
+/** ワンタップコピー（1.5秒だけ✓を表示）。 */
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label="コピー"
+      title="コピー"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          // クリップボード不許可時は何もしない
+        }
+      }}
+      className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+    >
+      {copied ? (
+        <svg className="h-3.5 w-3.5 text-green-500" viewBox="0 0 20 20" fill="currentColor">
+          <path
+            fillRule="evenodd"
+            d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
+            clipRule="evenodd"
+          />
+        </svg>
+      ) : (
+        <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
+          <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 /** 分岐点に表示する ‹ 2/3 › 型の控えめなページャ。 */
 function BranchPager({
   message,
@@ -123,9 +160,13 @@ export function Chat({
   const [editing, setEditing] = useState<{ index: number; text: string } | null>(
     null,
   );
+  /** 削除選択モード。null = 通常表示。 */
+  const [selecting, setSelecting] = useState<Set<string> | null>(null);
 
   // 新規チャットで送信した時点で会話IDが確定するため ref で保持する
   const convIdRef = useRef<string | null>(conversationId);
+  // スマートスクロール: 最下部付近にいるときだけ自動追従する
+  const stickToBottomRef = useRef(true);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -207,8 +248,17 @@ export function Chat({
   };
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    if (stickToBottomRef.current) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    }
   }, [messages]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
 
   /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */
   async function refreshPath(convId: string, epoch: number) {
@@ -457,6 +507,7 @@ export function Chat({
     if (!text || isStreaming) return;
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
+    stickToBottomRef.current = true; // 送信時は必ず最下部へ
     const parentId = messages[messages.length - 1]?.id ?? null;
     void runGeneration([...messages, { role: "user", content: text }], {
       parentId,
@@ -502,6 +553,48 @@ export function Chat({
       parentId: messages[editing.index - 1]?.id ?? null,
       userContent: text,
     });
+  }
+
+  /** 削除選択モードでの選択トグル。 */
+  function toggleSelect(id: string | undefined) {
+    if (!id) return;
+    setSelecting((prev) => {
+      if (!prev) return prev;
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  /** 選択したメッセージを一括削除する。 */
+  async function deleteSelected() {
+    const convId = convIdRef.current;
+    if (!convId || !selecting || selecting.size === 0) return;
+    if (
+      !confirm(
+        `選択した${selecting.size}件のメッセージを削除します。この操作は取り消せません。よろしいですか？`,
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/conversations/${convId}/delete-messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: [...selecting] }),
+      });
+      if (!res.ok) throw new Error();
+      const { messages: fresh } = (await res.json()) as {
+        messages: UiMessage[];
+      };
+      setMessages(fresh);
+      setSelecting(null);
+      revalidator.revalidate();
+    } catch {
+      setError("メッセージの削除に失敗しました。");
+      setSelecting(null);
+    }
   }
 
   /** ブランチ切替（ページャ）。 */
@@ -631,7 +724,11 @@ export function Chat({
         </div>
       )}
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
         <div className="mx-auto max-w-3xl px-4 py-6">
           {messages.length === 0 && (
             <div className="flex min-h-[60vh] items-center justify-center text-gray-300 dark:text-gray-600">
@@ -641,9 +738,21 @@ export function Chat({
             </div>
           )}
           <div className="space-y-6">
-            {messages.map((m, i) =>
-              m.role === "user" ? (
-                <div key={m.id ?? `u${i}`} className="group/msg">
+            {messages.map((m, i) => {
+              const selectable = selecting != null && m.id != null;
+              const selectionClass = selecting
+                ? `cursor-pointer rounded-xl px-2 py-1 -mx-2 ${
+                    m.id && selecting.has(m.id)
+                      ? "bg-indigo-50 ring-1 ring-indigo-300 dark:bg-indigo-950/40 dark:ring-indigo-700"
+                      : "hover:bg-gray-50 dark:hover:bg-gray-900"
+                  }`
+                : "";
+              return m.role === "user" ? (
+                <div
+                  key={m.id ?? `u${i}`}
+                  className={`group/msg ${selectionClass}`}
+                  onClick={selectable ? () => toggleSelect(m.id) : undefined}
+                >
                   {editing?.index === i ? (
                     <div className="rounded-2xl border border-indigo-300 bg-gray-50 p-3 dark:border-indigo-700 dark:bg-gray-900">
                       <textarea
@@ -680,31 +789,55 @@ export function Chat({
                           {m.content}
                         </div>
                       </div>
-                      <div className="mt-1 flex items-center justify-end gap-2">
-                        <BranchPager
-                          message={m}
-                          disabled={isStreaming}
-                          onSwitch={switchBranch}
-                        />
-                        {m.id && !isStreaming && (
-                          <button
-                            type="button"
-                            onClick={() => setEditing({ index: i, text: m.content })}
-                            aria-label="編集して再送信"
-                            title="編集して再送信（分岐を作成）"
-                            className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
-                          >
-                            <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
-                              <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z" />
-                            </svg>
-                          </button>
-                        )}
-                      </div>
+                      {!selecting && (
+                        <div className="mt-1 flex items-center justify-end gap-1.5">
+                          <BranchPager
+                            message={m}
+                            disabled={isStreaming}
+                            onSwitch={switchBranch}
+                          />
+                          <CopyButton text={m.content} />
+                          {m.id && !isStreaming && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setEditing({ index: i, text: m.content })}
+                                aria-label="編集して再送信"
+                                title="編集して再送信（分岐を作成）"
+                                className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+                              >
+                                <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                                  <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z" />
+                                </svg>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSelecting(new Set([m.id!]))}
+                                aria-label="削除"
+                                title="メッセージを削除（選択モードへ）"
+                                className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-red-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-red-400 dark:group-hover/msg:text-gray-500"
+                              >
+                                <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                                  <path
+                                    fillRule="evenodd"
+                                    d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z"
+                                    clipRule="evenodd"
+                                  />
+                                </svg>
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
               ) : (
-                <div key={m.id ?? `a${i}`} className="group/msg">
+                <div
+                  key={m.id ?? `a${i}`}
+                  className={`group/msg ${selectionClass}`}
+                  onClick={selectable ? () => toggleSelect(m.id) : undefined}
+                >
                   {m.reasoning && (
                     <ReasoningBlock
                       key={`r${m.id ?? i}`}
@@ -735,32 +868,52 @@ export function Chat({
                   {isStreaming && i === messages.length - 1 && (
                     <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-gray-400 align-text-bottom dark:bg-gray-500" />
                   )}
-                  <div className="mt-1 flex items-center gap-3">
-                    <BranchPager
-                      message={m}
-                      disabled={isStreaming}
-                      onSwitch={switchBranch}
-                    />
-                    {m.usage && (
-                      <span className="text-xs text-gray-400 dark:text-gray-500">
-                        {m.usage.promptTokens} in / {m.usage.completionTokens} out
-                        {m.usage.cost != null && ` · $${m.usage.cost.toFixed(6)}`}
-                      </span>
-                    )}
-                    {m.id && !isStreaming && m.status !== "error" && (
-                      <button
-                        type="button"
-                        onClick={() => void fork(m.id!)}
-                        title="ここから分岐（独立した新しい会話を作成）"
-                        className="rounded px-1.5 py-0.5 text-xs text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
-                      >
-                        ⑂ ここから分岐
-                      </button>
-                    )}
-                  </div>
+                  {!selecting && (
+                    <div className="mt-1 flex items-center gap-2">
+                      <BranchPager
+                        message={m}
+                        disabled={isStreaming}
+                        onSwitch={switchBranch}
+                      />
+                      {m.usage && (
+                        <span className="text-xs text-gray-400 dark:text-gray-500">
+                          {m.usage.promptTokens} in / {m.usage.completionTokens} out
+                          {m.usage.cost != null && ` · $${m.usage.cost.toFixed(6)}`}
+                        </span>
+                      )}
+                      <CopyButton text={m.content} />
+                      {m.id && !isStreaming && m.status !== "error" && (
+                        <button
+                          type="button"
+                          onClick={() => void fork(m.id!)}
+                          title="ここから分岐（独立した新しい会話を作成）"
+                          className="rounded px-1.5 py-0.5 text-xs text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+                        >
+                          ⑂ ここから分岐
+                        </button>
+                      )}
+                      {m.id && !isStreaming && (
+                        <button
+                          type="button"
+                          onClick={() => setSelecting(new Set([m.id!]))}
+                          aria-label="削除"
+                          title="メッセージを削除（選択モードへ）"
+                          className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-red-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-red-400 dark:group-hover/msg:text-gray-500"
+                        >
+                          <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                            <path
+                              fillRule="evenodd"
+                              d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ),
-            )}
+              );
+            })}
           </div>
 
           {error && (
@@ -794,6 +947,30 @@ export function Chat({
       </div>
 
       <footer className="shrink-0 border-t border-gray-100 px-4 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 dark:border-gray-800">
+        {selecting ? (
+          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+            <span className="text-sm text-gray-500 dark:text-gray-400">
+              {selecting.size}件選択中（メッセージをタップで選択/解除）
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setSelecting(null)}
+                className="rounded-xl px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={() => void deleteSelected()}
+                disabled={selecting.size === 0}
+                className="rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-30"
+              >
+                削除
+              </button>
+            </div>
+          </div>
+        ) : (
         <div className="mx-auto flex max-w-3xl items-end gap-2">
           <button
             type="button"
@@ -860,6 +1037,7 @@ export function Chat({
             </button>
           )}
         </div>
+        )}
       </footer>
     </div>
   );

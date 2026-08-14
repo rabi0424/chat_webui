@@ -1,5 +1,6 @@
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
 import type { ConversationRow } from "../lib/db.server";
+import { ThemeToggle } from "./ThemeToggle";
 
 export function Sidebar({
   conversations,
@@ -92,6 +93,10 @@ export function Sidebar({
           ))}
         </ul>
       </nav>
+
+      <div className="border-t border-gray-100 p-3 dark:border-gray-800">
+        <ThemeToggle />
+      </div>
     </div>
   );
 }
