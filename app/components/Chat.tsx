@@ -226,6 +226,8 @@ export function Chat({
   const [paramsOpen, setParamsOpen] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>(initialMessages);
   const [input, setInput] = useState("");
+  // 未送信の下書きを端末に保存する（リロード・ページ遷移後に復元）
+  const draftKey = `chat-webui:draft:${conversationId ?? "new"}`;
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ index: number; text: string } | null>(
@@ -323,6 +325,31 @@ export function Chat({
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
     }
   }, [messages]);
+
+  // 下書きの復元（マウント時のみ）
+  useEffect(() => {
+    const draft = localStorage.getItem(draftKey);
+    if (draft) setInput(draft);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 入力欄の高さを内容に合わせる（入力時・下書き復元時の両方をカバー）
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [input]);
+
+  const changeInput = (value: string) => {
+    setInput(value);
+    try {
+      if (value) localStorage.setItem(draftKey, value);
+      else localStorage.removeItem(draftKey);
+    } catch {
+      // ストレージ不可でも入力自体は妨げない
+    }
+  };
 
   // スマホではプレースホルダを短縮する
   const [isNarrow, setIsNarrow] = useState(false);
@@ -543,6 +570,7 @@ export function Chat({
     const text = input.trim();
     if (!text || isStreaming) return;
     setInput("");
+    localStorage.removeItem(draftKey); // 送信したら下書きは破棄
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     stickToBottomRef.current = true; // 送信時は必ず最下部へ
     const parentId = messages[messages.length - 1]?.id ?? null;
@@ -1038,11 +1066,7 @@ export function Chat({
           <textarea
             ref={textareaRef}
             value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              e.currentTarget.style.height = "auto";
-              e.currentTarget.style.height = `${Math.min(e.currentTarget.scrollHeight, 200)}px`;
-            }}
+            onChange={(e) => changeInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
