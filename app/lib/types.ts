@@ -1,3 +1,11 @@
+/** メッセージに添付された画像。実体は /api/files/:id で取得する。 */
+export interface UiAttachment {
+  id: string;
+  mimeType: string;
+  name: string | null;
+  size: number;
+}
+
 /** チャット画面で扱うメッセージ。サーバー/クライアント共用。 */
 export interface UiMessage {
   /** DB上のID。未保存メッセージでは undefined。 */
@@ -29,4 +37,6 @@ export interface UiMessage {
   siblingIds?: string[];
   /** siblingIds の中での自分の位置。 */
   siblingIndex?: number;
+  /** 添付画像（ユーザーメッセージのみ）。 */
+  attachments?: UiAttachment[];
 }

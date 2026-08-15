@@ -9,7 +9,7 @@
 - React Router v7+ (Framework Mode) + React 19 + TypeScript
 - Tailwind CSS v4
 - Cloudflare Workers（ホスティング / API プロキシ）
-- Cloudflare D1 / R2（永続化・添付ファイル — 後続フェーズで追加予定）
+- Cloudflare D1（会話・メッセージの永続化）/ R2（添付画像）
 
 ## 開発環境のセットアップ
 
@@ -32,7 +32,10 @@ npm run dev
    Create Database（名前: `chat-webui`）。作成後に表示される **Database ID** を
    `wrangler.jsonc` の `database_id` に設定する。
    テーブルは初回アクセス時に自動作成される（マイグレーションコマンド不要）。
-2. **シークレットの登録**: ダッシュボードのWorker設定（Variables and Secrets）で
+2. **R2バケットの作成**: ダッシュボード → R2 → Create bucket（名前: `chat-webui-files`）。
+   添付画像の保存先で、`wrangler.jsonc` の `FILES` バインディングが参照する。
+   未作成のままでも画像添付以外の機能は動作する（添付時にエラーを表示）。
+3. **シークレットの登録**: ダッシュボードのWorker設定（Variables and Secrets）で
    `OPENROUTER_API_KEY` を設定、または `npx wrangler secret put OPENROUTER_API_KEY`。
 
 デプロイはGitHub連携（mainブランチへのpushで自動デプロイ）、

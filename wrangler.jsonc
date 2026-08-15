@@ -44,14 +44,21 @@
 			"tag": "v1",
 			"new_sqlite_classes": ["GenerationRunner"]
 		}
+	],
+	/**
+	 * R2: 添付画像の実体。メタデータ（MIME・サイズ・所属メッセージ）はD1の
+	 * attachments テーブルが持ち、ここにはオブジェクト本体だけを置く。
+	 * バケットはダッシュボード（R2 > Create bucket）で作成する。
+	 */
+	"r2_buckets": [
+		{
+			"binding": "FILES",
+			"bucket_name": "chat-webui-files"
+		}
 	]
 	/**
 	 * Secrets (never committed):
 	 *   OPENROUTER_API_KEY - set locally in .dev.vars (copy .dev.vars.example),
 	 *   in production via: npx wrangler secret put OPENROUTER_API_KEY
-	 */
-	/**
-	 * R2 (attachments) binding will be added in a later phase:
-	 * "r2_buckets": [ { "binding": "FILES", "bucket_name": "chat-webui-files" } ]
 	 */
 }

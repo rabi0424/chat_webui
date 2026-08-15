@@ -1,6 +1,7 @@
 import { openRouterChatRequest, poeChatRequest, POE_PREFIX, type ChatMessage } from "./openrouter.server";
 import { buildGenerationPayload, type ParamsState } from "./params";
-import { finalizeGeneration, flushGeneration } from "./db.server";
+import { finalizeGeneration, flushGeneration, getAttachments } from "./db.server";
+import { getFile, toBase64 } from "./r2.server";
 
 /**
  * サーバー側生成のジョブ実行。
@@ -13,6 +14,60 @@ import { finalizeGeneration, flushGeneration } from "./db.server";
 
 const FLUSH_INTERVAL_MS = 900;
 
+/** OpenAI互換のマルチモーダルコンテンツ要素。 */
+type ContentPart =
+  | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
+  | {
+      type: "image_url";
+      image_url: { url: string };
+      cache_control?: { type: "ephemeral" };
+    };
+
+interface OutgoingMessage {
+  role: string;
+  content: string | ContentPart[];
+}
+
+/**
+ * 添付画像を data: URL へ展開する。
+ *
+ * アプリは Cloudflare Access の背後にあり、外部（LLMプロバイダ）から
+ * 画像URLを取得させられないため、実体をbase64で埋め込んで送る。
+ * 読み出せなかった画像は黙って除外する（残りのやり取りは成立させる）。
+ */
+async function expandAttachments(
+  messages: ChatMessage[],
+): Promise<OutgoingMessage[]> {
+  const out: OutgoingMessage[] = [];
+  for (const m of messages) {
+    if (!m.attachmentIds || m.attachmentIds.length === 0) {
+      out.push({ role: m.role, content: m.content });
+      continue;
+    }
+    const rows = await getAttachments(m.attachmentIds);
+    const parts: ContentPart[] = [];
+    for (const a of rows) {
+      try {
+        const object = await getFile(a.r2_key);
+        if (!object) continue;
+        const url = `data:${a.mime_type};base64,${toBase64(
+          await object.arrayBuffer(),
+        )}`;
+        parts.push({ type: "image_url", image_url: { url } });
+      } catch {
+        // 1枚読めなくても送信自体は続ける
+      }
+    }
+    // 画像 → テキストの順（Anthropicの推奨。他社も同等に扱う）
+    if (m.content) parts.push({ type: "text", text: m.content });
+    out.push({
+      role: m.role,
+      content: parts.length > 0 ? parts : m.content,
+    });
+  }
+  return out;
+}
+
 /**
  * プロンプトキャッシングの適用。
  *
@@ -24,8 +79,8 @@ const FLUSH_INTERVAL_MS = 900;
  */
 function applyPromptCaching(
   model: string,
-  messages: ChatMessage[],
-): unknown[] {
+  messages: OutgoingMessage[],
+): OutgoingMessage[] {
   if (!model.startsWith("anthropic/")) return messages;
 
   const marked = new Set<number>();
@@ -40,20 +95,20 @@ function applyPromptCaching(
     }
   }
 
-  return messages.map((m, i) =>
-    marked.has(i)
-      ? {
-          role: m.role,
-          content: [
-            {
-              type: "text",
-              text: m.content,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
-        }
-      : m,
-  );
+  return messages.map((m, i) => {
+    if (!marked.has(i)) return m;
+    // ブレークポイントは末尾の要素に置く（そこまでの全内容がキャッシュ対象）
+    const parts: ContentPart[] =
+      typeof m.content === "string"
+        ? [{ type: "text", text: m.content }]
+        : [...m.content];
+    if (parts.length === 0) return m;
+    parts[parts.length - 1] = {
+      ...parts[parts.length - 1],
+      cache_control: { type: "ephemeral" },
+    };
+    return { role: m.role, content: parts };
+  });
 }
 
 export interface GenerationJob {
@@ -74,17 +129,20 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
 
   let upstream: Response;
   try {
+    // 添付画像はここでR2から読み出して data: URL に展開する
+    // （DOのストレージに実体を持ち込まないため、ジョブにはIDだけを載せている）
+    const messages = await expandAttachments(job.messages);
     upstream = isPoe
       ? await poeChatRequest({
           model,
-          messages: job.messages,
+          messages,
           stream: true,
           stream_options: { include_usage: true },
           ...buildGenerationPayload(job.paramsState),
         })
       : await openRouterChatRequest({
           model,
-          messages: applyPromptCaching(job.model, job.messages),
+          messages: applyPromptCaching(job.model, messages),
           stream: true,
           usage: { include: true },
           ...buildGenerationPayload(job.paramsState),

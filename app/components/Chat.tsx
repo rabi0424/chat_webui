@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
-import type { UiMessage } from "../lib/types";
+import type { UiAttachment, UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
+import {
+  ACCEPTED_IMAGE_TYPES,
+  formatBytes,
+  isAcceptedImage,
+  prepareImage,
+} from "../lib/image";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
@@ -20,6 +26,73 @@ const MODEL_STORAGE_KEY = "chat-webui:model";
 const WEB_STORAGE_KEY = "chat-webui:web-search";
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
 const POLL_INTERVAL_MS = 500;
+/** 1メッセージに添付できる画像の枚数（サーバー側の上限と揃える）。 */
+const MAX_ATTACHMENTS = 8;
+
+/** 送信前の添付。アップロード完了で id（添付ID）が入る。 */
+interface PendingAttachment {
+  localId: string;
+  previewUrl: string;
+  name: string;
+  size: number;
+  status: "uploading" | "ready" | "error";
+  id?: string;
+  error?: string;
+}
+
+/** メッセージに添付された画像の表示（タップで原寸表示）。 */
+function MessageImages({
+  attachments,
+  onOpen,
+}: {
+  attachments: UiAttachment[];
+  onOpen: (id: string) => void;
+}) {
+  return (
+    <div className="mb-1.5 flex flex-wrap items-end justify-end gap-1.5">
+      {attachments.map((a) => (
+        <button
+          key={a.id}
+          type="button"
+          onClick={() => onOpen(a.id)}
+          title={a.name ?? "画像"}
+          className="overflow-hidden rounded-xl border border-gray-200 transition hover:opacity-90 active:scale-[0.98] dark:border-gray-700"
+        >
+          <img
+            src={`/api/files/${a.id}`}
+            alt={a.name ?? "添付画像"}
+            loading="lazy"
+            className="max-h-56 max-w-[min(16rem,60vw)] object-contain"
+          />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** 画像の原寸表示（タップで閉じる）。 */
+function Lightbox({ id, onClose }: { id: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex animate-fade items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <img
+        src={`/api/files/${id}`}
+        alt="添付画像"
+        className="max-h-full max-w-full rounded-xl object-contain"
+      />
+    </div>
+  );
+}
 
 /** thinking対応モデルの思考内容の折りたたみ表示。 */
 function ReasoningBlock({
@@ -235,6 +308,12 @@ export function Chat({
   );
   /** 削除選択モード。null = 通常表示。 */
   const [selecting, setSelecting] = useState<Set<string> | null>(null);
+  /** 送信前の添付画像。 */
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
+  /** ドラッグ&ドロップのハイライト。 */
+  const [dragOver, setDragOver] = useState(false);
+  /** 原寸表示中の添付ID。 */
+  const [lightbox, setLightbox] = useState<string | null>(null);
 
   // 新規チャットで送信した時点で会話IDが確定するため ref で保持する
   const convIdRef = useRef<string | null>(conversationId);
@@ -246,6 +325,11 @@ export function Chat({
   const [footerHeight, setFooterHeight] = useState(88);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // ドラッグの出入りは子要素をまたぐたびに発火するため、深さで数える
+  const dragDepth = useRef(0);
+  // アンマウント時にプレビュー用のオブジェクトURLを解放するための最新値
+  const pendingRef = useRef<PendingAttachment[]>([]);
   // 古い非同期処理が新しいストリームの表示を上書きしないための世代カウンタ
   const epochRef = useRef(0);
 
@@ -382,6 +466,108 @@ export function Chat({
       el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
+  // --- 添付画像 -----------------------------------------------------------
+
+  const selectedModel = models.find((m) => m.id === model);
+  /** 画像入力に対応したモデルか（Poeは対応可否を公開していないため許可する）。 */
+  const supportsImages =
+    !selectedModel ||
+    selectedModel.provider === "poe" ||
+    selectedModel.inputModalities.includes("image");
+
+  /** 選択・貼り付け・ドロップされた画像を縮小してアップロードする。 */
+  async function addFiles(files: File[]) {
+    const images = files.filter(isAcceptedImage);
+    if (images.length === 0) {
+      if (files.length > 0) setError("画像ファイルのみ添付できます。");
+      return;
+    }
+    const room = MAX_ATTACHMENTS - pending.length;
+    if (room <= 0) {
+      setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
+      return;
+    }
+    setError(null);
+
+    for (const file of images.slice(0, room)) {
+      const localId = crypto.randomUUID();
+      const entry: PendingAttachment = {
+        localId,
+        previewUrl: URL.createObjectURL(file),
+        name: file.name,
+        size: file.size,
+        status: "uploading",
+      };
+      setPending((prev) => [...prev, entry]);
+
+      void (async () => {
+        try {
+          const prepared = await prepareImage(file);
+          const form = new FormData();
+          form.append("file", prepared);
+          const res = await fetch("/api/uploads", {
+            method: "POST",
+            body: form,
+          });
+          const body = (await res.json().catch(() => null)) as
+            | { id?: string; size?: number; error?: string }
+            | null;
+          if (!res.ok || !body?.id) {
+            throw new Error(body?.error ?? `アップロードに失敗しました (${res.status})`);
+          }
+          setPending((prev) =>
+            prev.map((p) =>
+              p.localId === localId
+                ? { ...p, status: "ready", id: body.id, size: body.size ?? p.size }
+                : p,
+            ),
+          );
+        } catch (e) {
+          setPending((prev) =>
+            prev.map((p) =>
+              p.localId === localId
+                ? { ...p, status: "error", error: (e as Error).message }
+                : p,
+            ),
+          );
+        }
+      })();
+    }
+  }
+
+  function removePending(localId: string) {
+    setPending((prev) => {
+      const target = prev.find((p) => p.localId === localId);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((p) => p.localId !== localId);
+    });
+  }
+
+  pendingRef.current = pending;
+  useEffect(() => {
+    return () => {
+      for (const p of pendingRef.current) URL.revokeObjectURL(p.previewUrl);
+    };
+  }, []);
+
+  const uploading = pending.some((p) => p.status === "uploading");
+  const readyAttachmentIds = pending
+    .filter((p) => p.status === "ready" && p.id)
+    .map((p) => p.id!);
+
+  function openFilePicker() {
+    fileInputRef.current?.click();
+  }
+
+  /** 入力欄への画像貼り付け（スクショの直接添付）。 */
+  function onPaste(e: React.ClipboardEvent) {
+    const files = [...e.clipboardData.files];
+    if (files.some(isAcceptedImage)) {
+      e.preventDefault();
+      void addFiles(files);
+    }
+  }
+
   /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */
   async function refreshPath(convId: string, epoch: number) {
     try {
@@ -453,7 +639,12 @@ export function Chat({
    */
   async function runGeneration(
     history: UiMessage[],
-    persistInfo: { parentId: string | null; userContent: string | null },
+    persistInfo: {
+      parentId: string | null;
+      userContent: string | null;
+      /** 新しいユーザーメッセージに添付する画像（アップロード済みの添付ID）。 */
+      userAttachmentIds?: string[];
+    },
   ) {
     setError(null);
     setIsStreaming(true);
@@ -472,7 +663,7 @@ export function Chat({
             modelId: model,
             botId: bot?.id ?? undefined,
             params: Object.keys(params).length > 0 ? params : undefined,
-            title: (firstUser?.content ?? "新しいチャット").slice(0, 40),
+            title: (firstUser?.content?.trim() || "新しいチャット").slice(0, 40),
           }),
         });
         if (!res.ok) throw new Error("会話の作成に失敗しました");
@@ -496,11 +687,16 @@ export function Chat({
           params,
           parentId: persistInfo.parentId,
           userContent: persistInfo.userContent,
+          userAttachmentIds: persistInfo.userAttachmentIds ?? [],
           messages: [
             ...(bot?.systemPrompt
               ? [{ role: "system", content: bot.systemPrompt }]
               : []),
-            ...history.map(({ role, content }) => ({ role, content })),
+            ...history.map(({ role, content, attachments }) => ({
+              role,
+              content,
+              attachmentIds: attachments?.map((a) => a.id),
+            })),
           ],
         }),
       });
@@ -548,12 +744,13 @@ export function Chat({
           const finalBody = finalRes?.ok
             ? ((await finalRes.json()) as { content: string })
             : null;
-          if (persistInfo.userContent && finalBody?.content) {
+          if (persistInfo.userContent != null && finalBody?.content) {
             await fetch(`/api/conversations/${convId}/title`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                userText: persistInfo.userContent,
+                // 画像だけの送信でもタイトルは付けたいので、本文が空なら補う
+                userText: persistInfo.userContent.trim() || "（画像を送信）",
                 assistantText: finalBody.content,
               }),
             }).catch(() => {});
@@ -582,16 +779,39 @@ export function Chat({
 
   function send() {
     const text = input.trim();
-    if (!text || isStreaming) return;
+    // 画像だけの送信も許す。アップロード中は完了を待つ
+    if ((!text && readyAttachmentIds.length === 0) || isStreaming || uploading) {
+      return;
+    }
+    const attachments: UiAttachment[] = pending
+      .filter((p) => p.status === "ready" && p.id)
+      .map((p) => ({
+        id: p.id!,
+        mimeType: "image/*",
+        name: p.name,
+        size: p.size,
+      }));
+    const attachmentIds = attachments.map((a) => a.id);
+
     setInput("");
     localStorage.removeItem(draftKey); // 送信したら下書きは破棄
+    // プレビューURLは以降 /api/files/:id で表示するため解放してよい
+    for (const p of pending) URL.revokeObjectURL(p.previewUrl);
+    setPending([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     stickToBottomRef.current = true; // 送信時は必ず最下部へ
     const parentId = messages[messages.length - 1]?.id ?? null;
-    void runGeneration([...messages, { role: "user", content: text }], {
-      parentId,
-      userContent: text,
-    });
+    void runGeneration(
+      [
+        ...messages,
+        {
+          role: "user",
+          content: text,
+          attachments: attachments.length > 0 ? attachments : undefined,
+        },
+      ],
+      { parentId, userContent: text, userAttachmentIds: attachmentIds },
+    );
   }
 
   function stop() {
@@ -622,15 +842,18 @@ export function Chat({
   function submitEdit() {
     if (!editing || isStreaming) return;
     const text = editing.text.trim();
-    if (!text) return;
+    // 添付画像は編集後のメッセージにも引き継ぐ
+    const attachments = messages[editing.index]?.attachments;
+    if (!text && !attachments?.length) return;
     const history = [
       ...messages.slice(0, editing.index),
-      { role: "user" as const, content: text },
+      { role: "user" as const, content: text, attachments },
     ];
     setEditing(null);
     void runGeneration(history, {
       parentId: messages[editing.index - 1]?.id ?? null,
       userContent: text,
+      userAttachmentIds: attachments?.map((a) => a.id) ?? [],
     });
   }
 
@@ -725,7 +948,28 @@ export function Chat({
   const lastMessage = messages[messages.length - 1];
 
   return (
-    <div className="relative h-full">
+    <div
+      className="relative h-full"
+      onDragEnter={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        dragDepth.current++;
+        setDragOver(true);
+      }}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragOver(false);
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragOver(false);
+        void addFiles([...e.dataTransfer.files]);
+      }}
+    >
       <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b border-gray-200/60 bg-white/60 px-3 py-2 backdrop-blur-xl backdrop-saturate-150 dark:border-gray-800/60 dark:bg-gray-950/55">
         <button
           type="button"
@@ -867,11 +1111,19 @@ export function Chat({
                     </div>
                   ) : (
                     <>
-                      <div className="flex justify-end">
-                        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-600 px-4 py-2.5 text-white">
-                          {m.content}
+                      {m.attachments && m.attachments.length > 0 && (
+                        <MessageImages
+                          attachments={m.attachments}
+                          onOpen={setLightbox}
+                        />
+                      )}
+                      {m.content && (
+                        <div className="flex justify-end">
+                          <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-600 px-4 py-2.5 text-white">
+                            {m.content}
+                          </div>
                         </div>
-                      </div>
+                      )}
                       {!selecting && (
                         <div className="mt-1 flex items-center justify-end gap-1.5">
                           <BranchPager
@@ -879,7 +1131,7 @@ export function Chat({
                             disabled={isStreaming}
                             onSwitch={switchBranch}
                           />
-                          <CopyButton text={m.content} />
+                          {m.content && <CopyButton text={m.content} />}
                           {m.id && !isStreaming && (
                             <>
                               <button
@@ -1057,7 +1309,89 @@ export function Chat({
             </div>
           </div>
         ) : (
-        <div className="mx-auto flex max-w-3xl items-end gap-2">
+        <div className="mx-auto max-w-3xl">
+        {pending.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {pending.map((p) => (
+              <div
+                key={p.localId}
+                className={`group/att relative h-16 w-16 overflow-hidden rounded-xl border ${
+                  p.status === "error"
+                    ? "border-red-300 dark:border-red-800"
+                    : "border-gray-200 dark:border-gray-700"
+                }`}
+                title={
+                  p.status === "error"
+                    ? p.error
+                    : `${p.name}（${formatBytes(p.size)}）`
+                }
+              >
+                <img
+                  src={p.previewUrl}
+                  alt={p.name}
+                  className={`h-full w-full object-cover ${
+                    p.status === "ready" ? "" : "opacity-40"
+                  }`}
+                />
+                {p.status === "uploading" && (
+                  <span className="absolute inset-0 grid place-items-center">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-indigo-500" />
+                  </span>
+                )}
+                {p.status === "error" && (
+                  <span className="absolute inset-0 grid place-items-center text-lg text-red-500">
+                    !
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removePending(p.localId)}
+                  aria-label="添付を削除"
+                  className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-xs text-white opacity-0 transition group-hover/att:opacity-100 focus:opacity-100 max-sm:opacity-100"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {pending.length > 0 && !supportsImages && (
+          <p className="mb-2 text-xs text-amber-600 dark:text-amber-400">
+            このモデルは画像入力に対応していません。画像は無視されるか、エラーになる場合があります。
+          </p>
+        )}
+        <div className="flex items-end gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_IMAGE_TYPES.join(",")}
+            multiple
+            hidden
+            onChange={(e) => {
+              void addFiles([...(e.target.files ?? [])]);
+              e.target.value = ""; // 同じファイルの再選択を許す
+            }}
+          />
+          <button
+            type="button"
+            onClick={openFilePicker}
+            disabled={pending.length >= MAX_ATTACHMENTS}
+            title={
+              supportsImages
+                ? "画像を添付（貼り付け・ドラッグ&ドロップも可）"
+                : "このモデルは画像入力に対応していません（添付は可能ですが無視されます）"
+            }
+            aria-label="画像を添付"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-gray-200 text-gray-400 transition hover:bg-gray-50 active:scale-90 disabled:opacity-30 sm:h-11 sm:w-11 dark:border-gray-700 dark:text-gray-500 dark:hover:bg-gray-900"
+          >
+            <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path
+                fillRule="evenodd"
+                d="M15.621 4.379a3 3 0 00-4.242 0l-7 7a5 5 0 007.07 7.071l4.244-4.243a.75.75 0 011.06 1.06l-4.243 4.244a6.5 6.5 0 11-9.192-9.193l7-7a4.5 4.5 0 016.364 6.364l-6.72 6.72a2.5 2.5 0 11-3.536-3.536l6.011-6.01a.75.75 0 111.06 1.06l-6.01 6.01a1 1 0 101.414 1.415l6.72-6.72a3 3 0 000-4.242z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
           <button
             type="button"
             onClick={toggleWebSearch}
@@ -1095,6 +1429,7 @@ export function Chat({
                 send();
               }
             }}
+            onPaste={onPaste}
             rows={1}
             translate="no"
             placeholder={
@@ -1115,7 +1450,10 @@ export function Chat({
             <button
               type="button"
               onClick={send}
-              disabled={!input.trim()}
+              disabled={
+                (!input.trim() && readyAttachmentIds.length === 0) || uploading
+              }
+              title={uploading ? "画像をアップロード中…" : "送信"}
               className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-indigo-600 text-white transition hover:bg-indigo-500 active:scale-90 disabled:opacity-30 sm:h-11 sm:w-11"
               aria-label="送信"
             >
@@ -1125,8 +1463,19 @@ export function Chat({
             </button>
           )}
         </div>
+        </div>
         )}
       </footer>
+
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-3 z-40 grid animate-fade place-items-center rounded-3xl border-2 border-dashed border-indigo-400 bg-indigo-50/70 text-sm font-medium text-indigo-600 backdrop-blur-sm dark:bg-indigo-950/50 dark:text-indigo-300">
+          画像をドロップして添付
+        </div>
+      )}
+
+      {lightbox && (
+        <Lightbox id={lightbox} onClose={() => setLightbox(null)} />
+      )}
     </div>
   );
 }

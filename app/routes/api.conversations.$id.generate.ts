@@ -3,6 +3,7 @@ import { cloudflareContext } from "../lib/cloudflare-context";
 import { beginGeneration, getConversation } from "../lib/db.server";
 import type { ChatMessage } from "../lib/openrouter.server";
 import type { ParamsState } from "../lib/params";
+import { MAX_ATTACHMENTS_PER_MESSAGE } from "../lib/r2.server";
 
 interface GenerateBody {
   model: string;
@@ -14,6 +15,8 @@ interface GenerateBody {
   parentId?: string | null;
   /** 新規のユーザー発言。再生成のときは null。 */
   userContent?: string | null;
+  /** 新規のユーザー発言に添付する画像（アップロード済みの添付ID）。 */
+  userAttachmentIds?: string[];
 }
 
 /**
@@ -48,6 +51,9 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     conversationId: params.id,
     parentId: body.parentId ?? null,
     userContent: body.userContent ?? null,
+    userAttachmentIds: Array.isArray(body.userAttachmentIds)
+      ? body.userAttachmentIds.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)
+      : [],
     modelId: body.model,
   });
 
@@ -62,7 +68,13 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       model: body.model,
       web: body.web === true,
       paramsState: body.params ?? null,
-      messages: body.messages,
+      messages: body.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        attachmentIds: Array.isArray(m.attachmentIds)
+          ? m.attachmentIds.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)
+          : undefined,
+      })),
     }),
   });
 

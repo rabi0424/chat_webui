@@ -15,5 +15,14 @@ export function toUiMessage(m: PathMessage): UiMessage {
     finishedAt: m.flushed_at ?? undefined,
     siblingIds: m.sibling_ids.length > 1 ? m.sibling_ids : undefined,
     siblingIndex: m.sibling_ids.length > 1 ? m.sibling_index : undefined,
+    attachments:
+      m.attachments.length > 0
+        ? m.attachments.map((a) => ({
+            id: a.id,
+            mimeType: a.mime_type,
+            name: a.name,
+            size: a.size,
+          }))
+        : undefined,
   };
 }
