@@ -1014,7 +1014,7 @@ export function Chat({
       }}
     >
       <header
-        className={`absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b px-3 py-2 transition-colors duration-200 ${
+        className={`absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] transition-colors duration-200 ${
           scrolled
             ? "border-neutral-200/60 bg-white/60 backdrop-blur-xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-950/55"
             : "border-transparent"
@@ -1058,7 +1058,7 @@ export function Chat({
       {paramsOpen && (
         <div className="fixed inset-0 z-20" onClick={() => setParamsOpen(false)}>
           <div
-            className={`absolute right-2 top-14 max-h-[70vh] w-[min(94vw,26rem)] origin-top-right overflow-y-auto rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
+            className={`absolute right-2 top-[calc(3.5rem+env(safe-area-inset-top))] max-h-[70vh] w-[min(94vw,26rem)] origin-top-right overflow-y-auto rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-2 flex items-center justify-between">
@@ -1119,7 +1119,7 @@ export function Chat({
         className="absolute inset-0 overflow-y-auto"
       >
         <div
-          className="mx-auto max-w-3xl px-4 pt-20"
+          className="mx-auto max-w-3xl px-4 pt-[calc(5rem+env(safe-area-inset-top))]"
           style={{ paddingBottom: footerHeight + 24 }}
         >
           {messages.length === 0 && (

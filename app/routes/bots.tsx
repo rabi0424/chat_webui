@@ -39,7 +39,7 @@ export default function Bots() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-1 border-b border-neutral-100 px-3 py-2 dark:border-neutral-800">
+      <header className="flex shrink-0 items-center gap-1 border-b border-neutral-100 px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-neutral-800">
         <button
           type="button"
           onClick={openSidebar}

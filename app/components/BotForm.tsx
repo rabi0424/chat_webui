@@ -78,7 +78,7 @@ export function BotForm({
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6 px-4 py-6">
+    <div className="mx-auto max-w-2xl space-y-6 px-4 pb-6 pt-[calc(1.5rem+env(safe-area-inset-top))]">
       <div className="flex items-end gap-3">
         <div>
           <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
