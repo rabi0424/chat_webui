@@ -114,6 +114,11 @@ export async function fetchModels(): Promise<ModelInfo[]> {
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
+  /**
+   * 添付画像の添付ID（ユーザーメッセージのみ）。
+   * 送信直前にR2から読み出して data: URL へ展開する。
+   */
+  attachmentIds?: string[];
 }
 
 /** Cheap model used for auto-generating conversation titles. */

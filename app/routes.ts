@@ -18,6 +18,8 @@ export default [
   route("api/conversations/:id/path", "routes/api.conversations.$id.path.ts"),
   route("api/conversations/:id/fork", "routes/api.conversations.$id.fork.ts"),
   route("api/conversations/:id/delete-messages", "routes/api.conversations.$id.delete-messages.ts"),
+  route("api/uploads", "routes/api.uploads.ts"),
+  route("api/files/:id", "routes/api.files.$id.ts"),
   route("api/search", "routes/api.search.ts"),
   route("api/folders", "routes/api.folders.ts"),
   route("api/folders/:id", "routes/api.folders.$id.ts"),

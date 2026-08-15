@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { deleteFiles } from "./r2.server";
 
 /**
  * Data access layer for D1.
@@ -83,6 +84,22 @@ CREATE TABLE IF NOT EXISTS folders (
 );
 ALTER TABLE conversations ADD COLUMN folder_id TEXT;
 ALTER TABLE conversations ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+`,
+  // v7: 添付ファイル（画像）。実体はR2、ここにはメタデータのみ。
+  // message_id はアップロード直後は NULL（送信時にメッセージへ紐づける）。
+  `
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  message_id TEXT,
+  conversation_id TEXT,
+  r2_key TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  name TEXT,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_key ON attachments(r2_key);
 `,
 ];
 
@@ -169,6 +186,18 @@ export interface MessageRow {
   stop_requested: number;
   /** 生成中の最終フラッシュ時刻。中断検知に使う。 */
   flushed_at: number | null;
+  created_at: number;
+}
+
+export interface AttachmentRow {
+  id: string;
+  /** アップロード直後は NULL。送信時にユーザーメッセージへ紐づく。 */
+  message_id: string | null;
+  conversation_id: string | null;
+  r2_key: string;
+  mime_type: string;
+  name: string | null;
+  size: number;
   created_at: number;
 }
 
@@ -595,6 +624,11 @@ export async function deleteBot(id: string): Promise<void> {
 
 export async function deleteConversation(id: string): Promise<void> {
   const d = await db();
+  const { results } = await d
+    .prepare("SELECT id FROM attachments WHERE conversation_id = ?")
+    .bind(id)
+    .all<{ id: string }>();
+  await deleteAttachmentRows(results.map((r) => r.id));
   await d.batch([
     d.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM conversations WHERE id = ?").bind(id),
@@ -605,6 +639,8 @@ export interface PathMessage extends MessageRow {
   /** 同じ親を持つ兄弟（自分含む、作成順）。 */
   sibling_ids: string[];
   sibling_index: number;
+  /** このメッセージに添付された画像（作成順）。 */
+  attachments: AttachmentRow[];
 }
 
 async function loadMessages(conversationId: string): Promise<MessageRow[]> {
@@ -643,19 +679,24 @@ export async function getConversationPath(
   const byId = new Map(all.map((m) => [m.id, m]));
   const children = childrenByParent(all);
 
-  const path: PathMessage[] = [];
+  const rows: MessageRow[] = [];
   let cursor = byId.get(conversation.current_leaf_message_id);
   while (cursor) {
-    const current = cursor;
+    rows.push(cursor);
+    cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined;
+  }
+  rows.reverse();
+
+  const attachments = await attachmentsByMessage(rows.map((m) => m.id));
+  return rows.map((current) => {
     const siblings = children.get(current.parent_id) ?? [current];
-    path.push({
+    return {
       ...current,
       sibling_ids: siblings.map((s) => s.id),
       sibling_index: siblings.findIndex((s) => s.id === current.id),
-    });
-    cursor = current.parent_id ? byId.get(current.parent_id) : undefined;
-  }
-  return path.reverse();
+      attachments: attachments.get(current.id) ?? [],
+    };
+  });
 }
 
 /**
@@ -721,6 +762,8 @@ export async function forkConversation(
       .bind(newConvId, title, conversation.model_id, now, now),
   ];
 
+  const attachments = await attachmentsByMessage(path.map((m) => m.id));
+
   let parent: string | null = null;
   let lastId: string | null = null;
   for (const [i, m] of path.entries()) {
@@ -731,6 +774,13 @@ export async function forkConversation(
           "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id, newConvId, parent, m.role, m.content, m.model_id, m.usage_json, now + i),
+    );
+    // 添付はR2の実体を共有したまま行だけ複製する（元の会話を消しても残る）
+    statements.push(
+      ...linkAttachmentStatements(d, attachments.get(m.id) ?? [], {
+        messageId: id,
+        conversationId: newConvId,
+      }),
     );
     parent = id;
     lastId = id;
@@ -745,6 +795,185 @@ export async function forkConversation(
   return newConvId;
 }
 
+// --- 添付ファイル ---------------------------------------------------------
+
+/** アップロード直後の添付を登録する（まだメッセージには属さない）。 */
+export async function createAttachment(params: {
+  r2Key: string;
+  mimeType: string;
+  name: string | null;
+  size: number;
+}): Promise<AttachmentRow> {
+  const d = await db();
+  const row: AttachmentRow = {
+    id: crypto.randomUUID(),
+    message_id: null,
+    conversation_id: null,
+    r2_key: params.r2Key,
+    mime_type: params.mimeType,
+    name: params.name,
+    size: params.size,
+    created_at: Date.now(),
+  };
+  await d
+    .prepare(
+      "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at) VALUES (?, NULL, NULL, ?, ?, ?, ?, ?)",
+    )
+    .bind(row.id, row.r2_key, row.mime_type, row.name, row.size, row.created_at)
+    .run();
+  return row;
+}
+
+export async function getAttachment(id: string): Promise<AttachmentRow | null> {
+  const d = await db();
+  return await d
+    .prepare("SELECT * FROM attachments WHERE id = ?")
+    .bind(id)
+    .first<AttachmentRow>();
+}
+
+/** 指定IDの添付を、渡されたID順（= 表示順）で返す。 */
+export async function getAttachments(ids: string[]): Promise<AttachmentRow[]> {
+  if (ids.length === 0) return [];
+  const d = await db();
+  const { results } = await d
+    .prepare(
+      `SELECT * FROM attachments WHERE id IN (${ids.map(() => "?").join(",")})`,
+    )
+    .bind(...ids)
+    .all<AttachmentRow>();
+  const byId = new Map(results.map((a) => [a.id, a]));
+  return ids
+    .map((id) => byId.get(id))
+    .filter((a): a is AttachmentRow => a != null);
+}
+
+/** 指定メッセージ群の添付を、メッセージIDごとにまとめて返す。 */
+async function attachmentsByMessage(
+  messageIds: string[],
+): Promise<Map<string, AttachmentRow[]>> {
+  const map = new Map<string, AttachmentRow[]>();
+  if (messageIds.length === 0) return map;
+  const d = await db();
+  const { results } = await d
+    .prepare(
+      `SELECT * FROM attachments WHERE message_id IN (${messageIds
+        .map(() => "?")
+        .join(",")}) ORDER BY created_at`,
+    )
+    .bind(...messageIds)
+    .all<AttachmentRow>();
+  for (const a of results) {
+    if (!a.message_id) continue;
+    const list = map.get(a.message_id) ?? [];
+    list.push(a);
+    map.set(a.message_id, list);
+  }
+  return map;
+}
+
+/**
+ * 添付をメッセージへ紐づける文を組み立てる。
+ *
+ * 未使用の添付（アップロード直後）はそのまま紐づけ、既に別のメッセージに
+ * 属している添付は行を複製する。編集して再送信・分岐で同じ画像を引き継いでも、
+ * 元のメッセージから添付が奪われないようにするため。
+ * R2の実体は複数行で共有され、参照が0になったときだけ削除される。
+ */
+function linkAttachmentStatements(
+  d: D1Database,
+  rows: AttachmentRow[],
+  target: { messageId: string; conversationId: string },
+): D1PreparedStatement[] {
+  const now = Date.now();
+  return rows.map((a, i) =>
+    a.message_id === null
+      ? d
+          .prepare(
+            "UPDATE attachments SET message_id = ?, conversation_id = ?, created_at = ? WHERE id = ? AND message_id IS NULL",
+          )
+          .bind(target.messageId, target.conversationId, now + i, a.id)
+      : d
+          .prepare(
+            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .bind(
+            crypto.randomUUID(),
+            target.messageId,
+            target.conversationId,
+            a.r2_key,
+            a.mime_type,
+            a.name,
+            a.size,
+            now + i,
+          ),
+  );
+}
+
+/**
+ * 添付行を削除し、どのメッセージからも参照されなくなったR2オブジェクトを消す。
+ * 分岐・フォークで実体を共有するため、キー単位の参照数を数えてから削除する。
+ */
+async function deleteAttachmentRows(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const d = await db();
+  const placeholders = ids.map(() => "?").join(",");
+  const { results: doomed } = await d
+    .prepare(`SELECT r2_key FROM attachments WHERE id IN (${placeholders})`)
+    .bind(...ids)
+    .all<{ r2_key: string }>();
+  if (doomed.length === 0) return;
+
+  await d
+    .prepare(`DELETE FROM attachments WHERE id IN (${placeholders})`)
+    .bind(...ids)
+    .run();
+
+  const keys = [...new Set(doomed.map((r) => r.r2_key))];
+  const { results: survivors } = await d
+    .prepare(
+      `SELECT DISTINCT r2_key FROM attachments WHERE r2_key IN (${keys
+        .map(() => "?")
+        .join(",")})`,
+    )
+    .bind(...keys)
+    .all<{ r2_key: string }>();
+  const stillUsed = new Set(survivors.map((r) => r.r2_key));
+  await deleteFiles(keys.filter((k) => !stillUsed.has(k)));
+}
+
+/** 指定メッセージ群に属する添付をすべて削除する。 */
+async function deleteAttachmentsOfMessages(messageIds: string[]): Promise<void> {
+  if (messageIds.length === 0) return;
+  const d = await db();
+  const { results } = await d
+    .prepare(
+      `SELECT id FROM attachments WHERE message_id IN (${messageIds
+        .map(() => "?")
+        .join(",")})`,
+    )
+    .bind(...messageIds)
+    .all<{ id: string }>();
+  await deleteAttachmentRows(results.map((r) => r.id));
+}
+
+/**
+ * メッセージに紐づかないまま放置された添付を掃除する。
+ * 画像を選んだあと送信せずに離脱した場合に発生する。
+ */
+const ORPHAN_ATTACHMENT_TTL_MS = 24 * 60 * 60 * 1000;
+
+export async function sweepOrphanAttachments(): Promise<void> {
+  const d = await db();
+  const { results } = await d
+    .prepare(
+      "SELECT id FROM attachments WHERE message_id IS NULL AND created_at < ? LIMIT 100",
+    )
+    .bind(Date.now() - ORPHAN_ATTACHMENT_TTL_MS)
+    .all<{ id: string }>();
+  await deleteAttachmentRows(results.map((r) => r.id));
+}
+
 // --- サーバー側生成 -------------------------------------------------------
 
 /**
@@ -755,6 +984,8 @@ export async function beginGeneration(params: {
   conversationId: string;
   parentId: string | null;
   userContent: string | null;
+  /** 新しいユーザーメッセージに添付する画像（アップロード済みID）。 */
+  userAttachmentIds?: string[];
   modelId: string;
 }): Promise<{ userMessageId: string | null; assistantMessageId: string }> {
   const d = await db();
@@ -771,6 +1002,13 @@ export async function beginGeneration(params: {
           "INSERT INTO messages (id, conversation_id, parent_id, role, content, status, created_at) VALUES (?, ?, ?, 'user', ?, 'done', ?)",
         )
         .bind(userMessageId, params.conversationId, parent, params.userContent, now),
+    );
+    const attachments = await getAttachments(params.userAttachmentIds ?? []);
+    statements.push(
+      ...linkAttachmentStatements(d, attachments, {
+        messageId: userMessageId,
+        conversationId: params.conversationId,
+      }),
     );
     parent = userMessageId;
   }
@@ -916,6 +1154,7 @@ export async function deleteMessages(
     statements.push(d.prepare("DELETE FROM messages WHERE id = ?").bind(id));
   }
 
+  await deleteAttachmentsOfMessages([...deleteSet]);
   await d.batch(statements);
 }
 
