@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelInfo } from "../lib/openrouter.server";
+import { IconChevronDown } from "./icons";
 
 function formatPricePerMillion(perToken: string): string {
   const n = Number(perToken) * 1_000_000;
@@ -72,40 +73,34 @@ export function ModelPicker({
       <button
         type="button"
         onClick={() => (open ? setOpen(false) : openPicker())}
-        className="flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 active:scale-[0.98] dark:text-gray-200 dark:hover:bg-gray-800"
+        className="flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-100 active:scale-[0.98] dark:text-neutral-200 dark:hover:bg-neutral-800"
       >
         <span className="truncate">{selected?.name ?? value ?? "モデルを選択"}</span>
-        <svg className="h-4 w-4 shrink-0 text-gray-400" viewBox="0 0 20 20" fill="currentColor">
-          <path
-            fillRule="evenodd"
-            d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
-            clipRule="evenodd"
-          />
-        </svg>
+        <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
       </button>
 
       {open && (
         <div
           style={mobileTop != null ? { top: mobileTop } : undefined}
-          className={`z-30 flex max-h-[60vh] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white/95 shadow-lg backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95 ${
+          className={`z-30 flex max-h-[60vh] flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white/95 shadow-lg backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95 ${
             mobileTop != null
               ? "fixed inset-x-2 origin-top"
               : "absolute left-0 mt-1 w-[min(90vw,26rem)] origin-top-left"
           }`}
         >
-          <div className="border-b border-gray-100 p-2 dark:border-gray-800">
+          <div className="border-b border-neutral-100 p-2 dark:border-neutral-800">
             <input
               ref={searchRef}
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="モデルを検索…"
-              className="w-full rounded-lg bg-gray-100 px-3 py-2 text-base outline-none placeholder:text-gray-400 sm:text-sm dark:bg-gray-800 dark:text-gray-100"
+              className="w-full rounded-lg bg-neutral-100 px-3 py-2 text-base outline-none placeholder:text-neutral-400 sm:text-sm dark:bg-neutral-800 dark:text-neutral-100"
             />
           </div>
           <ul className="overflow-y-auto overscroll-contain p-1">
             {filtered.length === 0 && (
-              <li className="px-3 py-4 text-center text-sm text-gray-400">
+              <li className="px-3 py-4 text-center text-sm text-neutral-400">
                 該当するモデルがありません
               </li>
             )}
@@ -118,31 +113,31 @@ export function ModelPicker({
                     setOpen(false);
                     setQuery("");
                   }}
-                  className={`w-full rounded-lg px-3 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-800 ${
-                    m.id === value ? "bg-gray-100 dark:bg-gray-800" : ""
+                  className={`w-full rounded-lg px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
+                    m.id === value ? "bg-neutral-100 dark:bg-neutral-800" : ""
                   }`}
                 >
                   <div className="flex items-baseline justify-between gap-2">
-                    <span className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
+                    <span className="truncate text-sm font-medium text-neutral-800 dark:text-neutral-100">
                       {m.name}
                     </span>
                     <span className="flex shrink-0 gap-1">
                       {m.provider === "poe" && (
-                        <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-600 dark:bg-violet-950 dark:text-violet-300">
+                        <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
                           Poe
                         </span>
                       )}
                       {m.inputModalities.includes("image") && (
-                        <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300">
+                        <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
                           画像
                         </span>
                       )}
                     </span>
                   </div>
-                  <div className="mt-0.5 flex gap-3 text-xs text-gray-400 dark:text-gray-500">
+                  <div className="mt-0.5 flex gap-3 text-xs text-neutral-400 dark:text-neutral-500">
                     <span className="truncate">{m.id}</span>
                   </div>
-                  <div className="mt-0.5 flex gap-3 text-xs text-gray-500 dark:text-gray-400">
+                  <div className="mt-0.5 flex gap-3 text-xs text-neutral-500 dark:text-neutral-400">
                     {m.provider === "poe" ? (
                       <span>サブスクのポイントで課金</span>
                     ) : (

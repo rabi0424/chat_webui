@@ -17,7 +17,7 @@ export default function Home() {
   const emptyState =
     bots.length > 0 && !selected ? (
       <div className="w-full">
-        <p className="mb-3 text-center text-sm text-gray-400 dark:text-gray-500">
+        <p className="mb-3 text-center text-sm text-neutral-400 dark:text-neutral-500">
           ボットを選ぶか、そのままメッセージを送信
         </p>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -35,7 +35,7 @@ export default function Home() {
                 });
                 setSelectedModel(b.model_id);
               }}
-              className="rounded-2xl border border-gray-200 px-3 py-4 text-center transition hover:border-indigo-300 hover:bg-indigo-50/50 active:scale-[0.97] dark:border-gray-700 dark:hover:border-indigo-700 dark:hover:bg-indigo-950/30"
+              className="rounded-2xl border border-neutral-200 px-3 py-4 text-center transition hover:border-accent/50 hover:bg-accent/5 active:scale-[0.97] dark:border-neutral-700"
             >
               <span className="block text-3xl" aria-hidden>
                 {b.icon}
@@ -49,7 +49,7 @@ export default function Home() {
         <p className="mt-4 text-center">
           <Link
             to="/bots"
-            className="text-xs text-gray-400 underline-offset-2 hover:underline dark:text-gray-500"
+            className="text-xs text-neutral-400 underline-offset-2 hover:underline dark:text-neutral-500"
           >
             ボットを管理
           </Link>
@@ -60,10 +60,10 @@ export default function Home() {
         <span className="block text-5xl" aria-hidden>
           {selected.icon}
         </span>
-        <p className="mt-3 text-lg font-medium text-gray-600 dark:text-gray-300">
+        <p className="mt-3 text-lg font-medium text-neutral-600 dark:text-neutral-300">
           {selected.name}
         </p>
-        <p className="mt-1 text-sm text-gray-400 dark:text-gray-500">
+        <p className="mt-1 text-sm text-neutral-400 dark:text-neutral-500">
           メッセージを送って会話を開始
         </p>
         <button
@@ -72,7 +72,7 @@ export default function Home() {
             setSelected(null);
             setSelectedModel(null);
           }}
-          className="mt-3 rounded-lg px-3 py-1 text-xs text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+          className="mt-3 rounded-lg px-3 py-1 text-xs text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
         >
           選択を解除
         </button>

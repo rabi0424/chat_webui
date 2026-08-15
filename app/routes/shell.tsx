@@ -37,9 +37,9 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   };
 
   return (
-    <div className="flex h-dvh overflow-x-hidden bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+    <div className="flex h-dvh overflow-x-hidden bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
       {/* デスクトップ: 常設サイドバー */}
-      <div className="hidden w-64 shrink-0 border-r border-gray-100 md:block dark:border-gray-800">
+      <div className="hidden w-64 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
         <Sidebar conversations={conversations} folders={folders} />
       </div>
 
@@ -53,7 +53,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
             onClick={closeSidebar}
           />
           <div
-            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl dark:bg-gray-950 ${
+            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl dark:bg-neutral-950 ${
               sidebarClosing ? "animate-drawer-out" : "animate-drawer"
             }`}
           >

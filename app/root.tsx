@@ -9,6 +9,7 @@ import {
 
 import type { Route } from "./+types/root";
 import { THEME_INIT_SCRIPT } from "./lib/theme";
+import { ACCENT_INIT_SCRIPT } from "./lib/accent";
 import "./app.css";
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -17,8 +18,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-        {/* ハイドレーション前にテーマを適用してちらつきを防ぐ */}
-        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        {/* ハイドレーション前にテーマ・アクセントを適用してちらつきを防ぐ */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: THEME_INIT_SCRIPT + ACCENT_INIT_SCRIPT,
+          }}
+        />
         <Meta />
         <Links />
       </head>
@@ -54,9 +59,9 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   return (
     <main className="container mx-auto p-4 pt-16">
       <h1 className="text-2xl font-bold">{message}</h1>
-      <p className="mt-2 text-gray-600 dark:text-gray-300">{details}</p>
+      <p className="mt-2 text-neutral-600 dark:text-neutral-300">{details}</p>
       {stack && (
-        <pre className="mt-4 w-full overflow-x-auto rounded-lg bg-gray-100 p-4 text-sm dark:bg-gray-900">
+        <pre className="mt-4 w-full overflow-x-auto rounded-lg bg-neutral-100 p-4 text-sm dark:bg-neutral-900">
           <code>{stack}</code>
         </pre>
       )}

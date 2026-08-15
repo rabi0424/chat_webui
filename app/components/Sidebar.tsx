@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
 import type { ConversationRow, FolderRow, SearchResult } from "../lib/db.server";
-import { ThemeToggle } from "./ThemeToggle";
+import { AccentPicker, ThemeToggle } from "./ThemeToggle";
+import {
+  IconArrowLeft,
+  IconChevronRight,
+  IconEllipsis,
+  IconPlus,
+  IconSearch,
+  IconX,
+} from "./icons";
 
 type MenuTarget =
   | { type: "conversation"; id: string }
@@ -173,11 +181,9 @@ export function Sidebar({
           setMenu(open ? null : target);
         }}
         aria-label="メニュー"
-        className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-gray-400 hover:bg-gray-200 group-hover:block dark:hover:bg-gray-700 [.menu-open&]:block"
+        className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block"
       >
-        <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-          <path d="M10 3a1.5 1.5 0 110 3 1.5 1.5 0 010-3zM10 8.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zM11.5 15.5a1.5 1.5 0 10-3 0 1.5 1.5 0 003 0z" />
-        </svg>
+        <IconEllipsis className="h-4 w-4" />
       </button>
     );
   }
@@ -185,14 +191,14 @@ export function Sidebar({
   function MenuItems({ target }: { target: MenuTarget }) {
     if (!(menu?.type === target.type && menu.id === target.id)) return null;
     const itemClass =
-      "block w-full rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800";
+      "block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800";
     const close = () => setMenu(null);
 
     if (target.type === "conversation") {
       const c = conversations.find((x) => x.id === target.id);
       if (!c) return null;
       return (
-        <div className="absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl border border-gray-200 bg-white/95 p-1 shadow-lg backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95">
+        <div className="absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl border border-neutral-200 bg-white/95 p-1 shadow-lg backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95">
           <button type="button" className={itemClass} onClick={() => { close(); renameConversation(c); }}>
             名前を変更
           </button>
@@ -226,7 +232,7 @@ export function Sidebar({
     const f = folders.find((x) => x.id === target.id);
     if (!f) return null;
     return (
-      <div className="absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl border border-gray-200 bg-white/95 p-1 shadow-lg backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95">
+      <div className="absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl border border-neutral-200 bg-white/95 p-1 shadow-lg backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95">
         <button type="button" className={itemClass} onClick={() => { close(); renameFolder(f); }}>
           名前を変更
         </button>
@@ -266,8 +272,8 @@ export function Sidebar({
           className={({ isActive }) =>
             `block truncate rounded-lg py-2 pl-3 pr-8 text-sm ${
               isActive
-                ? "bg-gray-100 font-medium text-gray-900 dark:bg-gray-800 dark:text-gray-50"
-                : "text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-900"
+                ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
+                : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
             }`
           }
         >
@@ -298,29 +304,21 @@ export function Sidebar({
               })
             }
             aria-label={isExpanded ? "折りたたむ" : "展開"}
-            className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+            className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
           >
-            <svg
+            <IconChevronRight
               className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path
-                fillRule="evenodd"
-                d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
-                clipRule="evenodd"
-              />
-            </svg>
+            />
           </button>
           <button
             type="button"
             onClick={() => setView(f.id)}
-            className="min-w-0 flex-1 truncate rounded-lg py-2 pl-1 pr-8 text-left text-sm text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-900"
+            className="min-w-0 flex-1 truncate rounded-lg py-2 pl-1 pr-8 text-left text-sm text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
           >
             {f.pinned === 1 && <span aria-hidden className="mr-1">📌</span>}
             <span aria-hidden className="mr-1.5">📁</span>
             {f.name}
-            <span className="ml-1.5 text-xs text-gray-400 dark:text-gray-600">
+            <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
               {children.length}
             </span>
           </button>
@@ -330,7 +328,7 @@ export function Sidebar({
         {isExpanded && (
           <ul className="mt-0.5 space-y-0.5">
             {children.length === 0 && (
-              <li className="ml-5 px-3 py-1.5 text-xs text-gray-400 dark:text-gray-600">
+              <li className="ml-5 px-3 py-1.5 text-xs text-neutral-400 dark:text-neutral-600">
                 （空のフォルダ）
               </li>
             )}
@@ -353,11 +351,9 @@ export function Sidebar({
         <NavLink
           to="/"
           onClick={onNavigate}
-          className="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900"
+          className="flex items-center gap-2 rounded-xl border border-neutral-200 px-3 py-2.5 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-900"
         >
-          <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
-          </svg>
+          <IconPlus className="h-4 w-4" />
           新規チャット
         </NavLink>
         <NavLink
@@ -366,8 +362,8 @@ export function Sidebar({
           className={({ isActive }) =>
             `flex items-center gap-2 rounded-xl px-3 py-2 text-sm ${
               isActive
-                ? "bg-gray-100 font-medium text-gray-900 dark:bg-gray-800 dark:text-gray-50"
-                : "text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-900"
+                ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
+                : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
             }`
           }
         >
@@ -383,29 +379,17 @@ export function Sidebar({
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="検索（-語 で除外）"
           aria-label="会話を検索"
-          className="w-full rounded-xl border border-gray-200 bg-gray-50 py-2 pl-8 pr-7 text-base outline-none placeholder:text-gray-400 focus:border-indigo-400 sm:text-sm dark:border-gray-700 dark:bg-gray-900"
+          className="w-full rounded-xl border border-neutral-200 bg-neutral-50 py-2 pl-8 pr-7 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:border-neutral-700 dark:bg-neutral-900"
         />
-        <svg
-          className="pointer-events-none absolute left-5.5 top-1/2 h-4 w-4 -translate-y-[60%] text-gray-400"
-          viewBox="0 0 20 20"
-          fill="currentColor"
-        >
-          <path
-            fillRule="evenodd"
-            d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
-            clipRule="evenodd"
-          />
-        </svg>
+        <IconSearch className="pointer-events-none absolute left-5.5 top-1/2 h-4 w-4 -translate-y-[60%] text-neutral-400" />
         {searchQuery && (
           <button
             type="button"
             onClick={() => setSearchQuery("")}
             aria-label="検索をクリア"
-            className="absolute right-5 top-1/2 -translate-y-[60%] rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            className="absolute right-5 top-1/2 -translate-y-[60%] rounded p-0.5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
           >
-            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
-            </svg>
+            <IconX className="h-4 w-4" />
           </button>
         )}
       </div>
@@ -414,7 +398,7 @@ export function Sidebar({
         {searchQuery.trim() ? (
           /* --- 検索結果 --- */
           <>
-            <p className="px-3 pb-1 pt-1 text-[11px] font-medium text-gray-400 dark:text-gray-600">
+            <p className="px-3 pb-1 pt-1 text-[11px] font-medium text-neutral-400 dark:text-neutral-600">
               {searching
                 ? "検索中…"
                 : `検索結果 ${searchResults?.length ?? 0}件`}
@@ -425,13 +409,13 @@ export function Sidebar({
                   <NavLink
                     to={`/chat/${r.id}`}
                     onClick={onNavigate}
-                    className="block rounded-lg px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-900"
+                    className="block rounded-lg px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900"
                   >
-                    <span className="block truncate text-sm text-gray-700 dark:text-gray-200">
+                    <span className="block truncate text-sm text-neutral-700 dark:text-neutral-200">
                       {r.title}
                     </span>
                     {r.snippet && (
-                      <span className="mt-0.5 block truncate text-xs text-gray-400 dark:text-gray-500">
+                      <span className="mt-0.5 block truncate text-xs text-neutral-400 dark:text-neutral-500">
                         {r.snippet}
                       </span>
                     )}
@@ -439,7 +423,7 @@ export function Sidebar({
                 </li>
               ))}
               {!searching && searchResults?.length === 0 && (
-                <li className="px-3 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
+                <li className="px-3 py-6 text-center text-xs text-neutral-400 dark:text-neutral-600">
                   見つかりませんでした
                 </li>
               )}
@@ -453,15 +437,9 @@ export function Sidebar({
                 type="button"
                 onClick={() => setView(null)}
                 aria-label="戻る"
-                className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
               >
-                <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                  <path
-                    fillRule="evenodd"
-                    d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08l-4.158 3.96H16.25A.75.75 0 0117 10z"
-                    clipRule="evenodd"
-                  />
-                </svg>
+                <IconArrowLeft className="h-4 w-4" />
               </button>
               <span className="truncate text-sm font-medium">
                 📁 {viewFolder.name}
@@ -469,7 +447,7 @@ export function Sidebar({
             </div>
             <ul className="space-y-0.5">
               {folderConversations(viewFolder.id).length === 0 && (
-                <li className="px-3 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
+                <li className="px-3 py-6 text-center text-xs text-neutral-400 dark:text-neutral-600">
                   このフォルダは空です
                 </li>
               )}
@@ -483,7 +461,7 @@ export function Sidebar({
           <>
             {pinnedItems.length > 0 && (
               <>
-                <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-gray-400 dark:text-gray-600">
+                <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-neutral-400 dark:text-neutral-600">
                   ピン留め
                 </p>
                 <ul className="space-y-0.5">
@@ -502,7 +480,7 @@ export function Sidebar({
             )}
 
             <div className="flex items-center justify-between px-3 pb-1 pt-3">
-              <p className="text-[11px] font-medium text-gray-400 dark:text-gray-600">
+              <p className="text-[11px] font-medium text-neutral-400 dark:text-neutral-600">
                 フォルダ
               </p>
               <button
@@ -510,11 +488,9 @@ export function Sidebar({
                 onClick={() => void createFolderPrompt()}
                 aria-label="フォルダを作成"
                 title="フォルダを作成"
-                className="rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800"
+                className="rounded p-0.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800"
               >
-                <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                  <path d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z" />
-                </svg>
+                <IconPlus className="h-4 w-4" />
               </button>
             </div>
             <ul className="space-y-0.5">
@@ -523,11 +499,11 @@ export function Sidebar({
               ))}
             </ul>
 
-            <p className="px-3 pb-1 pt-3 text-[11px] font-medium text-gray-400 dark:text-gray-600">
+            <p className="px-3 pb-1 pt-3 text-[11px] font-medium text-neutral-400 dark:text-neutral-600">
               会話
             </p>
             {rootConversations.length === 0 && pinnedItems.length === 0 && (
-              <p className="px-3 py-4 text-center text-xs text-gray-400 dark:text-gray-600">
+              <p className="px-3 py-4 text-center text-xs text-neutral-400 dark:text-neutral-600">
                 まだ会話はありません
               </p>
             )}
@@ -540,7 +516,8 @@ export function Sidebar({
         )}
       </nav>
 
-      <div className="border-t border-gray-100 p-3 dark:border-gray-800">
+      <div className="space-y-2.5 border-t border-neutral-100 p-3 dark:border-neutral-800">
+        <AccentPicker />
         <ThemeToggle />
       </div>
 
@@ -551,7 +528,7 @@ export function Sidebar({
           onClick={() => setMoveTarget(null)}
         >
           <div
-            className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl animate-pop dark:bg-gray-900"
+            className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl animate-pop dark:bg-neutral-900"
             onClick={(e) => e.stopPropagation()}
           >
             <p className="mb-3 text-sm font-semibold">
@@ -565,7 +542,7 @@ export function Sidebar({
                     void patchConversation(moveConv.id, { folderId: null });
                     setMoveTarget(null);
                   }}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
                 >
                   フォルダから出す
                 </button>
@@ -579,13 +556,13 @@ export function Sidebar({
                     void patchConversation(moveConv.id, { folderId: f.id });
                     setMoveTarget(null);
                   }}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-40 dark:text-gray-200 dark:hover:bg-gray-800"
+                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-neutral-800"
                 >
                   📁 {f.name}
                 </button>
               ))}
               {folders.length === 0 && (
-                <p className="px-3 py-2 text-xs text-gray-400">
+                <p className="px-3 py-2 text-xs text-neutral-400">
                   フォルダはまだありません。下で作成できます。
                 </p>
               )}
@@ -596,7 +573,7 @@ export function Sidebar({
                 value={newFolderName}
                 onChange={(e) => setNewFolderName(e.target.value)}
                 placeholder="新しいフォルダ名"
-                className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-base outline-none focus:border-indigo-400 sm:text-sm dark:border-gray-700 dark:bg-gray-800"
+                className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-neutral-700 dark:bg-neutral-800"
               />
               <button
                 type="button"
@@ -613,7 +590,7 @@ export function Sidebar({
                   }
                   setMoveTarget(null);
                 }}
-                className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-30"
+                className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-fg hover:bg-accent/85 disabled:opacity-30"
               >
                 作成して移動
               </button>
@@ -622,7 +599,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => setMoveTarget(null)}
-                className="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
               >
                 キャンセル
               </button>
