@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
@@ -49,6 +49,85 @@ const POLL_INTERVAL_MS = 500;
 const WEB_PARAM_KEY = "web";
 /** 1メッセージに添付できる画像の枚数（サーバー側の上限と揃える）。 */
 const MAX_ATTACHMENTS = 8;
+
+/**
+ * Liquid Glass レンズの変位マップを、ガラス要素の実サイズで生成する。
+ * R=水平位置・G=垂直位置をエンコードした勾配の上に、中央をニュートラル
+ * （#808080 = 変位ゼロ）の角丸矩形で覆い、ぼかしでなだらかに繋ぐ。
+ * これを feDisplacementMap に食わせると「縁に向かって背景が湾曲する」
+ * 凸レンズ状の屈折になる。
+ * 注意: feImage は width/height をピクセルで正確に与えないと
+ * フィルタごと無効になるため（%指定は不可）、要素サイズごとに作り直す。
+ */
+function makeLensMap(w: number, h: number): string {
+  // 屈折が起きる縁の幅(px)。低いピルでは中央のニュートラル領域が
+  // 消えないよう高さに応じて絞る
+  const inset = Math.max(4, Math.min(10, Math.floor(h * 0.18)));
+  const blur = Math.max(2, Math.min(5, Math.floor(h * 0.08)));
+  const rx = Math.min(24, (h - inset * 2) / 2); // 中央ニュートラル領域の角丸
+  return `data:image/svg+xml;utf8,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+      "<defs>" +
+      '<linearGradient id="x" x1="0" y1="0" x2="1" y2="0">' +
+      '<stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#f00"/>' +
+      "</linearGradient>" +
+      '<linearGradient id="y" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#0f0"/>' +
+      "</linearGradient>" +
+      `<filter id="b" x="-30%" y="-30%" width="160%" height="160%">` +
+      `<feGaussianBlur stdDeviation="${blur}"/>` +
+      "</filter>" +
+      "</defs>" +
+      `<rect width="${w}" height="${h}" fill="url(#x)"/>` +
+      `<rect width="${w}" height="${h}" fill="url(#y)" style="mix-blend-mode:screen"/>` +
+      `<rect x="${inset}" y="${inset}" width="${w - inset * 2}" height="${h - inset * 2}" rx="${rx}" fill="#808080" filter="url(#b)"/>` +
+      "</svg>",
+  )}`;
+}
+
+/**
+ * レンズ屈折フィルタ本体。backdrop-filter: url(#liquid-lens) から参照する。
+ * RGBそれぞれ変位量を少しずつ変えて屈折させ screen で再合成することで、
+ * ガラスの縁にプリズムの色収差（虹のフリンジ）を出す。
+ */
+function LiquidLensFilter() {
+  const channels = [
+    // [チャンネル抽出行列, 変位スケール]。負のスケール = 縁で背景を拡大する凸レンズ
+    ["1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0", -46],
+    ["0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0", -40],
+    ["0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0", -34],
+  ] as const;
+  return (
+    <svg aria-hidden="true" className="pointer-events-none absolute h-0 w-0">
+      <defs>
+        <filter id="liquid-lens" colorInterpolationFilters="sRGB">
+          {/* href/width/height は実サイズに合わせて実行時に設定する */}
+          <feImage x="0" y="0" preserveAspectRatio="none" result="map" />
+          {channels.map(([matrix, scale], i) => (
+            <Fragment key={i}>
+              <feDisplacementMap
+                in="SourceGraphic"
+                in2="map"
+                scale={scale}
+                xChannelSelector="R"
+                yChannelSelector="G"
+                result={`d${i}`}
+              />
+              <feColorMatrix
+                in={`d${i}`}
+                type="matrix"
+                values={matrix}
+                result={`c${i}`}
+              />
+            </Fragment>
+          ))}
+          <feBlend in="c0" in2="c1" mode="screen" result="c01" />
+          <feBlend in="c01" in2="c2" mode="screen" />
+        </filter>
+      </defs>
+    </svg>
+  );
+}
 
 /** 円建てコストの表示。額の大きさに応じて桁数を変える。 */
 function formatJpy(jpy: number): string {
@@ -649,6 +728,34 @@ export function Chat({
     setFooterHeight(el.offsetHeight);
     return () => observer.disconnect();
   }, []);
+
+  // SVGフィルタ入りの backdrop-filter（レンズ屈折）は現状 Chromium 系のみ。
+  // 非対応環境では .lens を付けず、通常のブラーにフォールバックする。
+  const [lensActive, setLensActive] = useState(false);
+  useEffect(() => {
+    setLensActive(/Chrom(e|ium)/.test(navigator.userAgent));
+  }, []);
+
+  // レンズの変位マップをガラス要素の実サイズに同期する
+  // （入力欄の伸縮・画面リサイズ・選択バーへの切替に追従）。
+  useEffect(() => {
+    if (!lensActive) return;
+    const pill = footerRef.current?.querySelector<HTMLElement>(".liquid-glass");
+    const img = document.querySelector("#liquid-lens feImage");
+    if (!pill || !img) return;
+    const sync = () => {
+      const w = Math.round(pill.offsetWidth);
+      const h = Math.round(pill.offsetHeight);
+      if (!w || !h) return;
+      img.setAttribute("width", String(w));
+      img.setAttribute("height", String(h));
+      img.setAttribute("href", makeLensMap(w, h));
+    };
+    const observer = new ResizeObserver(sync);
+    observer.observe(pill);
+    sync();
+    return () => observer.disconnect();
+  }, [lensActive, selecting]);
 
   // スマホではプレースホルダを短縮する
   const [isNarrow, setIsNarrow] = useState(false);
@@ -1715,15 +1822,20 @@ export function Chat({
       </div>
 
       {/*
-        コンポーザー: ChatGPT風の一体型ガラスピル。
-        フッター自体は透明グラデーションにし、ピルだけが浮いて見えるようにする。
+        コンポーザー: Liquid Glass のレンズピル（質感の詳細は app.css の .liquid-glass）。
+        レンズ越しに背景が屈折して見えるよう、フッターのグラデーションは薄めにして
+        メッセージがガラスの下を通るのが見えるようにする。
       */}
       <footer
         ref={footerRef}
-        className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/80 to-transparent px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-6 dark:from-neutral-950 dark:via-neutral-950/80"
+        className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white/75 via-white/30 to-transparent px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-6 dark:from-neutral-950/80 dark:via-neutral-950/35"
       >
+        <LiquidLensFilter />
         {selecting ? (
-          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-3xl border border-neutral-200/80 bg-white/85 px-4 py-2.5 shadow-lg shadow-black/5 backdrop-blur-xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-900/80">
+          <div
+            className={`liquid-glass ${lensActive ? "lens" : ""} mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-3xl px-4 py-2.5`}
+          >
+            <div aria-hidden className="liquid-glass-lens" />
             <span className="text-sm text-neutral-500 dark:text-neutral-400">
               {selecting.size}件選択中（メッセージをタップで選択/解除）
             </span>
@@ -1747,7 +1859,10 @@ export function Chat({
           </div>
         ) : (
           <div className="mx-auto max-w-3xl">
-            <div className="rounded-[1.625rem] border border-neutral-200/80 bg-white/85 shadow-lg shadow-black/5 backdrop-blur-xl backdrop-saturate-150 transition-colors focus-within:border-neutral-300 dark:border-white/10 dark:bg-neutral-900/80 dark:focus-within:border-white/20">
+            <div
+              className={`liquid-glass ${lensActive ? "lens" : ""} rounded-[1.75rem]`}
+            >
+              <div aria-hidden className="liquid-glass-lens" />
               {pending.length > 0 && (
                 <div className="flex flex-wrap gap-2 px-3 pt-3">
                   {pending.map((p) => (
