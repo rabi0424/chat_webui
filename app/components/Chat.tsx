@@ -339,6 +339,12 @@ export function Chat({
   );
   /** 削除選択モード。null = 通常表示。 */
   const [selecting, setSelecting] = useState<Set<string> | null>(null);
+  /**
+   * コンテンツがヘッダー下に潜り込んでいるか。
+   * 最上部ではヘッダーを完全透明にしてページと一体化させ、
+   * スクロールしたときだけガラス面と境界線を出す（iOSアプリと同じ挙動）。
+   */
+  const [scrolled, setScrolled] = useState(false);
   /** 送信前の添付画像。 */
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   /** ドラッグ&ドロップのハイライト。 */
@@ -500,6 +506,7 @@ export function Chat({
     if (!el) return;
     stickToBottomRef.current =
       el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    setScrolled(el.scrollTop > 8);
   };
 
   // --- 添付画像 -----------------------------------------------------------
@@ -1006,7 +1013,13 @@ export function Chat({
         void addFiles([...e.dataTransfer.files]);
       }}
     >
-      <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b border-neutral-200/60 bg-white/60 px-3 py-2 backdrop-blur-xl backdrop-saturate-150 dark:border-neutral-800/60 dark:bg-neutral-950/55">
+      <header
+        className={`absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b px-3 py-2 transition-colors duration-200 ${
+          scrolled
+            ? "border-neutral-200/60 bg-white/60 backdrop-blur-xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-950/55"
+            : "border-transparent"
+        }`}
+      >
         <button
           type="button"
           onClick={openSidebar}
