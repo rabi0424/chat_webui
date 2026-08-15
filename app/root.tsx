@@ -20,6 +20,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         {/* ステータスバー領域の色。初期スクリプトとapplyTheme()がテーマに合わせて書き換える */}
         <meta name="theme-color" content={THEME_COLOR_LIGHT} />
+        {/*
+          PWA（ホーム画面追加でアプリ風の全画面表示）。
+          オフライン動作は要件外のため Service Worker は持たない。
+          black-translucent でステータスバーの背後まで描画し（境界が消える）、
+          はみ出しは各画面の safe-area パディングで吸収する。
+        */}
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta name="apple-mobile-web-app-title" content="Chat" />
         {/* ハイドレーション前にテーマ・アクセントを適用してちらつきを防ぐ */}
         <script
           dangerouslySetInnerHTML={{

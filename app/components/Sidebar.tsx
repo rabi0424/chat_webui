@@ -347,7 +347,10 @@ export function Sidebar({
     : null;
 
   return (
-    <div className="flex h-full flex-col" onClick={() => menu && setMenu(null)}>
+    <div
+      className="flex h-full flex-col pt-[env(safe-area-inset-top)]"
+      onClick={() => menu && setMenu(null)}
+    >
       <div className="space-y-1.5 p-3">
         <NavLink
           to="/"
