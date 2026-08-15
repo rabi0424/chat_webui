@@ -56,18 +56,29 @@ export function ModelPicker({
     setOpen(true);
   };
 
+  /**
+   * スペース区切りのAND検索。各語がID・名前のどこかに含まれれば良い
+   * （OpenRouterとPoeで命名規則が違うため、"opus 4.6" のような
+   * 語順・区切りに依存しない検索ができるように）。
+   */
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return models;
-    return models.filter(
-      (m) =>
-        m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
-    );
+    const terms = query.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
+    if (terms.length === 0) return models;
+    return models.filter((m) => {
+      const haystack = `${m.id} ${m.name}`.toLowerCase();
+      return terms.every((t) => haystack.includes(t));
+    });
   }, [models, query]);
 
   useEffect(() => {
     if (!open) return;
-    searchRef.current?.focus();
+    // タッチ環境では自動フォーカスしない。キーボードが開くと
+    // Safariが「入力欄を見せるためのページ全体のパン」を優先し、
+    // 一覧内のスクロールがそちらへ取られてしまうため
+    // （検索したいときだけタップしてもらう）。
+    if (!window.matchMedia("(pointer: coarse)").matches) {
+      searchRef.current?.focus();
+    }
     const onPointerDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (
@@ -122,8 +133,13 @@ export function ModelPicker({
             />
           </div>
           {/* min-h-0: これが無いとflex子はコンテンツ高さより縮めず、
-              一覧自体がスクロール不能になってタッチが背面へ抜ける */}
-          <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
+              一覧自体がスクロール不能になってタッチが背面へ抜ける。
+              onTouchMove: 検索中に一覧をスクロールし始めたら
+              キーボードを閉じる（スクロールがパンに取られるのを防ぐ） */}
+          <ul
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1"
+            onTouchMove={() => searchRef.current?.blur()}
+          >
             {filtered.length === 0 && (
               <li className="px-3 py-4 text-center text-sm text-neutral-400">
                 該当するモデルがありません

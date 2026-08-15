@@ -23,6 +23,7 @@ import {
   IconPlus,
   IconSliders,
   IconTrash,
+  IconX,
 } from "./icons";
 import { GLASS_PANEL } from "../lib/ui";
 
@@ -90,26 +91,166 @@ function MessageImages({
   );
 }
 
-/** 画像の原寸表示（タップで閉じる）。 */
+/**
+ * 画像の原寸表示。
+ * ダブルタップ（ダブルクリック）でタップ位置を中心に拡大/等倍へ切替、
+ * 拡大中はドラッグで移動できる。等倍時のシングルタップ・×・Escで閉じる
+ * （シングルタップはダブルタップ猶予の後に確定させる）。
+ */
 function Lightbox({ id, onClose }: { id: string; onClose: () => void }) {
+  const ZOOM = 2.5;
+  const [t, setT] = useState({ scale: 1, x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    baseX: number;
+    baseY: number;
+    moved: boolean;
+  } | null>(null);
+  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    };
   }, [onClose]);
+
+  const clamp = (v: number, limit: number) =>
+    Math.max(-limit, Math.min(limit, v));
+  /** 画像が画面から離れすぎないよう、移動量をコンテナ基準で制限する。 */
+  const limits = (scale: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    return {
+      x: ((rect?.width ?? 0) * (scale - 1)) / 2,
+      y: ((rect?.height ?? 0) * (scale - 1)) / 2,
+    };
+  };
+
+  /** タップ位置が拡大後も同じ場所に見えるよう平行移動を計算する。 */
+  const toggleZoom = (clientX: number, clientY: number) => {
+    setT((prev) => {
+      if (prev.scale > 1) return { scale: 1, x: 0, y: 0 };
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return prev;
+      const dx = clientX - (rect.left + rect.width / 2);
+      const dy = clientY - (rect.top + rect.height / 2);
+      const lim = limits(ZOOM);
+      return {
+        scale: ZOOM,
+        x: clamp(dx * (1 - ZOOM), lim.x),
+        y: clamp(dy * (1 - ZOOM), lim.y),
+      };
+    });
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    if (drag.current) return; // 2本目以降の指は無視（ピンチは未対応）
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      baseX: t.x,
+      baseY: t.y,
+      moved: false,
+    };
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!d.moved && Math.abs(dx) + Math.abs(dy) > 6) {
+      d.moved = true;
+      if (t.scale > 1) setDragging(true);
+    }
+    if (d.moved && t.scale > 1) {
+      const lim = limits(t.scale);
+      setT((prev) => ({
+        ...prev,
+        x: clamp(d.baseX + dx, lim.x),
+        y: clamp(d.baseY + dy, lim.y),
+      }));
+    }
+  };
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    drag.current = null;
+    setDragging(false);
+    if (d.moved) return; // ドラッグはタップとして扱わない
+
+    const now = Date.now();
+    const last = lastTap.current;
+    lastTap.current = { time: now, x: e.clientX, y: e.clientY };
+    if (
+      last &&
+      now - last.time < 300 &&
+      Math.hypot(e.clientX - last.x, e.clientY - last.y) < 40
+    ) {
+      lastTap.current = null;
+      toggleZoom(e.clientX, e.clientY);
+      return;
+    }
+    if (t.scale === 1) {
+      closeTimer.current = setTimeout(onClose, 280);
+    }
+  };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex animate-fade items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
-      onClick={onClose}
+      ref={containerRef}
+      className="fixed inset-0 z-50 flex animate-fade touch-none select-none items-center justify-center overflow-hidden bg-black/80 p-4 backdrop-blur-sm"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={() => {
+        drag.current = null;
+        setDragging(false);
+      }}
+      onTouchStart={(e) => e.stopPropagation()}
+      onTouchMove={(e) => e.stopPropagation()}
+      onTouchEnd={(e) => e.stopPropagation()}
     >
       <img
         src={`/api/files/${id}`}
         alt="添付画像"
-        className="max-h-full max-w-full rounded-xl object-contain"
+        draggable={false}
+        style={{
+          transform: `translate(${t.x}px, ${t.y}px) scale(${t.scale})`,
+          transition: dragging ? "none" : "transform 0.2s ease-out",
+        }}
+        className={`max-h-full max-w-full rounded-xl object-contain ${
+          t.scale > 1 ? "cursor-grab" : ""
+        }`}
       />
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        aria-label="閉じる"
+        className="absolute right-3 top-[calc(0.75rem+env(safe-area-inset-top))] grid h-9 w-9 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
+      >
+        <IconX className="h-5 w-5" />
+      </button>
     </div>
   );
 }
@@ -334,9 +475,17 @@ export function Chat({
   const draftKey = `chat-webui:draft:${conversationId ?? "new"}`;
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState<{ index: number; text: string } | null>(
-    null,
-  );
+  /**
+   * 編集して再送信の状態。attachments は編集後のメッセージに付く添付
+   * （既存分 + 追加分。削除も可能）。uploads は追加分のアップロード
+   * 進行中件数で、0になるまで送信できない。
+   */
+  const [editing, setEditing] = useState<{
+    index: number;
+    text: string;
+    attachments: UiAttachment[];
+    uploads: number;
+  } | null>(null);
   /** 削除選択モード。null = 通常表示。 */
   const [selecting, setSelecting] = useState<Set<string> | null>(null);
   /**
@@ -363,6 +512,7 @@ export function Chat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
   // ドラッグの出入りは子要素をまたぐたびに発火するため、深さで数える
   const dragDepth = useRef(0);
   // アンマウント時にプレビュー用のオブジェクトURLを解放するための最新値
@@ -584,6 +734,63 @@ export function Chat({
       if (target) URL.revokeObjectURL(target.previewUrl);
       return prev.filter((p) => p.localId !== localId);
     });
+  }
+
+  /**
+   * 編集中メッセージへの画像追加。縮小 → アップロードし、完了したものから
+   * editing.attachments に加える（表示は /api/files/:id 経由）。
+   */
+  async function addEditFiles(files: File[]) {
+    const current = editing;
+    if (!current) return;
+    const room =
+      MAX_ATTACHMENTS - current.attachments.length - current.uploads;
+    const images = files.filter(isAcceptedImage).slice(0, Math.max(0, room));
+    if (images.length === 0) {
+      if (files.length > 0 && room <= 0) {
+        setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
+      }
+      return;
+    }
+    setEditing((prev) =>
+      prev ? { ...prev, uploads: prev.uploads + images.length } : prev,
+    );
+    for (const file of images) {
+      try {
+        const prepared = await prepareImage(file);
+        const form = new FormData();
+        form.append("file", prepared);
+        const res = await fetch("/api/uploads", { method: "POST", body: form });
+        const body = (await res.json().catch(() => null)) as
+          | { id?: string; mimeType?: string; name?: string | null; size?: number; error?: string }
+          | null;
+        if (!res.ok || !body?.id) {
+          throw new Error(body?.error ?? `アップロードに失敗しました (${res.status})`);
+        }
+        setEditing((prev) =>
+          prev
+            ? {
+                ...prev,
+                uploads: prev.uploads - 1,
+                attachments: [
+                  ...prev.attachments,
+                  {
+                    id: body.id!,
+                    mimeType: body.mimeType ?? "image/*",
+                    name: body.name ?? file.name,
+                    size: body.size ?? file.size,
+                  },
+                ],
+              }
+            : prev,
+        );
+      } catch (e) {
+        setEditing((prev) =>
+          prev ? { ...prev, uploads: prev.uploads - 1 } : prev,
+        );
+        setError((e as Error).message);
+      }
+    }
   }
 
   pendingRef.current = pending;
@@ -883,20 +1090,23 @@ export function Chat({
 
   /** 過去メッセージの編集・再送信（同一会話内で分岐を作る）。 */
   function submitEdit() {
-    if (!editing || isStreaming) return;
+    if (!editing || isStreaming || editing.uploads > 0) return;
     const text = editing.text.trim();
-    // 添付画像は編集後のメッセージにも引き継ぐ
-    const attachments = messages[editing.index]?.attachments;
-    if (!text && !attachments?.length) return;
+    const attachments = editing.attachments;
+    if (!text && attachments.length === 0) return;
     const history = [
       ...messages.slice(0, editing.index),
-      { role: "user" as const, content: text, attachments },
+      {
+        role: "user" as const,
+        content: text,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      },
     ];
     setEditing(null);
     void runGeneration(history, {
       parentId: messages[editing.index - 1]?.id ?? null,
       userContent: text,
-      userAttachmentIds: attachments?.map((a) => a.id) ?? [],
+      userAttachmentIds: attachments.map((a) => a.id),
     });
   }
 
@@ -1147,32 +1357,120 @@ export function Chat({
                 >
                   {editing?.index === i ? (
                     <div className="rounded-2xl border border-accent/50 bg-neutral-50 p-3 dark:bg-neutral-900">
+                      {(editing.attachments.length > 0 || editing.uploads > 0) && (
+                        <div className="mb-2 flex flex-wrap gap-2">
+                          {editing.attachments.map((a) => (
+                            <div
+                              key={a.id}
+                              className="group/att relative h-16 w-16 overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700"
+                              title={a.name ?? "画像"}
+                            >
+                              <img
+                                src={`/api/files/${a.id}`}
+                                alt={a.name ?? "添付画像"}
+                                className="h-full w-full object-cover"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditing((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          attachments: prev.attachments.filter(
+                                            (x) => x.id !== a.id,
+                                          ),
+                                        }
+                                      : prev,
+                                  )
+                                }
+                                aria-label="添付を削除"
+                                className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-xs text-white opacity-0 transition group-hover/att:opacity-100 focus:opacity-100 max-sm:opacity-100"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                          {Array.from({ length: editing.uploads }).map((_, n) => (
+                            <div
+                              key={`up${n}`}
+                              className="grid h-16 w-16 place-items-center rounded-xl border border-neutral-200 dark:border-neutral-700"
+                            >
+                              <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <textarea
                         value={editing.text}
                         onChange={(e) =>
-                          setEditing({ index: i, text: e.target.value })
+                          setEditing((prev) =>
+                            prev ? { ...prev, text: e.target.value } : prev,
+                          )
                         }
+                        onPaste={(e) => {
+                          const files = [...e.clipboardData.files];
+                          if (files.some(isAcceptedImage)) {
+                            e.preventDefault();
+                            void addEditFiles(files);
+                          }
+                        }}
                         rows={3}
                         autoFocus
                         translate="no"
                         className="w-full resize-y bg-transparent outline-none"
                       />
-                      <div className="mt-2 flex justify-end gap-2 text-sm">
+                      <div className="mt-2 flex items-center gap-2 text-sm">
+                        <input
+                          ref={editFileInputRef}
+                          type="file"
+                          accept={ACCEPTED_IMAGE_TYPES.join(",")}
+                          multiple
+                          hidden
+                          onChange={(e) => {
+                            void addEditFiles([...(e.target.files ?? [])]);
+                            e.target.value = "";
+                          }}
+                        />
                         <button
                           type="button"
-                          onClick={() => setEditing(null)}
-                          className="rounded-lg px-3 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                          onClick={() => editFileInputRef.current?.click()}
+                          disabled={
+                            editing.attachments.length + editing.uploads >=
+                            MAX_ATTACHMENTS
+                          }
+                          aria-label="画像を追加"
+                          title="画像を追加"
+                          className="grid h-8 w-8 place-items-center rounded-full text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 dark:text-neutral-400 dark:hover:bg-neutral-800"
                         >
-                          キャンセル
+                          <IconPlus className="h-4.5 w-4.5" />
                         </button>
-                        <button
-                          type="button"
-                          onClick={submitEdit}
-                          disabled={!editing.text.trim()}
-                          className="rounded-lg bg-accent px-3 py-1.5 text-accent-fg hover:bg-accent/85 disabled:opacity-30"
-                        >
-                          送信
-                        </button>
+                        <div className="ml-auto flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditing(null)}
+                            className="rounded-lg px-3 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                          >
+                            キャンセル
+                          </button>
+                          <button
+                            type="button"
+                            onClick={submitEdit}
+                            disabled={
+                              (!editing.text.trim() &&
+                                editing.attachments.length === 0) ||
+                              editing.uploads > 0
+                            }
+                            title={
+                              editing.uploads > 0
+                                ? "画像をアップロード中…"
+                                : "送信"
+                            }
+                            className="rounded-lg bg-accent px-3 py-1.5 text-accent-fg hover:bg-accent/85 disabled:opacity-30"
+                          >
+                            送信
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : (
@@ -1202,7 +1500,14 @@ export function Chat({
                             <>
                               <button
                                 type="button"
-                                onClick={() => setEditing({ index: i, text: m.content })}
+                                onClick={() =>
+                                  setEditing({
+                                    index: i,
+                                    text: m.content,
+                                    attachments: m.attachments ?? [],
+                                    uploads: 0,
+                                  })
+                                }
                                 aria-label="編集して再送信"
                                 title="編集して再送信（分岐を作成）"
                                 className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
