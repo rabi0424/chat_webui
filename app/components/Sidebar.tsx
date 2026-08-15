@@ -16,6 +16,34 @@ type MenuTarget =
   | { type: "conversation"; id: string }
   | { type: "folder"; id: string };
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** 検索結果内のヒット語を太字で表示する。 */
+function Highlight({ text, terms }: { text: string; terms: string[] }) {
+  if (!text || terms.length === 0) return <>{text}</>;
+  const re = new RegExp(`(${terms.map(escapeRegExp).join("|")})`, "gi");
+  // 捕捉グループ付きsplit: 奇数インデックスがヒット語
+  const parts = text.split(re);
+  return (
+    <>
+      {parts.map((part, i) =>
+        i % 2 === 1 ? (
+          <strong
+            key={i}
+            className="font-bold text-neutral-900 dark:text-neutral-50"
+          >
+            {part}
+          </strong>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
 export function Sidebar({
   conversations,
   folders,
@@ -69,6 +97,16 @@ export function Sidebar({
   }, [searchQuery]);
 
   const viewFolder = view ? folders.find((f) => f.id === view) ?? null : null;
+
+  /** 太字ハイライト対象の検索語（マイナス検索の除外語は含めない）。 */
+  const highlightTerms = useMemo(
+    () =>
+      searchQuery
+        .trim()
+        .split(/[\s　]+/)
+        .filter((t) => t && !t.startsWith("-")),
+    [searchQuery],
+  );
 
   const pinnedItems = useMemo(
     () =>
@@ -416,11 +454,11 @@ export function Sidebar({
                     className="block rounded-lg px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900"
                   >
                     <span className="block truncate text-sm text-neutral-700 dark:text-neutral-200">
-                      {r.title}
+                      <Highlight text={r.title} terms={highlightTerms} />
                     </span>
                     {r.snippet && (
                       <span className="mt-0.5 block truncate text-xs text-neutral-400 dark:text-neutral-500">
-                        {r.snippet}
+                        <Highlight text={r.snippet} terms={highlightTerms} />
                       </span>
                     )}
                   </NavLink>

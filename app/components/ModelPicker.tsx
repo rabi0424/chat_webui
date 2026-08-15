@@ -56,13 +56,18 @@ export function ModelPicker({
     setOpen(true);
   };
 
+  /**
+   * スペース区切りのAND検索。各語がID・名前のどこかに含まれれば良い
+   * （OpenRouterとPoeで命名規則が違うため、"opus 4.6" のような
+   * 語順・区切りに依存しない検索ができるように）。
+   */
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return models;
-    return models.filter(
-      (m) =>
-        m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
-    );
+    const terms = query.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
+    if (terms.length === 0) return models;
+    return models.filter((m) => {
+      const haystack = `${m.id} ${m.name}`.toLowerCase();
+      return terms.every((t) => haystack.includes(t));
+    });
   }, [models, query]);
 
   useEffect(() => {
