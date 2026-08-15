@@ -1103,6 +1103,20 @@ export function Chat({
     }).catch(() => {});
   }
 
+  /**
+   * 最後尾がユーザーメッセージのとき（分岐直後や応答削除後）、
+   * 新しい入力なしでそのまま応答を生成する。
+   */
+  function generateFromLast() {
+    if (isStreaming) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "user" || !last.id) return;
+    void runGeneration([...messages], {
+      parentId: last.id,
+      userContent: null,
+    });
+  }
+
   function regenerate() {
     if (isStreaming) return;
     const history = [...messages];
@@ -1544,6 +1558,14 @@ export function Chat({
                               </button>
                               <button
                                 type="button"
+                                onClick={() => void fork(m.id!)}
+                                title="ここから分岐（独立した新しい会話を作成）"
+                                className="rounded px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
+                              >
+                                ⑂ ここから分岐
+                              </button>
+                              <button
+                                type="button"
                                 onClick={() => setSelecting(new Set([m.id!]))}
                                 aria-label="削除"
                                 title="メッセージを削除（選択モードへ）"
@@ -1669,6 +1691,23 @@ export function Chat({
                   className="rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
                 >
                   ↻ 再生成
+                </button>
+              </div>
+            )}
+
+          {/* 分岐直後・応答削除後など、最後尾がユーザーメッセージのとき */}
+          {!isStreaming &&
+            !error &&
+            !selecting &&
+            lastMessage?.role === "user" &&
+            lastMessage.id && (
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={generateFromLast}
+                  className="rounded-lg border border-accent/40 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/10"
+                >
+                  ↵ 応答を生成
                 </button>
               </div>
             )}
