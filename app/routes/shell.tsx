@@ -3,26 +3,30 @@ import { Outlet } from "react-router";
 import type { Route } from "./+types/shell";
 import { listBots, listConversations, listFolders, type BotRow, type FolderRow } from "../lib/db.server";
 import { fetchModels, type ModelInfo } from "../lib/openrouter.server";
+import { fetchUsdJpy } from "../lib/fx.server";
 import { Sidebar } from "../components/Sidebar";
 
 export interface ShellContext {
   models: ModelInfo[];
   bots: BotRow[];
+  /** USD/JPYレート。取得できないときは null（ドル建て表示に戻る）。 */
+  usdJpy: number | null;
   openSidebar: () => void;
 }
 
 export async function loader() {
-  const [models, conversations, bots, folders] = await Promise.all([
+  const [models, conversations, bots, folders, usdJpy] = await Promise.all([
     fetchModels(),
     listConversations(),
     listBots(),
     listFolders(),
+    fetchUsdJpy(),
   ]);
-  return { models, conversations, bots, folders };
+  return { models, conversations, bots, folders, usdJpy };
 }
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { models, conversations, bots, folders } = loaderData;
+  const { models, conversations, bots, folders, usdJpy } = loaderData;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarClosing, setSidebarClosing] = useState(false);
 
@@ -151,6 +155,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
             {
               models,
               bots,
+              usdJpy,
               openSidebar: () => setSidebarOpen(true),
             } satisfies ShellContext
           }

@@ -1,4 +1,10 @@
-import { openRouterChatRequest, poeChatRequest, POE_PREFIX, type ChatMessage } from "./openrouter.server";
+import {
+  fetchPoeRecentPoints,
+  openRouterChatRequest,
+  poeChatRequest,
+  POE_PREFIX,
+  type ChatMessage,
+} from "./openrouter.server";
 import { buildGenerationPayload, type ParamsState } from "./params";
 import { finalizeGeneration, flushGeneration, getAttachments } from "./db.server";
 import { getFile, toBase64 } from "./r2.server";
@@ -122,6 +128,7 @@ export interface GenerationJob {
 
 /** 例外を投げず、必ずメッセージ行を確定させて終了する。 */
 export async function runGenerationJob(job: GenerationJob): Promise<void> {
+  const startedAt = Date.now();
   const isPoe = job.model.startsWith(POE_PREFIX);
   const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
   // Web検索プラグイン（:online）はOpenRouter専用
@@ -257,6 +264,27 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
     }
   } catch {
     // 上流の切断・エラー: ここまでの内容で確定する
+  }
+
+  // Poe: ポイント消費はレスポンスに載らないため、Usage APIの履歴を
+  // 突き合わせて usage に合流させる（履歴への反映が遅れることがあるので
+  // 少し待ちながら数回試す。見つからなければ諦めて確定する）
+  if (isPoe && content !== "") {
+    for (const delay of [1200, 2500]) {
+      await new Promise((r) => setTimeout(r, delay));
+      const hit = await fetchPoeRecentPoints(modelName, startedAt);
+      if (hit) {
+        const base = usageJson
+          ? (JSON.parse(usageJson) as Record<string, unknown>)
+          : {};
+        usageJson = JSON.stringify({
+          ...base,
+          points: hit.points,
+          cost: hit.costUsd ?? base.cost,
+        });
+        break;
+      }
+    }
   }
 
   const empty = content === "";
