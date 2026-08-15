@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ModelInfo } from "../lib/openrouter.server";
 import { IconChevronDown } from "./icons";
 import { GLASS_PANEL } from "../lib/ui";
@@ -26,20 +27,32 @@ export function ModelPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  /** モバイルでは画面幅にフィットするfixed配置にする（横はみ出し防止）。 */
-  const [mobileTop, setMobileTop] = useState<number | null>(null);
+  /**
+   * パネルの fixed 配置座標。ボタン位置から計算し、画面内へクランプする。
+   * パネルはポータルで body 直下に描画する（後述のコメント参照）。
+   */
+  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const selected = models.find((m) => m.id === value);
 
   const openPicker = () => {
-    if (window.innerWidth < 640) {
-      const rect = containerRef.current?.getBoundingClientRect();
-      setMobileTop((rect?.bottom ?? 56) + 6);
-    } else {
-      setMobileTop(null);
-    }
+    const rect = containerRef.current?.getBoundingClientRect();
+    const margin = 8;
+    const width =
+      window.innerWidth < 640
+        ? window.innerWidth - margin * 2
+        : Math.min(window.innerWidth * 0.9, 416); // 26rem
+    setPos({
+      left: Math.max(
+        margin,
+        Math.min(rect?.left ?? margin, window.innerWidth - width - margin),
+      ),
+      top: (rect?.bottom ?? 56) + 6,
+      width,
+    });
     setOpen(true);
   };
 
@@ -56,7 +69,13 @@ export function ModelPicker({
     if (!open) return;
     searchRef.current?.focus();
     const onPointerDown = (e: PointerEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (
+        !containerRef.current?.contains(t) &&
+        !panelRef.current?.contains(t)
+      ) {
+        setOpen(false);
+      }
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
@@ -80,14 +99,17 @@ export function ModelPicker({
         <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
       </button>
 
-      {open && (
+      {/*
+        パネルはポータルで body 直下に描画する。ヘッダー（スクロール時に
+        backdrop-blur が付く）の子孫に置くと、「backdrop-filter 要素の
+        子孫では backdrop-filter が効かない」ブラウザの挙動により、
+        スクロール中に開いたときだけパネルのブラーが消えてしまうため。
+      */}
+      {open && pos != null && createPortal(
         <div
-          style={mobileTop != null ? { top: mobileTop } : undefined}
-          className={`z-30 flex max-h-[60vh] flex-col overflow-hidden rounded-xl animate-pop ${GLASS_PANEL} ${
-            mobileTop != null
-              ? "fixed inset-x-2 origin-top"
-              : "absolute left-0 mt-1 w-[min(90vw,26rem)] origin-top-left"
-          }`}
+          ref={panelRef}
+          style={{ left: pos.left, top: pos.top, width: pos.width }}
+          className={`fixed z-30 flex max-h-[60vh] origin-top flex-col overflow-hidden rounded-xl animate-pop ${GLASS_PANEL}`}
         >
           <div className="border-b border-neutral-100 p-2 dark:border-white/10">
             <input
@@ -99,7 +121,9 @@ export function ModelPicker({
               className="w-full rounded-lg bg-neutral-100 px-3 py-2 text-base outline-none placeholder:text-neutral-400 sm:text-sm dark:bg-white/10 dark:text-neutral-100"
             />
           </div>
-          <ul className="overflow-y-auto overscroll-contain p-1">
+          {/* min-h-0: これが無いとflex子はコンテンツ高さより縮めず、
+              一覧自体がスクロール不能になってタッチが背面へ抜ける */}
+          <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
             {filtered.length === 0 && (
               <li className="px-3 py-4 text-center text-sm text-neutral-400">
                 該当するモデルがありません
@@ -155,7 +179,8 @@ export function ModelPicker({
               </li>
             ))}
           </ul>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
