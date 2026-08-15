@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Outlet } from "react-router";
 import type { Route } from "./+types/shell";
 import { listBots, listConversations, listFolders, type BotRow, type FolderRow } from "../lib/db.server";
@@ -36,8 +36,73 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     }, 220);
   };
 
+  /**
+   * アプリの高さを visualViewport の実測値に同期する。
+   * iOS Safari は読み込み直後に 100dvh が実際の表示領域より小さい値の
+   * ままになることがあり、入力欄が画面下端より上に浮いて見える
+   * （スクロールすると再計算されて直る）。実測値をCSS変数 --app-height で
+   * 渡すことで初期表示から正しい高さになり、ツールバーの伸縮や
+   * ソフトキーボードの表示にも追従する。
+   */
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      if (vv.scale !== 1) return; // ピンチズーム中は据え置く
+      document.documentElement.style.setProperty(
+        "--app-height",
+        `${vv.height}px`,
+      );
+    };
+    update();
+    vv.addEventListener("resize", update);
+    return () => vv.removeEventListener("resize", update);
+  }, []);
+
+  /**
+   * エッジスワイプ: 左端から右へ = ドロワーを開く / 左向き = 閉じる。
+   * 縦方向が優勢になった時点でスクロールとみなし判定を打ち切る。
+   * 右端は（ブラウザの「進む」ジェスチャと衝突するため）割り当てない。
+   */
+  const swipeRef = useRef<{ x: number; y: number; fromEdge: boolean } | null>(
+    null,
+  );
+  const onTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    if (!t) return;
+    swipeRef.current = { x: t.clientX, y: t.clientY, fromEdge: t.clientX <= 28 };
+  };
+  const onTouchMove = (e: React.TouchEvent) => {
+    const start = swipeRef.current;
+    const t = e.touches[0];
+    if (!start || !t) return;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dy) > 16 && Math.abs(dy) > Math.abs(dx)) {
+      swipeRef.current = null;
+      return;
+    }
+    if (!sidebarOpen && start.fromEdge && dx > 50) {
+      setSidebarOpen(true);
+      swipeRef.current = null;
+    } else if (sidebarOpen && !sidebarClosing && dx < -50) {
+      closeSidebar();
+      swipeRef.current = null;
+    }
+  };
+  const onTouchEnd = () => {
+    swipeRef.current = null;
+  };
+
   return (
-    <div className="flex h-dvh overflow-x-hidden bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+    <div
+      className="flex overflow-x-hidden bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100"
+      style={{ height: "var(--app-height, 100dvh)" }}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+    >
       {/* デスクトップ: 常設サイドバー */}
       <div className="hidden w-64 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
         <Sidebar conversations={conversations} folders={folders} />
