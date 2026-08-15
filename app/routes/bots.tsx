@@ -1,6 +1,7 @@
 import { Link, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { Route } from "./+types/bots";
 import type { ShellContext } from "./shell";
+import { IconMenu } from "../components/icons";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "ボット管理 - Chat WebUI" }];
@@ -38,26 +39,20 @@ export default function Bots() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-1 border-b border-gray-100 px-3 py-2 dark:border-gray-800">
+      <header className="flex shrink-0 items-center gap-1 border-b border-neutral-100 px-3 py-2 dark:border-neutral-800">
         <button
           type="button"
           onClick={openSidebar}
           aria-label="メニュー"
-          className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 md:hidden dark:text-gray-400 dark:hover:bg-gray-800"
+          className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
         >
-          <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-            <path
-              fillRule="evenodd"
-              d="M2 4.75A.75.75 0 012.75 4h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 4.75zm0 10.5a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75a.75.75 0 01-.75-.75zM2 10a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 10z"
-              clipRule="evenodd"
-            />
-          </svg>
+          <IconMenu className="h-5 w-5" />
         </button>
         <h1 className="px-1 text-sm font-semibold tracking-tight">ボット管理</h1>
         <div className="ml-auto">
           <Link
             to="/bots/new"
-            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent/85"
           >
             + 新しいボット
           </Link>
@@ -67,8 +62,8 @@ export default function Bots() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-4 py-6">
           {bots.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-gray-200 px-6 py-12 text-center dark:border-gray-700">
-              <p className="text-gray-400 dark:text-gray-500">
+            <div className="rounded-2xl border border-dashed border-neutral-200 px-6 py-12 text-center dark:border-neutral-700">
+              <p className="text-neutral-400 dark:text-neutral-500">
                 ボットはまだありません。
                 <br />
                 「モデル + システムプロンプト」の組み合わせを登録すると、
@@ -80,14 +75,14 @@ export default function Bots() {
             {bots.map((b) => (
               <li
                 key={b.id}
-                className="flex items-center gap-3 rounded-2xl border border-gray-200 px-4 py-3 dark:border-gray-700"
+                className="flex items-center gap-3 rounded-2xl border border-neutral-200 px-4 py-3 dark:border-neutral-700"
               >
                 <span className="text-2xl" aria-hidden>
                   {b.icon}
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{b.name}</p>
-                  <p className="truncate text-xs text-gray-400 dark:text-gray-500">
+                  <p className="truncate text-xs text-neutral-400 dark:text-neutral-500">
                     {models.find((m) => m.id === b.model_id)?.name ?? b.model_id}
                   </p>
                 </div>
@@ -95,14 +90,14 @@ export default function Bots() {
                   <button
                     type="button"
                     onClick={() => void navigate(`/bots/${b.id}/edit`)}
-                    className="rounded-lg px-2.5 py-1.5 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                    className="rounded-lg px-2.5 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
                   >
                     編集
                   </button>
                   <button
                     type="button"
                     onClick={() => void duplicate(b.id)}
-                    className="rounded-lg px-2.5 py-1.5 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                    className="rounded-lg px-2.5 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
                   >
                     複製
                   </button>

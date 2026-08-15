@@ -12,6 +12,18 @@ import {
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
+import {
+  IconArrowUp,
+  IconCheck,
+  IconCopy,
+  IconGlobe,
+  IconInfo,
+  IconMenu,
+  IconPencil,
+  IconPlus,
+  IconSliders,
+  IconTrash,
+} from "./icons";
 
 /** この会話に適用されるボット設定（会話開始時のスナップショット）。 */
 export interface BotContext {
@@ -23,9 +35,16 @@ export interface BotContext {
 }
 
 const MODEL_STORAGE_KEY = "chat-webui:model";
-const WEB_STORAGE_KEY = "chat-webui:web-search";
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
 const POLL_INTERVAL_MS = 500;
+/**
+ * Web検索（OpenRouterの :online プラグイン）の設定キー。
+ * 他の生成パラメータと同じく会話の params に保存するが、APIへは送らず
+ * （buildGenerationPayload は PARAM_DEFS のキーしか読まない）、
+ * generate リクエストの web フラグとしてだけ使う。
+ * キーが無い = 既定でオン。"off" のときだけ無効。
+ */
+const WEB_PARAM_KEY = "web";
 /** 1メッセージに添付できる画像の枚数（サーバー側の上限と揃える）。 */
 const MAX_ATTACHMENTS = 8;
 
@@ -56,7 +75,7 @@ function MessageImages({
           type="button"
           onClick={() => onOpen(a.id)}
           title={a.name ?? "画像"}
-          className="overflow-hidden rounded-xl border border-gray-200 transition hover:opacity-90 active:scale-[0.98] dark:border-gray-700"
+          className="overflow-hidden rounded-xl border border-neutral-200 transition hover:opacity-90 active:scale-[0.98] dark:border-neutral-700"
         >
           <img
             src={`/api/files/${a.id}`}
@@ -109,13 +128,13 @@ function ReasoningBlock({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
       >
         <span aria-hidden>💭</span>
         {streaming ? "思考中…" : show ? "思考プロセスを隠す" : "思考プロセスを表示"}
       </button>
       {show && (
-        <div className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-xs leading-relaxed text-gray-500 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400">
+        <div className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
           {reasoning}
         </div>
       )}
@@ -140,21 +159,12 @@ function CopyButton({ text }: { text: string }) {
           // クリップボード不許可時は何もしない
         }
       }}
-      className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+      className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
     >
       {copied ? (
-        <svg className="h-3.5 w-3.5 text-green-500" viewBox="0 0 20 20" fill="currentColor">
-          <path
-            fillRule="evenodd"
-            d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
-            clipRule="evenodd"
-          />
-        </svg>
+        <IconCheck className="h-3.5 w-3.5 text-green-500" />
       ) : (
-        <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
-          <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
-          <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
-        </svg>
+        <IconCopy className="h-3.5 w-3.5" />
       )}
     </button>
   );
@@ -205,24 +215,18 @@ function MessageDetails({ message }: { message: UiMessage }) {
         onClick={() => setOpen((v) => !v)}
         aria-label="詳細"
         title="この応答の詳細"
-        className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+        className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
       >
-        <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
-          <path
-            fillRule="evenodd"
-            d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z"
-            clipRule="evenodd"
-          />
-        </svg>
+        <IconInfo className="h-3.5 w-3.5" />
       </button>
       {open && (
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <span className="absolute bottom-7 left-0 z-40 block w-64 origin-bottom-left rounded-xl border border-gray-200 bg-white/95 p-3 text-xs shadow-lg backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95">
+          <span className="absolute bottom-7 left-0 z-40 block w-64 origin-bottom-left rounded-xl border border-neutral-200 bg-white/95 p-3 text-xs shadow-lg backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95">
             {rows.map(([k, v]) => (
               <span key={k} className="flex justify-between gap-3 py-0.5">
-                <span className="shrink-0 text-gray-400 dark:text-gray-500">{k}</span>
-                <span className="break-all text-right text-gray-700 dark:text-gray-200">{v}</span>
+                <span className="shrink-0 text-neutral-400 dark:text-neutral-500">{k}</span>
+                <span className="break-all text-right text-neutral-700 dark:text-neutral-200">{v}</span>
               </span>
             ))}
           </span>
@@ -245,12 +249,12 @@ function BranchPager({
   const { siblingIds, siblingIndex } = message;
   if (!siblingIds || siblingIds.length < 2 || siblingIndex == null) return null;
   return (
-    <span className="inline-flex items-center gap-0.5 text-xs text-gray-400 dark:text-gray-500">
+    <span className="inline-flex items-center gap-0.5 text-xs text-neutral-400 dark:text-neutral-500">
       <button
         type="button"
         disabled={disabled || siblingIndex === 0}
         onClick={() => onSwitch(siblingIds[siblingIndex - 1])}
-        className="rounded px-1 hover:bg-gray-100 hover:text-gray-600 disabled:opacity-30 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+        className="rounded px-1 hover:bg-neutral-100 hover:text-neutral-600 disabled:opacity-30 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
         aria-label="前のブランチ"
       >
         ‹
@@ -262,7 +266,7 @@ function BranchPager({
         type="button"
         disabled={disabled || siblingIndex === siblingIds.length - 1}
         onClick={() => onSwitch(siblingIds[siblingIndex + 1])}
-        className="rounded px-1 hover:bg-gray-100 hover:text-gray-600 disabled:opacity-30 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+        className="rounded px-1 hover:bg-neutral-100 hover:text-neutral-600 disabled:opacity-30 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
         aria-label="次のブランチ"
       >
         ›
@@ -292,7 +296,6 @@ export function Chat({
   const revalidator = useRevalidator();
 
   const [model, setModel] = useState(initialModel ?? DEFAULT_MODEL);
-  const [webSearch, setWebSearch] = useState(false);
   const [params, setParams] = useState<ParamsState>(
     initialParams ?? bot?.params ?? {},
   );
@@ -342,7 +345,6 @@ export function Chat({
         setModel(models[0].id);
       }
     }
-    setWebSearch(localStorage.getItem(WEB_STORAGE_KEY) === "1");
   }, [models, initialModel]);
 
   // 別端末やリロードで開いたとき、生成中の応答があればポーリングで追いかける
@@ -374,11 +376,17 @@ export function Chat({
     }
   };
 
+  /**
+   * Web検索の有効/無効。既定はオンで、オフにしたときだけ
+   * 会話パラメータに "off" を保存する（他のパラメータと同じ保存経路）。
+   * Poeには相当機能がないため、Poeモデルでは常に無効扱い。
+   */
+  const webSearch = params[WEB_PARAM_KEY] !== "off";
   const toggleWebSearch = () => {
-    setWebSearch((v) => {
-      localStorage.setItem(WEB_STORAGE_KEY, v ? "0" : "1");
-      return !v;
-    });
+    const next = { ...params };
+    if (webSearch) next[WEB_PARAM_KEY] = "off";
+    else delete next[WEB_PARAM_KEY];
+    changeParams(next);
   };
 
   /** ⚙パネルでの変更を反映し、既存の会話にはデバウンスして保存する。 */
@@ -683,7 +691,7 @@ export function Chat({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model,
-          web: webSearch,
+          web: webSearch && !model.startsWith("poe:"),
           params,
           parentId: persistInfo.parentId,
           userContent: persistInfo.userContent,
@@ -970,24 +978,18 @@ export function Chat({
         void addFiles([...e.dataTransfer.files]);
       }}
     >
-      <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b border-gray-200/60 bg-white/60 px-3 py-2 backdrop-blur-xl backdrop-saturate-150 dark:border-gray-800/60 dark:bg-gray-950/55">
+      <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b border-neutral-200/60 bg-white/60 px-3 py-2 backdrop-blur-xl backdrop-saturate-150 dark:border-neutral-800/60 dark:bg-neutral-950/55">
         <button
           type="button"
           onClick={openSidebar}
           aria-label="メニュー"
-          className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 md:hidden dark:text-gray-400 dark:hover:bg-gray-800"
+          className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
         >
-          <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-            <path
-              fillRule="evenodd"
-              d="M2 4.75A.75.75 0 012.75 4h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 4.75zm0 10.5a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75a.75.75 0 01-.75-.75zM2 10a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 10z"
-              clipRule="evenodd"
-            />
-          </svg>
+          <IconMenu className="h-5 w-5" />
         </button>
         {bot && (
           <span
-            className="flex min-w-0 shrink items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1.5 text-sm font-medium dark:bg-gray-800"
+            className="flex min-w-0 shrink items-center gap-1.5 rounded-lg bg-neutral-100 px-2.5 py-1.5 text-sm font-medium dark:bg-neutral-800"
             title={bot.systemPrompt ?? undefined}
           >
             <span aria-hidden>{bot.icon}</span>
@@ -1003,17 +1005,11 @@ export function Chat({
             title="生成パラメータ（この会話にのみ適用）"
             className={`rounded-lg p-2 ${
               Object.keys(params).length > 0
-                ? "text-indigo-500 hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950"
-                : "text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                ? "text-accent hover:bg-accent/10"
+                : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
             }`}
           >
-            <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path
-                fillRule="evenodd"
-                d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z"
-                clipRule="evenodd"
-              />
-            </svg>
+            <IconSliders className="h-5 w-5" />
           </button>
         </div>
       </header>
@@ -1021,7 +1017,7 @@ export function Chat({
       {paramsOpen && (
         <div className="fixed inset-0 z-20" onClick={() => setParamsOpen(false)}>
           <div
-            className="absolute right-2 top-14 max-h-[70vh] w-[min(94vw,26rem)] origin-top-right overflow-y-auto rounded-2xl border border-gray-200 bg-white/95 p-4 shadow-xl backdrop-blur animate-pop dark:border-gray-700 dark:bg-gray-900/95"
+            className="absolute right-2 top-14 max-h-[70vh] w-[min(94vw,26rem)] origin-top-right overflow-y-auto rounded-2xl border border-neutral-200 bg-white/95 p-4 shadow-xl backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-2 flex items-center justify-between">
@@ -1029,15 +1025,44 @@ export function Chat({
               <button
                 type="button"
                 onClick={resetParams}
-                className="rounded-lg px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
               >
                 初期設定に戻す
               </button>
             </div>
-            <p className="mb-3 text-xs text-gray-400 dark:text-gray-500">
+            <p className="mb-3 text-xs text-neutral-400 dark:text-neutral-500">
               この会話にのみ適用されます
               {bot ? "（ボットの設定が初期状態です）" : ""}
             </p>
+            {!model.startsWith("poe:") && (
+              <div className="mb-3 flex items-center gap-3 rounded-xl border border-neutral-200 p-3 dark:border-neutral-700">
+                <IconGlobe className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">Web検索</p>
+                  <p className="text-xs text-neutral-400 dark:text-neutral-500">
+                    最新情報を検索して回答（検索1回ごとに数円の追加料金）
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={webSearch}
+                  aria-label="Web検索"
+                  onClick={toggleWebSearch}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                    webSearch
+                      ? "bg-accent"
+                      : "bg-neutral-300 dark:bg-neutral-600"
+                  }`}
+                >
+                  <span
+                    className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                      webSearch ? "translate-x-[22px]" : "translate-x-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+            )}
             <ParamsEditor
               model={models.find((m) => m.id === model)}
               value={params}
@@ -1057,7 +1082,7 @@ export function Chat({
           style={{ paddingBottom: footerHeight + 24 }}
         >
           {messages.length === 0 && (
-            <div className="flex min-h-[60vh] items-center justify-center text-gray-300 dark:text-gray-600">
+            <div className="flex min-h-[60vh] items-center justify-center text-neutral-300 dark:text-neutral-600">
               {emptyState ?? (
                 <p className="text-lg">モデルを選んでメッセージを送信</p>
               )}
@@ -1069,8 +1094,8 @@ export function Chat({
               const selectionClass = selecting
                 ? `cursor-pointer rounded-xl px-2 py-1 -mx-2 ${
                     m.id && selecting.has(m.id)
-                      ? "bg-indigo-50 ring-1 ring-indigo-300 dark:bg-indigo-950/40 dark:ring-indigo-700"
-                      : "hover:bg-gray-50 dark:hover:bg-gray-900"
+                      ? "bg-accent/10 ring-1 ring-accent/50"
+                      : "hover:bg-neutral-50 dark:hover:bg-neutral-900"
                   }`
                 : "";
               return m.role === "user" ? (
@@ -1080,7 +1105,7 @@ export function Chat({
                   onClick={selectable ? () => toggleSelect(m.id) : undefined}
                 >
                   {editing?.index === i ? (
-                    <div className="rounded-2xl border border-indigo-300 bg-gray-50 p-3 dark:border-indigo-700 dark:bg-gray-900">
+                    <div className="rounded-2xl border border-accent/50 bg-neutral-50 p-3 dark:bg-neutral-900">
                       <textarea
                         value={editing.text}
                         onChange={(e) =>
@@ -1095,7 +1120,7 @@ export function Chat({
                         <button
                           type="button"
                           onClick={() => setEditing(null)}
-                          className="rounded-lg px-3 py-1.5 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                          className="rounded-lg px-3 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
                         >
                           キャンセル
                         </button>
@@ -1103,7 +1128,7 @@ export function Chat({
                           type="button"
                           onClick={submitEdit}
                           disabled={!editing.text.trim()}
-                          className="rounded-lg bg-indigo-600 px-3 py-1.5 text-white hover:bg-indigo-500 disabled:opacity-30"
+                          className="rounded-lg bg-accent px-3 py-1.5 text-accent-fg hover:bg-accent/85 disabled:opacity-30"
                         >
                           送信
                         </button>
@@ -1119,7 +1144,7 @@ export function Chat({
                       )}
                       {m.content && (
                         <div className="flex justify-end">
-                          <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-600 px-4 py-2.5 text-white">
+                          <div className="max-w-[85%] whitespace-pre-wrap rounded-3xl rounded-br-lg bg-accent px-4 py-2.5 text-accent-fg">
                             {m.content}
                           </div>
                         </div>
@@ -1139,26 +1164,18 @@ export function Chat({
                                 onClick={() => setEditing({ index: i, text: m.content })}
                                 aria-label="編集して再送信"
                                 title="編集して再送信（分岐を作成）"
-                                className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+                                className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
                               >
-                                <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
-                                  <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z" />
-                                </svg>
+                                <IconPencil className="h-3.5 w-3.5" />
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setSelecting(new Set([m.id!]))}
                                 aria-label="削除"
                                 title="メッセージを削除（選択モードへ）"
-                                className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-red-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-red-400 dark:group-hover/msg:text-gray-500"
+                                className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-red-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-red-400 dark:group-hover/msg:text-neutral-500"
                               >
-                                <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
-                                  <path
-                                    fillRule="evenodd"
-                                    d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z"
-                                    clipRule="evenodd"
-                                  />
-                                </svg>
+                                <IconTrash className="h-3.5 w-3.5" />
                               </button>
                             </>
                           )}
@@ -1201,7 +1218,7 @@ export function Chat({
                     <Markdown>{m.content}</Markdown>
                   )}
                   {isStreaming && i === messages.length - 1 && (
-                    <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-gray-400 align-text-bottom dark:bg-gray-500" />
+                    <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-neutral-400 align-text-bottom dark:bg-neutral-500" />
                   )}
                   {!selecting && (
                     <div className="mt-1 flex items-center gap-2">
@@ -1211,7 +1228,7 @@ export function Chat({
                         onSwitch={switchBranch}
                       />
                       {m.usage && (
-                        <span className="text-xs text-gray-400 dark:text-gray-500">
+                        <span className="text-xs text-neutral-400 dark:text-neutral-500">
                           {m.usage.promptTokens} in / {m.usage.completionTokens} out
                           {m.usage.cost != null && ` · $${m.usage.cost.toFixed(6)}`}
                         </span>
@@ -1223,7 +1240,7 @@ export function Chat({
                           type="button"
                           onClick={() => void fork(m.id!)}
                           title="ここから分岐（独立した新しい会話を作成）"
-                          className="rounded px-1.5 py-0.5 text-xs text-gray-300 hover:bg-gray-100 hover:text-gray-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-gray-300 dark:group-hover/msg:text-gray-500"
+                          className="rounded px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
                         >
                           ⑂ ここから分岐
                         </button>
@@ -1234,15 +1251,9 @@ export function Chat({
                           onClick={() => setSelecting(new Set([m.id!]))}
                           aria-label="削除"
                           title="メッセージを削除（選択モードへ）"
-                          className="rounded p-1 text-gray-300 hover:bg-gray-100 hover:text-red-600 group-hover/msg:text-gray-400 dark:text-gray-700 dark:hover:bg-gray-800 dark:hover:text-red-400 dark:group-hover/msg:text-gray-500"
+                          className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-red-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-red-400 dark:group-hover/msg:text-neutral-500"
                         >
-                          <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
-                            <path
-                              fillRule="evenodd"
-                              d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z"
-                              clipRule="evenodd"
-                            />
-                          </svg>
+                          <IconTrash className="h-3.5 w-3.5" />
                         </button>
                       )}
                     </div>
@@ -1273,7 +1284,7 @@ export function Chat({
                 <button
                   type="button"
                   onClick={regenerate}
-                  className="rounded-lg px-2 py-1 text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+                  className="rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
                 >
                   ↻ 再生成
                 </button>
@@ -1282,19 +1293,24 @@ export function Chat({
         </div>
       </div>
 
+      {/*
+        コンポーザー: ChatGPT風の一体型ガラスピル。
+        フッター自体は透明グラデーションにし、ピルだけが浮いて見えるようにする。
+      */}
       <footer
         ref={footerRef}
-        className="absolute inset-x-0 bottom-0 z-20 border-t border-gray-200/60 bg-white/60 px-4 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 backdrop-blur-xl backdrop-saturate-150 dark:border-gray-800/60 dark:bg-gray-950/55">
+        className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/80 to-transparent px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-6 dark:from-neutral-950 dark:via-neutral-950/80"
+      >
         {selecting ? (
-          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
-            <span className="text-sm text-gray-500 dark:text-gray-400">
+          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-3xl border border-neutral-200/80 bg-white/85 px-4 py-2.5 shadow-lg shadow-black/5 backdrop-blur-xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-900/80">
+            <span className="text-sm text-neutral-500 dark:text-neutral-400">
               {selecting.size}件選択中（メッセージをタップで選択/解除）
             </span>
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => setSelecting(null)}
-                className="rounded-xl px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                className="rounded-xl px-4 py-2 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
               >
                 キャンセル
               </button>
@@ -1309,166 +1325,134 @@ export function Chat({
             </div>
           </div>
         ) : (
-        <div className="mx-auto max-w-3xl">
-        {pending.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {pending.map((p) => (
-              <div
-                key={p.localId}
-                className={`group/att relative h-16 w-16 overflow-hidden rounded-xl border ${
-                  p.status === "error"
-                    ? "border-red-300 dark:border-red-800"
-                    : "border-gray-200 dark:border-gray-700"
-                }`}
-                title={
-                  p.status === "error"
-                    ? p.error
-                    : `${p.name}（${formatBytes(p.size)}）`
-                }
-              >
-                <img
-                  src={p.previewUrl}
-                  alt={p.name}
-                  className={`h-full w-full object-cover ${
-                    p.status === "ready" ? "" : "opacity-40"
-                  }`}
+          <div className="mx-auto max-w-3xl">
+            <div className="rounded-[1.625rem] border border-neutral-200/80 bg-white/85 shadow-lg shadow-black/5 backdrop-blur-xl backdrop-saturate-150 transition-colors focus-within:border-neutral-300 dark:border-white/10 dark:bg-neutral-900/80 dark:focus-within:border-white/20">
+              {pending.length > 0 && (
+                <div className="flex flex-wrap gap-2 px-3 pt-3">
+                  {pending.map((p) => (
+                    <div
+                      key={p.localId}
+                      className={`group/att relative h-16 w-16 overflow-hidden rounded-xl border ${
+                        p.status === "error"
+                          ? "border-red-300 dark:border-red-800"
+                          : "border-neutral-200 dark:border-neutral-700"
+                      }`}
+                      title={
+                        p.status === "error"
+                          ? p.error
+                          : `${p.name}（${formatBytes(p.size)}）`
+                      }
+                    >
+                      <img
+                        src={p.previewUrl}
+                        alt={p.name}
+                        className={`h-full w-full object-cover ${
+                          p.status === "ready" ? "" : "opacity-40"
+                        }`}
+                      />
+                      {p.status === "uploading" && (
+                        <span className="absolute inset-0 grid place-items-center">
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
+                        </span>
+                      )}
+                      {p.status === "error" && (
+                        <span className="absolute inset-0 grid place-items-center text-lg text-red-500">
+                          !
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removePending(p.localId)}
+                        aria-label="添付を削除"
+                        className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-xs text-white opacity-0 transition group-hover/att:opacity-100 focus:opacity-100 max-sm:opacity-100"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {pending.length > 0 && !supportsImages && (
+                <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">
+                  このモデルは画像入力に対応していません。画像は無視されるか、エラーになる場合があります。
+                </p>
+              )}
+              <div className="flex items-end gap-1 p-1.5">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={ACCEPTED_IMAGE_TYPES.join(",")}
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    void addFiles([...(e.target.files ?? [])]);
+                    e.target.value = ""; // 同じファイルの再選択を許す
+                  }}
                 />
-                {p.status === "uploading" && (
-                  <span className="absolute inset-0 grid place-items-center">
-                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-indigo-500" />
-                  </span>
-                )}
-                {p.status === "error" && (
-                  <span className="absolute inset-0 grid place-items-center text-lg text-red-500">
-                    !
-                  </span>
-                )}
                 <button
                   type="button"
-                  onClick={() => removePending(p.localId)}
-                  aria-label="添付を削除"
-                  className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-xs text-white opacity-0 transition group-hover/att:opacity-100 focus:opacity-100 max-sm:opacity-100"
+                  onClick={openFilePicker}
+                  disabled={pending.length >= MAX_ATTACHMENTS}
+                  title={
+                    supportsImages
+                      ? "画像を添付（貼り付け・ドラッグ&ドロップも可）"
+                      : "このモデルは画像入力に対応していません（添付は可能ですが無視されます）"
+                  }
+                  aria-label="画像を添付"
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-neutral-500 transition hover:bg-neutral-100 active:scale-90 disabled:opacity-30 dark:text-neutral-400 dark:hover:bg-white/10"
                 >
-                  ×
+                  <IconPlus className="h-5 w-5" />
                 </button>
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => changeInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                  onPaste={onPaste}
+                  rows={1}
+                  translate="no"
+                  placeholder={
+                    isNarrow ? "メッセージ" : "メッセージを入力…（Shift+Enterで改行）"
+                  }
+                  className="max-h-[200px] min-h-[36px] flex-1 resize-none bg-transparent px-1.5 py-1.5 leading-6 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
+                />
+                {isStreaming ? (
+                  <button
+                    type="button"
+                    onClick={stop}
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition hover:bg-accent/85 active:scale-90"
+                    aria-label="停止"
+                  >
+                    <span className="block h-3 w-3 rounded-[3px] bg-current" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={send}
+                    disabled={
+                      (!input.trim() && readyAttachmentIds.length === 0) ||
+                      uploading
+                    }
+                    title={uploading ? "画像をアップロード中…" : "送信"}
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition hover:bg-accent/85 active:scale-90 disabled:opacity-30"
+                    aria-label="送信"
+                  >
+                    <IconArrowUp className="h-4.5 w-4.5" />
+                  </button>
+                )}
               </div>
-            ))}
+            </div>
           </div>
-        )}
-        {pending.length > 0 && !supportsImages && (
-          <p className="mb-2 text-xs text-amber-600 dark:text-amber-400">
-            このモデルは画像入力に対応していません。画像は無視されるか、エラーになる場合があります。
-          </p>
-        )}
-        <div className="flex items-end gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={ACCEPTED_IMAGE_TYPES.join(",")}
-            multiple
-            hidden
-            onChange={(e) => {
-              void addFiles([...(e.target.files ?? [])]);
-              e.target.value = ""; // 同じファイルの再選択を許す
-            }}
-          />
-          <button
-            type="button"
-            onClick={openFilePicker}
-            disabled={pending.length >= MAX_ATTACHMENTS}
-            title={
-              supportsImages
-                ? "画像を添付（貼り付け・ドラッグ&ドロップも可）"
-                : "このモデルは画像入力に対応していません（添付は可能ですが無視されます）"
-            }
-            aria-label="画像を添付"
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-gray-200 text-gray-400 transition hover:bg-gray-50 active:scale-90 disabled:opacity-30 sm:h-11 sm:w-11 dark:border-gray-700 dark:text-gray-500 dark:hover:bg-gray-900"
-          >
-            <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path
-                fillRule="evenodd"
-                d="M15.621 4.379a3 3 0 00-4.242 0l-7 7a5 5 0 007.07 7.071l4.244-4.243a.75.75 0 011.06 1.06l-4.243 4.244a6.5 6.5 0 11-9.192-9.193l7-7a4.5 4.5 0 016.364 6.364l-6.72 6.72a2.5 2.5 0 11-3.536-3.536l6.011-6.01a.75.75 0 111.06 1.06l-6.01 6.01a1 1 0 101.414 1.415l6.72-6.72a3 3 0 000-4.242z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            onClick={toggleWebSearch}
-            disabled={model.startsWith("poe:")}
-            aria-pressed={webSearch}
-            title={
-              model.startsWith("poe:")
-                ? "Web検索はOpenRouterのモデルでのみ利用できます"
-                : webSearch
-                  ? "Web検索: オン（検索1回ごとに数円の追加料金がかかります）"
-                  : "Web検索: オフ"
-            }
-            className={`grid h-10 w-10 shrink-0 place-items-center rounded-full border transition active:scale-90 disabled:opacity-30 sm:h-11 sm:w-11 ${
-              webSearch
-                ? "border-indigo-400 bg-indigo-50 text-indigo-600 dark:border-indigo-600 dark:bg-indigo-950 dark:text-indigo-300"
-                : "border-gray-200 text-gray-400 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-500 dark:hover:bg-gray-900"
-            }`}
-            aria-label="Web検索の切替"
-          >
-            <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path
-                fillRule="evenodd"
-                d="M10 18a8 8 0 100-16 8 8 0 000 16zM6.262 6.072a8.25 8.25 0 1010.562-.766 4.5 4.5 0 01-1.318 1.357L14.25 7.5l.165.33a.809.809 0 01-1.086 1.085l-.604-.302a1.125 1.125 0 00-1.298.21l-.132.131c-.439.44-.439 1.152 0 1.591l.296.296c.256.257.622.374.98.314l1.17-.195c.323-.054.654.036.905.245l1.33 1.108c.32.267.46.694.358 1.1a8.7 8.7 0 01-2.288 4.04l-.723.724a1.125 1.125 0 01-1.298.21l-.153-.076a1.125 1.125 0 01-.622-1.006v-1.089c0-.298-.119-.585-.33-.796l-1.347-1.347a1.125 1.125 0 01-.21-1.298L9.75 12l-1.64-1.64a6 6 0 01-1.676-3.257l-.172-1.03z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => changeInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            onPaste={onPaste}
-            rows={1}
-            translate="no"
-            placeholder={
-              isNarrow ? "メッセージ" : "メッセージを入力…（Shift+Enterで改行）"
-            }
-            className="max-h-[200px] min-h-[40px] flex-1 resize-none rounded-2xl border border-gray-200/80 bg-white/70 px-4 py-2 leading-6 outline-none placeholder:text-gray-400 focus:border-indigo-400 dark:border-gray-700/80 dark:bg-gray-900/60 dark:focus:border-indigo-500"
-          />
-          {isStreaming ? (
-            <button
-              type="button"
-              onClick={stop}
-              className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-gray-900 text-white transition hover:bg-gray-700 active:scale-90 sm:h-11 sm:w-11 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-300"
-              aria-label="停止"
-            >
-              <span className="block h-3.5 w-3.5 rounded-sm bg-current" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={send}
-              disabled={
-                (!input.trim() && readyAttachmentIds.length === 0) || uploading
-              }
-              title={uploading ? "画像をアップロード中…" : "送信"}
-              className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-indigo-600 text-white transition hover:bg-indigo-500 active:scale-90 disabled:opacity-30 sm:h-11 sm:w-11"
-              aria-label="送信"
-            >
-              <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A1.5 1.5 0 005.135 9.25h6.115a.75.75 0 010 1.5H5.135a1.5 1.5 0 00-1.442 1.086l-1.414 4.926a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
-              </svg>
-            </button>
-          )}
-        </div>
-        </div>
         )}
       </footer>
 
       {dragOver && (
-        <div className="pointer-events-none absolute inset-3 z-40 grid animate-fade place-items-center rounded-3xl border-2 border-dashed border-indigo-400 bg-indigo-50/70 text-sm font-medium text-indigo-600 backdrop-blur-sm dark:bg-indigo-950/50 dark:text-indigo-300">
+        <div className="pointer-events-none absolute inset-3 z-40 grid animate-fade place-items-center rounded-3xl border-2 border-dashed border-accent/60 bg-accent/10 text-sm font-medium text-accent backdrop-blur-sm">
           画像をドロップして添付
         </div>
       )}

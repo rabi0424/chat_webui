@@ -184,7 +184,13 @@ export const PARAM_DEFS: ParamDef[] = [
  * supported_parameters に載っていてもチャットUIとして意味がないため
  * 表示しないもの: tools / tool_choice / response_format /
  * structured_outputs / logit_bias / logprobs / top_logprobs /
- * web_search_options（地球儀トグルで代替） / include_reasoning（非推奨） など。
+ * web_search_options（⚙パネルのWeb検索トグルで代替） /
+ * include_reasoning（非推奨） など。
+ *
+ * 注: ParamsState には PARAM_DEFS 以外の予約キーが入ることがある
+ * （例: "web" = Web検索のオン/オフ。Chat.tsx 参照）。
+ * buildGenerationPayload は PARAM_DEFS のキーしか読まないため、
+ * これらがAPIリクエストへ漏れることはない。
  */
 
 /** モデルが対応するパラメータ定義だけを返す。 */

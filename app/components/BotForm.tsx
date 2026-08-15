@@ -81,7 +81,7 @@ export function BotForm({
     <div className="mx-auto max-w-2xl space-y-6 px-4 py-6">
       <div className="flex items-end gap-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+          <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
             アイコン（絵文字）
           </label>
           <input
@@ -89,11 +89,11 @@ export function BotForm({
             value={icon}
             onChange={(e) => setIcon(e.target.value)}
             aria-label="アイコン（絵文字）"
-            className="w-16 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-center text-xl outline-none focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900"
+            className="w-16 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-center text-xl outline-none focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
           />
         </div>
         <div className="flex-1">
-          <label className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+          <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
             名前 *
           </label>
           <input
@@ -102,22 +102,22 @@ export function BotForm({
             onChange={(e) => setName(e.target.value)}
             aria-label="名前"
             placeholder="例: 翻訳者、コードレビュアー"
-            className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5 outline-none placeholder:text-gray-400 focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900"
+            className="w-full rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 outline-none placeholder:text-neutral-400 focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
           />
         </div>
       </div>
 
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+        <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
           モデル *
         </label>
-        <div className="rounded-xl border border-gray-200 p-1 dark:border-gray-700">
+        <div className="rounded-xl border border-neutral-200 p-1 dark:border-neutral-700">
           <ModelPicker models={models} value={modelId} onChange={setModelId} />
         </div>
       </div>
 
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">
+        <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
           システムプロンプト
         </label>
         <textarea
@@ -126,19 +126,19 @@ export function BotForm({
           rows={8}
           aria-label="システムプロンプト"
           placeholder="このボットの役割・口調・制約などを書きます"
-          className="w-full resize-y rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5 outline-none placeholder:text-gray-400 focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900"
+          className="w-full resize-y rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 outline-none placeholder:text-neutral-400 focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
         />
       </div>
 
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+          <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
             生成パラメータ（このモデルが対応するもの）
           </span>
           <button
             type="button"
             onClick={resetParams}
-            className="rounded-lg px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+            className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
           >
             初期設定に戻す
           </button>
@@ -156,7 +156,7 @@ export function BotForm({
         <button
           type="button"
           onClick={() => void navigate("/bots")}
-          className="rounded-xl px-4 py-2.5 text-sm text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+          className="rounded-xl px-4 py-2.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
         >
           キャンセル
         </button>
@@ -164,7 +164,7 @@ export function BotForm({
           type="button"
           onClick={() => void save()}
           disabled={!name.trim() || !modelId || saving}
-          className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-30"
+          className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-accent-fg hover:bg-accent/85 disabled:opacity-30"
         >
           {saving ? "保存中…" : "保存"}
         </button>
