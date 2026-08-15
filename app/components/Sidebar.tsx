@@ -10,6 +10,7 @@ import {
   IconSearch,
   IconX,
 } from "./icons";
+import { GLASS_PANEL } from "../lib/ui";
 
 type MenuTarget =
   | { type: "conversation"; id: string }
@@ -191,14 +192,14 @@ export function Sidebar({
   function MenuItems({ target }: { target: MenuTarget }) {
     if (!(menu?.type === target.type && menu.id === target.id)) return null;
     const itemClass =
-      "block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800";
+      "block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10";
     const close = () => setMenu(null);
 
     if (target.type === "conversation") {
       const c = conversations.find((x) => x.id === target.id);
       if (!c) return null;
       return (
-        <div className="absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl border border-neutral-200 bg-white/95 p-1 shadow-lg backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95">
+        <div className={`absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl p-1 animate-pop ${GLASS_PANEL}`}>
           <button type="button" className={itemClass} onClick={() => { close(); renameConversation(c); }}>
             名前を変更
           </button>
@@ -220,7 +221,7 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/15"
             onClick={() => { close(); void removeConversation(c); }}
           >
             削除
@@ -232,7 +233,7 @@ export function Sidebar({
     const f = folders.find((x) => x.id === target.id);
     if (!f) return null;
     return (
-      <div className="absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl border border-neutral-200 bg-white/95 p-1 shadow-lg backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95">
+      <div className={`absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl p-1 animate-pop ${GLASS_PANEL}`}>
         <button type="button" className={itemClass} onClick={() => { close(); renameFolder(f); }}>
           名前を変更
         </button>
@@ -251,7 +252,7 @@ export function Sidebar({
         )}
         <button
           type="button"
-          className="block w-full rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+          className="block w-full rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/15"
           onClick={() => { close(); void removeFolder(f); }}
         >
           削除

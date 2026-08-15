@@ -24,6 +24,7 @@ import {
   IconSliders,
   IconTrash,
 } from "./icons";
+import { GLASS_PANEL } from "../lib/ui";
 
 /** この会話に適用されるボット設定（会話開始時のスナップショット）。 */
 export interface BotContext {
@@ -173,6 +174,8 @@ function CopyButton({ text }: { text: string }) {
 /** 応答の詳細情報（トークン・金額・時刻・所要時間・速度）のポップオーバー。 */
 function MessageDetails({ message }: { message: UiMessage }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const u = message.usage;
   const durationMs =
     message.finishedAt && message.createdAt
@@ -208,21 +211,46 @@ function MessageDetails({ message }: { message: UiMessage }) {
   if (tokensPerSec) rows.push(["速度", `${tokensPerSec} tok/秒`]);
   if (rows.length === 0) return null;
 
+  /**
+   * パネルはボタン上に fixed 配置し、左端を画面内へクランプする。
+   * メッセージ列内の absolute 配置だと、スマホでボタンが右寄りのとき
+   * パネルが画面外へはみ出し、ページ全体が横スクロール可能になっていた。
+   */
+  const PANEL_WIDTH = 256; // w-64
+  const openPanel = () => {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect) {
+      const margin = 8;
+      setPos({
+        left: Math.max(
+          margin,
+          Math.min(rect.left, window.innerWidth - PANEL_WIDTH - margin),
+        ),
+        bottom: window.innerHeight - rect.top + 6,
+      });
+    }
+    setOpen(true);
+  };
+
   return (
     <span className="relative">
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? setOpen(false) : openPanel())}
         aria-label="詳細"
         title="この応答の詳細"
         className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
       >
         <IconInfo className="h-3.5 w-3.5" />
       </button>
-      {open && (
+      {open && pos && (
         <>
           <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <span className="absolute bottom-7 left-0 z-40 block w-64 origin-bottom-left rounded-xl border border-neutral-200 bg-white/95 p-3 text-xs shadow-lg backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95">
+          <span
+            style={{ left: pos.left, bottom: pos.bottom }}
+            className={`fixed z-40 block w-64 origin-bottom rounded-xl p-3 text-xs animate-pop ${GLASS_PANEL}`}
+          >
             {rows.map(([k, v]) => (
               <span key={k} className="flex justify-between gap-3 py-0.5">
                 <span className="shrink-0 text-neutral-400 dark:text-neutral-500">{k}</span>
@@ -1017,7 +1045,7 @@ export function Chat({
       {paramsOpen && (
         <div className="fixed inset-0 z-20" onClick={() => setParamsOpen(false)}>
           <div
-            className="absolute right-2 top-14 max-h-[70vh] w-[min(94vw,26rem)] origin-top-right overflow-y-auto rounded-2xl border border-neutral-200 bg-white/95 p-4 shadow-xl backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95"
+            className={`absolute right-2 top-14 max-h-[70vh] w-[min(94vw,26rem)] origin-top-right overflow-y-auto rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-2 flex items-center justify-between">
@@ -1035,7 +1063,7 @@ export function Chat({
               {bot ? "（ボットの設定が初期状態です）" : ""}
             </p>
             {!model.startsWith("poe:") && (
-              <div className="mb-3 flex items-center gap-3 rounded-xl border border-neutral-200 p-3 dark:border-neutral-700">
+              <div className="mb-3 flex items-center gap-3 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
                 <IconGlobe className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">Web検索</p>
