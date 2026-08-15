@@ -49,6 +49,20 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     if (!vv) return;
     const update = () => {
       if (vv.scale !== 1) return; // ピンチズーム中は据え置く
+      // ソフトキーボード表示中（入力欄フォーカス中）は更新しない。
+      // 縮んだ高さに合わせるとSafari自身の自動パンと二重補正になり、
+      // 入力欄が画面上部まで吹き飛ぶ。キーボード中の位置合わせは
+      // Safariに任せ、閉じたあとのresizeで追従する。
+      const active = document.activeElement;
+      if (
+        active &&
+        (active.tagName === "TEXTAREA" || active.tagName === "INPUT")
+      ) {
+        return;
+      }
+      // キーボードが残したページのパンを戻す（このアプリのbodyは
+      // 本来スクロールしないため、scrollY > 0 はSafariのパンの残骸）
+      if (window.scrollY > 0) window.scrollTo(0, 0);
       document.documentElement.style.setProperty(
         "--app-height",
         `${vv.height}px`,
