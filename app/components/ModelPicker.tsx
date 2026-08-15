@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelInfo } from "../lib/openrouter.server";
 import { IconChevronDown } from "./icons";
+import { GLASS_PANEL } from "../lib/ui";
 
 function formatPricePerMillion(perToken: string): string {
   const n = Number(perToken) * 1_000_000;
@@ -82,20 +83,20 @@ export function ModelPicker({
       {open && (
         <div
           style={mobileTop != null ? { top: mobileTop } : undefined}
-          className={`z-30 flex max-h-[60vh] flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white/95 shadow-lg backdrop-blur animate-pop dark:border-neutral-700 dark:bg-neutral-900/95 ${
+          className={`z-30 flex max-h-[60vh] flex-col overflow-hidden rounded-xl animate-pop ${GLASS_PANEL} ${
             mobileTop != null
               ? "fixed inset-x-2 origin-top"
               : "absolute left-0 mt-1 w-[min(90vw,26rem)] origin-top-left"
           }`}
         >
-          <div className="border-b border-neutral-100 p-2 dark:border-neutral-800">
+          <div className="border-b border-neutral-100 p-2 dark:border-white/10">
             <input
               ref={searchRef}
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="モデルを検索…"
-              className="w-full rounded-lg bg-neutral-100 px-3 py-2 text-base outline-none placeholder:text-neutral-400 sm:text-sm dark:bg-neutral-800 dark:text-neutral-100"
+              className="w-full rounded-lg bg-neutral-100 px-3 py-2 text-base outline-none placeholder:text-neutral-400 sm:text-sm dark:bg-white/10 dark:text-neutral-100"
             />
           </div>
           <ul className="overflow-y-auto overscroll-contain p-1">
@@ -113,8 +114,8 @@ export function ModelPicker({
                     setOpen(false);
                     setQuery("");
                   }}
-                  className={`w-full rounded-lg px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
-                    m.id === value ? "bg-neutral-100 dark:bg-neutral-800" : ""
+                  className={`w-full rounded-lg px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-white/10 ${
+                    m.id === value ? "bg-neutral-100 dark:bg-white/10" : ""
                   }`}
                 >
                   <div className="flex items-baseline justify-between gap-2">
