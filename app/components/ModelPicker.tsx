@@ -67,7 +67,13 @@ export function ModelPicker({
 
   useEffect(() => {
     if (!open) return;
-    searchRef.current?.focus();
+    // タッチ環境では自動フォーカスしない。キーボードが開くと
+    // Safariが「入力欄を見せるためのページ全体のパン」を優先し、
+    // 一覧内のスクロールがそちらへ取られてしまうため
+    // （検索したいときだけタップしてもらう）。
+    if (!window.matchMedia("(pointer: coarse)").matches) {
+      searchRef.current?.focus();
+    }
     const onPointerDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (
@@ -122,8 +128,13 @@ export function ModelPicker({
             />
           </div>
           {/* min-h-0: これが無いとflex子はコンテンツ高さより縮めず、
-              一覧自体がスクロール不能になってタッチが背面へ抜ける */}
-          <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
+              一覧自体がスクロール不能になってタッチが背面へ抜ける。
+              onTouchMove: 検索中に一覧をスクロールし始めたら
+              キーボードを閉じる（スクロールがパンに取られるのを防ぐ） */}
+          <ul
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1"
+            onTouchMove={() => searchRef.current?.blur()}
+          >
             {filtered.length === 0 && (
               <li className="px-3 py-4 text-center text-sm text-neutral-400">
                 該当するモデルがありません

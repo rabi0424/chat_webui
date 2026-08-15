@@ -334,9 +334,17 @@ export function Chat({
   const draftKey = `chat-webui:draft:${conversationId ?? "new"}`;
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState<{ index: number; text: string } | null>(
-    null,
-  );
+  /**
+   * 編集して再送信の状態。attachments は編集後のメッセージに付く添付
+   * （既存分 + 追加分。削除も可能）。uploads は追加分のアップロード
+   * 進行中件数で、0になるまで送信できない。
+   */
+  const [editing, setEditing] = useState<{
+    index: number;
+    text: string;
+    attachments: UiAttachment[];
+    uploads: number;
+  } | null>(null);
   /** 削除選択モード。null = 通常表示。 */
   const [selecting, setSelecting] = useState<Set<string> | null>(null);
   /**
@@ -363,6 +371,7 @@ export function Chat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
   // ドラッグの出入りは子要素をまたぐたびに発火するため、深さで数える
   const dragDepth = useRef(0);
   // アンマウント時にプレビュー用のオブジェクトURLを解放するための最新値
@@ -584,6 +593,63 @@ export function Chat({
       if (target) URL.revokeObjectURL(target.previewUrl);
       return prev.filter((p) => p.localId !== localId);
     });
+  }
+
+  /**
+   * 編集中メッセージへの画像追加。縮小 → アップロードし、完了したものから
+   * editing.attachments に加える（表示は /api/files/:id 経由）。
+   */
+  async function addEditFiles(files: File[]) {
+    const current = editing;
+    if (!current) return;
+    const room =
+      MAX_ATTACHMENTS - current.attachments.length - current.uploads;
+    const images = files.filter(isAcceptedImage).slice(0, Math.max(0, room));
+    if (images.length === 0) {
+      if (files.length > 0 && room <= 0) {
+        setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
+      }
+      return;
+    }
+    setEditing((prev) =>
+      prev ? { ...prev, uploads: prev.uploads + images.length } : prev,
+    );
+    for (const file of images) {
+      try {
+        const prepared = await prepareImage(file);
+        const form = new FormData();
+        form.append("file", prepared);
+        const res = await fetch("/api/uploads", { method: "POST", body: form });
+        const body = (await res.json().catch(() => null)) as
+          | { id?: string; mimeType?: string; name?: string | null; size?: number; error?: string }
+          | null;
+        if (!res.ok || !body?.id) {
+          throw new Error(body?.error ?? `アップロードに失敗しました (${res.status})`);
+        }
+        setEditing((prev) =>
+          prev
+            ? {
+                ...prev,
+                uploads: prev.uploads - 1,
+                attachments: [
+                  ...prev.attachments,
+                  {
+                    id: body.id!,
+                    mimeType: body.mimeType ?? "image/*",
+                    name: body.name ?? file.name,
+                    size: body.size ?? file.size,
+                  },
+                ],
+              }
+            : prev,
+        );
+      } catch (e) {
+        setEditing((prev) =>
+          prev ? { ...prev, uploads: prev.uploads - 1 } : prev,
+        );
+        setError((e as Error).message);
+      }
+    }
   }
 
   pendingRef.current = pending;
@@ -883,20 +949,23 @@ export function Chat({
 
   /** 過去メッセージの編集・再送信（同一会話内で分岐を作る）。 */
   function submitEdit() {
-    if (!editing || isStreaming) return;
+    if (!editing || isStreaming || editing.uploads > 0) return;
     const text = editing.text.trim();
-    // 添付画像は編集後のメッセージにも引き継ぐ
-    const attachments = messages[editing.index]?.attachments;
-    if (!text && !attachments?.length) return;
+    const attachments = editing.attachments;
+    if (!text && attachments.length === 0) return;
     const history = [
       ...messages.slice(0, editing.index),
-      { role: "user" as const, content: text, attachments },
+      {
+        role: "user" as const,
+        content: text,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      },
     ];
     setEditing(null);
     void runGeneration(history, {
       parentId: messages[editing.index - 1]?.id ?? null,
       userContent: text,
-      userAttachmentIds: attachments?.map((a) => a.id) ?? [],
+      userAttachmentIds: attachments.map((a) => a.id),
     });
   }
 
@@ -1147,32 +1216,120 @@ export function Chat({
                 >
                   {editing?.index === i ? (
                     <div className="rounded-2xl border border-accent/50 bg-neutral-50 p-3 dark:bg-neutral-900">
+                      {(editing.attachments.length > 0 || editing.uploads > 0) && (
+                        <div className="mb-2 flex flex-wrap gap-2">
+                          {editing.attachments.map((a) => (
+                            <div
+                              key={a.id}
+                              className="group/att relative h-16 w-16 overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700"
+                              title={a.name ?? "画像"}
+                            >
+                              <img
+                                src={`/api/files/${a.id}`}
+                                alt={a.name ?? "添付画像"}
+                                className="h-full w-full object-cover"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditing((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          attachments: prev.attachments.filter(
+                                            (x) => x.id !== a.id,
+                                          ),
+                                        }
+                                      : prev,
+                                  )
+                                }
+                                aria-label="添付を削除"
+                                className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-xs text-white opacity-0 transition group-hover/att:opacity-100 focus:opacity-100 max-sm:opacity-100"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                          {Array.from({ length: editing.uploads }).map((_, n) => (
+                            <div
+                              key={`up${n}`}
+                              className="grid h-16 w-16 place-items-center rounded-xl border border-neutral-200 dark:border-neutral-700"
+                            >
+                              <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <textarea
                         value={editing.text}
                         onChange={(e) =>
-                          setEditing({ index: i, text: e.target.value })
+                          setEditing((prev) =>
+                            prev ? { ...prev, text: e.target.value } : prev,
+                          )
                         }
+                        onPaste={(e) => {
+                          const files = [...e.clipboardData.files];
+                          if (files.some(isAcceptedImage)) {
+                            e.preventDefault();
+                            void addEditFiles(files);
+                          }
+                        }}
                         rows={3}
                         autoFocus
                         translate="no"
                         className="w-full resize-y bg-transparent outline-none"
                       />
-                      <div className="mt-2 flex justify-end gap-2 text-sm">
+                      <div className="mt-2 flex items-center gap-2 text-sm">
+                        <input
+                          ref={editFileInputRef}
+                          type="file"
+                          accept={ACCEPTED_IMAGE_TYPES.join(",")}
+                          multiple
+                          hidden
+                          onChange={(e) => {
+                            void addEditFiles([...(e.target.files ?? [])]);
+                            e.target.value = "";
+                          }}
+                        />
                         <button
                           type="button"
-                          onClick={() => setEditing(null)}
-                          className="rounded-lg px-3 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                          onClick={() => editFileInputRef.current?.click()}
+                          disabled={
+                            editing.attachments.length + editing.uploads >=
+                            MAX_ATTACHMENTS
+                          }
+                          aria-label="画像を追加"
+                          title="画像を追加"
+                          className="grid h-8 w-8 place-items-center rounded-full text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 dark:text-neutral-400 dark:hover:bg-neutral-800"
                         >
-                          キャンセル
+                          <IconPlus className="h-4.5 w-4.5" />
                         </button>
-                        <button
-                          type="button"
-                          onClick={submitEdit}
-                          disabled={!editing.text.trim()}
-                          className="rounded-lg bg-accent px-3 py-1.5 text-accent-fg hover:bg-accent/85 disabled:opacity-30"
-                        >
-                          送信
-                        </button>
+                        <div className="ml-auto flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditing(null)}
+                            className="rounded-lg px-3 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                          >
+                            キャンセル
+                          </button>
+                          <button
+                            type="button"
+                            onClick={submitEdit}
+                            disabled={
+                              (!editing.text.trim() &&
+                                editing.attachments.length === 0) ||
+                              editing.uploads > 0
+                            }
+                            title={
+                              editing.uploads > 0
+                                ? "画像をアップロード中…"
+                                : "送信"
+                            }
+                            className="rounded-lg bg-accent px-3 py-1.5 text-accent-fg hover:bg-accent/85 disabled:opacity-30"
+                          >
+                            送信
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : (
@@ -1202,7 +1359,14 @@ export function Chat({
                             <>
                               <button
                                 type="button"
-                                onClick={() => setEditing({ index: i, text: m.content })}
+                                onClick={() =>
+                                  setEditing({
+                                    index: i,
+                                    text: m.content,
+                                    attachments: m.attachments ?? [],
+                                    uploads: 0,
+                                  })
+                                }
                                 aria-label="編集して再送信"
                                 title="編集して再送信（分岐を作成）"
                                 className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
