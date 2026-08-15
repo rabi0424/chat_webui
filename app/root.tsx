@@ -8,7 +8,7 @@ import {
 } from "react-router";
 
 import type { Route } from "./+types/root";
-import { THEME_INIT_SCRIPT } from "./lib/theme";
+import { THEME_COLOR_LIGHT, THEME_INIT_SCRIPT } from "./lib/theme";
 import { ACCENT_INIT_SCRIPT } from "./lib/accent";
 import "./app.css";
 
@@ -18,6 +18,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        {/* ステータスバー領域の色。初期スクリプトとapplyTheme()がテーマに合わせて書き換える */}
+        <meta name="theme-color" content={THEME_COLOR_LIGHT} />
         {/* ハイドレーション前にテーマ・アクセントを適用してちらつきを防ぐ */}
         <script
           dangerouslySetInnerHTML={{
