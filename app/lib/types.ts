@@ -19,12 +19,16 @@ export interface UiMessage {
   /** status === "error" のときのエラーメッセージ。 */
   error?: string;
   usage?: {
-    promptTokens: number;
-    completionTokens: number;
+    /** トークン数はAPIがusageを返さない場合（Poe等）undefinedになりうる。 */
+    promptTokens?: number;
+    completionTokens?: number;
+    /** ドル建てコスト（OpenRouter、またはPoeのUSD換算額）。 */
     cost?: number;
+    /** Poe: この応答で消費したポイント。 */
+    points?: number;
     /** キャッシュから読み取られた入力トークン数（プロンプトキャッシング）。 */
     cachedTokens?: number;
-    /** 思考（reasoning）に使われた出力トークン数。 */
+    /** 思考（reasoning)に使われた出力トークン数。 */
     reasoningTokens?: number;
   };
   /** 応答生成に使ったモデルID（アシスタントのみ）。 */

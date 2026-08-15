@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const POE_BASE = "https://api.poe.com/v1";
+/** Poe Usage API（残高・ポイント履歴）。/v1 の外に生えている。 */
+const POE_USAGE_BASE = POE_BASE.replace(/\/v1$/, "") + "/usage";
 
 /** Poeモデルは "poe:" プレフィックス付きのIDで扱う。 */
 export const POE_PREFIX = "poe:";
@@ -157,6 +159,62 @@ export async function generateTitle(params: {
     const title = body.choices?.[0]?.message?.content?.trim();
     if (!title) return null;
     return title.replace(/^["「『]|["」』]$/g, "").slice(0, 60);
+  } catch {
+    return null;
+  }
+}
+
+function parsePoeTime(v: unknown): number | null {
+  if (typeof v === "number") return v > 1e12 ? v : v * 1000;
+  if (typeof v === "string") {
+    const t = Date.parse(v);
+    return Number.isNaN(t) ? null : t;
+  }
+  return null;
+}
+
+export interface PoePointsHit {
+  points: number;
+  costUsd?: number;
+}
+
+/**
+ * Poeのポイント履歴から、指定ボットの sinceMs 以降の消費を探す。
+ *
+ * PoeのOpenAI互換レスポンスにはポイント消費が載らないため、
+ * 生成完了後に Usage API（/usage/points_history）を照会して
+ * 直近エントリを突き合わせる。履歴は新しい順で返る前提で、
+ * sinceMs より明確に古いエントリに達したら打ち切る。
+ */
+export async function fetchPoeRecentPoints(
+  botName: string,
+  sinceMs: number,
+): Promise<PoePointsHit | null> {
+  if (!env.POE_API_KEY) return null;
+  try {
+    const res = await fetch(`${POE_USAGE_BASE}/points_history`, {
+      headers: { Authorization: `Bearer ${env.POE_API_KEY}` },
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Record<string, unknown>;
+    const entries = (
+      Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : []
+    ) as Record<string, unknown>[];
+    for (const e of entries) {
+      const t = parsePoeTime(e.time);
+      if (t != null && t < sinceMs - 60_000) break;
+      if (String(e.bot_name ?? "").toLowerCase() !== botName.toLowerCase()) {
+        continue;
+      }
+      const points = Number(e.cost_points);
+      if (!Number.isFinite(points)) continue;
+      const costUsd = Number(e.cost_usd);
+      return {
+        points,
+        costUsd: Number.isFinite(costUsd) ? costUsd : undefined,
+      };
+    }
+    return null;
   } catch {
     return null;
   }

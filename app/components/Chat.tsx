@@ -50,6 +50,13 @@ const WEB_PARAM_KEY = "web";
 /** 1メッセージに添付できる画像の枚数（サーバー側の上限と揃える）。 */
 const MAX_ATTACHMENTS = 8;
 
+/** 円建てコストの表示。額の大きさに応じて桁数を変える。 */
+function formatJpy(jpy: number): string {
+  if (jpy >= 100) return `¥${Math.round(jpy).toLocaleString()}`;
+  if (jpy >= 1) return `¥${jpy.toFixed(2)}`;
+  return `¥${jpy.toFixed(4)}`;
+}
+
 /** 送信前の添付。アップロード完了で id（添付ID）が入る。 */
 interface PendingAttachment {
   localId: string;
@@ -313,7 +320,13 @@ function CopyButton({ text }: { text: string }) {
 }
 
 /** 応答の詳細情報（トークン・金額・時刻・所要時間・速度）のポップオーバー。 */
-function MessageDetails({ message }: { message: UiMessage }) {
+function MessageDetails({
+  message,
+  usdJpy,
+}: {
+  message: UiMessage;
+  usdJpy: number | null;
+}) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -323,25 +336,40 @@ function MessageDetails({ message }: { message: UiMessage }) {
       ? message.finishedAt - message.createdAt
       : null;
   const tokensPerSec =
-    durationMs && durationMs > 0 && u
+    durationMs && durationMs > 0 && u && u.completionTokens != null
       ? (u.completionTokens / (durationMs / 1000)).toFixed(1)
       : null;
 
   const rows: [string, string][] = [];
   if (message.modelId) rows.push(["モデル", message.modelId]);
   if (u) {
-    rows.push(["入力トークン", u.promptTokens.toLocaleString()]);
+    if (u.promptTokens != null) {
+      rows.push(["入力トークン", u.promptTokens.toLocaleString()]);
+    }
     if (u.cachedTokens != null && u.cachedTokens > 0) {
       rows.push([
         "うちキャッシュ読取",
         `${u.cachedTokens.toLocaleString()}（割引適用）`,
       ]);
     }
-    rows.push(["出力トークン", u.completionTokens.toLocaleString()]);
+    if (u.completionTokens != null) {
+      rows.push(["出力トークン", u.completionTokens.toLocaleString()]);
+    }
     if (u.reasoningTokens != null && u.reasoningTokens > 0) {
       rows.push(["うち思考トークン", u.reasoningTokens.toLocaleString()]);
     }
-    if (u.cost != null) rows.push(["コスト", `$${u.cost.toFixed(6)}`]);
+    if (u.points != null) {
+      rows.push(["消費ポイント", `${u.points.toLocaleString()} pt`]);
+    }
+    if (u.cost != null) {
+      // 一覧は円建てのみ、詳細では円とドルを併記する
+      rows.push([
+        "コスト",
+        usdJpy != null
+          ? `${formatJpy(u.cost * usdJpy)}（$${u.cost.toFixed(6)}）`
+          : `$${u.cost.toFixed(6)}`,
+      ]);
+    }
   }
   if (message.createdAt) {
     rows.push(["時刻", new Date(message.createdAt).toLocaleString("ja-JP")]);
@@ -460,7 +488,7 @@ export function Chat({
   initialParams?: ParamsState | null;
   emptyState?: React.ReactNode;
 }) {
-  const { models, openSidebar } = useOutletContext<ShellContext>();
+  const { models, usdJpy, openSidebar } = useOutletContext<ShellContext>();
   const navigate = useNavigate();
   const revalidator = useRevalidator();
 
@@ -1575,12 +1603,20 @@ export function Chat({
                       />
                       {m.usage && (
                         <span className="text-xs text-neutral-400 dark:text-neutral-500">
-                          {m.usage.promptTokens} in / {m.usage.completionTokens} out
-                          {m.usage.cost != null && ` · $${m.usage.cost.toFixed(6)}`}
+                          {m.usage.promptTokens != null &&
+                            `${m.usage.promptTokens} in / ${m.usage.completionTokens ?? 0} out`}
+                          {m.usage.points != null &&
+                            `${m.usage.promptTokens != null ? " · " : ""}${m.usage.points.toLocaleString()} pt`}
+                          {m.usage.cost != null &&
+                            ` · ${
+                              usdJpy != null
+                                ? formatJpy(m.usage.cost * usdJpy)
+                                : `$${m.usage.cost.toFixed(6)}`
+                            }`}
                         </span>
                       )}
                       <CopyButton text={m.content} />
-                      <MessageDetails message={m} />
+                      <MessageDetails message={m} usdJpy={usdJpy} />
                       {m.id && !isStreaming && m.status !== "error" && (
                         <button
                           type="button"
