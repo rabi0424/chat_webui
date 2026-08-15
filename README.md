@@ -32,7 +32,7 @@ npm run dev
    Create Database（名前: `chat-webui`）。作成後に表示される **Database ID** を
    `wrangler.jsonc` の `database_id` に設定する。
    テーブルは初回アクセス時に自動作成される（マイグレーションコマンド不要）。
-2. **R2バケットの作成**: ダッシュボード → R2 → Create bucket（名前: `chat-webui-files`）。
+2. **R2バケットの作成**: ダッシュボード → R2 → Create bucket（名前: `chat-webui-file`）。
    添付画像の保存先で、`wrangler.jsonc` の `FILES` バインディングが参照する。
    未作成のままでも画像添付以外の機能は動作する（添付時にエラーを表示）。
 3. **シークレットの登録**: ダッシュボードのWorker設定（Variables and Secrets）で
