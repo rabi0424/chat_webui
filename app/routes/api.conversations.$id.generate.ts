@@ -1,6 +1,11 @@
 import type { Route } from "./+types/api.conversations.$id.generate";
 import { cloudflareContext } from "../lib/cloudflare-context";
-import { beginGeneration, getConversation } from "../lib/db.server";
+import {
+  beginGeneration,
+  getAppSettings,
+  getConversation,
+} from "../lib/db.server";
+import { readRetryConfig } from "../lib/retry";
 import type { ChatMessage } from "../lib/openrouter.server";
 import type { ParamsState } from "../lib/params";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "../lib/r2.server";
@@ -49,6 +54,16 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     return Response.json({ error: "会話が見つかりません" }, { status: 404 });
   }
 
+  // 「成功するまで生成」の設定。天井はアプリ設定側で決まるので、
+  // クライアントの値は信用せずここで通す
+  // 成功の判定が「画像が返ったか」なので、画像を出せるモデル以外では
+  // 何度投げても成功しない。モデル側の条件もここで見る
+  const settings = await getAppSettings();
+  const retry =
+    body.imageOutput === true
+      ? readRetryConfig(body.params, settings.retryAttemptCeiling)
+      : null;
+
   const { userMessageId, assistantMessageId } = await beginGeneration({
     conversationId: params.id,
     parentId: body.parentId ?? null,
@@ -70,6 +85,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       model: body.model,
       web: body.web === true,
       imageOutput: body.imageOutput === true,
+      retry: retry ?? undefined,
       paramsState: body.params ?? null,
       messages: body.messages.map((m) => ({
         role: m.role,

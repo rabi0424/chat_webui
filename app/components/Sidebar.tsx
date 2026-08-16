@@ -4,8 +4,11 @@ import type { ConversationRow, FolderRow, SearchResult } from "../lib/db.server"
 import { AccentPicker, ThemeToggle } from "./ThemeToggle";
 import {
   IconArrowLeft,
+  IconBot,
   IconChevronRight,
+  IconCog,
   IconEllipsis,
+  IconPhoto,
   IconPlus,
   IconSearch,
   IconX,
@@ -47,12 +50,18 @@ function Highlight({ text, terms }: { text: string; terms: string[] }) {
 export function Sidebar({
   conversations,
   folders,
+  unreadIds,
   onNavigate,
 }: {
   conversations: ConversationRow[];
   folders: FolderRow[];
+  /** 最新の未読状態。null のあいだは行の値を使う。 */
+  unreadIds?: Set<string> | null;
   onNavigate?: () => void;
 }) {
+  /** 取得済みならそちらを正とする（開いて既読になった分も即座に消える）。 */
+  const isUnread = (c: ConversationRow) =>
+    unreadIds ? unreadIds.has(c.id) : c.unread === 1;
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const params = useParams();
@@ -220,7 +229,7 @@ export function Sidebar({
           setMenu(open ? null : target);
         }}
         aria-label="メニュー"
-        className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block"
+        className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block [@media(hover:none)]:block"
       >
         <IconEllipsis className="h-4 w-4" />
       </button>
@@ -309,15 +318,25 @@ export function Sidebar({
           to={`/chat/${c.id}`}
           onClick={onNavigate}
           className={({ isActive }) =>
-            `block truncate rounded-lg py-2 pl-3 pr-8 text-sm ${
+            `flex items-center gap-1.5 rounded-lg py-2 pl-3 pr-8 text-sm ${
               isActive
                 ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
                 : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
             }`
           }
         >
-          {c.pinned === 1 && <span aria-hidden className="mr-1">📌</span>}
-          {c.title}
+          {/* 開いていないうちに応答が完成した会話の印。右端は「…」が使う */}
+          {isUnread(c) && (
+            <span
+              aria-label="新しい応答があります"
+              title="新しい応答があります"
+              className="h-2 w-2 shrink-0 rounded-full bg-accent"
+            />
+          )}
+          <span className="min-w-0 truncate">
+            {c.pinned === 1 && <span aria-hidden className="mr-1">📌</span>}
+            {c.title}
+          </span>
         </NavLink>
         <MenuButton target={{ type: "conversation", id: c.id }} />
         <MenuItems target={{ type: "conversation", id: c.id }} />
@@ -409,7 +428,7 @@ export function Sidebar({
             }`
           }
         >
-          <span aria-hidden>🤖</span>
+          <IconBot className="h-4 w-4" />
           ボット管理
         </NavLink>
         <NavLink
@@ -423,8 +442,22 @@ export function Sidebar({
             }`
           }
         >
-          <span aria-hidden>🖼️</span>
+          <IconPhoto className="h-4 w-4" />
           画像
+        </NavLink>
+        <NavLink
+          to="/settings"
+          onClick={onNavigate}
+          className={({ isActive }) =>
+            `flex items-center gap-2 rounded-xl px-3 py-2 text-sm ${
+              isActive
+                ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
+                : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+            }`
+          }
+        >
+          <IconCog className="h-4 w-4" />
+          設定
         </NavLink>
       </div>
 

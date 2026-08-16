@@ -475,6 +475,50 @@ export async function fetchPoeRecentPoints(
 }
 
 /**
+ * sinceMs 以降に指定ボットで消費したポイントの合計。
+ *
+ * リトライ生成は1回の依頼で何度も生成するため、1件ずつ突き合わせても
+ * 全体の消費が分からない。実行時間帯のエントリをまとめて合計する。
+ */
+export async function fetchPoeRunPoints(
+  botName: string,
+  sinceMs: number,
+): Promise<PoePointsHit | null> {
+  if (!env.POE_API_KEY) return null;
+  try {
+    const res = await fetch(`${POE_USAGE_BASE}/points_history`, {
+      headers: { Authorization: `Bearer ${env.POE_API_KEY}` },
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Record<string, unknown>;
+    const entries = (
+      Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : []
+    ) as Record<string, unknown>[];
+
+    let points = 0;
+    let costUsd = 0;
+    let found = false;
+    for (const e of entries) {
+      const t = parsePoeTime(e.time);
+      // 履歴は新しい順。実行開始より明確に古いところまで来たら打ち切る
+      if (t != null && t < sinceMs - 60_000) break;
+      if (String(e.bot_name ?? "").toLowerCase() !== botName.toLowerCase()) {
+        continue;
+      }
+      const p = Number(e.cost_points);
+      if (!Number.isFinite(p)) continue;
+      points += p;
+      const c = Number(e.cost_usd);
+      if (Number.isFinite(c)) costUsd += c;
+      found = true;
+    }
+    return found ? { points, costUsd: costUsd > 0 ? costUsd : undefined } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * OpenRouterの chat/completions へのリクエスト。APIキーはサーバー側のみ。
  */
 /** Poeの chat/completions（OpenAI互換）へのリクエスト。 */

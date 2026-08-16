@@ -119,6 +119,12 @@
 html,
 body {
   @apply bg-white dark:bg-neutral-950;
+  /*
+   * 内側の一覧をスクロールしたとき、行き止まりでページ全体が
+   * 引っぱられる（ラバーバンド）のを止める。会話が短くて
+   * スクロールの余地がないときは特に、画面ごと動いて見える。
+   */
+  overscroll-behavior: none;
 }
 
 .dark {

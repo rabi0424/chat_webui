@@ -1,5 +1,10 @@
 import { env } from "cloudflare:workers";
 import { deleteFiles } from "./r2.server";
+import {
+  DEFAULT_APP_SETTINGS,
+  RETRY_CEILING_RANGE,
+  type AppSettings,
+} from "./settings";
 
 /**
  * Data access layer for D1.
@@ -107,6 +112,18 @@ CREATE INDEX IF NOT EXISTS idx_attachments_key ON attachments(r2_key);
 ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'upload';
 CREATE INDEX IF NOT EXISTS idx_attachments_kind ON attachments(kind, created_at);
 `,
+  // v9: 未読。応答の完成を会話一覧で知らせるため、生成の確定時に立てて
+  // その会話を開いたときに落とす。
+  `
+ALTER TABLE conversations ADD COLUMN unread INTEGER NOT NULL DEFAULT 0;
+`,
+  // v10: 画像一覧のお気に入りと検索。prompt は生成時の依頼文の写しで、
+  // 会話ツリーを遡らずに検索できるようにするために持つ。
+  `
+ALTER TABLE attachments ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attachments ADD COLUMN prompt TEXT;
+CREATE INDEX IF NOT EXISTS idx_attachments_favorite ON attachments(favorite, created_at);
+`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -152,6 +169,8 @@ export interface ConversationRow {
   params_json: string | null;
   folder_id: string | null;
   sort_order: number;
+  /** 応答が完成したがまだ開いていない会話は 1。 */
+  unread: number;
   created_at: number;
   updated_at: number;
 }
@@ -195,6 +214,48 @@ export interface MessageRow {
   created_at: number;
 }
 
+const APP_SETTINGS_KEY = "app_settings";
+
+export async function getAppSettings(): Promise<AppSettings> {
+  const d = await db();
+  const row = await d
+    .prepare("SELECT value FROM meta WHERE key = ?")
+    .bind(APP_SETTINGS_KEY)
+    .first<{ value: string }>();
+  if (!row) return { ...DEFAULT_APP_SETTINGS };
+  try {
+    const parsed = JSON.parse(row.value) as Partial<AppSettings>;
+    return { ...DEFAULT_APP_SETTINGS, ...parsed };
+  } catch {
+    return { ...DEFAULT_APP_SETTINGS };
+  }
+}
+
+/** 渡された項目だけを更新する。不正値は現在値のまま。 */
+export async function updateAppSettings(
+  patch: Partial<AppSettings>,
+): Promise<AppSettings> {
+  const current = await getAppSettings();
+  const next = { ...current };
+
+  const ceiling = Number(patch.retryAttemptCeiling);
+  if (Number.isFinite(ceiling)) {
+    next.retryAttemptCeiling = Math.min(
+      Math.max(Math.round(ceiling), RETRY_CEILING_RANGE.min),
+      RETRY_CEILING_RANGE.max,
+    );
+  }
+
+  const d = await db();
+  await d
+    .prepare(
+      "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+    )
+    .bind(APP_SETTINGS_KEY, JSON.stringify(next))
+    .run();
+  return next;
+}
+
 export interface AttachmentRow {
   id: string;
   /** アップロード直後は NULL。送信時にユーザーメッセージへ紐づく。 */
@@ -207,6 +268,9 @@ export interface AttachmentRow {
   created_at: number;
   /** upload = ユーザーが添付した画像 / generated = モデルが生成した画像。 */
   kind: "upload" | "generated";
+  favorite: number;
+  /** 生成画像のみ。生成時の依頼文（検索用の写し）。 */
+  prompt: string | null;
 }
 
 /**
@@ -283,6 +347,7 @@ export async function createConversation(params: {
     bot_id: bot?.id ?? null,
     bot_name: bot?.name ?? null,
     bot_icon: bot?.icon ?? null,
+    unread: 0,
     system_prompt: bot ? bot.system_prompt : null,
     params_json: bot?.params_json ?? null,
     folder_id: null,
@@ -557,10 +622,14 @@ export async function movePinnedItem(
 
 // --- Bots -----------------------------------------------------------------
 
+/**
+ * ボット一覧。作成順（古い順）で、新しいものは後ろに足される。
+ * 更新順にすると編集のたびに並びが変わり、選ぶ位置を覚えられない。
+ */
 export async function listBots(): Promise<BotRow[]> {
   const d = await db();
   const { results } = await d
-    .prepare("SELECT * FROM bots ORDER BY updated_at DESC")
+    .prepare("SELECT * FROM bots ORDER BY created_at, id")
     .all<BotRow>();
   return results;
 }
@@ -823,6 +892,8 @@ export async function createAttachment(params: {
     size: params.size,
     created_at: Date.now(),
     kind: "upload",
+    favorite: 0,
+    prompt: null,
   };
   await d
     .prepare(
@@ -931,12 +1002,14 @@ export async function createGeneratedAttachment(params: {
   mimeType: string;
   name: string | null;
   size: number;
+  /** 生成時の依頼文。画像一覧の検索に使う。 */
+  prompt?: string | null;
 }): Promise<string> {
   const d = await db();
   const id = crypto.randomUUID();
   await d
     .prepare(
-      "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generated')",
+      "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind, prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?)",
     )
     .bind(
       id,
@@ -947,9 +1020,24 @@ export async function createGeneratedAttachment(params: {
       params.name,
       params.size,
       Date.now(),
+      params.prompt?.slice(0, 2000) ?? null,
     )
     .run();
   return id;
+}
+
+/** お気に入りの切り替え。実体を共有する行（フォーク先）もまとめて揃える。 */
+export async function setImageFavorite(
+  id: string,
+  favorite: boolean,
+): Promise<void> {
+  const d = await db();
+  await d
+    .prepare(
+      "UPDATE attachments SET favorite = ? WHERE r2_key = (SELECT r2_key FROM attachments WHERE id = ?)",
+    )
+    .bind(favorite ? 1 : 0, id)
+    .run();
 }
 
 export interface GeneratedImageRow {
@@ -957,6 +1045,9 @@ export interface GeneratedImageRow {
   conversation_id: string | null;
   message_id: string | null;
   created_at: number;
+  favorite: number;
+  /** 生成時の依頼文（検索・一覧の説明に使う）。 */
+  prompt: string | null;
   /** 生成元の会話タイトル（会話が消えていれば null）。 */
   title: string | null;
   /** 生成に使ったモデル。 */
@@ -969,28 +1060,56 @@ export interface GeneratedImageRow {
  * 会話ツリーの現在のパスとは無関係に、行が存在する限り出す。
  * 再生成や分岐で表示から外れた画像も残り続ける（分岐は上書きではなく
  * 別の枝として保存されるため、元のメッセージの添付は消えない）。
+ *
+ * 検索は依頼文・モデル名・会話タイトルを対象に、空白区切りの語をANDで見る。
  */
 export async function listGeneratedImages(params: {
   limit: number;
   before?: number;
+  query?: string;
+  favoritesOnly?: boolean;
 }): Promise<GeneratedImageRow[]> {
   const d = await db();
+  const terms = (params.query ?? "")
+    .trim()
+    .toLowerCase()
+    .split(/[\s\u3000]+/)
+    .filter(Boolean)
+    .slice(0, 5);
+
+  const conditions: string[] = ["a.kind = 'generated'", "a.created_at < ?"];
+  const binds: (string | number)[] = [
+    params.before ?? Number.MAX_SAFE_INTEGER,
+  ];
+  if (params.favoritesOnly) conditions.push("a.favorite = 1");
+  for (const term of terms) {
+    conditions.push(
+      `(LOWER(COALESCE(a.prompt, '')) LIKE ?
+        OR LOWER(COALESCE(m.model_id, '')) LIKE ?
+        OR LOWER(COALESCE(c.title, '')) LIKE ?)`,
+    );
+    const like = `%${term.replace(/[%_]/g, "")}%`;
+    binds.push(like, like, like);
+  }
+  binds.push(params.limit);
+
   const { results } = await d
     .prepare(
       // フォークで実体を共有する行は重複させない。MAX() と併記した列は
       // その最大行の値になる（SQLiteの規定の挙動）ので、最新の1行が残る。
       `SELECT a.id, a.conversation_id, a.message_id,
               MAX(a.created_at) AS created_at,
+              a.favorite, a.prompt,
               c.title AS title, m.model_id AS model_id
          FROM attachments a
          LEFT JOIN conversations c ON c.id = a.conversation_id
          LEFT JOIN messages m ON m.id = a.message_id
-        WHERE a.kind = 'generated' AND a.created_at < ?
+        WHERE ${conditions.join(" AND ")}
         GROUP BY a.r2_key
         ORDER BY created_at DESC
         LIMIT ?`,
     )
-    .bind(params.before ?? Number.MAX_SAFE_INTEGER, params.limit)
+    .bind(...binds)
     .all<GeneratedImageRow>();
   return results;
 }
@@ -1151,19 +1270,44 @@ export async function finalizeGeneration(
   },
 ): Promise<void> {
   const d = await db();
+  await d.batch([
+    d
+      .prepare(
+        "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, flushed_at = ? WHERE id = ?",
+      )
+      .bind(
+        result.content,
+        result.reasoning,
+        result.usageJson,
+        result.status,
+        result.error ?? null,
+        Date.now(),
+        messageId,
+      ),
+    // 完成を会話一覧で知らせる。開いている会話はクライアントがすぐ落とす
+    d
+      .prepare(
+        "UPDATE conversations SET unread = 1 WHERE id = (SELECT conversation_id FROM messages WHERE id = ?)",
+      )
+      .bind(messageId),
+  ]);
+}
+
+/** 未読の会話ID。サイドバーの印を再読み込みなしで更新するために引く。 */
+export async function listUnreadConversationIds(): Promise<string[]> {
+  const d = await db();
+  const { results } = await d
+    .prepare("SELECT id FROM conversations WHERE unread = 1")
+    .all<{ id: string }>();
+  return results.map((r) => r.id);
+}
+
+/** 会話を既読にする（開いたとき・応答を見届けたとき）。 */
+export async function markConversationRead(id: string): Promise<void> {
+  const d = await db();
   await d
-    .prepare(
-      "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, flushed_at = ? WHERE id = ?",
-    )
-    .bind(
-      result.content,
-      result.reasoning,
-      result.usageJson,
-      result.status,
-      result.error ?? null,
-      Date.now(),
-      messageId,
-    )
+    .prepare("UPDATE conversations SET unread = 0 WHERE id = ?")
+    .bind(id)
     .run();
 }
 
@@ -1241,6 +1385,46 @@ export async function deleteMessages(
 
   await deleteAttachmentsOfMessages([...deleteSet]);
   await d.batch(statements);
+}
+
+/**
+ * 既存メッセージの下にアシスタントの応答を1件足し、リーフを移す。
+ *
+ * リトライ生成で、成功するたびに応答を積み増していくために使う。
+ * 分岐（兄弟）ではなく直列に繋ぐので、左右の切り替えなしで全部見える。
+ */
+export async function appendAssistantMessage(params: {
+  conversationId: string;
+  parentId: string;
+  modelId: string;
+  content: string;
+  usageJson?: string | null;
+}): Promise<string> {
+  const d = await db();
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  await d.batch([
+    d
+      .prepare(
+        "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, status, flushed_at, created_at) VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'done', ?, ?)",
+      )
+      .bind(
+        id,
+        params.conversationId,
+        params.parentId,
+        params.content,
+        params.modelId,
+        params.usageJson ?? null,
+        now,
+        now,
+      ),
+    d
+      .prepare(
+        "UPDATE conversations SET current_leaf_message_id = ?, updated_at = ? WHERE id = ?",
+      )
+      .bind(id, now, params.conversationId),
+  ]);
+  return id;
 }
 
 /** ポーリング用: 単一メッセージの現在状態を返す（中断検知つき）。 */

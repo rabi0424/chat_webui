@@ -2,6 +2,7 @@ import type { Route } from "./+types/api.conversations.$id";
 import {
   deleteConversation,
   getConversation,
+  markConversationRead,
   updateConversationMeta,
   updateConversationModel,
   updateConversationParams,
@@ -25,6 +26,8 @@ export async function action({ request, params }: Route.ActionArgs) {
       title?: string;
       pinned?: boolean;
       folderId?: string | null;
+      /** true で既読にする。 */
+      read?: boolean;
     };
     try {
       body = (await request.json()) as typeof body;
@@ -44,6 +47,9 @@ export async function action({ request, params }: Route.ActionArgs) {
         pinned: body.pinned,
         folderId: body.folderId,
       });
+    }
+    if (body.read) {
+      await markConversationRead(params.id);
     }
     if (body.params !== undefined) {
       await updateConversationParams(
