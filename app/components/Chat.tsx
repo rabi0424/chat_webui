@@ -22,6 +22,7 @@ import {
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
+import { NumberInput } from "./NumberInput";
 import { Lightbox } from "./Lightbox";
 import {
   IconArrowUp,
@@ -111,21 +112,27 @@ function MessageImages({
   );
 }
 
-/** 「成功するまで生成」の数値入力1つ分。 */
+/** 「成功するまで生成」の数値入力1つ分。空欄なら既定に従う。 */
 function RetryField({
   label,
   hint,
   value,
+  effective,
   min,
   max,
   onChange,
+  onClear,
 }: {
   label: string;
   hint: string;
-  value: number;
+  /** 実際に入力されている値。未入力なら undefined。 */
+  value: number | undefined;
+  /** 未入力のときに使われる値（プレースホルダに出す）。 */
+  effective: number;
   min: number;
   max: number;
   onChange: (value: number) => void;
+  onClear: () => void;
 }) {
   return (
     <div className="flex items-center gap-3">
@@ -135,14 +142,15 @@ function RetryField({
           {hint}
         </p>
       </div>
-      <input
-        type="number"
+      <NumberInput
+        label={label}
         value={value}
+        onChange={onChange}
+        onClear={onClear}
+        placeholder={String(effective)}
         min={min}
         max={max}
         step={1}
-        onChange={(e) => onChange(Number(e.target.value))}
-        aria-label={label}
         className="w-20 shrink-0 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
       />
     </div>
@@ -491,6 +499,22 @@ export function Chat({
     const next = { ...params };
     if (webSearch) next[WEB_PARAM_KEY] = "off";
     else delete next[WEB_PARAM_KEY];
+    changeParams(next);
+  };
+
+  /** ⚙パネルに出す、実際に入力されている値（未入力は undefined）。 */
+  const retryValue = (key: string): number | undefined => {
+    const raw = params[key];
+    if (raw == null || raw === "") return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
+  /** null を渡すと未入力に戻す（既定値に従う）。 */
+  const setRetryParam = (key: string, value: number | null) => {
+    const next = { ...params };
+    if (value == null) delete next[key];
+    else next[key] = value;
     changeParams(next);
   };
 
@@ -1403,32 +1427,32 @@ export function Chat({
                     <RetryField
                       label="目標の成功数"
                       hint="ほしい応答の数"
-                      value={retryConfig.target}
+                      value={retryValue(RETRY_TARGET_KEY)}
+                      effective={retryConfig.target}
                       min={1}
                       max={settings.retryAttemptCeiling}
-                      onChange={(v) =>
-                        changeParams({ ...params, [RETRY_TARGET_KEY]: v })
-                      }
+                      onChange={(v) => setRetryParam(RETRY_TARGET_KEY, v)}
+                      onClear={() => setRetryParam(RETRY_TARGET_KEY, null)}
                     />
                     <RetryField
                       label="上限の試行回数"
-                      hint={`ここで打ち切る（設定の天井: ${settings.retryAttemptCeiling}）`}
-                      value={retryConfig.maxAttempts}
+                      hint={`未入力なら目標数と同じ（天井: ${settings.retryAttemptCeiling}）`}
+                      value={retryValue(RETRY_MAX_KEY)}
+                      effective={retryConfig.maxAttempts}
                       min={1}
                       max={settings.retryAttemptCeiling}
-                      onChange={(v) =>
-                        changeParams({ ...params, [RETRY_MAX_KEY]: v })
-                      }
+                      onChange={(v) => setRetryParam(RETRY_MAX_KEY, v)}
+                      onClear={() => setRetryParam(RETRY_MAX_KEY, null)}
                     />
                     <RetryField
                       label="並列数"
-                      hint="同時に走らせる数。既定は目標の成功数と同じ"
-                      value={retryConfig.concurrency}
+                      hint="同時に走らせる数。未入力なら目標数と同じ"
+                      value={retryValue(RETRY_CONCURRENCY_KEY)}
+                      effective={retryConfig.concurrency}
                       min={1}
                       max={retryConfig.maxAttempts}
-                      onChange={(v) =>
-                        changeParams({ ...params, [RETRY_CONCURRENCY_KEY]: v })
-                      }
+                      onChange={(v) => setRetryParam(RETRY_CONCURRENCY_KEY, v)}
+                      onClear={() => setRetryParam(RETRY_CONCURRENCY_KEY, null)}
                     />
                   </div>
                 )}

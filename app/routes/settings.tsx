@@ -6,6 +6,7 @@ import { getAppSettings } from "../lib/db.server";
 import { RETRY_CEILING_RANGE, type AppSettings } from "../lib/settings";
 import { applyTheme, getTheme, type Theme } from "../lib/theme";
 import { AccentPicker } from "../components/ThemeToggle";
+import { NumberInput } from "../components/NumberInput";
 import { IconMenu } from "../components/icons";
 
 export function meta({}: Route.MetaArgs) {
@@ -139,22 +140,13 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
               label="リトライの上限回数"
               description={`1回の依頼で許可する最大試行回数（${RETRY_CEILING_RANGE.min}〜${RETRY_CEILING_RANGE.max}）`}
             >
-              <input
-                type="number"
+              <NumberInput
+                label="リトライの上限回数"
+                value={settings.retryAttemptCeiling}
                 min={RETRY_CEILING_RANGE.min}
                 max={RETRY_CEILING_RANGE.max}
                 step={1}
-                value={settings.retryAttemptCeiling}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    retryAttemptCeiling: Number(e.target.value),
-                  })
-                }
-                onBlur={(e) =>
-                  void save({ retryAttemptCeiling: Number(e.target.value) })
-                }
-                aria-label="リトライの上限回数"
+                onChange={(v) => void save({ retryAttemptCeiling: v })}
                 className="w-24 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
               />
             </Row>

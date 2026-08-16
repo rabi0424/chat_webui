@@ -54,12 +54,15 @@ export function readRetryConfig(
 ): RetryConfig | null {
   if (!state || state[RETRY_ENABLED_KEY] !== "on") return null;
 
-  const target = Math.max(1, toInt(state[RETRY_TARGET_KEY], RETRY_DEFAULT_TARGET));
+  const target = Math.max(
+    1,
+    toInt(state[RETRY_TARGET_KEY], RETRY_DEFAULT_TARGET),
+  );
+  // 試行回数と並列数は、未入力なら目標数と同じとみなす
   const maxAttempts = Math.min(
-    Math.max(1, toInt(state[RETRY_MAX_KEY], RETRY_DEFAULT_MAX_ATTEMPTS)),
+    Math.max(1, toInt(state[RETRY_MAX_KEY], target)),
     Math.max(1, Math.round(ceiling)),
   );
-  // 既定の並列数は目標数。ただし試行回数は超えられない
   const concurrency = Math.min(
     Math.max(1, toInt(state[RETRY_CONCURRENCY_KEY], target)),
     maxAttempts,
