@@ -272,9 +272,14 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         />
       </div>
 
-      {/* モバイル: ドロワー */}
+      {/* モバイル: ドロワー。高さは fixed inset-0 に任せず、本体と同じ
+          --app-height で決める。iOSのスタンドアロン（PWA）では fixed の
+          基準がズレることがあり、下部のボタンが浮いて見えていた */}
       {sidebarOpen && (
-        <div className="fixed inset-0 z-30 md:hidden">
+        <div
+          className="fixed inset-x-0 top-0 z-30 md:hidden"
+          style={{ height: "var(--app-height, 100dvh)" }}
+        >
           <div
             className={`absolute inset-0 bg-black/40 backdrop-blur-sm ${
               sidebarClosing ? "animate-fade-out" : "animate-fade"

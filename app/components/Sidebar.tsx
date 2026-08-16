@@ -673,7 +673,7 @@ export function Sidebar({
         ボタンで「新規チャット・テーマ・設定」を常に手の届く位置に置く。
         バー自体はタップを通し（pointer-events-none）、ボタンだけが拾う。
       */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/60 to-transparent pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-16 dark:from-neutral-950 dark:via-neutral-950/60">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/60 to-transparent pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-16 dark:from-neutral-950 dark:via-neutral-950/60">
         <div className="pointer-events-auto flex items-center gap-2 px-3">
           <NavLink
             to="/"

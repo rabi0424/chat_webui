@@ -1165,7 +1165,12 @@ export function Chat({
               }),
             }).catch(() => {});
           }
-          await navigate(`/chat/${convId}`, { replace: true });
+          // タイトル生成中にユーザーが自分で遷移していたら（分岐や別会話
+          // など）、後追いの自動遷移で引き戻さない。新規会話の最初の応答で
+          // 「ここから分岐」した直後に元の会話へ戻されるのはこれが原因
+          if (window.location.pathname === "/") {
+            await navigate(`/chat/${convId}`, { replace: true });
+          }
         } else {
           await refreshPath(convId, epoch);
           revalidator.revalidate();
