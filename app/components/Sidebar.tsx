@@ -322,6 +322,14 @@ export function Sidebar({
           {c.pinned === 1 && <span aria-hidden className="mr-1">📌</span>}
           {c.title}
         </NavLink>
+        {/* 開いていないうちに応答が完成した会話の印 */}
+        {c.unread === 1 && (
+          <span
+            aria-label="新しい応答があります"
+            title="新しい応答があります"
+            className="pointer-events-none absolute right-3 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-accent group-hover:hidden"
+          />
+        )}
         <MenuButton target={{ type: "conversation", id: c.id }} />
         <MenuItems target={{ type: "conversation", id: c.id }} />
       </li>

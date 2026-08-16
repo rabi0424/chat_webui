@@ -25,6 +25,7 @@ import { ParamsEditor } from "./ParamsEditor";
 import { NumberInput } from "./NumberInput";
 import { Lightbox } from "./Lightbox";
 import {
+  IconArrowDown,
   IconArrowUp,
   IconCheck,
   IconCopy,
@@ -418,6 +419,8 @@ export function Chat({
    * スクロールしたときだけガラス面と境界線を出す（iOSアプリと同じ挙動）。
    */
   const [scrolled, setScrolled] = useState(false);
+  /** 最下部付近にいるか。離れているときだけ「最新へ」を出す。 */
+  const [atBottom, setAtBottom] = useState(true);
   /** 送信前の添付画像。 */
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   /** ドラッグ&ドロップのハイライト。 */
@@ -460,6 +463,21 @@ export function Chat({
     }
   }, [models, initialModel]);
 
+  /** この会話を既読にする（一覧の未読マークを落とす）。 */
+  function markRead(convId: string) {
+    void fetch(`/api/conversations/${convId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ read: true }),
+    }).catch(() => {});
+  }
+
+  // 開いた時点で既読にする（見ている会話に印が残らないように）
+  useEffect(() => {
+    if (conversationId) markRead(conversationId);
+    // 会話を切り替えたときも
+  }, [conversationId]);
+
   // 別端末やリロードで開いたとき、生成中の応答があればポーリングで追いかける
   useEffect(() => {
     const last = initialMessages[initialMessages.length - 1];
@@ -469,6 +487,7 @@ export function Chat({
       void pollUntilDone(conversationId, last.id, epoch).then(() => {
         if (epochRef.current === epoch) {
           setIsStreaming(false);
+          markRead(conversationId);
           void refreshPath(conversationId, epoch);
         }
       });
@@ -615,9 +634,19 @@ export function Chat({
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    stickToBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stickToBottomRef.current = near;
+    setAtBottom(near);
     setScrolled(el.scrollTop > 8);
+  };
+
+  /** 「最新へ」。押した時点から追従も再開する。 */
+  const scrollToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottomRef.current = true;
+    setAtBottom(true);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
 
   // --- 添付画像 -----------------------------------------------------------
@@ -1022,6 +1051,8 @@ export function Chat({
       } else {
         await pollUntilDone(convId, assistantMessageId, epoch);
       }
+      // 見届けたので既読に戻す（確定時に未読が立つ）
+      markRead(convId);
 
       if (epochRef.current === epoch) {
         setIsStreaming(false);
@@ -1470,7 +1501,7 @@ export function Chat({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="absolute inset-0 overflow-y-auto"
+        className="absolute inset-0 overflow-y-auto overscroll-contain"
       >
         <div
           className="mx-auto max-w-3xl px-4 pt-[calc(5rem+env(safe-area-inset-top))]"
@@ -1830,6 +1861,19 @@ export function Chat({
         コンポーザー: ChatGPT風の一体型ガラスピル。
         フッター自体は透明グラデーションにし、ピルだけが浮いて見えるようにする。
       */}
+      {!atBottom && messages.length > 0 && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          aria-label="最新のメッセージへ"
+          title="最新のメッセージへ"
+          className={`absolute left-1/2 z-20 -translate-x-1/2 rounded-full p-2 text-neutral-500 shadow-lg animate-pop dark:text-neutral-300 ${GLASS_PANEL}`}
+          style={{ bottom: footerHeight + 12 }}
+        >
+          <IconArrowDown className="h-5 w-5" />
+        </button>
+      )}
+
       <footer
         ref={footerRef}
         className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/80 to-transparent px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-6 dark:from-neutral-950 dark:via-neutral-950/80"

@@ -112,6 +112,11 @@ CREATE INDEX IF NOT EXISTS idx_attachments_key ON attachments(r2_key);
 ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'upload';
 CREATE INDEX IF NOT EXISTS idx_attachments_kind ON attachments(kind, created_at);
 `,
+  // v9: 未読。応答の完成を会話一覧で知らせるため、生成の確定時に立てて
+  // その会話を開いたときに落とす。
+  `
+ALTER TABLE conversations ADD COLUMN unread INTEGER NOT NULL DEFAULT 0;
+`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -157,6 +162,8 @@ export interface ConversationRow {
   params_json: string | null;
   folder_id: string | null;
   sort_order: number;
+  /** 応答が完成したがまだ開いていない会話は 1。 */
+  unread: number;
   created_at: number;
   updated_at: number;
 }
@@ -330,6 +337,7 @@ export async function createConversation(params: {
     bot_id: bot?.id ?? null,
     bot_name: bot?.name ?? null,
     bot_icon: bot?.icon ?? null,
+    unread: 0,
     system_prompt: bot ? bot.system_prompt : null,
     params_json: bot?.params_json ?? null,
     folder_id: null,
@@ -1198,19 +1206,35 @@ export async function finalizeGeneration(
   },
 ): Promise<void> {
   const d = await db();
+  await d.batch([
+    d
+      .prepare(
+        "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, flushed_at = ? WHERE id = ?",
+      )
+      .bind(
+        result.content,
+        result.reasoning,
+        result.usageJson,
+        result.status,
+        result.error ?? null,
+        Date.now(),
+        messageId,
+      ),
+    // 完成を会話一覧で知らせる。開いている会話はクライアントがすぐ落とす
+    d
+      .prepare(
+        "UPDATE conversations SET unread = 1 WHERE id = (SELECT conversation_id FROM messages WHERE id = ?)",
+      )
+      .bind(messageId),
+  ]);
+}
+
+/** 会話を既読にする（開いたとき・応答を見届けたとき）。 */
+export async function markConversationRead(id: string): Promise<void> {
+  const d = await db();
   await d
-    .prepare(
-      "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, flushed_at = ? WHERE id = ?",
-    )
-    .bind(
-      result.content,
-      result.reasoning,
-      result.usageJson,
-      result.status,
-      result.error ?? null,
-      Date.now(),
-      messageId,
-    )
+    .prepare("UPDATE conversations SET unread = 0 WHERE id = ?")
+    .bind(id)
     .run();
 }
 

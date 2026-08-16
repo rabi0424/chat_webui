@@ -119,6 +119,11 @@ export function IconEllipsis({ className = "h-5 w-5" }: IconProps) {
   );
 }
 
+/** 最新へ (arrow-down) */
+export const IconArrowDown = makeIcon(
+  <path d="M12 4.5v15m0 0 6.75-6.75M12 19.5l-6.75-6.75" />,
+);
+
 /** 画像 (photo) */
 export const IconPhoto = makeIcon(
   <path d="M2.25 15.75l5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M18 8.25h.008v.008H18V8.25Zm2.25 10.5H3.75a1.5 1.5 0 0 1-1.5-1.5V6.75a1.5 1.5 0 0 1 1.5-1.5h16.5a1.5 1.5 0 0 1 1.5 1.5v10.5a1.5 1.5 0 0 1-1.5 1.5Z" />,
