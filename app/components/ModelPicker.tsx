@@ -179,16 +179,17 @@ export function ModelPicker({
                     <span className="truncate">{m.id}</span>
                   </div>
                   <div className="mt-0.5 flex gap-3 text-xs text-neutral-500 dark:text-neutral-400">
-                    {m.provider === "poe" ? (
-                      <span>サブスクのポイントで課金</span>
+                    {m.contextLength > 0 && (
+                      <span>{formatContext(m.contextLength)} ctx</span>
+                    )}
+                    {/* Poeは価格を返さないことがある。その場合は課金方法だけ示す */}
+                    {m.provider === "poe" && Number(m.promptPrice) === 0 ? (
+                      <span>ポイントで課金</span>
                     ) : (
-                      <>
-                        <span>{formatContext(m.contextLength)} ctx</span>
-                        <span>
-                          入 {formatPricePerMillion(m.promptPrice)}/M · 出{" "}
-                          {formatPricePerMillion(m.completionPrice)}/M
-                        </span>
-                      </>
+                      <span>
+                        入 {formatPricePerMillion(m.promptPrice)}/M · 出{" "}
+                        {formatPricePerMillion(m.completionPrice)}/M
+                      </span>
                     )}
                   </div>
                 </button>

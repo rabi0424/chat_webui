@@ -42,7 +42,7 @@ const POLL_INTERVAL_MS = 500;
 /**
  * Web検索（OpenRouterの :online プラグイン）の設定キー。
  * 他の生成パラメータと同じく会話の params に保存するが、APIへは送らず
- * （buildGenerationPayload は PARAM_DEFS のキーしか読まない）、
+ * （buildGenerationPayload はプロバイダごとの許可リストしか読まない）、
  * generate リクエストの web フラグとしてだけ使う。
  * キーが無い = 既定でオン。"off" のときだけ無効。
  */
@@ -690,11 +690,9 @@ export function Chat({
   // --- 添付画像 -----------------------------------------------------------
 
   const selectedModel = models.find((m) => m.id === model);
-  /** 画像入力に対応したモデルか（Poeは対応可否を公開していないため許可する）。 */
+  /** 画像入力に対応したモデルか。Poeも supports_images を返すので同じ扱い。 */
   const supportsImages =
-    !selectedModel ||
-    selectedModel.provider === "poe" ||
-    selectedModel.inputModalities.includes("image");
+    !selectedModel || selectedModel.inputModalities.includes("image");
 
   /** 選択・貼り付け・ドロップされた画像を縮小してアップロードする。 */
   async function addFiles(files: File[]) {

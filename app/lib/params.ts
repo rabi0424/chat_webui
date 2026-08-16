@@ -6,9 +6,16 @@
  *   送らなければ各プロバイダ/モデルの真の既定値が適用される
  *   （モデル別の公式既定値はAPIで取得できないため、これが唯一安全な扱い）。
  * - 手動に切り替えた項目だけ明示的な値を送る。
- * - OpenRouterのモデル情報 supported_parameters と突き合わせ、
+ * - モデル情報の対応パラメータ一覧と突き合わせ、
  *   モデルが対応するものだけをフォームに表示する。
+ *
+ * OpenRouterとPoeでは対応パラメータもリクエストの形式も異なるため、
+ * 定義（PARAM_DEFS / POE_*）と組み立て（buildGenerationPayload）の
+ * 両方をプロバイダで分ける。一方の設定値がもう一方へ漏れないよう、
+ * 組み立て時にプロバイダ側の許可リストで必ず絞る。
  */
+
+import type { ModelInfo } from "./openrouter.server";
 
 /** 手動設定された値の集合。キーがない = 自動（送らない）。 */
 export type ParamsState = Record<string, number | string>;
@@ -27,11 +34,15 @@ export interface NumberParamDef extends BaseParamDef {
   integer?: boolean;
   /** 入力欄のプレースホルダに出す参考値（プラットフォーム一般既定値）。 */
   hint: string;
+  /** 「自動」から手動に切り替えたときの初期値。 */
+  defaultValue?: number;
 }
 
 export interface SelectParamDef extends BaseParamDef {
   kind: "select";
   options: { value: string; label: string }[];
+  /** 「自動」から手動に切り替えたときの初期値。既定は末尾の選択肢。 */
+  defaultValue?: string;
 }
 
 export interface TextParamDef extends BaseParamDef {
@@ -187,27 +198,214 @@ export const PARAM_DEFS: ParamDef[] = [
  * web_search_options（⚙パネルのWeb検索トグルで代替） /
  * include_reasoning（非推奨） など。
  *
- * 注: ParamsState には PARAM_DEFS 以外の予約キーが入ることがある
+ * 注: ParamsState には定義済みキー以外の予約キーが入ることがある
  * （例: "web" = Web検索のオン/オフ。Chat.tsx 参照）。
- * buildGenerationPayload は PARAM_DEFS のキーしか読まないため、
+ * buildGenerationPayload はプロバイダごとの許可リストしか読まないため、
  * これらがAPIリクエストへ漏れることはない。
  */
 
+// --- Poe -------------------------------------------------------------------
+
+/**
+ * Poeのパラメータキー。OpenRouterとは名前も形式も異なる。
+ *
+ * - 思考の強さは reasoning_effort（GPT系など）と thinking_budget（Claude系）。
+ *   OpenRouterの `reasoning: { effort }` 形式は解釈されない。
+ * - 画像生成ボットの縦横比は aspect_ratio。
+ *
+ * 対応可否はPoeの /v1/models が返す reasoning / output_modalities から
+ * モデルごとに判定する（openrouter.server.ts の fetchPoeModels 参照）。
+ */
+export const POE_REASONING_EFFORT_KEY = "reasoning_effort";
+export const POE_THINKING_BUDGET_KEY = "thinking_budget";
+export const POE_ASPECT_RATIO_KEY = "aspect_ratio";
+
+/**
+ * Poeがモデル共通で受け付ける標準パラメータ。
+ *
+ * Poeのプロトコル自体が temperature と stop_sequences を持つため、
+ * OpenAI互換エンドポイントでもこの2つは通る。top_p・top_k・各種
+ * ペナルティに相当するものはプロトコルに無いため出さない
+ * （送っても黙って無視され、効かない設定がUIに並ぶだけになる）。
+ */
+const POE_STANDARD_KEYS = ["temperature", "stop"];
+
+/** reasoning_effort の値はPoeがモデルごとに申告する。表示名だけこちらで持つ。 */
+const EFFORT_LABELS: Record<string, string> = {
+  none: "オフ",
+  minimal: "最小",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最高",
+};
+
+/** 思考トークン上限の初期値（範囲内に収める）。 */
+function defaultBudget(budget: { min: number; max: number }): number {
+  return Math.min(Math.max(2048, budget.min), budget.max);
+}
+
+/** Poeモデルの対応パラメータ名。fetchPoeModels から呼ぶ。 */
+export function poeSupportedParameters(model: {
+  efforts?: string[];
+  reasoningBudget?: { min: number; max: number };
+  outputModalities: string[];
+}): string[] {
+  const keys = [...POE_STANDARD_KEYS];
+  if (model.efforts && model.efforts.length > 0) {
+    keys.push(POE_REASONING_EFFORT_KEY);
+  }
+  if (model.reasoningBudget) keys.push(POE_THINKING_BUDGET_KEY);
+  if (model.outputModalities.includes("image")) {
+    keys.push(POE_ASPECT_RATIO_KEY);
+  }
+  return keys;
+}
+
+/** Poeモデル向けの定義。選択肢や範囲がモデル依存なので動的に組み立てる。 */
+function poeParamDefs(model: ModelInfo): ParamDef[] {
+  const supported = new Set(model.supportedParameters);
+  const defs: ParamDef[] = [];
+
+  const efforts = model.reasoningEfforts ?? [];
+  if (supported.has(POE_REASONING_EFFORT_KEY) && efforts.length > 0) {
+    defs.push({
+      kind: "select",
+      key: POE_REASONING_EFFORT_KEY,
+      label: "思考 (Thinking)",
+      description:
+        "回答前に推論させる強さ。上げるほど思考トークン分の消費が増える",
+      options: efforts.map((v) => ({ value: v, label: EFFORT_LABELS[v] ?? v })),
+      defaultValue: efforts.includes("medium") ? "medium" : undefined,
+    });
+  }
+
+  const budget = model.reasoningBudget;
+  if (supported.has(POE_THINKING_BUDGET_KEY) && budget) {
+    defs.push({
+      kind: "number",
+      key: POE_THINKING_BUDGET_KEY,
+      label: "思考トークン上限",
+      description: `思考に使えるトークン数（${budget.min}〜${budget.max}）`,
+      min: budget.min,
+      max: budget.max,
+      step: 1,
+      integer: true,
+      hint: `例: ${defaultBudget(budget)}`,
+      defaultValue: defaultBudget(budget),
+    });
+  }
+
+  if (supported.has(POE_ASPECT_RATIO_KEY)) {
+    defs.push({
+      kind: "text",
+      key: POE_ASPECT_RATIO_KEY,
+      label: "アスペクト比",
+      description: "生成画像の縦横比。使える値はボットごとに異なる",
+      placeholder: "例: 16:9",
+    });
+  }
+
+  for (const def of PARAM_DEFS) {
+    if (POE_STANDARD_KEYS.includes(def.key) && supported.has(def.key)) {
+      defs.push(def);
+    }
+  }
+  return defs;
+}
+
+// --- 共通 ------------------------------------------------------------------
+
 /** モデルが対応するパラメータ定義だけを返す。 */
-export function paramsForModel(supportedParameters: string[]): ParamDef[] {
-  const supported = new Set(supportedParameters);
+export function paramsForModel(model: ModelInfo | undefined): ParamDef[] {
+  if (!model) return [];
+  if (model.provider === "poe") return poeParamDefs(model);
+  const supported = new Set(model.supportedParameters);
   return PARAM_DEFS.filter((p) => supported.has(p.key));
 }
 
 /**
- * 手動設定値をOpenRouterのリクエストボディ用に変換する。
- * 不正値・未対応キーは黙って捨てる（サーバー側の許可リストを兼ねる）。
+ * 手動設定値をリクエストボディへ変換する。
+ *
+ * パラメータは会話（およびボット）単位で保存され、モデルとは紐付かない。
+ * モデルを乗り換えると別プロバイダ向けの設定値が残っているため、
+ * ここでプロバイダ側の許可リストを必ず通す（サーバー側の検証も兼ねる）。
+ * 不正値・未対応キーは黙って捨てる。
  */
 export function buildGenerationPayload(
   state: ParamsState | null | undefined,
+  provider: ModelInfo["provider"] = "openrouter",
 ): Record<string, unknown> {
+  if (!state || typeof state !== "object") return {};
+  return provider === "poe"
+    ? buildPoePayload(state)
+    : buildOpenRouterPayload(state);
+}
+
+/** カンマ区切りの停止文字列をAPIの配列形式へ。 */
+function parseStops(raw: unknown): string[] {
+  if (typeof raw !== "string") return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+/**
+ * Poe向けのリクエストボディ。
+ *
+ * Poe独自パラメータ（thinking_budget / aspect_ratio）の渡し方は、
+ * 公式ドキュメントの記述が「OpenAI SDKの extra_body で渡す」と
+ * 「OpenAI互換APIでは渡せない（Python SDKの ProtocolMessage.parameters
+ * を使う）」で食い違っている。OpenAI SDKの extra_body はボディ直下へ
+ * 展開されるためトップレベルに置くのが素直だが、extra_body というキーを
+ * そのまま解釈している実装報告もある。Poeは未知のフィールドをエラーに
+ * せず黙って無視するため、両方へ同じ値を載せて取りこぼしを防ぐ。
+ * 実キーでどちらが効くか確認できたら片方へ寄せてよい。
+ *
+ * reasoning_effort は独自拡張ではなくOpenAI標準のため、トップレベルのみ。
+ */
+function buildPoePayload(state: ParamsState): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  if (!state || typeof state !== "object") return out;
+  const custom: Record<string, unknown> = {};
+
+  const temperature = Number(state.temperature);
+  if (state.temperature != null && Number.isFinite(temperature)) {
+    out.temperature = Math.min(Math.max(temperature, 0), 2);
+  }
+
+  const stops = parseStops(state.stop);
+  if (stops.length > 0) out.stop = stops;
+
+  const effort = state[POE_REASONING_EFFORT_KEY];
+  if (typeof effort === "string" && /^[a-z]+$/.test(effort)) {
+    out[POE_REASONING_EFFORT_KEY] = effort;
+  }
+
+  const budget = Number(state[POE_THINKING_BUDGET_KEY]);
+  if (Number.isFinite(budget) && budget > 0) {
+    custom[POE_THINKING_BUDGET_KEY] = Math.round(budget);
+  }
+
+  // 比（16:9）と実寸（1280x720）のどちらもボットによって使われる
+  const aspect = state[POE_ASPECT_RATIO_KEY];
+  const aspectPattern = /^\d{1,5}\s*[:x×]\s*\d{1,5}$/i;
+  if (typeof aspect === "string" && aspectPattern.test(aspect)) {
+    custom[POE_ASPECT_RATIO_KEY] = aspect.replace(/\s+/g, "");
+  }
+
+  if (Object.keys(custom).length > 0) {
+    Object.assign(out, custom);
+    out.extra_body = custom;
+  }
+  return out;
+}
+
+/** OpenRouter向けのリクエストボディ。 */
+function buildOpenRouterPayload(state: ParamsState): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
 
   for (const def of PARAM_DEFS) {
     const raw = state[def.key];
@@ -233,14 +431,8 @@ export function buildGenerationPayload(
         out[def.key] = raw;
       }
     } else if (def.kind === "text" && def.key === "stop") {
-      if (typeof raw === "string") {
-        const stops = raw
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .slice(0, 4);
-        if (stops.length > 0) out.stop = stops;
-      }
+      const stops = parseStops(raw);
+      if (stops.length > 0) out.stop = stops;
     }
   }
   return out;

@@ -145,14 +145,14 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
           messages,
           stream: true,
           stream_options: { include_usage: true },
-          ...buildGenerationPayload(job.paramsState),
+          ...buildGenerationPayload(job.paramsState, "poe"),
         })
       : await openRouterChatRequest({
           model,
           messages: applyPromptCaching(job.model, messages),
           stream: true,
           usage: { include: true },
-          ...buildGenerationPayload(job.paramsState),
+          ...buildGenerationPayload(job.paramsState, "openrouter"),
         });
   } catch (e) {
     await finalizeGeneration(job.assistantMessageId, {

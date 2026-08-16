@@ -18,18 +18,21 @@ export function ParamsEditor({
   value: ParamsState;
   onChange: (next: ParamsState) => void;
 }) {
-  const defs = paramsForModel(model?.supportedParameters ?? []);
+  const defs = paramsForModel(model);
 
   function setManual(def: ParamDef) {
     const initial =
       def.kind === "number"
-        ? def.key === "max_tokens"
-          ? Math.min(4096, def.max)
-          : def.key === "temperature" || def.key === "top_p" || def.key === "repetition_penalty"
-            ? 1
-            : def.min
+        ? (def.defaultValue ??
+          (def.key === "max_tokens"
+            ? Math.min(4096, def.max)
+            : def.key === "temperature" ||
+                def.key === "top_p" ||
+                def.key === "repetition_penalty"
+              ? 1
+              : def.min))
         : def.kind === "select"
-          ? def.options[def.options.length - 1].value
+          ? (def.defaultValue ?? def.options[def.options.length - 1].value)
           : "";
     onChange({ ...value, [def.key]: initial });
   }
