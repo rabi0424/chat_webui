@@ -168,8 +168,8 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
     >
-      {/* デスクトップ: 常設サイドバー */}
-      <div className="hidden w-64 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
+      {/* デスクトップ: 常設サイドバー（幅はモバイルのドロワーと揃える） */}
+      <div className="hidden w-72 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
         <Sidebar
           conversations={conversations}
           folders={folders}

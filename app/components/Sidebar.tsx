@@ -1,19 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
 import type { ConversationRow, FolderRow, SearchResult } from "../lib/db.server";
-import { AccentPicker, ThemeToggle } from "./ThemeToggle";
+import { ThemeToggle } from "./ThemeToggle";
 import {
   IconArrowLeft,
   IconBot,
   IconChevronRight,
   IconCog,
   IconEllipsis,
+  IconPencilSquare,
   IconPhoto,
   IconPlus,
   IconSearch,
   IconX,
 } from "./icons";
-import { GLASS_PANEL } from "../lib/ui";
+import {
+  GLASS_ACCENT_BUTTON,
+  GLASS_ICON_BUTTON,
+  GLASS_PANEL,
+  GLASS_SHEEN,
+} from "../lib/ui";
 
 type MenuTarget =
   | { type: "conversation"; id: string }
@@ -81,6 +87,19 @@ export function Sidebar({
   );
   const [searching, setSearching] = useState(false);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 検索欄は畳んでおき、虫眼鏡を押したときだけ開く（一覧を広く使う）。 */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInput = useRef<HTMLInputElement>(null);
+
+  const openSearch = () => {
+    setSearchOpen(true);
+    // 描画後にフォーカスするとモバイルでもキーボードが上がる
+    requestAnimationFrame(() => searchInput.current?.focus());
+  };
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  };
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -403,87 +422,79 @@ export function Sidebar({
     ? conversations.find((c) => c.id === moveTarget)
     : null;
 
+  const shortcutClass = ({ isActive }: { isActive: boolean }) =>
+    `flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm ${
+      isActive
+        ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
+        : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+    }`;
+
   return (
     <div
-      className="flex h-full flex-col pt-[env(safe-area-inset-top)]"
+      className="relative flex h-full flex-col pt-[env(safe-area-inset-top)]"
       onClick={() => menu && setMenu(null)}
     >
-      <div className="space-y-1.5 p-3">
-        <NavLink
-          to="/"
-          onClick={onNavigate}
-          className="flex items-center gap-2 rounded-xl border border-neutral-200 px-3 py-2.5 text-sm font-medium text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-900"
-        >
-          <IconPlus className="h-4 w-4" />
-          新規チャット
-        </NavLink>
+      {/* ヘッダー: アプリ名と検索。検索は押したときだけ入力欄に変わる */}
+      <div className="flex h-14 items-center gap-1 px-3">
+        {searchOpen ? (
+          <div className="relative flex-1 animate-pop">
+            <input
+              ref={searchInput}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") closeSearch();
+              }}
+              placeholder="検索（-語 で除外）"
+              aria-label="会話を検索"
+              className="w-full rounded-full border border-neutral-200 bg-neutral-50 py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            />
+            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
+            <button
+              type="button"
+              onClick={closeSearch}
+              aria-label="検索を閉じる"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+            >
+              <IconX className="h-4 w-4" />
+            </button>
+          </div>
+        ) : (
+          <>
+            <span className="min-w-0 flex-1 truncate px-2 text-lg font-semibold tracking-tight">
+              Chat
+            </span>
+            <button
+              type="button"
+              onClick={openSearch}
+              aria-label="会話を検索"
+              title="会話を検索"
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-neutral-500 transition hover:bg-neutral-100 active:scale-95 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            >
+              <IconSearch className="h-5 w-5" />
+            </button>
+          </>
+        )}
+      </div>
+
+      <div className="space-y-0.5 px-3 pb-1">
         <NavLink
           to="/bots"
           onClick={onNavigate}
-          className={({ isActive }) =>
-            `flex items-center gap-2 rounded-xl px-3 py-2 text-sm ${
-              isActive
-                ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
-                : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
-            }`
-          }
+          className={shortcutClass}
         >
           <IconBot className="h-4 w-4" />
           ボット管理
         </NavLink>
-        <NavLink
-          to="/images"
-          onClick={onNavigate}
-          className={({ isActive }) =>
-            `flex items-center gap-2 rounded-xl px-3 py-2 text-sm ${
-              isActive
-                ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
-                : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
-            }`
-          }
-        >
+        <NavLink to="/images" onClick={onNavigate} className={shortcutClass}>
           <IconPhoto className="h-4 w-4" />
           画像
         </NavLink>
-        <NavLink
-          to="/settings"
-          onClick={onNavigate}
-          className={({ isActive }) =>
-            `flex items-center gap-2 rounded-xl px-3 py-2 text-sm ${
-              isActive
-                ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
-                : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
-            }`
-          }
-        >
-          <IconCog className="h-4 w-4" />
-          設定
-        </NavLink>
       </div>
 
-      <div className="relative px-3 pb-2">
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="検索（-語 で除外）"
-          aria-label="会話を検索"
-          className="w-full rounded-xl border border-neutral-200 bg-neutral-50 py-2 pl-8 pr-7 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:border-neutral-700 dark:bg-neutral-900"
-        />
-        <IconSearch className="pointer-events-none absolute left-5.5 top-1/2 h-4 w-4 -translate-y-[60%] text-neutral-400" />
-        {searchQuery && (
-          <button
-            type="button"
-            onClick={() => setSearchQuery("")}
-            aria-label="検索をクリア"
-            className="absolute right-5 top-1/2 -translate-y-[60%] rounded p-0.5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
-          >
-            <IconX className="h-4 w-4" />
-          </button>
-        )}
-      </div>
-
-      <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+      {/* 下部の浮いたボタンに隠れないよう、一覧は余分に下を空ける */}
+      <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-24">
         {searchQuery.trim() ? (
           /* --- 検索結果 --- */
           <>
@@ -605,9 +616,37 @@ export function Sidebar({
         )}
       </nav>
 
-      <div className="space-y-2.5 border-t border-neutral-100 p-3 dark:border-neutral-800">
-        <AccentPicker />
-        <ThemeToggle />
+      {/*
+        下部に浮かべるバー。一覧の上に重ね、背景をぼかしたガラスの
+        ボタンで「新規チャット・テーマ・設定」を常に手の届く位置に置く。
+        バー自体はタップを通し（pointer-events-none）、ボタンだけが拾う。
+      */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/70 to-transparent pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-12 dark:from-neutral-950 dark:via-neutral-950/70">
+        <div className="pointer-events-auto flex items-center gap-2 px-3">
+          <NavLink
+            to="/"
+            onClick={onNavigate}
+            title="新規チャット"
+            className={`relative flex min-w-0 flex-1 items-center justify-center gap-2 overflow-hidden whitespace-nowrap rounded-full px-4 py-3 text-sm font-semibold transition active:scale-95 ${GLASS_ACCENT_BUTTON}`}
+          >
+            <span className={GLASS_SHEEN} />
+            <IconPencilSquare className="h-4.5 w-4.5 shrink-0" />
+            新規チャット
+          </NavLink>
+          <ThemeToggle />
+          <NavLink
+            to="/settings"
+            onClick={onNavigate}
+            aria-label="設定"
+            title="設定"
+            className={({ isActive }) =>
+              `${GLASS_ICON_BUTTON} ${isActive ? "text-accent" : ""}`
+            }
+          >
+            <span className={GLASS_SHEEN} />
+            <IconCog className="h-5 w-5" />
+          </NavLink>
+        </div>
       </div>
 
       {/* フォルダ移動モーダル */}
