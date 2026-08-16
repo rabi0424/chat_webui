@@ -592,6 +592,40 @@ export function Chat({
     }
   }
 
+  /**
+   * 生成画像を入力欄の添付に載せる（編集・リスタイル・合成の起点）。
+   *
+   * 生成画像はモデルへ送り返せない（アシスタントの発言に画像を付ける形式が
+   * OpenAI互換APIに無い）。編集対象は「最新のユーザーメッセージの添付」
+   * として渡す決まりなので、次の発言へ引き継げるようにする。
+   * 実体はR2にあるためアップロードは不要で、添付IDをそのまま使う。
+   */
+  function attachGeneratedImages(attachments: UiAttachment[]) {
+    setPending((prev) => {
+      const room = MAX_ATTACHMENTS - prev.length;
+      if (room <= 0) {
+        setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
+        return prev;
+      }
+      const added = attachments
+        .filter((a) => !prev.some((p) => p.id === a.id))
+        .slice(0, room)
+        .map(
+          (a): PendingAttachment => ({
+            localId: crypto.randomUUID(),
+            previewUrl: `/api/files/${a.id}`,
+            name: a.name ?? "生成画像",
+            size: a.size,
+            status: "ready",
+            id: a.id,
+          }),
+        );
+      return added.length > 0 ? [...prev, ...added] : prev;
+    });
+    setError(null);
+    textareaRef.current?.focus();
+  }
+
   function removePending(localId: string) {
     setPending((prev) => {
       const target = prev.find((p) => p.localId === localId);
@@ -801,6 +835,7 @@ export function Chat({
         body: JSON.stringify({
           model,
           web: webSearch && !model.startsWith("poe:"),
+          imageOutput: selectedModel?.outputModalities.includes("image") ?? false,
           params,
           parentId: persistInfo.parentId,
           userContent: persistInfo.userContent,
@@ -1490,6 +1525,16 @@ export function Chat({
                       )}
                       <CopyButton text={m.content} />
                       <MessageDetails message={m} usdJpy={usdJpy} />
+                      {m.attachments && m.attachments.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => attachGeneratedImages(m.attachments!)}
+                          title="この画像を入力欄に添付して、編集や続きを頼む"
+                          className="rounded px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
+                        >
+                          この画像を使う
+                        </button>
+                      )}
                       {m.id && !isStreaming && m.status !== "error" && (
                         <button
                           type="button"

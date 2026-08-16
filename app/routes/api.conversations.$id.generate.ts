@@ -8,6 +8,8 @@ import { MAX_ATTACHMENTS_PER_MESSAGE } from "../lib/r2.server";
 interface GenerateBody {
   model: string;
   web?: boolean;
+  /** 画像を出力できるモデルか（OpenRouterでは modalities の指定が要る）。 */
+  imageOutput?: boolean;
   params?: ParamsState | null;
   /** LLMへ送る完全なメッセージ列（システムプロンプト含む）。 */
   messages: ChatMessage[];
@@ -67,6 +69,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       assistantMessageId,
       model: body.model,
       web: body.web === true,
+      imageOutput: body.imageOutput === true,
       paramsState: body.params ?? null,
       messages: body.messages.map((m) => ({
         role: m.role,
