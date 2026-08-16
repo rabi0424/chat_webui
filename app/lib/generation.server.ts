@@ -173,12 +173,19 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
     } catch {
       // ステータスコードだけで十分
     }
+    // 上流が知らないパラメータを弾いたときは、英語のメッセージだけでは
+    // 何を直せばいいか分からないので、設定パネルへ誘導する
+    const hint = /unknown parameter|unsupported parameter/i.test(detail)
+      ? "\nこのモデルが対応していないパラメータが含まれています。⚙の生成パラメータを見直してください。"
+      : "";
     await finalizeGeneration(job.assistantMessageId, {
       content: "",
       reasoning: null,
       usageJson: null,
       status: "error",
-      error: detail || `${isPoe ? "Poe" : "OpenRouter"} APIエラー (${upstream.status})`,
+      error:
+        (detail || `${isPoe ? "Poe" : "OpenRouter"} APIエラー (${upstream.status})`) +
+        hint,
     });
     return;
   }

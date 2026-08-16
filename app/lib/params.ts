@@ -356,16 +356,14 @@ function parseStops(raw: unknown): string[] {
 /**
  * Poe向けのリクエストボディ。
  *
- * Poe独自パラメータ（thinking_budget / aspect_ratio）の渡し方は、
- * 公式ドキュメントの記述が「OpenAI SDKの extra_body で渡す」と
- * 「OpenAI互換APIでは渡せない（Python SDKの ProtocolMessage.parameters
- * を使う）」で食い違っている。OpenAI SDKの extra_body はボディ直下へ
- * 展開されるためトップレベルに置くのが素直だが、extra_body というキーを
- * そのまま解釈している実装報告もある。Poeは未知のフィールドをエラーに
- * せず黙って無視するため、両方へ同じ値を載せて取りこぼしを防ぐ。
- * 実キーでどちらが効くか確認できたら片方へ寄せてよい。
+ * Poe独自パラメータ（thinking_budget / aspect_ratio）は extra_body に
+ * 入れて送る。ボディ直下へ置くと `Unknown parameter: 'aspect_ratio'` で
+ * 400が返る（Poeは未知のトップレベルフィールドを無視せず弾く）。
+ * OpenAI SDKの extra_body はボディ直下へ展開される仕組みだが、
+ * Poeのサーバーは extra_body というキー自体を読んでボットへ渡す。
  *
- * reasoning_effort は独自拡張ではなくOpenAI標準のため、トップレベルのみ。
+ * reasoning_effort は独自拡張ではなくOpenAI標準のフィールドなので、
+ * これはボディ直下へ置く（モデルが対応を申告したときだけ出す）。
  */
 function buildPoePayload(state: ParamsState): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -396,10 +394,7 @@ function buildPoePayload(state: ParamsState): Record<string, unknown> {
     custom[POE_ASPECT_RATIO_KEY] = aspect.replace(/\s+/g, "");
   }
 
-  if (Object.keys(custom).length > 0) {
-    Object.assign(out, custom);
-    out.extra_body = custom;
-  }
+  if (Object.keys(custom).length > 0) out.extra_body = custom;
   return out;
 }
 
