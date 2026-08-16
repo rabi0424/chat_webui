@@ -426,6 +426,20 @@ export function Sidebar({
           <span aria-hidden>🖼️</span>
           画像
         </NavLink>
+        <NavLink
+          to="/settings"
+          onClick={onNavigate}
+          className={({ isActive }) =>
+            `flex items-center gap-2 rounded-xl px-3 py-2 text-sm ${
+              isActive
+                ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
+                : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+            }`
+          }
+        >
+          <span aria-hidden>⚙️</span>
+          設定
+        </NavLink>
       </div>
 
       <div className="relative px-3 pb-2">

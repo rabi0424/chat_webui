@@ -1,5 +1,10 @@
 import { env } from "cloudflare:workers";
 import { deleteFiles } from "./r2.server";
+import {
+  DEFAULT_APP_SETTINGS,
+  RETRY_CEILING_RANGE,
+  type AppSettings,
+} from "./settings";
 
 /**
  * Data access layer for D1.
@@ -193,6 +198,48 @@ export interface MessageRow {
   /** 生成中の最終フラッシュ時刻。中断検知に使う。 */
   flushed_at: number | null;
   created_at: number;
+}
+
+const APP_SETTINGS_KEY = "app_settings";
+
+export async function getAppSettings(): Promise<AppSettings> {
+  const d = await db();
+  const row = await d
+    .prepare("SELECT value FROM meta WHERE key = ?")
+    .bind(APP_SETTINGS_KEY)
+    .first<{ value: string }>();
+  if (!row) return { ...DEFAULT_APP_SETTINGS };
+  try {
+    const parsed = JSON.parse(row.value) as Partial<AppSettings>;
+    return { ...DEFAULT_APP_SETTINGS, ...parsed };
+  } catch {
+    return { ...DEFAULT_APP_SETTINGS };
+  }
+}
+
+/** 渡された項目だけを更新する。不正値は現在値のまま。 */
+export async function updateAppSettings(
+  patch: Partial<AppSettings>,
+): Promise<AppSettings> {
+  const current = await getAppSettings();
+  const next = { ...current };
+
+  const ceiling = Number(patch.retryAttemptCeiling);
+  if (Number.isFinite(ceiling)) {
+    next.retryAttemptCeiling = Math.min(
+      Math.max(Math.round(ceiling), RETRY_CEILING_RANGE.min),
+      RETRY_CEILING_RANGE.max,
+    );
+  }
+
+  const d = await db();
+  await d
+    .prepare(
+      "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+    )
+    .bind(APP_SETTINGS_KEY, JSON.stringify(next))
+    .run();
+  return next;
 }
 
 export interface AttachmentRow {
