@@ -556,7 +556,7 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
 // --- 成功するまで生成する（リトライ生成） ---------------------------------
 
 /** 生成中の見出しメッセージを更新する間隔。中断とみなされる前に打つ。 */
-const HEARTBEAT_MS = 20_000;
+const HEARTBEAT_MS = 3_000;
 /** レート制限に当たったときの待ち時間。 */
 const RATE_LIMIT_BACKOFF_MS = [2_000, 4_000, 8_000];
 
@@ -638,9 +638,16 @@ async function runAttempt(
 function progressText(state: {
   successes: number;
   attempts: number;
+  inflight: number;
+  startedAt: number;
   retry: RetryConfig;
 }): string {
-  return `生成中… 成功 ${state.successes}/${state.retry.target}・試行 ${state.attempts}/${state.retry.maxAttempts}`;
+  const elapsed = Math.round((Date.now() - state.startedAt) / 1000);
+  return (
+    `生成中… 成功 ${state.successes}/${state.retry.target}・` +
+    `試行 ${state.attempts}/${state.retry.maxAttempts}・` +
+    `実行中 ${state.inflight}本（${elapsed}秒）`
+  );
 }
 
 /**
@@ -660,6 +667,9 @@ async function runRetryGenerationJob(
   const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
   const statusId = job.assistantMessageId;
 
+  let finished = false;
+  let wakeHeartbeat = () => {};
+
   let messages: OutgoingMessage[];
   try {
     messages = await expandAttachments(job.messages);
@@ -678,106 +688,147 @@ async function runRetryGenerationJob(
   let successes = 0;
   let rateLimitRounds = 0;
   let stopped = false;
+  /** レート制限に当たったら、この時刻まで新しい発射を控える。 */
+  let pauseUntil = 0;
+  let rateLimitExhausted = false;
   /** 成功はこの下に繋いでいく。 */
   let parentId = statusId;
   const refusals: string[] = [];
   let lastError: string | null = null;
+  const inflight = new Set<Promise<void>>();
 
   /** 進捗の保存を兼ねた停止確認。 */
   const touch = async (): Promise<boolean> => {
     const { stopRequested } = await flushGeneration(statusId, {
-      content: progressText({ successes, attempts, retry }),
+      content: progressText({
+        successes,
+        attempts,
+        inflight: inflight.size,
+        startedAt,
+        retry,
+      }),
       reasoning: null,
     });
+    if (stopRequested) stopped = true;
     return stopRequested;
   };
 
-  while (successes < retry.target && attempts < retry.maxAttempts && !stopped) {
-    const batch = Math.min(retry.concurrency, retry.maxAttempts - attempts);
-
-    // 実行中も見出しを更新する。画像生成は1回が長く、放っておくと
-    // 「生成中のまま更新が止まった」とみなされて中断扱いになる
-    let beating = true;
-    let wake = () => {};
-    const heartbeat = (async () => {
-      while (beating) {
-        const nap = cancellableSleep(HEARTBEAT_MS);
-        wake = nap.cancel;
-        await nap.promise;
-        if (!beating) break;
-        if (await touch()) stopped = true;
-      }
-    })();
-
-    const results = await Promise.all(
-      Array.from({ length: batch }, () => runAttempt(job, messages)),
-    );
-    // 待ちを切り上げて確実に止める（次のバッチを遅らせないため）
-    beating = false;
-    wake();
-    await heartbeat;
-
-    let rateLimited = 0;
-    for (const r of results) {
+  /**
+   * 結果の取り込みは1件ずつ直列に行う。
+   * 成功は前の成功の下に繋ぐので、同時に走らせると親が競合する。
+   */
+  let queue: Promise<void> = Promise.resolve();
+  const accept = (r: AttemptOutcome): Promise<void> => {
+    queue = queue.then(async () => {
       if (r.kind === "rate_limited") {
-        // レート制限は上流の都合なので試行回数は消費しない
-        rateLimited++;
-        continue;
+        // レート制限は上流の都合なので試行回数は消費しない。
+        // ただし待ち直しの回数には上限を設ける
+        if (rateLimitRounds >= RETRY_RATE_LIMIT_ROUNDS) {
+          lastError = "レート制限が続いたため打ち切りました";
+          rateLimitExhausted = true;
+          return;
+        }
+        pauseUntil =
+          Date.now() +
+          RATE_LIMIT_BACKOFF_MS[
+            Math.min(rateLimitRounds, RATE_LIMIT_BACKOFF_MS.length - 1)
+          ];
+        rateLimitRounds++;
+        return;
       }
+
       attempts++;
       if (r.kind === "error") {
         lastError = r.error;
-        continue;
-      }
-      if (r.kind === "refused") {
+      } else if (r.kind === "refused") {
         if (r.text.trim()) refusals.push(r.text.trim());
-        continue;
-      }
-
-      // 成功: 応答を1件足し、画像を自前のストレージへ移す
-      const id = await appendAssistantMessage({
-        conversationId: job.conversationId,
-        parentId,
-        modelId: job.model,
-        content: r.content,
-        usageJson: r.usageJson,
-      });
-      const finalContent = await captureGeneratedImages(
-        r.content,
-        r.imageUrls,
-        {
-          messageId: id,
+      } else {
+        // 成功: 応答を1件足し、画像を自前のストレージへ移す。
+        // 待たずにここで保存するので、実行中でも順に見えるようになる
+        const id = await appendAssistantMessage({
           conversationId: job.conversationId,
-          prompt: promptOf(job),
-        },
-      );
-      if (finalContent !== r.content) {
-        await finalizeGeneration(id, {
-          content: finalContent,
-          reasoning: null,
+          parentId,
+          modelId: job.model,
+          content: r.content,
           usageJson: r.usageJson,
-          status: "done",
         });
+        const finalContent = await captureGeneratedImages(
+          r.content,
+          r.imageUrls,
+          {
+            messageId: id,
+            conversationId: job.conversationId,
+            prompt: promptOf(job),
+          },
+        );
+        if (finalContent !== r.content) {
+          await finalizeGeneration(id, {
+            content: finalContent,
+            reasoning: null,
+            usageJson: r.usageJson,
+            status: "done",
+          });
+        }
+        parentId = id;
+        successes++;
       }
-      parentId = id;
-      successes++;
-    }
+      await touch();
+    });
+    return queue;
+  };
 
-    if (await touch()) stopped = true;
+  const launch = () => {
+    const p = runAttempt(job, messages)
+      .then(accept)
+      .catch(() => {
+        // 取り込みに失敗しても実行自体は続ける
+      })
+      .finally(() => {
+        inflight.delete(p);
+      });
+    inflight.add(p);
+  };
 
-    if (rateLimited > 0 && successes < retry.target && !stopped) {
-      if (rateLimitRounds >= RETRY_RATE_LIMIT_ROUNDS) {
-        lastError = "レート制限が続いたため打ち切りました";
-        break;
-      }
-      await sleep(
-        RATE_LIMIT_BACKOFF_MS[
-          Math.min(rateLimitRounds, RATE_LIMIT_BACKOFF_MS.length - 1)
-        ],
-      );
-      rateLimitRounds++;
+  /**
+   * 空いた枠にすぐ次を発射し、1本終わるたびに取り込む。
+   * バッチ単位で待つと、先に終わった成功が最も遅い1本に足を引っぱられる。
+   */
+  const heartbeat = (async () => {
+    while (inflight.size > 0 || !stopped) {
+      const nap = cancellableSleep(HEARTBEAT_MS);
+      wakeHeartbeat = nap.cancel;
+      await nap.promise;
+      if (finished) break;
+      await touch();
     }
+  })();
+
+  while (!stopped && !rateLimitExhausted) {
+    if (Date.now() < pauseUntil) {
+      await sleep(pauseUntil - Date.now());
+      continue;
+    }
+    // 目標に届くまで、上限と並列数の範囲で発射し続ける
+    while (
+      !stopped &&
+      successes < retry.target &&
+      attempts + inflight.size < retry.maxAttempts &&
+      inflight.size < retry.concurrency &&
+      Date.now() >= pauseUntil
+    ) {
+      launch();
+      await touch();
+    }
+    if (inflight.size === 0) break;
+    await Promise.race(inflight);
   }
+
+  // 走っている分は最後まで受け取る（課金済みなので成功は捨てない）
+  await Promise.all(inflight);
+  await queue;
+  finished = true;
+  wakeHeartbeat();
+  await heartbeat;
 
   // Poe: 消費ポイントは応答に載らないので、実行時間帯の履歴を合計する
   let usageJson: string | null = null;
