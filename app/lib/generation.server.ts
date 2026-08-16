@@ -6,8 +6,19 @@ import {
   type ChatMessage,
 } from "./openrouter.server";
 import { buildGenerationPayload, type ParamsState } from "./params";
-import { finalizeGeneration, flushGeneration, getAttachments } from "./db.server";
-import { getFile, toBase64 } from "./r2.server";
+import {
+  createGeneratedAttachment,
+  finalizeGeneration,
+  flushGeneration,
+  getAttachments,
+} from "./db.server";
+import {
+  ALLOWED_IMAGE_TYPES,
+  getFile,
+  isStorageConfigured,
+  putFile,
+  toBase64,
+} from "./r2.server";
 
 /**
  * サーバー側生成のジョブ実行。
@@ -117,11 +128,148 @@ function applyPromptCaching(
   });
 }
 
+/** 1応答あたりに取り込む生成画像の枚数と、1枚あたりの上限。 */
+const MAX_CAPTURED_IMAGES = 8;
+const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
+
+/**
+ * OpenAI互換の応答に載る生成画像を取り出す。
+ *
+ * OpenRouterの画像生成モデルは本文ではなく `images` フィールドで返し、
+ * 中身は base64 の data: URL。要素の形は
+ * `{ type: "image_url", image_url: { url } }` だが、素の文字列や
+ * `{ url }` で来る実装もあるため、いずれも受ける。
+ */
+function collectImageUrls(value: unknown, into: string[]): void {
+  if (!Array.isArray(value)) return;
+  for (const item of value) {
+    const obj = item as { image_url?: { url?: unknown }; url?: unknown } | null;
+    const url =
+      typeof item === "string"
+        ? item
+        : typeof obj?.image_url?.url === "string"
+          ? obj.image_url.url
+          : typeof obj?.url === "string"
+            ? obj.url
+            : null;
+    if (url && !into.includes(url)) into.push(url);
+  }
+}
+
+/** 応答本文からモデルが返した画像URLを拾う（markdown記法と裸のURL）。 */
+function extractImageUrls(content: string): string[] {
+  const urls: string[] = [];
+  const add = (u: string) => {
+    if (u.startsWith("http") && !urls.includes(u)) urls.push(u);
+  };
+  for (const m of content.matchAll(/!\[[^\]]*\]\(\s*<?([^)\s>]+)>?[^)]*\)/g)) {
+    add(m[1]);
+  }
+  // 画像記法を使わず、URLだけを返すボットもある
+  for (const m of content.matchAll(/https?:\/\/[^\s<>()[\]"']+/g)) {
+    if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(m[0])) add(m[0]);
+  }
+  return urls.slice(0, MAX_CAPTURED_IMAGES);
+}
+
+/** base64のdata: URLを実体へ戻す。Workersのfetchは data: を扱わない。 */
+function decodeDataUrl(
+  url: string,
+): { buffer: ArrayBuffer; mimeType: string } | null {
+  const m = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+  if (!m) return null;
+  const mimeType = m[1].trim().toLowerCase();
+  if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) return null;
+  try {
+    const binary = atob(m[2]);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return { buffer: bytes.buffer, mimeType };
+  } catch {
+    return null;
+  }
+}
+
+/** 画像1枚をR2へ保存し、添付IDを返す。取り込めなければ null。 */
+async function storeImage(
+  url: string,
+  target: { messageId: string; conversationId: string },
+): Promise<string | null> {
+  try {
+    let payload: { buffer: ArrayBuffer; mimeType: string } | null = null;
+    if (url.startsWith("data:")) {
+      payload = decodeDataUrl(url);
+    } else {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const mimeType = (res.headers.get("content-type") ?? "")
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+      if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) return null;
+      payload = { buffer: await res.arrayBuffer(), mimeType };
+    }
+    if (
+      !payload ||
+      payload.buffer.byteLength === 0 ||
+      payload.buffer.byteLength > MAX_CAPTURED_BYTES
+    ) {
+      return null;
+    }
+
+    const key = `generated/${target.messageId}/${crypto.randomUUID()}`;
+    await putFile(key, payload.buffer, payload.mimeType);
+    return await createGeneratedAttachment({
+      messageId: target.messageId,
+      conversationId: target.conversationId,
+      r2Key: key,
+      mimeType: payload.mimeType,
+      name: null,
+      size: payload.buffer.byteLength,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 生成された画像をR2へ取り込み、本文から参照できるようにする。
+ *
+ * 画像の返し方はプロバイダで違う。Poeは本文に上流CDN（pfst.cf2.poecdn.net）
+ * のURLを書いて返し、そのURLは期限が切れると過去の会話から画像が消える。
+ * OpenRouterは本文ではなく images フィールドに base64 の data: URL を載せる
+ * ため、取り込まないとそもそも表示できない。どちらも実体をこちらへ持ち、
+ * 添付として記録して会話にも画像一覧にも残るようにする。
+ *
+ * 本文中のURLは自前の配信URLへ差し替え、本文に出てこない画像は末尾へ
+ * 画像記法で足す。取り込めなかったものは元のURLのまま残す。
+ */
+async function captureGeneratedImages(
+  content: string,
+  imageUrls: string[],
+  target: { messageId: string; conversationId: string },
+): Promise<string> {
+  if (!isStorageConfigured()) return content;
+
+  let out = content;
+  for (const url of extractImageUrls(content)) {
+    const id = await storeImage(url, target);
+    if (id) out = out.split(url).join(`/api/files/${id}`);
+  }
+  for (const url of imageUrls.slice(0, MAX_CAPTURED_IMAGES)) {
+    const id = await storeImage(url, target);
+    if (id) out += `${out ? "\n\n" : ""}![生成画像](/api/files/${id})`;
+  }
+  return out;
+}
+
 export interface GenerationJob {
   conversationId: string;
   assistantMessageId: string;
   model: string;
   web: boolean;
+  /** 画像を出力できるモデルか（OpenRouterでは modalities の指定が要る）。 */
+  imageOutput?: boolean;
   paramsState: ParamsState | null;
   messages: ChatMessage[];
 }
@@ -145,14 +293,18 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
           messages,
           stream: true,
           stream_options: { include_usage: true },
-          ...buildGenerationPayload(job.paramsState),
+          ...buildGenerationPayload(job.paramsState, "poe"),
         })
       : await openRouterChatRequest({
           model,
           messages: applyPromptCaching(job.model, messages),
           stream: true,
           usage: { include: true },
-          ...buildGenerationPayload(job.paramsState),
+          // 画像を出せるモデルでも、明示しないとテキストしか返らない
+          ...(job.imageOutput
+            ? { modalities: ["image", "text"] }
+            : {}),
+          ...buildGenerationPayload(job.paramsState, "openrouter"),
         });
   } catch (e) {
     await finalizeGeneration(job.assistantMessageId, {
@@ -173,12 +325,19 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
     } catch {
       // ステータスコードだけで十分
     }
+    // 上流が知らないパラメータを弾いたときは、英語のメッセージだけでは
+    // 何を直せばいいか分からないので、設定パネルへ誘導する
+    const hint = /unknown parameter|unsupported parameter/i.test(detail)
+      ? "\nこのモデルが対応していないパラメータが含まれています。⚙の生成パラメータを見直してください。"
+      : "";
     await finalizeGeneration(job.assistantMessageId, {
       content: "",
       reasoning: null,
       usageJson: null,
       status: "error",
-      error: detail || `${isPoe ? "Poe" : "OpenRouter"} APIエラー (${upstream.status})`,
+      error:
+        (detail || `${isPoe ? "Poe" : "OpenRouter"} APIエラー (${upstream.status})`) +
+        hint,
     });
     return;
   }
@@ -190,6 +349,8 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
   let reasoning = "";
   let usageJson: string | null = null;
   let finishReason: string | undefined;
+  /** images フィールドで返ってきた生成画像（多くは data: URL）。 */
+  const imageUrls: string[] = [];
   let stopped = false;
   let lastFlush = Date.now();
 
@@ -209,7 +370,12 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
         try {
           const chunk = JSON.parse(data) as {
             choices?: {
-              delta?: { content?: string; reasoning?: string | null };
+              delta?: {
+                content?: string;
+                reasoning?: string | null;
+                images?: unknown;
+              };
+              message?: { images?: unknown };
               finish_reason?: string | null;
             }[];
             usage?: {
@@ -228,6 +394,10 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
           if (typeof choice?.delta?.reasoning === "string") {
             reasoning += choice.delta.reasoning;
           }
+          // 画像はストリーム中に delta で来るが、最後にまとめて
+          // message で返す実装もある
+          collectImageUrls(choice?.delta?.images, imageUrls);
+          collectImageUrls(choice?.message?.images, imageUrls);
           if (chunk.usage) {
             usageJson = JSON.stringify({
               promptTokens: chunk.usage.prompt_tokens ?? 0,
@@ -287,9 +457,19 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
     }
   }
 
-  const empty = content === "";
+  // 画像はここで自前のストレージへ移す（本文のURLも差し替わる）
+  const finalContent =
+    content === "" && imageUrls.length === 0
+      ? content
+      : await captureGeneratedImages(content, imageUrls, {
+          messageId: job.assistantMessageId,
+          conversationId: job.conversationId,
+        });
+  // 画像だけの応答（本文なし）も成功として扱う
+  const empty = finalContent === "";
+
   await finalizeGeneration(job.assistantMessageId, {
-    content,
+    content: finalContent,
     reasoning: reasoning || null,
     usageJson,
     status: empty ? "error" : "done",

@@ -4,6 +4,7 @@ export default [
   layout("routes/shell.tsx", [
     index("routes/home.tsx"),
     route("chat/:id", "routes/chat.$id.tsx"),
+    route("images", "routes/images.tsx"),
     route("bots", "routes/bots.tsx"),
     route("bots/new", "routes/bots.new.tsx"),
     route("bots/:id/edit", "routes/bots.$id.edit.tsx"),
@@ -24,6 +25,8 @@ export default [
   route("api/folders", "routes/api.folders.ts"),
   route("api/folders/:id", "routes/api.folders.$id.ts"),
   route("api/sidebar/move", "routes/api.sidebar.move.ts"),
+  route("api/images", "routes/api.images.ts"),
+  route("api/poe/bot-info", "routes/api.poe.bot-info.ts"),
   route("api/bots", "routes/api.bots.ts"),
   route("api/bots/:id", "routes/api.bots.$id.ts"),
 ] satisfies RouteConfig;

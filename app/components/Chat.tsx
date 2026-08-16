@@ -3,6 +3,7 @@ import { useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
+import { recordModelUse } from "../lib/recent-models";
 import {
   ACCEPTED_IMAGE_TYPES,
   formatBytes,
@@ -12,6 +13,7 @@ import {
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
+import { Lightbox } from "./Lightbox";
 import {
   IconArrowUp,
   IconCheck,
@@ -42,7 +44,7 @@ const POLL_INTERVAL_MS = 500;
 /**
  * Web検索（OpenRouterの :online プラグイン）の設定キー。
  * 他の生成パラメータと同じく会話の params に保存するが、APIへは送らず
- * （buildGenerationPayload は PARAM_DEFS のキーしか読まない）、
+ * （buildGenerationPayload はプロバイダごとの許可リストしか読まない）、
  * generate リクエストの web フラグとしてだけ使う。
  * キーが無い = 既定でオン。"off" のときだけ無効。
  */
@@ -94,170 +96,6 @@ function MessageImages({
           />
         </button>
       ))}
-    </div>
-  );
-}
-
-/**
- * 画像の原寸表示。
- * ダブルタップ（ダブルクリック）でタップ位置を中心に拡大/等倍へ切替、
- * 拡大中はドラッグで移動できる。等倍時のシングルタップ・×・Escで閉じる
- * （シングルタップはダブルタップ猶予の後に確定させる）。
- */
-function Lightbox({ id, onClose }: { id: string; onClose: () => void }) {
-  const ZOOM = 2.5;
-  const [t, setT] = useState({ scale: 1, x: 0, y: 0 });
-  const [dragging, setDragging] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const drag = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    baseX: number;
-    baseY: number;
-    moved: boolean;
-  } | null>(null);
-  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      if (closeTimer.current) clearTimeout(closeTimer.current);
-    };
-  }, [onClose]);
-
-  const clamp = (v: number, limit: number) =>
-    Math.max(-limit, Math.min(limit, v));
-  /** 画像が画面から離れすぎないよう、移動量をコンテナ基準で制限する。 */
-  const limits = (scale: number) => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    return {
-      x: ((rect?.width ?? 0) * (scale - 1)) / 2,
-      y: ((rect?.height ?? 0) * (scale - 1)) / 2,
-    };
-  };
-
-  /** タップ位置が拡大後も同じ場所に見えるよう平行移動を計算する。 */
-  const toggleZoom = (clientX: number, clientY: number) => {
-    setT((prev) => {
-      if (prev.scale > 1) return { scale: 1, x: 0, y: 0 };
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return prev;
-      const dx = clientX - (rect.left + rect.width / 2);
-      const dy = clientY - (rect.top + rect.height / 2);
-      const lim = limits(ZOOM);
-      return {
-        scale: ZOOM,
-        x: clamp(dx * (1 - ZOOM), lim.x),
-        y: clamp(dy * (1 - ZOOM), lim.y),
-      };
-    });
-  };
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (closeTimer.current) {
-      clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-    if (drag.current) return; // 2本目以降の指は無視（ピンチは未対応）
-    e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      baseX: t.x,
-      baseY: t.y,
-      moved: false,
-    };
-  };
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    const d = drag.current;
-    if (!d || d.pointerId !== e.pointerId) return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
-    if (!d.moved && Math.abs(dx) + Math.abs(dy) > 6) {
-      d.moved = true;
-      if (t.scale > 1) setDragging(true);
-    }
-    if (d.moved && t.scale > 1) {
-      const lim = limits(t.scale);
-      setT((prev) => ({
-        ...prev,
-        x: clamp(d.baseX + dx, lim.x),
-        y: clamp(d.baseY + dy, lim.y),
-      }));
-    }
-  };
-
-  const onPointerUp = (e: React.PointerEvent) => {
-    const d = drag.current;
-    if (!d || d.pointerId !== e.pointerId) return;
-    drag.current = null;
-    setDragging(false);
-    if (d.moved) return; // ドラッグはタップとして扱わない
-
-    const now = Date.now();
-    const last = lastTap.current;
-    lastTap.current = { time: now, x: e.clientX, y: e.clientY };
-    if (
-      last &&
-      now - last.time < 300 &&
-      Math.hypot(e.clientX - last.x, e.clientY - last.y) < 40
-    ) {
-      lastTap.current = null;
-      toggleZoom(e.clientX, e.clientY);
-      return;
-    }
-    if (t.scale === 1) {
-      closeTimer.current = setTimeout(onClose, 280);
-    }
-  };
-
-  return (
-    <div
-      ref={containerRef}
-      className="fixed inset-0 z-50 flex animate-fade touch-none select-none items-center justify-center overflow-hidden bg-black/80 p-4 backdrop-blur-sm"
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={() => {
-        drag.current = null;
-        setDragging(false);
-      }}
-      onTouchStart={(e) => e.stopPropagation()}
-      onTouchMove={(e) => e.stopPropagation()}
-      onTouchEnd={(e) => e.stopPropagation()}
-    >
-      <img
-        src={`/api/files/${id}`}
-        alt="添付画像"
-        draggable={false}
-        style={{
-          transform: `translate(${t.x}px, ${t.y}px) scale(${t.scale})`,
-          transition: dragging ? "none" : "transform 0.2s ease-out",
-        }}
-        className={`max-h-full max-w-full rounded-xl object-contain ${
-          t.scale > 1 ? "cursor-grab" : ""
-        }`}
-      />
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        onPointerDown={(e) => e.stopPropagation()}
-        aria-label="閉じる"
-        className="absolute right-3 top-[calc(0.75rem+env(safe-area-inset-top))] grid h-9 w-9 place-items-center rounded-full bg-black/50 text-white backdrop-blur hover:bg-black/70"
-      >
-        <IconX className="h-5 w-5" />
-      </button>
     </div>
   );
 }
@@ -690,11 +528,9 @@ export function Chat({
   // --- 添付画像 -----------------------------------------------------------
 
   const selectedModel = models.find((m) => m.id === model);
-  /** 画像入力に対応したモデルか（Poeは対応可否を公開していないため許可する）。 */
+  /** 画像入力に対応したモデルか。Poeも supports_images を返すので同じ扱い。 */
   const supportsImages =
-    !selectedModel ||
-    selectedModel.provider === "poe" ||
-    selectedModel.inputModalities.includes("image");
+    !selectedModel || selectedModel.inputModalities.includes("image");
 
   /** 選択・貼り付け・ドロップされた画像を縮小してアップロードする。 */
   async function addFiles(files: File[]) {
@@ -754,6 +590,40 @@ export function Chat({
         }
       })();
     }
+  }
+
+  /**
+   * 生成画像を入力欄の添付に載せる（編集・リスタイル・合成の起点）。
+   *
+   * 生成画像はモデルへ送り返せない（アシスタントの発言に画像を付ける形式が
+   * OpenAI互換APIに無い）。編集対象は「最新のユーザーメッセージの添付」
+   * として渡す決まりなので、次の発言へ引き継げるようにする。
+   * 実体はR2にあるためアップロードは不要で、添付IDをそのまま使う。
+   */
+  function attachGeneratedImages(attachments: UiAttachment[]) {
+    setPending((prev) => {
+      const room = MAX_ATTACHMENTS - prev.length;
+      if (room <= 0) {
+        setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
+        return prev;
+      }
+      const added = attachments
+        .filter((a) => !prev.some((p) => p.id === a.id))
+        .slice(0, room)
+        .map(
+          (a): PendingAttachment => ({
+            localId: crypto.randomUUID(),
+            previewUrl: `/api/files/${a.id}`,
+            name: a.name ?? "生成画像",
+            size: a.size,
+            status: "ready",
+            id: a.id,
+          }),
+        );
+      return added.length > 0 ? [...prev, ...added] : prev;
+    });
+    setError(null);
+    textareaRef.current?.focus();
   }
 
   function removePending(localId: string) {
@@ -927,6 +797,9 @@ export function Chat({
     setError(null);
     setIsStreaming(true);
     const epoch = ++epochRef.current;
+    // モデルピッカーの「最近よく使うモデル」の材料。選択ではなく実際に
+    // 生成へ使ったときだけ数える
+    recordModelUse(model);
 
     try {
       // 新規チャットなら先に会話を作る
@@ -962,6 +835,7 @@ export function Chat({
         body: JSON.stringify({
           model,
           web: webSearch && !model.startsWith("poe:"),
+          imageOutput: selectedModel?.outputModalities.includes("image") ?? false,
           params,
           parentId: persistInfo.parentId,
           userContent: persistInfo.userContent,
@@ -970,10 +844,14 @@ export function Chat({
             ...(bot?.systemPrompt
               ? [{ role: "system", content: bot.systemPrompt }]
               : []),
+            // 画像を送るのはユーザーの発言だけ。生成画像もアシスタントの
+            // メッセージに紐づくが、応答に画像を差し戻す形式は
+            // OpenAI互換APIに無く、送ると弾かれる
             ...history.map(({ role, content, attachments }) => ({
               role,
               content,
-              attachmentIds: attachments?.map((a) => a.id),
+              attachmentIds:
+                role === "user" ? attachments?.map((a) => a.id) : undefined,
             })),
           ],
         }),
@@ -1314,7 +1192,15 @@ export function Chat({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-semibold">生成パラメータ</p>
+              <div className="flex items-baseline gap-2">
+                <p className="text-sm font-semibold">生成パラメータ</p>
+                {/* 対応パラメータも送信形式もプロバイダで異なるため明示する */}
+                {selectedModel && (
+                  <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                    {selectedModel.provider === "poe" ? "Poe" : "OpenRouter"}
+                  </span>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={resetParams}
@@ -1639,6 +1525,16 @@ export function Chat({
                       )}
                       <CopyButton text={m.content} />
                       <MessageDetails message={m} usdJpy={usdJpy} />
+                      {m.attachments && m.attachments.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => attachGeneratedImages(m.attachments!)}
+                          title="この画像を入力欄に添付して、編集や続きを頼む"
+                          className="rounded px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
+                        >
+                          この画像を使う
+                        </button>
+                      )}
                       {m.id && !isStreaming && m.status !== "error" && (
                         <button
                           type="button"
