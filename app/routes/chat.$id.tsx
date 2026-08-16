@@ -1,5 +1,6 @@
 import type { Route } from "./+types/chat.$id";
 import { getConversationWithPath } from "../lib/db.server";
+import { getCachedChat, putCachedChat } from "../lib/chat-cache";
 import { toUiMessage } from "../lib/serialize.server";
 import { parseParamsJson } from "../lib/params";
 import { Chat } from "../components/Chat";
@@ -28,6 +29,21 @@ export async function loader({ params }: Route.LoaderArgs) {
     conversation: found.conversation,
     messages: found.path.map(toUiMessage),
   };
+}
+
+/**
+ * サイドバーの先読み（chat-cache）があればサーバーを待たずに即返す。
+ * なければ通常どおり取得し、直近の再訪に備えて書き込んでおく。
+ */
+export async function clientLoader({
+  params,
+  serverLoader,
+}: Route.ClientLoaderArgs) {
+  const cached = getCachedChat(params.id);
+  if (cached) return cached;
+  const data = await serverLoader();
+  putCachedChat(params.id, data);
+  return data;
 }
 
 export default function ChatRoute({ loaderData }: Route.ComponentProps) {

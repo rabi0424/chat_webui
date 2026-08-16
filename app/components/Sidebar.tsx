@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
 import type { ConversationRow, FolderRow, SearchResult } from "../lib/db.server";
 import { ThemeToggle } from "./ThemeToggle";
+import { prefetchChat } from "../lib/chat-cache";
 import {
   IconArrowLeft,
   IconBot,
@@ -24,6 +25,28 @@ import {
 type MenuTarget =
   | { type: "conversation"; id: string }
   | { type: "folder"; id: string };
+
+/**
+ * 会話リンクが画面に入ったら一度だけデータを先読みする。
+ * iOS Safari は <link rel="prefetch"> を無視するため、prefetch属性では
+ * データが先読みされない。自前で取ってメモリに置く（lib/chat-cache.ts）。
+ */
+function usePrefetchOnVisible(id: string) {
+  const ref = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        prefetchChat(id);
+        io.disconnect();
+      }
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [id]);
+  return ref;
+}
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -331,8 +354,9 @@ export function Sidebar({
 
   function ConversationItem({ c, indent = false }: { c: ConversationRow; indent?: boolean }) {
     const open = menu?.type === "conversation" && menu.id === c.id;
+    const prefetchRef = usePrefetchOnVisible(c.id);
     return (
-      <li className={`group relative ${open ? "menu-open" : ""} ${indent ? "ml-5" : ""}`}>
+      <li ref={prefetchRef} className={`group relative ${open ? "menu-open" : ""} ${indent ? "ml-5" : ""}`}>
         {/* prefetch="intent": ホバー/タッチ開始でデータとJSを先読みし、遷移の待ちを隠す */}
         <NavLink
           to={`/chat/${c.id}`}

@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Outlet, useNavigation } from "react-router";
+import {
+  Outlet,
+  useNavigation,
+  type ShouldRevalidateFunctionArgs,
+} from "react-router";
 import type { Route } from "./+types/shell";
 import {
   getAppSettings,
@@ -42,6 +46,23 @@ export async function loader() {
   // 初回表示・コールドスタートの重さを数字で追うための実測
   console.log(`[perf] shell loader ${Date.now() - started}ms`);
   return { models, conversations, bots, folders, usdJpy, settings };
+}
+
+/**
+ * ページ遷移ではシェルのローダーを再実行しない。
+ *
+ * single fetch は既定で親レイアウトのローダーも毎遷移サーバーで走らせる。
+ * ここはモデル一覧（コールドスタート時は数MBの取得）・会話一覧・為替と
+ * 重く、全ページ遷移の裏でこれを待っていた。サイドバーの鮮度は
+ * 各操作後の revalidator.revalidate()（URLが変わらず来る）が担う。
+ */
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
+  if (currentUrl.pathname !== nextUrl.pathname) return false;
+  return defaultShouldRevalidate;
 }
 
 export default function Shell({ loaderData }: Route.ComponentProps) {

@@ -4,6 +4,7 @@ import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
 import { recordModelUse } from "../lib/recent-models";
+import { invalidateChat } from "../lib/chat-cache";
 import {
   readRetryConfig,
   RETRY_CONCURRENCY_KEY,
@@ -624,6 +625,11 @@ export function Chat({
     if (stickToBottomRef.current) {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
     }
+  }, [messages]);
+
+  // 本文が動いたら先読みキャッシュを無効化（古いスナップショットで再訪させない）
+  useEffect(() => {
+    if (convIdRef.current) invalidateChat(convIdRef.current);
   }, [messages]);
 
   // 下書きの復元（マウント時のみ）。ボットを選ぶとこの画面は作り直され、
@@ -1382,6 +1388,7 @@ export function Chat({
       const { id } = (await res.json()) as { id: string };
       // 遷移先は履歴が同一で分岐したことに気づきにくい。印を渡して通知を出す
       await navigate(`/chat/${id}`, { state: { forked: true } });
+      revalidator.revalidate(); // 分岐先の会話をサイドバーへ反映
     } catch {
       setError("分岐の作成に失敗しました。");
     }
