@@ -14,6 +14,9 @@ import { fetchModels, type ModelInfo } from "../lib/openrouter.server";
 import { fetchUsdJpy } from "../lib/fx.server";
 import { Sidebar } from "../components/Sidebar";
 
+/** 未読の印を引き直す間隔（表示中のみ）。 */
+const UNREAD_POLL_MS = 15_000;
+
 export interface ShellContext {
   models: ModelInfo[];
   bots: BotRow[];
@@ -40,6 +43,38 @@ export async function loader() {
 export default function Shell({ loaderData }: Route.ComponentProps) {
   const { models, conversations, bots, folders, usdJpy, settings } = loaderData;
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /**
+   * 未読の会話ID。応答はサーバー側で進むので、別の画面にいるあいだに
+   * 完成しても分からない。表示中だけ短い間隔で引き直し、印を最新にする。
+   * null = まだ取得していない（ローダーの値をそのまま使う）。
+   */
+  const [unreadIds, setUnreadIds] = useState<Set<string> | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const res = await fetch("/api/conversations/unread");
+        if (!res.ok) return;
+        const { ids } = (await res.json()) as { ids: string[] };
+        if (alive) setUnreadIds(new Set(ids));
+      } catch {
+        // 印の更新が遅れても実害はない
+      }
+    };
+    void load();
+    const timer = setInterval(load, UNREAD_POLL_MS);
+    // 別のアプリから戻ってきたときは即座に反映する
+    document.addEventListener("visibilitychange", load);
+    window.addEventListener("focus", load);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", load);
+      window.removeEventListener("focus", load);
+    };
+  }, []);
   const [sidebarClosing, setSidebarClosing] = useState(false);
 
   /** 閉じるときも開くときと同じ滑らかさで（退場アニメーション後にアンマウント）。 */
@@ -135,7 +170,11 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     >
       {/* デスクトップ: 常設サイドバー */}
       <div className="hidden w-64 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
-        <Sidebar conversations={conversations} folders={folders} />
+        <Sidebar
+          conversations={conversations}
+          folders={folders}
+          unreadIds={unreadIds}
+        />
       </div>
 
       {/* モバイル: ドロワー */}
@@ -155,6 +194,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
             <Sidebar
               conversations={conversations}
               folders={folders}
+              unreadIds={unreadIds}
               onNavigate={closeSidebar}
             />
           </div>

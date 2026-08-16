@@ -1229,6 +1229,15 @@ export async function finalizeGeneration(
   ]);
 }
 
+/** 未読の会話ID。サイドバーの印を再読み込みなしで更新するために引く。 */
+export async function listUnreadConversationIds(): Promise<string[]> {
+  const d = await db();
+  const { results } = await d
+    .prepare("SELECT id FROM conversations WHERE unread = 1")
+    .all<{ id: string }>();
+  return results.map((r) => r.id);
+}
+
 /** 会話を既読にする（開いたとき・応答を見届けたとき）。 */
 export async function markConversationRead(id: string): Promise<void> {
   const d = await db();

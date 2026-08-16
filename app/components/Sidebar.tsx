@@ -50,12 +50,18 @@ function Highlight({ text, terms }: { text: string; terms: string[] }) {
 export function Sidebar({
   conversations,
   folders,
+  unreadIds,
   onNavigate,
 }: {
   conversations: ConversationRow[];
   folders: FolderRow[];
+  /** 最新の未読状態。null のあいだは行の値を使う。 */
+  unreadIds?: Set<string> | null;
   onNavigate?: () => void;
 }) {
+  /** 取得済みならそちらを正とする（開いて既読になった分も即座に消える）。 */
+  const isUnread = (c: ConversationRow) =>
+    unreadIds ? unreadIds.has(c.id) : c.unread === 1;
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const params = useParams();
@@ -320,7 +326,7 @@ export function Sidebar({
           }
         >
           {/* 開いていないうちに応答が完成した会話の印。右端は「…」が使う */}
-          {c.unread === 1 && (
+          {isUnread(c) && (
             <span
               aria-label="新しい応答があります"
               title="新しい応答があります"

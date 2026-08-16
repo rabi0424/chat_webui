@@ -12,6 +12,7 @@ export default [
   ]),
   route("api/models", "routes/api.models.ts"),
   route("api/conversations", "routes/api.conversations.ts"),
+  route("api/conversations/unread", "routes/api.conversations.unread.ts"),
   route("api/conversations/:id", "routes/api.conversations.$id.ts"),
   route("api/conversations/:id/generate", "routes/api.conversations.$id.generate.ts"),
   route("api/conversations/:id/stop", "routes/api.conversations.$id.stop.ts"),
