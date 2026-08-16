@@ -622,10 +622,14 @@ export async function movePinnedItem(
 
 // --- Bots -----------------------------------------------------------------
 
+/**
+ * ボット一覧。作成順（古い順）で、新しいものは後ろに足される。
+ * 更新順にすると編集のたびに並びが変わり、選ぶ位置を覚えられない。
+ */
 export async function listBots(): Promise<BotRow[]> {
   const d = await db();
   const { results } = await d
-    .prepare("SELECT * FROM bots ORDER BY updated_at DESC")
+    .prepare("SELECT * FROM bots ORDER BY created_at, id")
     .all<BotRow>();
   return results;
 }
