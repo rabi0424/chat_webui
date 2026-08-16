@@ -43,6 +43,12 @@ export default function Images({ loaderData }: Route.ComponentProps) {
   /** 「…」を開いている画像ID。 */
   const [menu, setMenu] = useState<string | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 一覧の末尾。ここが見えたら続きを読む。 */
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  /** 監視のコールバックから最新の状態を読むための控え。 */
+  const loadMoreRef = useRef<() => void>(() => {});
+  /** 二重読み込みの保険（状態の反映を待たずに弾く）。 */
+  const loadingRef = useRef(false);
   /** 検索・絞り込みの初回描画では読み直さない（ローダーの結果を使う）。 */
   const firstRender = useRef(true);
 
@@ -77,9 +83,28 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, favoritesOnly]);
 
+  /**
+   * 末尾が見えたら続きを読む（下スクロールでの自動読み込み）。
+   * 監視は貼り替えず、実処理は ref 経由で最新のものを呼ぶ。
+   */
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMoreRef.current();
+      },
+      // 少し手前から読み始めて、待ち時間を感じさせない
+      { rootMargin: "400px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [images.length === 0]);
+
   async function loadMore() {
     const last = images[images.length - 1];
-    if (!last || loading) return;
+    if (!last || loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     try {
       const res = await fetch(`/api/images?${params(last.created_at)}`);
@@ -89,9 +114,14 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     } catch {
       // 失敗しても既に出ている分はそのまま
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
   }
+
+  loadMoreRef.current = () => {
+    if (!exhausted) void loadMore();
+  };
 
   async function toggleFavorite(img: GeneratedImageRow) {
     const favorite = img.favorite !== 1;
@@ -271,18 +301,24 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                 </div>
               ))}
             </div>
-            {!exhausted && (
-              <div className="mt-4 flex justify-center">
+            <div
+              ref={sentinelRef}
+              className="mt-4 flex justify-center py-2 text-xs text-neutral-400 dark:text-neutral-500"
+            >
+              {exhausted ? (
+                images.length > PAGE_SIZE && "これで全部です"
+              ) : loading ? (
+                "読み込み中…"
+              ) : (
                 <button
                   type="button"
-                  onClick={loadMore}
-                  disabled={loading}
-                  className="rounded-xl border border-neutral-200 px-4 py-2 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
+                  onClick={() => void loadMore()}
+                  className="rounded-lg px-3 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800"
                 >
-                  {loading ? "読み込み中…" : "もっと見る"}
+                  もっと見る
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </>
         )}
       </div>

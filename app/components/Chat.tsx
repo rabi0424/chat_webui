@@ -398,6 +398,8 @@ export function Chat({
   const [input, setInput] = useState("");
   // 未送信の下書きを端末に保存する（リロード・ページ遷移後に復元）
   const draftKey = `chat-webui:draft:${conversationId ?? "new"}`;
+  /** 未送信の添付。本文と同じく端末に残し、画面の作り直しでも失わない。 */
+  const attachKey = `chat-webui:draft-files:${conversationId ?? "new"}`;
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -585,12 +587,50 @@ export function Chat({
     }
   }, [messages]);
 
-  // 下書きの復元（マウント時のみ）
+  // 下書きの復元（マウント時のみ）。ボットを選ぶとこの画面は作り直され、
+  // リロードでも状態は消えるため、本文と一緒に添付も戻す
   useEffect(() => {
     const draft = localStorage.getItem(draftKey);
     if (draft) setInput(draft);
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem(attachKey) ?? "[]",
+      ) as { id: string; name: string; size: number }[];
+      const restored = saved
+        .filter((a) => a && typeof a.id === "string")
+        .slice(0, MAX_ATTACHMENTS)
+        .map(
+          (a): PendingAttachment => ({
+            localId: crypto.randomUUID(),
+            previewUrl: `/api/files/${a.id}`,
+            name: a.name ?? "画像",
+            size: Number(a.size) || 0,
+            status: "ready",
+            id: a.id,
+          }),
+        );
+      if (restored.length > 0) setPending(restored);
+    } catch {
+      // 壊れていれば無視する
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // アップロードが終わった添付だけを控える（送信すると破棄する）
+  useEffect(() => {
+    const ready = pending
+      .filter((p) => p.status === "ready" && p.id)
+      .map((p) => ({ id: p.id!, name: p.name, size: p.size }));
+    try {
+      if (ready.length > 0) {
+        localStorage.setItem(attachKey, JSON.stringify(ready));
+      } else {
+        localStorage.removeItem(attachKey);
+      }
+    } catch {
+      // 保存できなくても添付自体は使える
+    }
+  }, [pending, attachKey]);
 
   // フッター（ガラス面）の高さを測り、コンテンツ下部の余白に反映する
   useEffect(() => {
@@ -1119,6 +1159,7 @@ export function Chat({
 
     setInput("");
     localStorage.removeItem(draftKey); // 送信したら下書きは破棄
+    localStorage.removeItem(attachKey);
     // プレビューURLは以降 /api/files/:id で表示するため解放してよい
     for (const p of pending) URL.revokeObjectURL(p.previewUrl);
     setPending([]);
