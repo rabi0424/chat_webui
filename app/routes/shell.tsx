@@ -28,6 +28,7 @@ export interface ShellContext {
 }
 
 export async function loader() {
+  const started = Date.now();
   const [models, conversations, bots, folders, usdJpy, settings] =
     await Promise.all([
       fetchModels(),
@@ -37,6 +38,8 @@ export async function loader() {
       fetchUsdJpy(),
       getAppSettings(),
     ]);
+  // 初回表示・コールドスタートの重さを数字で追うための実測
+  console.log(`[perf] shell loader ${Date.now() - started}ms`);
   return { models, conversations, bots, folders, usdJpy, settings };
 }
 

@@ -747,24 +747,29 @@ function childrenByParent(all: MessageRow[]): Map<string | null, MessageRow[]> {
  * current_leaf) in display order, each annotated with its siblings so the
  * UI can render branch pagers.
  */
-export async function getConversationPath(
+/** current_leaf からルートまで遡り、表示順（古→新）に並べる。 */
+function pathRows(
   conversation: ConversationRow,
-): Promise<PathMessage[]> {
+  all: MessageRow[],
+): MessageRow[] {
   if (!conversation.current_leaf_message_id) return [];
-  const all = await loadMessages(conversation.id);
-  await sweepStaleStreaming(all);
   const byId = new Map(all.map((m) => [m.id, m]));
-  const children = childrenByParent(all);
-
   const rows: MessageRow[] = [];
   let cursor = byId.get(conversation.current_leaf_message_id);
   while (cursor) {
     rows.push(cursor);
     cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined;
   }
-  rows.reverse();
+  return rows.reverse();
+}
 
-  const attachments = await attachmentsByMessage(rows.map((m) => m.id));
+/** 道筋の各行に兄弟情報と添付を付ける。 */
+function decoratePath(
+  rows: MessageRow[],
+  all: MessageRow[],
+  attachments: Map<string, AttachmentRow[]>,
+): PathMessage[] {
+  const children = childrenByParent(all);
   return rows.map((current) => {
     const siblings = children.get(current.parent_id) ?? [current];
     return {
@@ -774,6 +779,51 @@ export async function getConversationPath(
       attachments: attachments.get(current.id) ?? [],
     };
   });
+}
+
+export async function getConversationPath(
+  conversation: ConversationRow,
+): Promise<PathMessage[]> {
+  if (!conversation.current_leaf_message_id) return [];
+  const all = await loadMessages(conversation.id);
+  await sweepStaleStreaming(all);
+  const rows = pathRows(conversation, all);
+  const attachments = await attachmentsByMessage(rows.map((m) => m.id));
+  return decoratePath(rows, all, attachments);
+}
+
+/**
+ * 会話・メッセージ・添付を1回のbatchでまとめて読む画面表示用の入口。
+ * 個別に読むと Worker ↔ D1 の往復が直列に3回並び、そのぶんページ遷移が
+ * 遅くなるため、chat/:id のローダーはこちらを使う。
+ * 添付はIN句ではなくJOINで引く（D1のバインド上限100に届かないように）。
+ */
+export async function getConversationWithPath(
+  id: string,
+): Promise<{ conversation: ConversationRow; path: PathMessage[] } | null> {
+  const d = await db();
+  const [convRes, msgRes, attRes] = await d.batch([
+    d.prepare("SELECT * FROM conversations WHERE id = ?").bind(id),
+    d.prepare("SELECT * FROM messages WHERE conversation_id = ?").bind(id),
+    d
+      .prepare(
+        "SELECT a.* FROM attachments a JOIN messages m ON a.message_id = m.id WHERE m.conversation_id = ? ORDER BY a.created_at",
+      )
+      .bind(id),
+  ]);
+  const conversation =
+    (convRes.results as unknown as ConversationRow[])[0] ?? null;
+  if (!conversation) return null;
+  const all = msgRes.results as unknown as MessageRow[];
+  // 中断されたストリーミング行が残っていたときだけ、もう1往復して直す
+  await sweepStaleStreaming(all);
+  const attachments = groupByMessage(
+    attRes.results as unknown as AttachmentRow[],
+  );
+  return {
+    conversation,
+    path: decoratePath(pathRows(conversation, all), all, attachments),
+  };
 }
 
 /**
@@ -929,11 +979,21 @@ export async function getAttachments(ids: string[]): Promise<AttachmentRow[]> {
 }
 
 /** 指定メッセージ群の添付を、メッセージIDごとにまとめて返す。 */
+function groupByMessage(rows: AttachmentRow[]): Map<string, AttachmentRow[]> {
+  const map = new Map<string, AttachmentRow[]>();
+  for (const a of rows) {
+    if (!a.message_id) continue;
+    const list = map.get(a.message_id) ?? [];
+    list.push(a);
+    map.set(a.message_id, list);
+  }
+  return map;
+}
+
 async function attachmentsByMessage(
   messageIds: string[],
 ): Promise<Map<string, AttachmentRow[]>> {
-  const map = new Map<string, AttachmentRow[]>();
-  if (messageIds.length === 0) return map;
+  if (messageIds.length === 0) return new Map();
   const d = await db();
   const { results } = await d
     .prepare(
@@ -943,13 +1003,7 @@ async function attachmentsByMessage(
     )
     .bind(...messageIds)
     .all<AttachmentRow>();
-  for (const a of results) {
-    if (!a.message_id) continue;
-    const list = map.get(a.message_id) ?? [];
-    list.push(a);
-    map.set(a.message_id, list);
-  }
-  return map;
+  return groupByMessage(results);
 }
 
 /**

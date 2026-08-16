@@ -333,8 +333,10 @@ export function Sidebar({
     const open = menu?.type === "conversation" && menu.id === c.id;
     return (
       <li className={`group relative ${open ? "menu-open" : ""} ${indent ? "ml-5" : ""}`}>
+        {/* prefetch="intent": ホバー/タッチ開始でデータとJSを先読みし、遷移の待ちを隠す */}
         <NavLink
           to={`/chat/${c.id}`}
+          prefetch="intent"
           onClick={onNavigate}
           className={({ isActive }) =>
             `flex items-center gap-1.5 rounded-lg py-2 pl-3 pr-8 text-[0.9375rem] ${
@@ -481,13 +483,14 @@ export function Sidebar({
       <div className="space-y-0.5 px-3 pb-1">
         <NavLink
           to="/bots"
+          prefetch="intent"
           onClick={onNavigate}
           className={shortcutClass}
         >
           <IconBot className="h-4 w-4" />
           ボット管理
         </NavLink>
-        <NavLink to="/images" onClick={onNavigate} className={shortcutClass}>
+        <NavLink to="/images" prefetch="intent" onClick={onNavigate} className={shortcutClass}>
           <IconPhoto className="h-4 w-4" />
           画像
         </NavLink>
@@ -508,6 +511,7 @@ export function Sidebar({
                 <li key={r.id}>
                   <NavLink
                     to={`/chat/${r.id}`}
+                    prefetch="intent"
                     onClick={onNavigate}
                     className="block rounded-lg px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900"
                   >
@@ -625,6 +629,7 @@ export function Sidebar({
         <div className="pointer-events-auto flex items-center gap-2 px-3">
           <NavLink
             to="/"
+            prefetch="intent"
             onClick={onNavigate}
             title="新規チャット"
             className={`flex min-w-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-3 text-[0.9375rem] font-semibold transition active:scale-95 ${GLASS_ACCENT_BUTTON}`}
@@ -635,6 +640,7 @@ export function Sidebar({
           <ThemeToggle />
           <NavLink
             to="/settings"
+            prefetch="intent"
             onClick={onNavigate}
             aria-label="設定"
             title="設定"
