@@ -200,6 +200,87 @@ export async function fetchModels(): Promise<ModelInfo[]> {
   return merged;
 }
 
+/** APIキーらしき値を伏せる（診断用の生JSONをそのまま返すため）。 */
+function redactSecrets(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSecrets);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = /key|secret|token|password/i.test(k) && typeof v === "string"
+        ? "***"
+        : redactSecrets(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+export interface PoeProbeResult {
+  endpoint: string;
+  status: number | null;
+  body?: unknown;
+  error?: string;
+}
+
+/**
+ * 特定のPoeボットについてPoeが返す情報を、そのまま見せる（診断用）。
+ *
+ * ボットが受け付けるパラメータ名（画像の縦横比など）は、モデル一覧にも
+ * ドキュメント化されたエンドポイントにも載っていない。ただし公開されて
+ * いないだけで返っている可能性はあるため、候補のエンドポイントを順に
+ * 叩いて生のJSONを返す。ここに parameter_controls 相当が出てくるなら、
+ * ⚙パネルの入力欄を自動生成できる。
+ */
+export async function probePoeBot(botName: string): Promise<PoeProbeResult[]> {
+  if (!env.POE_API_KEY) {
+    return [{ endpoint: "-", status: null, error: "POE_API_KEY が未設定です" }];
+  }
+  const headers = { Authorization: `Bearer ${env.POE_API_KEY}` };
+  const name = encodeURIComponent(botName);
+  const results: PoeProbeResult[] = [];
+
+  for (const endpoint of [
+    `${POE_BASE}/models/${name}`,
+    `${POE_BASE.replace(/\/v1$/, "")}/bots/${name}`,
+  ]) {
+    try {
+      const res = await fetch(endpoint, { headers });
+      const text = await res.text();
+      let body: unknown = text.slice(0, 20000);
+      try {
+        body = redactSecrets(JSON.parse(text));
+      } catch {
+        // JSONでなければ本文の先頭をそのまま見せる
+      }
+      results.push({ endpoint, status: res.status, body });
+    } catch (e) {
+      results.push({ endpoint, status: null, error: (e as Error).message });
+    }
+  }
+
+  // モデル一覧に載っている当該ボットの行（一覧側にしかない項目の確認用）
+  try {
+    const res = await fetch(`${POE_BASE}/models`, { headers });
+    const body = (await res.json()) as { data?: Record<string, unknown>[] };
+    const hit = (body.data ?? []).find(
+      (m) => String(m.id).toLowerCase() === botName.toLowerCase(),
+    );
+    results.push({
+      endpoint: `${POE_BASE}/models → ${botName}`,
+      status: res.status,
+      body: hit ? redactSecrets(hit) : "一覧に見つかりませんでした",
+    });
+  } catch (e) {
+    results.push({
+      endpoint: `${POE_BASE}/models`,
+      status: null,
+      error: (e as Error).message,
+    });
+  }
+
+  return results;
+}
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;

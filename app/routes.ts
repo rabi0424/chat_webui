@@ -24,6 +24,7 @@ export default [
   route("api/folders", "routes/api.folders.ts"),
   route("api/folders/:id", "routes/api.folders.$id.ts"),
   route("api/sidebar/move", "routes/api.sidebar.move.ts"),
+  route("api/poe/bot-info", "routes/api.poe.bot-info.ts"),
   route("api/bots", "routes/api.bots.ts"),
   route("api/bots/:id", "routes/api.bots.$id.ts"),
 ] satisfies RouteConfig;
