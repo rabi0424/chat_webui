@@ -5,6 +5,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import {
   IconArrowLeft,
   IconBot,
+  IconChatBubble,
   IconChevronRight,
   IconCog,
   IconEllipsis,
@@ -352,10 +353,11 @@ export function Sidebar({
               className="h-2 w-2 shrink-0 rounded-full bg-accent"
             />
           )}
-          <span className="min-w-0 truncate">
-            {c.pinned === 1 && <span aria-hidden className="mr-1">📌</span>}
-            {c.title}
-          </span>
+          {/* ピン留めは見出しで分かるので、印ではなく会話のアイコンを添える */}
+          {c.pinned === 1 && (
+            <IconChatBubble className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
+          )}
+          <span className="min-w-0 truncate">{c.title}</span>
         </NavLink>
         <MenuButton target={{ type: "conversation", id: c.id }} />
         <MenuItems target={{ type: "conversation", id: c.id }} />
@@ -392,7 +394,6 @@ export function Sidebar({
             onClick={() => setView(f.id)}
             className="min-w-0 flex-1 truncate rounded-lg py-2 pl-1 pr-8 text-left text-sm text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
           >
-            {f.pinned === 1 && <span aria-hidden className="mr-1">📌</span>}
             <span aria-hidden className="mr-1.5">📁</span>
             {f.name}
             <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
