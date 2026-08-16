@@ -3,6 +3,7 @@ import { useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
+import { recordModelUse } from "../lib/recent-models";
 import {
   ACCEPTED_IMAGE_TYPES,
   formatBytes,
@@ -925,6 +926,9 @@ export function Chat({
     setError(null);
     setIsStreaming(true);
     const epoch = ++epochRef.current;
+    // モデルピッカーの「最近よく使うモデル」の材料。選択ではなく実際に
+    // 生成へ使ったときだけ数える
+    recordModelUse(model);
 
     try {
       // 新規チャットなら先に会話を作る

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { ModelInfo } from "../lib/openrouter.server";
 import { IconChevronDown } from "./icons";
 import { GLASS_PANEL } from "../lib/ui";
+import { rankedModelIds } from "../lib/recent-models";
 
 function formatPricePerMillion(perToken: string): string {
   const n = Number(perToken) * 1_000_000;
@@ -16,6 +17,67 @@ function formatContext(len: number): string {
   return String(len);
 }
 
+/** 「最近よく使うモデル」に出す件数。 */
+const RECENT_LIMIT = 5;
+
+/** 一覧の1行。よく使う節と一覧本体で同じ見た目を使う。 */
+function ModelRow({
+  model: m,
+  selected,
+  onSelect,
+}: {
+  model: ModelInfo;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onSelect(m.id)}
+        className={`w-full rounded-lg px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-white/10 ${
+          selected ? "bg-neutral-100 dark:bg-white/10" : ""
+        }`}
+      >
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="truncate text-sm font-medium text-neutral-800 dark:text-neutral-100">
+            {m.name}
+          </span>
+          <span className="flex shrink-0 gap-1">
+            {m.provider === "poe" && (
+              <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                Poe
+              </span>
+            )}
+            {m.inputModalities.includes("image") && (
+              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                画像
+              </span>
+            )}
+          </span>
+        </div>
+        <div className="mt-0.5 flex gap-3 text-xs text-neutral-400 dark:text-neutral-500">
+          <span className="truncate">{m.id}</span>
+        </div>
+        <div className="mt-0.5 flex gap-3 text-xs text-neutral-500 dark:text-neutral-400">
+          {m.contextLength > 0 && (
+            <span>{formatContext(m.contextLength)} ctx</span>
+          )}
+          {/* Poeは価格を返さないことがある。その場合は課金方法だけ示す */}
+          {m.provider === "poe" && Number(m.promptPrice) === 0 ? (
+            <span>ポイントで課金</span>
+          ) : (
+            <span>
+              入 {formatPricePerMillion(m.promptPrice)}/M · 出{" "}
+              {formatPricePerMillion(m.completionPrice)}/M
+            </span>
+          )}
+        </div>
+      </button>
+    </li>
+  );
+}
+
 export function ModelPicker({
   models,
   value,
@@ -27,6 +89,8 @@ export function ModelPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  /** よく使う順のモデルID。localStorage 由来なのでパネルを開くときに読む。 */
+  const [recentIds, setRecentIds] = useState<string[]>([]);
   /**
    * パネルの fixed 配置座標。ボタン位置から計算し、画面内へクランプする。
    * パネルはポータルで body 直下に描画する（後述のコメント参照）。
@@ -53,7 +117,14 @@ export function ModelPicker({
       top: (rect?.bottom ?? 56) + 6,
       width,
     });
+    setRecentIds(rankedModelIds());
     setOpen(true);
+  };
+
+  const select = (id: string) => {
+    onChange(id);
+    setOpen(false);
+    setQuery("");
   };
 
   /**
@@ -69,6 +140,15 @@ export function ModelPicker({
       return terms.every((t) => haystack.includes(t));
     });
   }, [models, query]);
+
+  /** よく使う順の上位。提供終了などで一覧に無いIDは落とす。 */
+  const recent = useMemo(() => {
+    if (query.trim() !== "") return [];
+    return recentIds
+      .map((id) => models.find((m) => m.id === id))
+      .filter((m): m is ModelInfo => m != null)
+      .slice(0, RECENT_LIMIT);
+  }, [models, recentIds, query]);
 
   useEffect(() => {
     if (!open) return;
@@ -145,55 +225,37 @@ export function ModelPicker({
                 該当するモデルがありません
               </li>
             )}
+            {/*
+              よく使うモデルの節。検索中は出さない（打ち込んだ語に対する
+              並びが一定になるほうが探しやすいため）。一覧本体からは
+              除かず、上に複製して置くだけにする。
+            */}
+            {recent.length > 0 && (
+              <>
+                <li className="px-3 pb-1 pt-2 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+                  最近よく使うモデル
+                </li>
+                {recent.map((m) => (
+                  <ModelRow
+                    key={`recent-${m.id}`}
+                    model={m}
+                    selected={m.id === value}
+                    onSelect={select}
+                  />
+                ))}
+                <li
+                  role="separator"
+                  className="mx-3 my-1 border-t border-neutral-100 dark:border-white/10"
+                />
+              </>
+            )}
             {filtered.map((m) => (
-              <li key={m.id}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange(m.id);
-                    setOpen(false);
-                    setQuery("");
-                  }}
-                  className={`w-full rounded-lg px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-white/10 ${
-                    m.id === value ? "bg-neutral-100 dark:bg-white/10" : ""
-                  }`}
-                >
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="truncate text-sm font-medium text-neutral-800 dark:text-neutral-100">
-                      {m.name}
-                    </span>
-                    <span className="flex shrink-0 gap-1">
-                      {m.provider === "poe" && (
-                        <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
-                          Poe
-                        </span>
-                      )}
-                      {m.inputModalities.includes("image") && (
-                        <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
-                          画像
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 flex gap-3 text-xs text-neutral-400 dark:text-neutral-500">
-                    <span className="truncate">{m.id}</span>
-                  </div>
-                  <div className="mt-0.5 flex gap-3 text-xs text-neutral-500 dark:text-neutral-400">
-                    {m.contextLength > 0 && (
-                      <span>{formatContext(m.contextLength)} ctx</span>
-                    )}
-                    {/* Poeは価格を返さないことがある。その場合は課金方法だけ示す */}
-                    {m.provider === "poe" && Number(m.promptPrice) === 0 ? (
-                      <span>ポイントで課金</span>
-                    ) : (
-                      <span>
-                        入 {formatPricePerMillion(m.promptPrice)}/M · 出{" "}
-                        {formatPricePerMillion(m.completionPrice)}/M
-                      </span>
-                    )}
-                  </div>
-                </button>
-              </li>
+              <ModelRow
+                key={m.id}
+                model={m}
+                selected={m.id === value}
+                onSelect={select}
+              />
             ))}
           </ul>
         </div>,
