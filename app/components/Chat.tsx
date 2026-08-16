@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 import { useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
@@ -368,6 +368,9 @@ function BranchPager({
   );
 }
 
+/** 遷移直後にまず描画する末尾のメッセージ数。残りは直後に低優先度で描く。 */
+const DEFERRED_TAIL = 24;
+
 export function Chat({
   conversationId,
   initialMessages,
@@ -439,6 +442,29 @@ export function Chat({
   const convIdRef = useRef<string | null>(conversationId);
   // スマートスクロール: 最下部付近にいるときだけ自動追従する
   const stickToBottomRef = useRef(true);
+
+  /**
+   * 遷移直後の初回描画は末尾だけにして、画面が出たらすぐ
+   * startTransition で全件に広げる（スクロールは待たない）。
+   * 低優先度の割り込み可能なレンダリングなので、広げている最中に
+   * スクロールやタップが来てもそちらが先に処理される。
+   */
+  const [renderAll, setRenderAll] = useState(
+    initialMessages.length <= DEFERRED_TAIL,
+  );
+  useEffect(() => {
+    if (renderAll) return;
+    startTransition(() => setRenderAll(true));
+    // 初回マウント時のみ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    // 全件に広がると上に内容が増える。最下部に貼り付いていたなら貼り直す
+    if (renderAll && stickToBottomRef.current) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderAll]);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ガラス面フッターの高さ（コンテンツ下部の余白に使う）
   const footerRef = useRef<HTMLElement>(null);
@@ -690,6 +716,11 @@ export function Chat({
   };
 
   // --- 添付画像 -----------------------------------------------------------
+
+  const visibleMessages = renderAll
+    ? messages
+    : messages.slice(-DEFERRED_TAIL);
+  const hiddenCount = messages.length - visibleMessages.length;
 
   const selectedModel = models.find((m) => m.id === model);
   /**
@@ -1556,7 +1587,8 @@ export function Chat({
             </div>
           )}
           <div className="space-y-6">
-            {messages.map((m, i) => {
+            {visibleMessages.map((m, vi) => {
+              const i = vi + hiddenCount;
               const selectable = selecting != null && m.id != null;
               const selectionClass = selecting
                 ? `cursor-pointer rounded-xl px-2 py-1 -mx-2 ${

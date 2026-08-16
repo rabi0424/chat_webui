@@ -1,3 +1,4 @@
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -29,7 +30,15 @@ function stripDuplicateImageUrls(markdown: string): string {
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
-export function Markdown({ children }: { children: string }) {
+/**
+ * memo必須: パースが重く、ストリーミング中は親が毎チャンク再描画される。
+ * 本文が変わらないメッセージの再パースをここで止める。
+ */
+export const Markdown = memo(function Markdown({
+  children,
+}: {
+  children: string;
+}) {
   return (
     <div className="prose prose-sm prose-neutral sm:prose-base dark:prose-invert max-w-none break-words prose-pre:overflow-x-auto">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -37,4 +46,4 @@ export function Markdown({ children }: { children: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});

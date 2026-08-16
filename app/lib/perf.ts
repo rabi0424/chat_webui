@@ -127,16 +127,66 @@ export function summarize(samples: PerfSample[]): BuildStat[] {
     .sort((a, b) => b.lastAt - a.lastAt);
 }
 
+export interface BuildComparison {
+  /** いま動いているビルドの集計（記録がなければ null）。 */
+  current: BuildStat | null;
+  /** 比較対象: 現行以外で最後に記録のあったビルド。 */
+  previous: BuildStat | null;
+}
+
+/**
+ * 表示は常に「現行ビルド vs 直前のビルド」。デプロイでビルドIDが
+ * 変わると current が新しい方へ自動で切り替わり、それまでの数字は
+ * previous 側として比較に使われる。
+ */
+export function compareLatest(samples: PerfSample[]): BuildComparison {
+  const stats = summarize(samples);
+  return {
+    current: stats.find((b) => b.build === __BUILD_ID__) ?? null,
+    // summarize は新しい順なので、最初に見つかる別ビルドが「前回」
+    previous: stats.find((b) => b.build !== __BUILD_ID__) ?? null,
+  };
+}
+
+export function currentBuildId(): string {
+  return __BUILD_ID__;
+}
+
+/** 前回比。previous に同じページの記録がなければ null。 */
+export function delta(
+  cur: number,
+  prev: number | undefined,
+): { ms: number; pct: number } | null {
+  if (prev == null || prev <= 0) return null;
+  const ms = cur - prev;
+  return { ms, pct: Math.round((ms / prev) * 100) };
+}
+
+function formatDelta(cur: number, prev: number | undefined): string {
+  const d = delta(cur, prev);
+  if (!d) return "";
+  const sign = d.ms > 0 ? "+" : "";
+  return `（前回比 ${sign}${d.ms}ms / ${sign}${d.pct}%）`;
+}
+
 /** コピー用のプレーンテキスト。 */
-export function formatSummary(stats: BuildStat[]): string {
+export function formatComparison(c: BuildComparison): string {
   const lines: string[] = ["Chat WebUI ページ遷移の実測（この端末）"];
-  for (const b of stats) {
+  if (!c.current) {
+    lines.push(`現行ビルド ${__BUILD_ID__} の記録はまだありません`);
+  } else {
     lines.push(
-      `\nビルド ${b.build}（最終記録 ${new Date(b.lastAt).toLocaleString("ja-JP")}、${b.total}件）`,
+      `現行ビルド ${c.current.build}（${c.current.total}件・最終 ${new Date(c.current.lastAt).toLocaleString("ja-JP")}）`,
     );
-    for (const r of b.routes) {
+    if (c.previous) {
       lines.push(
-        `  ${r.path}  n=${r.count}  中央値 ${r.median}ms  p90 ${r.p90}ms`,
+        `前回ビルド ${c.previous.build}（${c.previous.total}件）との比較`,
+      );
+    }
+    for (const r of c.current.routes) {
+      const prev = c.previous?.routes.find((p) => p.path === r.path);
+      lines.push(
+        `  ${r.path}  n=${r.count}  中央値 ${r.median}ms${formatDelta(r.median, prev?.median)}  p90 ${r.p90}ms${formatDelta(r.p90, prev?.p90)}`,
       );
     }
   }

@@ -10,10 +10,12 @@ import { NumberInput } from "../components/NumberInput";
 import { IconCheck, IconCopy, IconMenu, IconTrash } from "../components/icons";
 import {
   clearSamples,
-  formatSummary,
+  compareLatest,
+  currentBuildId,
+  delta,
+  formatComparison,
   loadSamples,
-  summarize,
-  type BuildStat,
+  type BuildComparison,
 } from "../lib/perf";
 
 export function meta({}: Route.MetaArgs) {
@@ -79,23 +81,52 @@ function Section({
   );
 }
 
+/** 前回ビルド比の表示。速くなったら緑、遅くなったら赤。 */
+function DeltaBadge({ cur, prev }: { cur: number; prev: number | undefined }) {
+  const d = delta(cur, prev);
+  if (!d) {
+    return (
+      <span className="block text-[10px] text-neutral-300 dark:text-neutral-600">
+        —
+      </span>
+    );
+  }
+  const sign = d.ms > 0 ? "+" : "";
+  return (
+    <span
+      className={`block text-[10px] tabular-nums ${
+        d.ms < 0
+          ? "text-emerald-600 dark:text-emerald-400"
+          : d.ms > 0
+            ? "text-red-600 dark:text-red-400"
+            : "text-neutral-400 dark:text-neutral-500"
+      }`}
+    >
+      {sign}
+      {d.ms}ms / {sign}
+      {d.pct}%
+    </span>
+  );
+}
+
 /**
- * ページ遷移の実測の集計。遷移のたびに自動で貯まる記録（lib/perf.ts）を
- * ビルドごとに表示する。デプロイをまたぐとビルドIDが変わるので、
- * 改善の前後比較が並べて見える。コピーはワンタップ。
+ * ページ遷移の実測の集計（lib/perf.ts）。表示は常に「現行ビルド」で、
+ * デプロイするとビルドIDが変わって自動で新しい集計に切り替わる。
+ * 各項目には直前のビルドとの差（絶対値と割合）を添える。
  */
 function PerfPanel() {
-  const [stats, setStats] = useState<BuildStat[]>([]);
+  const [comparison, setComparison] = useState<BuildComparison | null>(null);
   const [copied, setCopied] = useState(false);
 
   // localStorageはSSRで読めないので描画後に読む
   useEffect(() => {
-    setStats(summarize(loadSamples()));
+    setComparison(compareLatest(loadSamples()));
   }, []);
 
   const copy = async () => {
+    if (!comparison) return;
     try {
-      await navigator.clipboard.writeText(formatSummary(stats));
+      await navigator.clipboard.writeText(formatComparison(comparison));
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -103,7 +134,7 @@ function PerfPanel() {
     }
   };
 
-  if (stats.length === 0) {
+  if (!comparison || (!comparison.current && !comparison.previous)) {
     return (
       <p className="px-1 py-2 text-sm text-neutral-400 dark:text-neutral-500">
         まだ記録がありません。ページを行き来すると自動で貯まります。
@@ -111,44 +142,65 @@ function PerfPanel() {
     );
   }
 
+  const { current, previous } = comparison;
+
   return (
     <div className="space-y-3">
-      {stats.map((b) => (
-        <div key={b.build}>
-          <p className="px-1 text-xs font-medium text-neutral-400 dark:text-neutral-500">
-            ビルド {b.build} ・ {b.total}件 ・ 最終{" "}
-            {new Date(b.lastAt).toLocaleDateString("ja-JP")}
-          </p>
-          <table className="mt-1 w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-neutral-400 dark:text-neutral-500">
-                <th className="px-1 py-0.5 font-normal">ページ</th>
-                <th className="px-1 py-0.5 text-right font-normal">回数</th>
-                <th className="px-1 py-0.5 text-right font-normal">中央値</th>
-                <th className="px-1 py-0.5 text-right font-normal">p90</th>
-              </tr>
-            </thead>
-            <tbody>
-              {b.routes.map((r) => (
+      <p className="px-1 text-xs font-medium text-neutral-400 dark:text-neutral-500">
+        現行ビルド {currentBuildId()}
+        {current && (
+          <>
+            {" "}
+            ・ {current.total}件 ・ 最終{" "}
+            {new Date(current.lastAt).toLocaleDateString("ja-JP")}
+          </>
+        )}
+        {previous && (
+          <>
+            <br />
+            前回ビルド {previous.build}（{previous.total}件）との比較
+          </>
+        )}
+      </p>
+      {!current ? (
+        <p className="px-1 text-sm text-neutral-400 dark:text-neutral-500">
+          このビルドの記録はまだありません。ページを行き来すると貯まります。
+        </p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-neutral-400 dark:text-neutral-500">
+              <th className="px-1 py-0.5 font-normal">ページ</th>
+              <th className="px-1 py-0.5 text-right font-normal">回数</th>
+              <th className="px-1 py-0.5 text-right font-normal">中央値</th>
+              <th className="px-1 py-0.5 text-right font-normal">p90</th>
+            </tr>
+          </thead>
+          <tbody className="align-top">
+            {current.routes.map((r) => {
+              const prev = previous?.routes.find((p) => p.path === r.path);
+              return (
                 <tr key={r.path}>
-                  <td className="truncate px-1 py-0.5 font-mono text-xs">
+                  <td className="truncate px-1 py-1 font-mono text-xs">
                     {r.path}
                   </td>
-                  <td className="px-1 py-0.5 text-right tabular-nums">
+                  <td className="px-1 py-1 text-right tabular-nums">
                     {r.count}
                   </td>
-                  <td className="px-1 py-0.5 text-right tabular-nums">
+                  <td className="px-1 py-1 text-right tabular-nums">
                     {r.median}ms
+                    <DeltaBadge cur={r.median} prev={prev?.median} />
                   </td>
-                  <td className="px-1 py-0.5 text-right tabular-nums">
+                  <td className="px-1 py-1 text-right tabular-nums">
                     {r.p90}ms
+                    <DeltaBadge cur={r.p90} prev={prev?.p90} />
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ))}
+              );
+            })}
+          </tbody>
+        </table>
+      )}
       <div className="flex items-center gap-2 pt-1">
         <button
           type="button"
@@ -167,7 +219,7 @@ function PerfPanel() {
           onClick={() => {
             if (!confirm("遷移の記録をすべて消しますか？")) return;
             clearSamples();
-            setStats([]);
+            setComparison(compareLatest([]));
           }}
           aria-label="記録を消去"
           title="記録を消去"
@@ -286,7 +338,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
 
           <Section
             title="パフォーマンス"
-            note="ページ遷移のたびに自動で記録されます（この端末のみ・最大1000件）。デプロイするとビルドの行が分かれるので、改善の前後を並べて比較できます。"
+            note="ページ遷移のたびに自動で記録されます（この端末のみ・最大1000件）。デプロイすると現行ビルドの集計に切り替わり、各数値に前回ビルドとの差が付きます。"
           >
             <PerfPanel />
           </Section>
