@@ -1044,6 +1044,8 @@ export function Chat({
   ) {
     setError(null);
     setIsStreaming(true);
+    // ⚙パネルを開いたまま送信できるので、生成が始まったら畳んで会話を見せる
+    setParamsOpen(false);
     const epoch = ++epochRef.current;
     // モデルピッカーの「最近よく使うモデル」の材料。選択ではなく実際に
     // 生成へ使ったときだけ数える

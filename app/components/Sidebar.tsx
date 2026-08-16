@@ -701,14 +701,19 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* フォルダ移動モーダル */}
+      {/*
+        フォルダ移動モーダル。Sidebarのルートが relative なので、ここは
+        fixed ではなく absolute inset-0 でサイドバーの領域だけに重ねる
+        （fixed だと画面全体を基準に中央寄せされ、幅の狭いサイドバーから
+        見て右に偏った位置に出てしまう）。他のガラス面と揃え GLASS_PANEL。
+      */}
       {moveConv && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm animate-fade"
+          className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm animate-fade"
           onClick={() => setMoveTarget(null)}
         >
           <div
-            className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-xl animate-pop dark:bg-neutral-900"
+            className={`w-full max-w-sm rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
             onClick={(e) => e.stopPropagation()}
           >
             <p className="mb-3 text-sm font-semibold">
@@ -722,7 +727,7 @@ export function Sidebar({
                     void patchConversation(moveConv.id, { folderId: null });
                     setMoveTarget(null);
                   }}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
                 >
                   フォルダから出す
                 </button>
@@ -736,7 +741,7 @@ export function Sidebar({
                     void patchConversation(moveConv.id, { folderId: f.id });
                     setMoveTarget(null);
                   }}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-neutral-800"
+                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-white/10"
                 >
                   📁 {f.name}
                 </button>
@@ -753,7 +758,7 @@ export function Sidebar({
                 value={newFolderName}
                 onChange={(e) => setNewFolderName(e.target.value)}
                 placeholder="新しいフォルダ名"
-                className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-neutral-700 dark:bg-neutral-800"
+                className="min-w-0 flex-1 rounded-lg border border-neutral-200/80 bg-white/60 px-3 py-2 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
               />
               <button
                 type="button"
@@ -779,7 +784,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => setMoveTarget(null)}
-                className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-white/10"
               >
                 キャンセル
               </button>
