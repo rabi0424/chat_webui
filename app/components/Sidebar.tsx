@@ -223,7 +223,7 @@ export function Sidebar({
           setMenu(open ? null : target);
         }}
         aria-label="メニュー"
-        className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block"
+        className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block [@media(hover:none)]:block"
       >
         <IconEllipsis className="h-4 w-4" />
       </button>
@@ -319,17 +319,17 @@ export function Sidebar({
             }`
           }
         >
+          {/* 開いていないうちに応答が完成した会話の印。右端は「…」が使う */}
+          {c.unread === 1 && (
+            <span
+              aria-label="新しい応答があります"
+              title="新しい応答があります"
+              className="mr-1.5 inline-block h-2 w-2 shrink-0 rounded-full bg-accent align-middle"
+            />
+          )}
           {c.pinned === 1 && <span aria-hidden className="mr-1">📌</span>}
           {c.title}
         </NavLink>
-        {/* 開いていないうちに応答が完成した会話の印 */}
-        {c.unread === 1 && (
-          <span
-            aria-label="新しい応答があります"
-            title="新しい応答があります"
-            className="pointer-events-none absolute right-3 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-accent group-hover:hidden"
-          />
-        )}
         <MenuButton target={{ type: "conversation", id: c.id }} />
         <MenuItems target={{ type: "conversation", id: c.id }} />
       </li>
