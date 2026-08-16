@@ -131,6 +131,15 @@ function applyPromptCaching(
   });
 }
 
+/** 画像一覧の検索に使う、この生成の依頼文（直近のユーザー発言）。 */
+function promptOf(job: GenerationJob): string | null {
+  for (let i = job.messages.length - 1; i >= 0; i--) {
+    const m = job.messages[i];
+    if (m.role === "user" && m.content.trim()) return m.content;
+  }
+  return null;
+}
+
 /** 1応答あたりに取り込む生成画像の枚数と、1枚あたりの上限。 */
 const MAX_CAPTURED_IMAGES = 8;
 const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
@@ -196,7 +205,7 @@ function decodeDataUrl(
 /** 画像1枚をR2へ保存し、添付IDを返す。取り込めなければ null。 */
 async function storeImage(
   url: string,
-  target: { messageId: string; conversationId: string },
+  target: { messageId: string; conversationId: string; prompt: string | null },
 ): Promise<string | null> {
   try {
     let payload: { buffer: ArrayBuffer; mimeType: string } | null = null;
@@ -229,6 +238,7 @@ async function storeImage(
       mimeType: payload.mimeType,
       name: null,
       size: payload.buffer.byteLength,
+      prompt: target.prompt,
     });
   } catch {
     return null;
@@ -250,7 +260,7 @@ async function storeImage(
 async function captureGeneratedImages(
   content: string,
   imageUrls: string[],
-  target: { messageId: string; conversationId: string },
+  target: { messageId: string; conversationId: string; prompt: string | null },
 ): Promise<string> {
   if (!isStorageConfigured()) return content;
 
@@ -523,6 +533,7 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
       : await captureGeneratedImages(result.content, result.imageUrls, {
           messageId: job.assistantMessageId,
           conversationId: job.conversationId,
+          prompt: promptOf(job),
         });
   // 画像だけの応答（本文なし）も成功として扱う
   const empty = finalContent === "";
@@ -734,7 +745,11 @@ async function runRetryGenerationJob(
       const finalContent = await captureGeneratedImages(
         r.content,
         r.imageUrls,
-        { messageId: id, conversationId: job.conversationId },
+        {
+          messageId: id,
+          conversationId: job.conversationId,
+          prompt: promptOf(job),
+        },
       );
       if (finalContent !== r.content) {
         await finalizeGeneration(id, {
