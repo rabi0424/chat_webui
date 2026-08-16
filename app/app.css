@@ -1,4 +1,5 @@
 @import "tailwindcss" source(".");
+@import "katex/dist/katex.min.css";
 @plugin "@tailwindcss/typography";
 
 /* テーマは .dark クラスで制御（ライト/ダーク/システムのトグル対応） */
@@ -129,4 +130,146 @@ body {
 
 .dark {
   color-scheme: dark;
+}
+
+/*
+ * 数式（KaTeX）。長い式はスマホだと確実にはみ出すので、
+ * ブロック数式は本文を押し広げずに横スクロールさせる。
+ */
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0;
+}
+.katex {
+  /* 本文が小さいときに数式だけ浮かないよう、拡大率を控えめにする */
+  font-size: 1.05em;
+}
+/* 数式内の日本語（\text{...}）は本文と同じフォントで出す */
+.katex .mord.text,
+.katex .mord.cjk_fallback {
+  font-family: var(--font-sans);
+}
+/* KaTeXが解釈できなかった式は、元のTeXをそのまま折り返して見せる */
+.katex-error {
+  white-space: pre-wrap;
+}
+
+/*
+ * インラインコード。prose 既定のバッククォート装飾は Markdown.tsx 側で消し、
+ * 代わりに薄い背景で囲う。
+ */
+.prose :where(code):not(:where(pre code, [class~="not-prose"] *)) {
+  @apply rounded bg-neutral-100 px-1 py-0.5 font-normal dark:bg-neutral-800;
+}
+
+/* GFMのチェックリストは行頭の点を消して、チェックボックスだけ見せる */
+.prose .contains-task-list {
+  list-style: none;
+  padding-left: 0;
+}
+.prose .task-list-item {
+  padding-left: 0;
+}
+.prose .task-list-item input {
+  @apply mr-1.5 align-middle;
+}
+
+/*
+ * コードブロックのシンタックスハイライト（highlight.js のクラスに対する配色）。
+ * GitHub のライト / ダークテーマに合わせている。
+ */
+.hljs-comment,
+.hljs-quote {
+  color: #6a737d;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-type,
+.hljs-doctag,
+.hljs-name {
+  color: #d73a49;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-meta .hljs-string {
+  color: #032f62;
+}
+.hljs-number,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attr,
+.hljs-attribute,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: #005cc5;
+}
+.hljs-title,
+.hljs-section,
+.hljs-title.class_,
+.hljs-title.function_ {
+  color: #6f42c1;
+}
+.hljs-built_in,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-meta {
+  color: #e36209;
+}
+.hljs-deletion {
+  color: #b31d28;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+.dark .hljs-comment,
+.dark .hljs-quote {
+  color: #8b949e;
+}
+.dark .hljs-keyword,
+.dark .hljs-selector-tag,
+.dark .hljs-literal,
+.dark .hljs-type,
+.dark .hljs-doctag,
+.dark .hljs-name {
+  color: #ff7b72;
+}
+.dark .hljs-string,
+.dark .hljs-regexp,
+.dark .hljs-addition,
+.dark .hljs-meta .hljs-string {
+  color: #a5d6ff;
+}
+.dark .hljs-number,
+.dark .hljs-variable,
+.dark .hljs-template-variable,
+.dark .hljs-attr,
+.dark .hljs-attribute,
+.dark .hljs-selector-attr,
+.dark .hljs-selector-pseudo {
+  color: #79c0ff;
+}
+.dark .hljs-title,
+.dark .hljs-section,
+.dark .hljs-title.class_,
+.dark .hljs-title.function_ {
+  color: #d2a8ff;
+}
+.dark .hljs-built_in,
+.dark .hljs-symbol,
+.dark .hljs-bullet,
+.dark .hljs-link,
+.dark .hljs-meta {
+  color: #ffa657;
+}
+.dark .hljs-deletion {
+  color: #ffa198;
 }
