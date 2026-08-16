@@ -76,6 +76,41 @@ function Highlight({ text, terms }: { text: string; terms: string[] }) {
   );
 }
 
+/**
+ * 検索結果の1行。会話一覧と同じく、画面に入った時点でデータを先読みする
+ * （usePrefetchOnVisible）。map の中ではフックを呼べないため独立させている。
+ */
+function SearchResultItem({
+  r,
+  terms,
+  onNavigate,
+}: {
+  r: SearchResult;
+  terms: string[];
+  onNavigate?: () => void;
+}) {
+  const prefetchRef = usePrefetchOnVisible(r.id);
+  return (
+    <li ref={prefetchRef}>
+      <NavLink
+        to={`/chat/${r.id}`}
+        prefetch="intent"
+        onClick={onNavigate}
+        className="block rounded-lg px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900"
+      >
+        <span className="block truncate text-[0.9375rem] text-neutral-700 dark:text-neutral-200">
+          <Highlight text={r.title} terms={terms} />
+        </span>
+        {r.snippet && (
+          <span className="mt-0.5 block truncate text-[0.8125rem] text-neutral-400 dark:text-neutral-500">
+            <Highlight text={r.snippet} terms={terms} />
+          </span>
+        )}
+      </NavLink>
+    </li>
+  );
+}
+
 export function Sidebar({
   conversations,
   folders,
@@ -532,23 +567,12 @@ export function Sidebar({
             </p>
             <ul className="space-y-0.5">
               {(searchResults ?? []).map((r) => (
-                <li key={r.id}>
-                  <NavLink
-                    to={`/chat/${r.id}`}
-                    prefetch="intent"
-                    onClick={onNavigate}
-                    className="block rounded-lg px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900"
-                  >
-                    <span className="block truncate text-[0.9375rem] text-neutral-700 dark:text-neutral-200">
-                      <Highlight text={r.title} terms={highlightTerms} />
-                    </span>
-                    {r.snippet && (
-                      <span className="mt-0.5 block truncate text-[0.8125rem] text-neutral-400 dark:text-neutral-500">
-                        <Highlight text={r.snippet} terms={highlightTerms} />
-                      </span>
-                    )}
-                  </NavLink>
-                </li>
+                <SearchResultItem
+                  key={r.id}
+                  r={r}
+                  terms={highlightTerms}
+                  onNavigate={onNavigate}
+                />
               ))}
               {!searching && searchResults?.length === 0 && (
                 <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
