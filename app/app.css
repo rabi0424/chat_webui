@@ -163,6 +163,24 @@ body {
   @apply rounded bg-neutral-100 px-1 py-0.5 font-normal dark:bg-neutral-800;
 }
 
+/*
+ * ホーム（グラススタイル）の環境光。淡い色のグラデーションを3つ重ねる。
+ * blurフィルタは使わず radial-gradient のフェードだけで光に見せる
+ * （スマホでの描画コストを抑えるため）。
+ */
+.home-ambient {
+  background:
+    radial-gradient(420px 420px at 15% 10%, rgba(109, 91, 208, 0.10), transparent 70%),
+    radial-gradient(500px 500px at 85% 42%, rgba(47, 158, 143, 0.09), transparent 70%),
+    radial-gradient(420px 420px at 32% 95%, rgba(192, 90, 140, 0.08), transparent 70%);
+}
+.dark .home-ambient {
+  background:
+    radial-gradient(420px 420px at 15% 10%, rgba(122, 102, 232, 0.18), transparent 70%),
+    radial-gradient(500px 500px at 85% 42%, rgba(45, 168, 152, 0.14), transparent 70%),
+    radial-gradient(420px 420px at 32% 95%, rgba(205, 96, 150, 0.13), transparent 70%);
+}
+
 /* GFMのチェックリストは行頭の点を消して、チェックボックスだけ見せる */
 .prose .contains-task-list {
   list-style: none;
