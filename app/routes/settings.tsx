@@ -7,7 +7,14 @@ import { RETRY_CEILING_RANGE, type AppSettings } from "../lib/settings";
 import { applyTheme, getTheme, type Theme } from "../lib/theme";
 import { AccentPicker } from "../components/ThemeToggle";
 import { NumberInput } from "../components/NumberInput";
-import { IconMenu } from "../components/icons";
+import { IconCheck, IconCopy, IconMenu, IconTrash } from "../components/icons";
+import {
+  clearSamples,
+  formatSummary,
+  loadSamples,
+  summarize,
+  type BuildStat,
+} from "../lib/perf";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "設定 - Chat WebUI" }];
@@ -69,6 +76,107 @@ function Section({
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * ページ遷移の実測の集計。遷移のたびに自動で貯まる記録（lib/perf.ts）を
+ * ビルドごとに表示する。デプロイをまたぐとビルドIDが変わるので、
+ * 改善の前後比較が並べて見える。コピーはワンタップ。
+ */
+function PerfPanel() {
+  const [stats, setStats] = useState<BuildStat[]>([]);
+  const [copied, setCopied] = useState(false);
+
+  // localStorageはSSRで読めないので描画後に読む
+  useEffect(() => {
+    setStats(summarize(loadSamples()));
+  }, []);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(formatSummary(stats));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 権限がない環境では黙って何もしない
+    }
+  };
+
+  if (stats.length === 0) {
+    return (
+      <p className="px-1 py-2 text-sm text-neutral-400 dark:text-neutral-500">
+        まだ記録がありません。ページを行き来すると自動で貯まります。
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {stats.map((b) => (
+        <div key={b.build}>
+          <p className="px-1 text-xs font-medium text-neutral-400 dark:text-neutral-500">
+            ビルド {b.build} ・ {b.total}件 ・ 最終{" "}
+            {new Date(b.lastAt).toLocaleDateString("ja-JP")}
+          </p>
+          <table className="mt-1 w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-neutral-400 dark:text-neutral-500">
+                <th className="px-1 py-0.5 font-normal">ページ</th>
+                <th className="px-1 py-0.5 text-right font-normal">回数</th>
+                <th className="px-1 py-0.5 text-right font-normal">中央値</th>
+                <th className="px-1 py-0.5 text-right font-normal">p90</th>
+              </tr>
+            </thead>
+            <tbody>
+              {b.routes.map((r) => (
+                <tr key={r.path}>
+                  <td className="truncate px-1 py-0.5 font-mono text-xs">
+                    {r.path}
+                  </td>
+                  <td className="px-1 py-0.5 text-right tabular-nums">
+                    {r.count}
+                  </td>
+                  <td className="px-1 py-0.5 text-right tabular-nums">
+                    {r.median}ms
+                  </td>
+                  <td className="px-1 py-0.5 text-right tabular-nums">
+                    {r.p90}ms
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          type="button"
+          onClick={() => void copy()}
+          className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-50 dark:border-white/10 dark:text-neutral-300 dark:hover:bg-white/5"
+        >
+          {copied ? (
+            <IconCheck className="h-4 w-4" />
+          ) : (
+            <IconCopy className="h-4 w-4" />
+          )}
+          {copied ? "コピーしました" : "結果をコピー"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (!confirm("遷移の記録をすべて消しますか？")) return;
+            clearSamples();
+            setStats([]);
+          }}
+          aria-label="記録を消去"
+          title="記録を消去"
+          className="rounded-lg border border-neutral-200 p-1.5 text-neutral-400 hover:bg-neutral-50 hover:text-neutral-600 dark:border-white/10 dark:hover:bg-white/5 dark:hover:text-neutral-300"
+        >
+          <IconTrash className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -174,6 +282,13 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             <Row label="アクセント色" description="ボタンや強調表示の色">
               <AccentPicker />
             </Row>
+          </Section>
+
+          <Section
+            title="パフォーマンス"
+            note="ページ遷移のたびに自動で記録されます（この端末のみ・最大1000件）。デプロイするとビルドの行が分かれるので、改善の前後を並べて比較できます。"
+          >
+            <PerfPanel />
           </Section>
         </div>
       </div>

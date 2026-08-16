@@ -7,3 +7,6 @@ declare namespace Cloudflare {
     POE_API_KEY?: string;
   }
 }
+
+/** ビルドの識別子（vite.config.ts の define で埋め込むgit短縮SHA）。 */
+declare const __BUILD_ID__: string;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Outlet } from "react-router";
+import { Outlet, useNavigation } from "react-router";
 import type { Route } from "./+types/shell";
 import {
   getAppSettings,
@@ -13,6 +13,7 @@ import type { AppSettings } from "../lib/settings";
 import { fetchModels, type ModelInfo } from "../lib/openrouter.server";
 import { fetchUsdJpy } from "../lib/fx.server";
 import { Sidebar } from "../components/Sidebar";
+import { recordNavigation } from "../lib/perf";
 
 /** 未読の印を引き直す間隔（表示中のみ）。 */
 const UNREAD_POLL_MS = 5_000;
@@ -78,6 +79,30 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       window.removeEventListener("focus", load);
     };
   }, []);
+  /**
+   * ページ遷移の所要時間を記録する（設定画面の「パフォーマンス」で見る）。
+   * useNavigation が idle を離れてから戻るまでが「タップ〜画面切り替わり」。
+   * 途中で行き先が変わったら（連打など）最後の行き先として記録する。
+   */
+  const navigation = useNavigation();
+  const navTiming = useRef<{ path: string; started: number } | null>(null);
+  useEffect(() => {
+    if (navigation.state !== "idle" && navigation.location) {
+      if (navTiming.current) {
+        navTiming.current.path = navigation.location.pathname;
+      } else {
+        navTiming.current = {
+          path: navigation.location.pathname,
+          started: performance.now(),
+        };
+      }
+    } else if (navigation.state === "idle" && navTiming.current) {
+      const { path, started } = navTiming.current;
+      navTiming.current = null;
+      recordNavigation(path, performance.now() - started);
+    }
+  }, [navigation.state, navigation.location]);
+
   const [sidebarClosing, setSidebarClosing] = useState(false);
 
   /** 閉じるときも開くときと同じ滑らかさで（退場アニメーション後にアンマウント）。 */
