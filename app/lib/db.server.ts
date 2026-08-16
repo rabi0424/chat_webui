@@ -1290,6 +1290,46 @@ export async function deleteMessages(
   await d.batch(statements);
 }
 
+/**
+ * 既存メッセージの下にアシスタントの応答を1件足し、リーフを移す。
+ *
+ * リトライ生成で、成功するたびに応答を積み増していくために使う。
+ * 分岐（兄弟）ではなく直列に繋ぐので、左右の切り替えなしで全部見える。
+ */
+export async function appendAssistantMessage(params: {
+  conversationId: string;
+  parentId: string;
+  modelId: string;
+  content: string;
+  usageJson?: string | null;
+}): Promise<string> {
+  const d = await db();
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  await d.batch([
+    d
+      .prepare(
+        "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, status, flushed_at, created_at) VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'done', ?, ?)",
+      )
+      .bind(
+        id,
+        params.conversationId,
+        params.parentId,
+        params.content,
+        params.modelId,
+        params.usageJson ?? null,
+        now,
+        now,
+      ),
+    d
+      .prepare(
+        "UPDATE conversations SET current_leaf_message_id = ?, updated_at = ? WHERE id = ?",
+      )
+      .bind(id, now, params.conversationId),
+  ]);
+  return id;
+}
+
 /** ポーリング用: 単一メッセージの現在状態を返す（中断検知つき）。 */
 export async function getMessage(
   conversationId: string,

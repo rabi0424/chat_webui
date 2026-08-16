@@ -5,6 +5,15 @@ import type { UiAttachment, UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
 import { recordModelUse } from "../lib/recent-models";
 import {
+  readRetryConfig,
+  RETRY_CONCURRENCY_KEY,
+  RETRY_DEFAULT_MAX_ATTEMPTS,
+  RETRY_DEFAULT_TARGET,
+  RETRY_ENABLED_KEY,
+  RETRY_MAX_KEY,
+  RETRY_TARGET_KEY,
+} from "../lib/retry";
+import {
   ACCEPTED_IMAGE_TYPES,
   formatBytes,
   isAcceptedImage,
@@ -41,6 +50,8 @@ export interface BotContext {
 const MODEL_STORAGE_KEY = "chat-webui:model";
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
 const POLL_INTERVAL_MS = 500;
+/** リトライ生成の追跡間隔。途中経過が無いので長めにする。 */
+const RUN_POLL_INTERVAL_MS = 1500;
 /**
  * Web検索（OpenRouterの :online プラグイン）の設定キー。
  * 他の生成パラメータと同じく会話の params に保存するが、APIへは送らず
@@ -96,6 +107,44 @@ function MessageImages({
           />
         </button>
       ))}
+    </div>
+  );
+}
+
+/** 「成功するまで生成」の数値入力1つ分。 */
+function RetryField({
+  label,
+  hint,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm">{label}</p>
+        <p className="truncate text-xs text-neutral-400 dark:text-neutral-500">
+          {hint}
+        </p>
+      </div>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        step={1}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={label}
+        className="w-20 shrink-0 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+      />
     </div>
   );
 }
@@ -326,7 +375,8 @@ export function Chat({
   initialParams?: ParamsState | null;
   emptyState?: React.ReactNode;
 }) {
-  const { models, usdJpy, openSidebar } = useOutletContext<ShellContext>();
+  const { models, usdJpy, settings, openSidebar } =
+    useOutletContext<ShellContext>();
   const navigate = useNavigate();
   const revalidator = useRevalidator();
 
@@ -366,6 +416,11 @@ export function Chat({
   const [dragOver, setDragOver] = useState(false);
   /** 原寸表示中の添付ID。 */
   const [lightbox, setLightbox] = useState<string | null>(null);
+  /**
+   * 「成功するまで生成」の実行確認待ち。
+   * 何度も生成する＝そのぶん課金されるので、走り出す前にパラメータを見せる。
+   */
+  const [pendingRun, setPendingRun] = useState<(() => void) | null>(null);
 
   // 新規チャットで送信した時点で会話IDが確定するため ref で保持する
   const convIdRef = useRef<string | null>(conversationId);
@@ -436,6 +491,22 @@ export function Chat({
     const next = { ...params };
     if (webSearch) next[WEB_PARAM_KEY] = "off";
     else delete next[WEB_PARAM_KEY];
+    changeParams(next);
+  };
+
+  /** 「成功するまで生成」の有効/無効。既定値も同時に置く。 */
+  const toggleRetry = () => {
+    const next = { ...params };
+    if (retryConfig) {
+      delete next[RETRY_ENABLED_KEY];
+    } else {
+      next[RETRY_ENABLED_KEY] = "on";
+      next[RETRY_TARGET_KEY] ??= RETRY_DEFAULT_TARGET;
+      next[RETRY_MAX_KEY] ??= Math.min(
+        RETRY_DEFAULT_MAX_ATTEMPTS,
+        settings.retryAttemptCeiling,
+      );
+    }
     changeParams(next);
   };
 
@@ -528,6 +599,15 @@ export function Chat({
   // --- 添付画像 -----------------------------------------------------------
 
   const selectedModel = models.find((m) => m.id === model);
+  /**
+   * 「成功するまで生成」。セーフティ判定の揺らぎで弾かれた依頼を
+   * 投げ直すためのものなので、画像を出せるモデルのときだけ出す
+   * （テキストは成功の判定ができない）。
+   */
+  const canRetry = selectedModel?.outputModalities.includes("image") ?? false;
+  const retryConfig = canRetry
+    ? readRetryConfig(params, settings.retryAttemptCeiling)
+    : null;
   /** 画像入力に対応したモデルか。Poeも supports_images を返すので同じ扱い。 */
   const supportsImages =
     !selectedModel || selectedModel.inputModalities.includes("image");
@@ -717,6 +797,31 @@ export function Chat({
   }
 
   /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */
+  /**
+   * リトライ生成の追跡。成功するたびに応答が増えるので、
+   * 1件を見張るのではなくパスごと取り直す。
+   * 画像生成には途中経過が無いため、間隔は長めでよい。
+   */
+  async function pollRunUntilDone(convId: string, epoch: number) {
+    for (;;) {
+      if (epochRef.current !== epoch) return;
+      try {
+        const res = await fetch(`/api/conversations/${convId}/path`);
+        if (res.ok) {
+          const { messages: fresh } = (await res.json()) as {
+            messages: UiMessage[];
+          };
+          if (epochRef.current !== epoch) return;
+          setMessages(fresh);
+          if (!fresh.some((m) => m.status === "streaming")) return;
+        }
+      } catch {
+        // 一時的な失敗はリトライ
+      }
+      await new Promise((r) => setTimeout(r, RUN_POLL_INTERVAL_MS));
+    }
+  }
+
   async function refreshPath(convId: string, epoch: number) {
     try {
       const res = await fetch(`/api/conversations/${convId}/path`);
@@ -888,7 +993,11 @@ export function Chat({
       });
 
       // 生成過程・最終状態はサーバーを正とし、ポーリングで追いかける
-      await pollUntilDone(convId, assistantMessageId, epoch);
+      if (retryConfig) {
+        await pollRunUntilDone(convId, epoch);
+      } else {
+        await pollUntilDone(convId, assistantMessageId, epoch);
+      }
 
       if (epochRef.current === epoch) {
         setIsStreaming(false);
@@ -933,7 +1042,11 @@ export function Chat({
     }
   }
 
-  function send() {
+  function send(confirmed = false) {
+    if (retryConfig && !confirmed) {
+      setPendingRun(() => () => send(true));
+      return;
+    }
     const text = input.trim();
     // 画像だけの送信も許す。アップロード中は完了を待つ
     if ((!text && readyAttachmentIds.length === 0) || isStreaming || uploading) {
@@ -972,12 +1085,15 @@ export function Chat({
 
   function stop() {
     const convId = convIdRef.current;
-    const last = messages[messages.length - 1];
-    if (!convId || !last?.id || last.role !== "assistant") return;
+    // リトライ生成では末尾が完了済みの応答なので、生成中の行を探す
+    const target = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.id && m.status === "streaming");
+    if (!convId || !target?.id) return;
     void fetch(`/api/conversations/${convId}/stop`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messageId: last.id }),
+      body: JSON.stringify({ messageId: target.id }),
     }).catch(() => {});
   }
 
@@ -985,8 +1101,12 @@ export function Chat({
    * 最後尾がユーザーメッセージのとき（分岐直後や応答削除後）、
    * 新しい入力なしでそのまま応答を生成する。
    */
-  function generateFromLast() {
+  function generateFromLast(confirmed = false) {
     if (isStreaming) return;
+    if (retryConfig && !confirmed) {
+      setPendingRun(() => () => generateFromLast(true));
+      return;
+    }
     const last = messages[messages.length - 1];
     if (!last || last.role !== "user" || !last.id) return;
     void runGeneration([...messages], {
@@ -995,8 +1115,12 @@ export function Chat({
     });
   }
 
-  function regenerate() {
+  function regenerate(confirmed = false) {
     if (isStreaming) return;
+    if (retryConfig && !confirmed) {
+      setPendingRun(() => () => regenerate(true));
+      return;
+    }
     const history = [...messages];
     while (history.length > 0 && history[history.length - 1].role === "assistant") {
       history.pop();
@@ -1009,8 +1133,12 @@ export function Chat({
   }
 
   /** 過去メッセージの編集・再送信（同一会話内で分岐を作る）。 */
-  function submitEdit() {
+  function submitEdit(confirmed = false) {
     if (!editing || isStreaming || editing.uploads > 0) return;
+    if (retryConfig && !confirmed) {
+      setPendingRun(() => () => submitEdit(true));
+      return;
+    }
     const text = editing.text.trim();
     const attachments = editing.attachments;
     if (!text && attachments.length === 0) return;
@@ -1242,6 +1370,70 @@ export function Chat({
                 </button>
               </div>
             )}
+            {canRetry && (
+              <div className="mb-3 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">成功するまで生成</p>
+                    <p className="text-xs text-neutral-400 dark:text-neutral-500">
+                      画像が返るまで同じ依頼を投げ直す（拒否の揺らぎ対策）
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={retryConfig != null}
+                    aria-label="成功するまで生成"
+                    onClick={toggleRetry}
+                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                      retryConfig
+                        ? "bg-accent"
+                        : "bg-neutral-300 dark:bg-neutral-600"
+                    }`}
+                  >
+                    <span
+                      className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                        retryConfig ? "translate-x-[22px]" : "translate-x-0.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+                {retryConfig && (
+                  <div className="mt-2 space-y-1.5 border-t border-neutral-100 pt-2 dark:border-white/10">
+                    <RetryField
+                      label="目標の成功数"
+                      hint="ほしい応答の数"
+                      value={retryConfig.target}
+                      min={1}
+                      max={settings.retryAttemptCeiling}
+                      onChange={(v) =>
+                        changeParams({ ...params, [RETRY_TARGET_KEY]: v })
+                      }
+                    />
+                    <RetryField
+                      label="上限の試行回数"
+                      hint={`ここで打ち切る（設定の天井: ${settings.retryAttemptCeiling}）`}
+                      value={retryConfig.maxAttempts}
+                      min={1}
+                      max={settings.retryAttemptCeiling}
+                      onChange={(v) =>
+                        changeParams({ ...params, [RETRY_MAX_KEY]: v })
+                      }
+                    />
+                    <RetryField
+                      label="並列数"
+                      hint="同時に走らせる数。既定は目標の成功数と同じ"
+                      value={retryConfig.concurrency}
+                      min={1}
+                      max={retryConfig.maxAttempts}
+                      onChange={(v) =>
+                        changeParams({ ...params, [RETRY_CONCURRENCY_KEY]: v })
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             <ParamsEditor
               model={models.find((m) => m.id === model)}
               value={params}
@@ -1383,7 +1575,7 @@ export function Chat({
                           </button>
                           <button
                             type="button"
-                            onClick={submitEdit}
+                            onClick={() => submitEdit()}
                             disabled={
                               (!editing.text.trim() &&
                                 editing.attachments.length === 0) ||
@@ -1489,7 +1681,7 @@ export function Chat({
                       {i === messages.length - 1 && !isStreaming && (
                         <button
                           type="button"
-                          onClick={regenerate}
+                          onClick={() => regenerate()}
                           className="shrink-0 rounded-lg border border-red-300 px-3 py-1 hover:bg-red-100 dark:border-red-800 dark:hover:bg-red-900"
                         >
                           再試行
@@ -1568,7 +1760,7 @@ export function Chat({
               <span className="break-all">{error}</span>
               <button
                 type="button"
-                onClick={regenerate}
+                onClick={() => regenerate()}
                 className="shrink-0 rounded-lg border border-red-300 px-3 py-1 hover:bg-red-100 dark:border-red-800 dark:hover:bg-red-900"
               >
                 再試行
@@ -1583,7 +1775,7 @@ export function Chat({
               <div className="mt-3">
                 <button
                   type="button"
-                  onClick={regenerate}
+                  onClick={() => regenerate()}
                   className="rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
                 >
                   ↻ 再生成
@@ -1600,7 +1792,7 @@ export function Chat({
               <div className="mt-3 flex justify-end">
                 <button
                   type="button"
-                  onClick={generateFromLast}
+                  onClick={() => generateFromLast()}
                   className="rounded-lg border border-accent/40 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/10"
                 >
                   ↵ 応答を生成
@@ -1750,7 +1942,7 @@ export function Chat({
                 ) : (
                   <button
                     type="button"
-                    onClick={send}
+                    onClick={() => send()}
                     disabled={
                       (!input.trim() && readyAttachmentIds.length === 0) ||
                       uploading
@@ -1771,6 +1963,75 @@ export function Chat({
       {dragOver && (
         <div className="pointer-events-none absolute inset-3 z-40 grid animate-fade place-items-center rounded-3xl border-2 border-dashed border-accent/60 bg-accent/10 text-sm font-medium text-accent backdrop-blur-sm">
           画像をドロップして添付
+        </div>
+      )}
+
+      {pendingRun && retryConfig && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setPendingRun(null)}
+        >
+          <div
+            className={`w-full max-w-sm rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-sm font-semibold">成功するまで生成します</p>
+            <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+              画像が返るまで同じ依頼を投げ直します。試行のたびに課金されます。
+            </p>
+            <dl className="mt-3 space-y-1.5 rounded-xl border border-neutral-200/80 p-3 text-sm dark:border-white/10">
+              <div className="flex justify-between gap-3">
+                <dt className="text-neutral-500 dark:text-neutral-400">
+                  目標の成功数
+                </dt>
+                <dd className="font-medium">{retryConfig.target}件</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-neutral-500 dark:text-neutral-400">
+                  上限の試行回数
+                </dt>
+                <dd className="font-medium">{retryConfig.maxAttempts}回</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-neutral-500 dark:text-neutral-400">
+                  並列数
+                </dt>
+                <dd className="font-medium">{retryConfig.concurrency}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-neutral-500 dark:text-neutral-400">
+                  モデル
+                </dt>
+                <dd className="min-w-0 truncate font-medium">
+                  {selectedModel?.name ?? model}
+                </dd>
+              </div>
+            </dl>
+            <p className="mt-2 text-xs text-neutral-400 dark:text-neutral-500">
+              最大 {retryConfig.maxAttempts}回ぶんの生成が行われます。並列数が
+              目標を超える場合、成功が目標より多くなることがあります（受け取ります）。
+            </p>
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingRun(null)}
+                className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const run = pendingRun;
+                  setPendingRun(null);
+                  run();
+                }}
+                className="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent/85"
+              >
+                実行
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

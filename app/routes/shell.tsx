@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Outlet } from "react-router";
 import type { Route } from "./+types/shell";
-import { listBots, listConversations, listFolders, type BotRow, type FolderRow } from "../lib/db.server";
+import {
+  getAppSettings,
+  listBots,
+  listConversations,
+  listFolders,
+  type BotRow,
+  type FolderRow,
+} from "../lib/db.server";
+import type { AppSettings } from "../lib/settings";
 import { fetchModels, type ModelInfo } from "../lib/openrouter.server";
 import { fetchUsdJpy } from "../lib/fx.server";
 import { Sidebar } from "../components/Sidebar";
@@ -11,22 +19,26 @@ export interface ShellContext {
   bots: BotRow[];
   /** USD/JPYレート。取得できないときは null（ドル建て表示に戻る）。 */
   usdJpy: number | null;
+  /** アプリ全体の設定（設定画面で変更する）。 */
+  settings: AppSettings;
   openSidebar: () => void;
 }
 
 export async function loader() {
-  const [models, conversations, bots, folders, usdJpy] = await Promise.all([
-    fetchModels(),
-    listConversations(),
-    listBots(),
-    listFolders(),
-    fetchUsdJpy(),
-  ]);
-  return { models, conversations, bots, folders, usdJpy };
+  const [models, conversations, bots, folders, usdJpy, settings] =
+    await Promise.all([
+      fetchModels(),
+      listConversations(),
+      listBots(),
+      listFolders(),
+      fetchUsdJpy(),
+      getAppSettings(),
+    ]);
+  return { models, conversations, bots, folders, usdJpy, settings };
 }
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { models, conversations, bots, folders, usdJpy } = loaderData;
+  const { models, conversations, bots, folders, usdJpy, settings } = loaderData;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarClosing, setSidebarClosing] = useState(false);
 
@@ -156,6 +168,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
               models,
               bots,
               usdJpy,
+              settings,
               openSidebar: () => setSidebarOpen(true),
             } satisfies ShellContext
           }
