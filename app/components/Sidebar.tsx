@@ -19,7 +19,6 @@ import {
   GLASS_ACCENT_BUTTON,
   GLASS_ICON_BUTTON,
   GLASS_PANEL,
-  GLASS_SHEEN,
 } from "../lib/ui";
 
 type MenuTarget =
@@ -259,7 +258,7 @@ export function Sidebar({
   function MenuItems({ target }: { target: MenuTarget }) {
     if (!(menu?.type === target.type && menu.id === target.id)) return null;
     const itemClass =
-      "block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10";
+      "block w-full rounded-lg px-3 py-2 text-left text-[0.9375rem] text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10";
     const close = () => setMenu(null);
 
     if (target.type === "conversation") {
@@ -288,7 +287,7 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/15"
+            className="block w-full rounded-lg px-3 py-2 text-left text-[0.9375rem] text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/15"
             onClick={() => { close(); void removeConversation(c); }}
           >
             削除
@@ -319,7 +318,7 @@ export function Sidebar({
         )}
         <button
           type="button"
-          className="block w-full rounded-lg px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/15"
+          className="block w-full rounded-lg px-3 py-2 text-left text-[0.9375rem] text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/15"
           onClick={() => { close(); void removeFolder(f); }}
         >
           削除
@@ -338,7 +337,7 @@ export function Sidebar({
           to={`/chat/${c.id}`}
           onClick={onNavigate}
           className={({ isActive }) =>
-            `flex items-center gap-1.5 rounded-lg py-2 pl-3 pr-8 text-sm ${
+            `flex items-center gap-1.5 rounded-lg py-2 pl-3 pr-8 text-[0.9375rem] ${
               isActive
                 ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
                 : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
@@ -392,7 +391,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={() => setView(f.id)}
-            className="min-w-0 flex-1 truncate rounded-lg py-2 pl-1 pr-8 text-left text-sm text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+            className="min-w-0 flex-1 truncate rounded-lg py-2 pl-1 pr-8 text-left text-[0.9375rem] text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
           >
             <span aria-hidden className="mr-1.5">📁</span>
             {f.name}
@@ -406,7 +405,7 @@ export function Sidebar({
         {isExpanded && (
           <ul className="mt-0.5 space-y-0.5">
             {children.length === 0 && (
-              <li className="ml-5 px-3 py-1.5 text-xs text-neutral-400 dark:text-neutral-600">
+              <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
                 （空のフォルダ）
               </li>
             )}
@@ -424,7 +423,7 @@ export function Sidebar({
     : null;
 
   const shortcutClass = ({ isActive }: { isActive: boolean }) =>
-    `flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm ${
+    `flex items-center gap-2.5 rounded-xl px-3 py-2 text-[0.9375rem] ${
       isActive
         ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
         : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
@@ -449,7 +448,7 @@ export function Sidebar({
               }}
               placeholder="検索（-語 で除外）"
               aria-label="会話を検索"
-              className="w-full rounded-full border border-neutral-200 bg-neutral-50 py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              className="w-full rounded-full border border-neutral-200 bg-neutral-50 py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-[0.9375rem] dark:border-neutral-700 dark:bg-neutral-900"
             />
             <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
             <button
@@ -463,7 +462,7 @@ export function Sidebar({
           </div>
         ) : (
           <>
-            <span className="min-w-0 flex-1 truncate px-2 text-lg font-semibold tracking-tight">
+            <span className="min-w-0 flex-1 truncate px-2 text-xl font-semibold tracking-tight">
               Chat
             </span>
             <button
@@ -499,7 +498,7 @@ export function Sidebar({
         {searchQuery.trim() ? (
           /* --- 検索結果 --- */
           <>
-            <p className="px-3 pb-1 pt-1 text-[11px] font-medium text-neutral-400 dark:text-neutral-600">
+            <p className="px-3 pb-1 pt-1 text-xs font-medium text-neutral-400 dark:text-neutral-600">
               {searching
                 ? "検索中…"
                 : `検索結果 ${searchResults?.length ?? 0}件`}
@@ -512,11 +511,11 @@ export function Sidebar({
                     onClick={onNavigate}
                     className="block rounded-lg px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900"
                   >
-                    <span className="block truncate text-sm text-neutral-700 dark:text-neutral-200">
+                    <span className="block truncate text-[0.9375rem] text-neutral-700 dark:text-neutral-200">
                       <Highlight text={r.title} terms={highlightTerms} />
                     </span>
                     {r.snippet && (
-                      <span className="mt-0.5 block truncate text-xs text-neutral-400 dark:text-neutral-500">
+                      <span className="mt-0.5 block truncate text-[0.8125rem] text-neutral-400 dark:text-neutral-500">
                         <Highlight text={r.snippet} terms={highlightTerms} />
                       </span>
                     )}
@@ -524,7 +523,7 @@ export function Sidebar({
                 </li>
               ))}
               {!searching && searchResults?.length === 0 && (
-                <li className="px-3 py-6 text-center text-xs text-neutral-400 dark:text-neutral-600">
+                <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
                   見つかりませんでした
                 </li>
               )}
@@ -542,13 +541,13 @@ export function Sidebar({
               >
                 <IconArrowLeft className="h-4 w-4" />
               </button>
-              <span className="truncate text-sm font-medium">
+              <span className="truncate text-[0.9375rem] font-medium">
                 📁 {viewFolder.name}
               </span>
             </div>
             <ul className="space-y-0.5">
               {folderConversations(viewFolder.id).length === 0 && (
-                <li className="px-3 py-6 text-center text-xs text-neutral-400 dark:text-neutral-600">
+                <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
                   このフォルダは空です
                 </li>
               )}
@@ -562,7 +561,7 @@ export function Sidebar({
           <>
             {pinnedItems.length > 0 && (
               <>
-                <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-neutral-400 dark:text-neutral-600">
+                <p className="px-3 pb-1 pt-2 text-xs font-medium text-neutral-400 dark:text-neutral-600">
                   ピン留め
                 </p>
                 <ul className="space-y-0.5">
@@ -581,7 +580,7 @@ export function Sidebar({
             )}
 
             <div className="flex items-center justify-between px-3 pb-1 pt-3">
-              <p className="text-[11px] font-medium text-neutral-400 dark:text-neutral-600">
+              <p className="text-xs font-medium text-neutral-400 dark:text-neutral-600">
                 フォルダ
               </p>
               <button
@@ -600,11 +599,11 @@ export function Sidebar({
               ))}
             </ul>
 
-            <p className="px-3 pb-1 pt-3 text-[11px] font-medium text-neutral-400 dark:text-neutral-600">
+            <p className="px-3 pb-1 pt-3 text-xs font-medium text-neutral-400 dark:text-neutral-600">
               会話
             </p>
             {rootConversations.length === 0 && pinnedItems.length === 0 && (
-              <p className="px-3 py-4 text-center text-xs text-neutral-400 dark:text-neutral-600">
+              <p className="px-3 py-4 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
                 まだ会話はありません
               </p>
             )}
@@ -622,15 +621,14 @@ export function Sidebar({
         ボタンで「新規チャット・テーマ・設定」を常に手の届く位置に置く。
         バー自体はタップを通し（pointer-events-none）、ボタンだけが拾う。
       */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/70 to-transparent pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-12 dark:from-neutral-950 dark:via-neutral-950/70">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/60 to-transparent pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-16 dark:from-neutral-950 dark:via-neutral-950/60">
         <div className="pointer-events-auto flex items-center gap-2 px-3">
           <NavLink
             to="/"
             onClick={onNavigate}
             title="新規チャット"
-            className={`relative flex min-w-0 flex-1 items-center justify-center gap-2 overflow-hidden whitespace-nowrap rounded-full px-4 py-3 text-sm font-semibold transition active:scale-95 ${GLASS_ACCENT_BUTTON}`}
+            className={`flex min-w-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-3 text-[0.9375rem] font-semibold transition active:scale-95 ${GLASS_ACCENT_BUTTON}`}
           >
-            <span className={GLASS_SHEEN} />
             <IconPencilSquare className="h-4.5 w-4.5 shrink-0" />
             新規チャット
           </NavLink>
@@ -644,7 +642,6 @@ export function Sidebar({
               `${GLASS_ICON_BUTTON} ${isActive ? "text-accent" : ""}`
             }
           >
-            <span className={GLASS_SHEEN} />
             <IconCog className="h-5 w-5" />
           </NavLink>
         </div>

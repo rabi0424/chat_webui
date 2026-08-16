@@ -1908,7 +1908,7 @@ export function Chat({
           onClick={scrollToBottom}
           aria-label="最新のメッセージへ"
           title="最新のメッセージへ"
-          className={`absolute left-1/2 z-20 -translate-x-1/2 rounded-full p-2 text-neutral-500 shadow-lg animate-pop dark:text-neutral-300 ${GLASS_PANEL}`}
+          className={`absolute left-1/2 z-20 -translate-x-1/2 rounded-full p-2 text-neutral-500 animate-pop dark:text-neutral-300 ${GLASS_PANEL}`}
           style={{ bottom: footerHeight + 12 }}
         >
           <IconArrowDown className="h-5 w-5" />

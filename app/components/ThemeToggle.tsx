@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { applyTheme, getTheme, type Theme } from "../lib/theme";
 import { ACCENTS, applyAccent, DEFAULT_ACCENT, getAccent } from "../lib/accent";
 import { IconAuto, IconMoon, IconSun } from "./icons";
-import { GLASS_ICON_BUTTON, GLASS_SHEEN } from "../lib/ui";
+import { GLASS_ICON_BUTTON } from "../lib/ui";
 
 const CYCLE: Theme[] = ["light", "dark", "system"];
 const LABELS: Record<Theme, string> = {
@@ -52,7 +52,6 @@ export function ThemeToggle() {
       aria-label={`テーマ: ${LABELS[theme]}`}
       className={GLASS_ICON_BUTTON}
     >
-      <span className={GLASS_SHEEN} />
       <ThemeIcon theme={theme} />
     </button>
   );
