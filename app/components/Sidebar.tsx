@@ -4,8 +4,11 @@ import type { ConversationRow, FolderRow, SearchResult } from "../lib/db.server"
 import { AccentPicker, ThemeToggle } from "./ThemeToggle";
 import {
   IconArrowLeft,
+  IconBot,
   IconChevronRight,
+  IconCog,
   IconEllipsis,
+  IconPhoto,
   IconPlus,
   IconSearch,
   IconX,
@@ -409,7 +412,7 @@ export function Sidebar({
             }`
           }
         >
-          <span aria-hidden>🤖</span>
+          <IconBot className="h-4 w-4" />
           ボット管理
         </NavLink>
         <NavLink
@@ -423,7 +426,7 @@ export function Sidebar({
             }`
           }
         >
-          <span aria-hidden>🖼️</span>
+          <IconPhoto className="h-4 w-4" />
           画像
         </NavLink>
         <NavLink
@@ -437,7 +440,7 @@ export function Sidebar({
             }`
           }
         >
-          <span aria-hidden>⚙️</span>
+          <IconCog className="h-4 w-4" />
           設定
         </NavLink>
       </div>
