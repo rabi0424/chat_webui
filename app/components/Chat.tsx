@@ -1312,7 +1312,15 @@ export function Chat({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-semibold">生成パラメータ</p>
+              <div className="flex items-baseline gap-2">
+                <p className="text-sm font-semibold">生成パラメータ</p>
+                {/* 対応パラメータも送信形式もプロバイダで異なるため明示する */}
+                {selectedModel && (
+                  <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                    {selectedModel.provider === "poe" ? "Poe" : "OpenRouter"}
+                  </span>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={resetParams}
