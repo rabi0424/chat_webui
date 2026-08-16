@@ -15,7 +15,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  retryAttemptCeiling: 20,
+  retryAttemptCeiling: 100,
 };
 
 /** 天井として受け付ける範囲。 */
