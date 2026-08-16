@@ -101,6 +101,12 @@ CREATE TABLE IF NOT EXISTS attachments (
 CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_key ON attachments(r2_key);
 `,
+  // v8: 生成画像。モデルが返した画像もR2へ取り込み、上流CDNの期限切れで
+  // 過去の会話から消えないようにする。kind で用途を分ける。
+  `
+ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'upload';
+CREATE INDEX IF NOT EXISTS idx_attachments_kind ON attachments(kind, created_at);
+`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -199,6 +205,8 @@ export interface AttachmentRow {
   name: string | null;
   size: number;
   created_at: number;
+  /** upload = ユーザーが添付した画像 / generated = モデルが生成した画像。 */
+  kind: "upload" | "generated";
 }
 
 /**
@@ -814,6 +822,7 @@ export async function createAttachment(params: {
     name: params.name,
     size: params.size,
     created_at: Date.now(),
+    kind: "upload",
   };
   await d
     .prepare(
@@ -895,7 +904,7 @@ function linkAttachmentStatements(
           .bind(target.messageId, target.conversationId, now + i, a.id)
       : d
           .prepare(
-            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .bind(
             crypto.randomUUID(),
@@ -906,8 +915,84 @@ function linkAttachmentStatements(
             a.name,
             a.size,
             now + i,
+            a.kind ?? "upload",
           ),
   );
+}
+
+/**
+ * モデルが生成した画像を添付として登録する。
+ * アップロードと違い、最初からメッセージに属する。
+ */
+export async function createGeneratedAttachment(params: {
+  messageId: string;
+  conversationId: string;
+  r2Key: string;
+  mimeType: string;
+  name: string | null;
+  size: number;
+}): Promise<string> {
+  const d = await db();
+  const id = crypto.randomUUID();
+  await d
+    .prepare(
+      "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generated')",
+    )
+    .bind(
+      id,
+      params.messageId,
+      params.conversationId,
+      params.r2Key,
+      params.mimeType,
+      params.name,
+      params.size,
+      Date.now(),
+    )
+    .run();
+  return id;
+}
+
+export interface GeneratedImageRow {
+  id: string;
+  conversation_id: string | null;
+  message_id: string | null;
+  created_at: number;
+  /** 生成元の会話タイトル（会話が消えていれば null）。 */
+  title: string | null;
+  /** 生成に使ったモデル。 */
+  model_id: string | null;
+}
+
+/**
+ * 生成画像の一覧（新しい順）。
+ *
+ * 会話ツリーの現在のパスとは無関係に、行が存在する限り出す。
+ * 再生成や分岐で表示から外れた画像も残り続ける（分岐は上書きではなく
+ * 別の枝として保存されるため、元のメッセージの添付は消えない）。
+ */
+export async function listGeneratedImages(params: {
+  limit: number;
+  before?: number;
+}): Promise<GeneratedImageRow[]> {
+  const d = await db();
+  const { results } = await d
+    .prepare(
+      // フォークで実体を共有する行は重複させない。MAX() と併記した列は
+      // その最大行の値になる（SQLiteの規定の挙動）ので、最新の1行が残る。
+      `SELECT a.id, a.conversation_id, a.message_id,
+              MAX(a.created_at) AS created_at,
+              c.title AS title, m.model_id AS model_id
+         FROM attachments a
+         LEFT JOIN conversations c ON c.id = a.conversation_id
+         LEFT JOIN messages m ON m.id = a.message_id
+        WHERE a.kind = 'generated' AND a.created_at < ?
+        GROUP BY a.r2_key
+        ORDER BY created_at DESC
+        LIMIT ?`,
+    )
+    .bind(params.before ?? Number.MAX_SAFE_INTEGER, params.limit)
+    .all<GeneratedImageRow>();
+  return results;
 }
 
 /**

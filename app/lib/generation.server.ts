@@ -6,8 +6,19 @@ import {
   type ChatMessage,
 } from "./openrouter.server";
 import { buildGenerationPayload, type ParamsState } from "./params";
-import { finalizeGeneration, flushGeneration, getAttachments } from "./db.server";
-import { getFile, toBase64 } from "./r2.server";
+import {
+  createGeneratedAttachment,
+  finalizeGeneration,
+  flushGeneration,
+  getAttachments,
+} from "./db.server";
+import {
+  ALLOWED_IMAGE_TYPES,
+  getFile,
+  isStorageConfigured,
+  putFile,
+  toBase64,
+} from "./r2.server";
 
 /**
  * サーバー側生成のジョブ実行。
@@ -115,6 +126,75 @@ function applyPromptCaching(
     };
     return { role: m.role, content: parts };
   });
+}
+
+/** 1応答あたりに取り込む生成画像の枚数と、1枚あたりの上限。 */
+const MAX_CAPTURED_IMAGES = 8;
+const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
+
+/** 応答本文からモデルが返した画像URLを拾う（markdown記法と裸のURL）。 */
+function extractImageUrls(content: string): string[] {
+  const urls: string[] = [];
+  const add = (u: string) => {
+    if (u.startsWith("http") && !urls.includes(u)) urls.push(u);
+  };
+  for (const m of content.matchAll(/!\[[^\]]*\]\(\s*<?([^)\s>]+)>?[^)]*\)/g)) {
+    add(m[1]);
+  }
+  // 画像記法を使わず、URLだけを返すボットもある
+  for (const m of content.matchAll(/https?:\/\/[^\s<>()[\]"']+/g)) {
+    if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(m[0])) add(m[0]);
+  }
+  return urls.slice(0, MAX_CAPTURED_IMAGES);
+}
+
+/**
+ * 生成された画像をR2へ取り込み、本文のURLを自前の配信URLへ差し替える。
+ *
+ * モデルが返すURLは上流のCDN（Poeなら pfst.cf2.poecdn.net）を指しており、
+ * 期限が切れると過去の会話から画像が消えてしまう。実体をこちらへ持って
+ * 添付として記録することで、会話にも画像一覧にも残り続けるようにする。
+ * 取り込めなかった画像は元のURLのまま残す（表示はできるので害はない）。
+ */
+async function captureGeneratedImages(
+  content: string,
+  target: { messageId: string; conversationId: string },
+): Promise<string> {
+  if (!isStorageConfigured()) return content;
+  const urls = extractImageUrls(content);
+  if (urls.length === 0) return content;
+
+  let out = content;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const mimeType = (res.headers.get("content-type") ?? "")
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+      if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) continue;
+      const buffer = await res.arrayBuffer();
+      if (buffer.byteLength === 0 || buffer.byteLength > MAX_CAPTURED_BYTES) {
+        continue;
+      }
+
+      const key = `generated/${target.messageId}/${crypto.randomUUID()}`;
+      await putFile(key, buffer, mimeType);
+      const id = await createGeneratedAttachment({
+        messageId: target.messageId,
+        conversationId: target.conversationId,
+        r2Key: key,
+        mimeType,
+        name: null,
+        size: buffer.byteLength,
+      });
+      out = out.split(url).join(`/api/files/${id}`);
+    } catch {
+      // 1枚取り込めなくても応答は確定させる
+    }
+  }
+  return out;
 }
 
 export interface GenerationJob {
@@ -295,8 +375,16 @@ export async function runGenerationJob(job: GenerationJob): Promise<void> {
   }
 
   const empty = content === "";
+  // 画像はここで自前のストレージへ移す（本文のURLも差し替わる）
+  const finalContent = empty
+    ? content
+    : await captureGeneratedImages(content, {
+        messageId: job.assistantMessageId,
+        conversationId: job.conversationId,
+      });
+
   await finalizeGeneration(job.assistantMessageId, {
-    content,
+    content: finalContent,
     reasoning: reasoning || null,
     usageJson,
     status: empty ? "error" : "done",
