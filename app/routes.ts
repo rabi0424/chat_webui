@@ -11,6 +11,7 @@ export default [
     route("bots/:id/edit", "routes/bots.$id.edit.tsx"),
   ]),
   route("api/models", "routes/api.models.ts"),
+  route("api/fx", "routes/api.fx.ts"),
   route("api/conversations", "routes/api.conversations.ts"),
   route("api/conversations/unread", "routes/api.conversations.unread.ts"),
   route("api/conversations/:id", "routes/api.conversations.$id.ts"),

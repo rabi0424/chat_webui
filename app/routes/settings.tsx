@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useOutletContext } from "react-router";
+import { startTransition, useEffect, useState } from "react";
+import { useOutletContext, useRevalidator } from "react-router";
 import type { Route } from "./+types/settings";
 import type { ShellContext } from "./shell";
 import { getAppSettings } from "../lib/db.server";
@@ -24,6 +24,25 @@ export function meta({}: Route.MetaArgs) {
 
 export async function loader() {
   return { settings: await getAppSettings() };
+}
+
+/**
+ * 設定はめったに変わらないので短時間メモリに持ち、再訪を即表示にする。
+ * 保存時は save() が新しい値で上書きするため、古い値へ戻ることはない。
+ */
+let settingsCache: { at: number; data: { settings: AppSettings } } | null =
+  null;
+const SETTINGS_TTL_MS = 5 * 60 * 1000;
+
+export async function clientLoader({
+  serverLoader,
+}: Route.ClientLoaderArgs) {
+  if (settingsCache && Date.now() - settingsCache.at < SETTINGS_TTL_MS) {
+    return settingsCache.data;
+  }
+  const data = await serverLoader();
+  settingsCache = { at: Date.now(), data };
+  return data;
 }
 
 const THEMES: { value: Theme; label: string }[] = [
@@ -118,9 +137,10 @@ function PerfPanel() {
   const [comparison, setComparison] = useState<BuildComparison | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // localStorageはSSRで読めないので描画後に読む
+  // localStorageはSSRで読めないので描画後に読む。集計は画面表示を
+  // 待たせないよう低優先度で行う
   useEffect(() => {
-    setComparison(compareLatest(loadSamples()));
+    startTransition(() => setComparison(compareLatest(loadSamples())));
   }, []);
 
   const copy = async () => {
@@ -234,6 +254,7 @@ function PerfPanel() {
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
   const { openSidebar } = useOutletContext<ShellContext>();
+  const revalidator = useRevalidator();
   const [settings, setSettings] = useState<AppSettings>(loaderData.settings);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -258,6 +279,9 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
       if (!res.ok || !body.settings) throw new Error();
       // 範囲外の値はサーバー側で丸められるので、戻り値で上書きする
       setSettings(body.settings);
+      settingsCache = { at: Date.now(), data: { settings: body.settings } };
+      // シェル経由でChatが参照する設定も更新する（遷移では再読込しないため）
+      revalidator.revalidate();
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch {

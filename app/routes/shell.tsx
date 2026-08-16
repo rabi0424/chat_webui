@@ -14,8 +14,7 @@ import {
   type FolderRow,
 } from "../lib/db.server";
 import type { AppSettings } from "../lib/settings";
-import { fetchModels, type ModelInfo } from "../lib/openrouter.server";
-import { fetchUsdJpy } from "../lib/fx.server";
+import type { ModelInfo } from "../lib/openrouter.server";
 import { Sidebar } from "../components/Sidebar";
 import { recordNavigation } from "../lib/perf";
 
@@ -34,18 +33,18 @@ export interface ShellContext {
 
 export async function loader() {
   const started = Date.now();
-  const [models, conversations, bots, folders, usdJpy, settings] =
-    await Promise.all([
-      fetchModels(),
-      listConversations(),
-      listBots(),
-      listFolders(),
-      fetchUsdJpy(),
-      getAppSettings(),
-    ]);
+  // モデル一覧（コールドスタート時は数MBの上流取得）と為替は
+  // ここでは待たない。D1だけで最初の画面を出し、モデルは
+  // クライアントが /api/models から遅れて読む（Shell内のuseEffect）。
+  const [conversations, bots, folders, settings] = await Promise.all([
+    listConversations(),
+    listBots(),
+    listFolders(),
+    getAppSettings(),
+  ]);
   // 初回表示・コールドスタートの重さを数字で追うための実測
   console.log(`[perf] shell loader ${Date.now() - started}ms`);
-  return { models, conversations, bots, folders, usdJpy, settings };
+  return { conversations, bots, folders, settings };
 }
 
 /**
@@ -65,9 +64,56 @@ export function shouldRevalidate({
   return defaultShouldRevalidate;
 }
 
+/** モデル一覧のローカルキャッシュ。起動直後はこれを即表示し、裏で更新する。 */
+const MODELS_CACHE_KEY = "chat-webui:models";
+
+/** 起動時間はドキュメント読み込みごとに1回だけ記録する。 */
+let startupRecorded = false;
+
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { models, conversations, bots, folders, usdJpy, settings } = loaderData;
+  const { conversations, bots, folders, settings } = loaderData;
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  /**
+   * モデル一覧と為替。初回表示を待たせないためローダーから外してある。
+   * 前回起動時のキャッシュを即座に出し（モデル選択がすぐ使える）、
+   * その裏で /api/models を取り直して差し替える。
+   */
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [usdJpy, setUsdJpy] = useState<number | null>(null);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(MODELS_CACHE_KEY);
+      if (raw) setModels(JSON.parse(raw) as ModelInfo[]);
+    } catch {
+      // 壊れたキャッシュは無視（下のfetchで直る）
+    }
+    void fetch("/api/models")
+      .then(async (res) => {
+        if (!res.ok) return;
+        const { models: fresh } = (await res.json()) as { models: ModelInfo[] };
+        setModels(fresh);
+        try {
+          localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(fresh));
+        } catch {
+          // 容量超過などで保存できなくても、次回起動が少し遅いだけ
+        }
+      })
+      .catch(() => {});
+    void fetch("/api/fx")
+      .then(async (res) => {
+        if (!res.ok) return;
+        setUsdJpy(((await res.json()) as { usdJpy: number | null }).usdJpy);
+      })
+      .catch(() => {});
+  }, []);
+
+  // 起動（PWAを開く/リロード）の所要時間もパフォーマンス一覧に載せる
+  useEffect(() => {
+    if (startupRecorded) return;
+    startupRecorded = true;
+    recordNavigation("(起動)", performance.now());
+  }, []);
   /**
    * 未読の会話ID。応答はサーバー側で進むので、別の画面にいるあいだに
    * 完成しても分からない。表示中だけ短い間隔で引き直し、印を最新にする。
