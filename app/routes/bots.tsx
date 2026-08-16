@@ -62,8 +62,8 @@ export default function Bots() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-4 py-6">
           {bots.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-neutral-200 px-6 py-12 text-center dark:border-neutral-700">
-              <p className="text-neutral-400 dark:text-neutral-500">
+            <div className="rounded-3xl border border-dashed border-neutral-200 px-6 py-14 text-center dark:border-neutral-800">
+              <p className="text-sm leading-relaxed text-neutral-400 dark:text-neutral-500">
                 ボットはまだありません。
                 <br />
                 「モデル + システムプロンプト」の組み合わせを登録すると、
@@ -71,18 +71,21 @@ export default function Bots() {
               </p>
             </div>
           )}
-          <ul className="space-y-2">
+          <ul className="space-y-2.5">
             {bots.map((b) => (
               <li
                 key={b.id}
-                className="flex items-center gap-3 rounded-2xl border border-neutral-200 px-4 py-3 dark:border-neutral-700"
+                className="flex items-center gap-3.5 rounded-2xl border border-black/[0.06] bg-white px-4 py-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-16px_rgba(0,0,0,0.12)] dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
               >
-                <span className="text-2xl" aria-hidden>
+                <span
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] bg-neutral-100 text-[22px] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:bg-[#1c1c1e] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]"
+                  aria-hidden
+                >
                   {b.icon}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{b.name}</p>
-                  <p className="truncate text-xs text-neutral-400 dark:text-neutral-500">
+                  <p className="truncate font-semibold tracking-tight">{b.name}</p>
+                  <p className="mt-0.5 truncate text-xs text-neutral-400 dark:text-neutral-500">
                     {models.find((m) => m.id === b.model_id)?.name ?? b.model_id}
                   </p>
                 </div>
