@@ -1,5 +1,5 @@
 import { startTransition, useEffect, useRef, useState } from "react";
-import { useNavigate, useOutletContext, useRevalidator } from "react-router";
+import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
@@ -405,6 +405,8 @@ export function Chat({
   const attachKey = `chat-webui:draft-files:${conversationId ?? "new"}`;
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 分岐直後などの控えめなトースト。数秒で自動的に消える。 */
+  const [notice, setNotice] = useState<string | null>(null);
   /**
    * 編集して再送信の状態。attachments は編集後のメッセージに付く添付
    * （既存分 + 追加分。削除も可能）。uploads は追加分のアップロード
@@ -437,6 +439,17 @@ export function Chat({
    * 何度も生成する＝そのぶん課金されるので、走り出す前にパラメータを見せる。
    */
   const [pendingRun, setPendingRun] = useState<(() => void) | null>(null);
+
+  const location = useLocation();
+  useEffect(() => {
+    if ((location.state as { forked?: boolean } | null)?.forked) {
+      setNotice("⑂ 分岐を作成しました");
+      const t = setTimeout(() => setNotice(null), 3500);
+      return () => clearTimeout(t);
+    }
+    // 分岐直後のマウント時のみ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 新規チャットで送信した時点で会話IDが確定するため ref で保持する
   const convIdRef = useRef<string | null>(conversationId);
@@ -1367,7 +1380,8 @@ export function Chat({
       });
       if (!res.ok) throw new Error();
       const { id } = (await res.json()) as { id: string };
-      await navigate(`/chat/${id}`);
+      // 遷移先は履歴が同一で分岐したことに気づきにくい。印を渡して通知を出す
+      await navigate(`/chat/${id}`, { state: { forked: true } });
     } catch {
       setError("分岐の作成に失敗しました。");
     }
@@ -1934,6 +1948,13 @@ export function Chat({
         コンポーザー: ChatGPT風の一体型ガラスピル。
         フッター自体は透明グラデーションにし、ピルだけが浮いて見えるようにする。
       */}
+      {notice && (
+        <div
+          className={`pointer-events-none absolute left-1/2 top-[calc(3.75rem+env(safe-area-inset-top))] z-30 max-w-[90%] -translate-x-1/2 truncate rounded-full px-4 py-2 text-sm text-neutral-700 animate-pop dark:text-neutral-200 ${GLASS_PANEL}`}
+        >
+          {notice}
+        </div>
+      )}
       {!atBottom && messages.length > 0 && (
         <button
           type="button"
