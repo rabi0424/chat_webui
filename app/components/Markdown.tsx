@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import type { PluggableList } from "unified";
 import type { Element, ElementContent } from "hast";
@@ -185,7 +185,15 @@ const rehypePlugins: PluggableList = [
   [rehypeHighlight, { detect: false, ignoreMissing: true }],
 ];
 
-export function Markdown({ children }: { children: string }) {
+/**
+ * memo必須: パースが重く、ストリーミング中は親が毎チャンク再描画される。
+ * 本文が変わらないメッセージの再パースをここで止める。
+ */
+export const Markdown = memo(function Markdown({
+  children,
+}: {
+  children: string;
+}) {
   const source = useMemo(() => prepareMarkdown(children), [children]);
   return (
     <div className="prose prose-sm prose-neutral sm:prose-base dark:prose-invert max-w-none break-words prose-code:before:content-none prose-code:after:content-none">
@@ -198,4 +206,4 @@ export function Markdown({ children }: { children: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});

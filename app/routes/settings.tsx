@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useOutletContext } from "react-router";
+import { startTransition, useEffect, useState } from "react";
+import { useOutletContext, useRevalidator } from "react-router";
 import type { Route } from "./+types/settings";
 import type { ShellContext } from "./shell";
 import { getAppSettings } from "../lib/db.server";
@@ -7,7 +7,16 @@ import { RETRY_CEILING_RANGE, type AppSettings } from "../lib/settings";
 import { applyTheme, getTheme, type Theme } from "../lib/theme";
 import { AccentPicker } from "../components/ThemeToggle";
 import { NumberInput } from "../components/NumberInput";
-import { IconMenu } from "../components/icons";
+import { IconCheck, IconCopy, IconMenu, IconTrash } from "../components/icons";
+import {
+  clearSamples,
+  compareLatest,
+  currentBuildId,
+  delta,
+  formatComparison,
+  loadSamples,
+  type BuildComparison,
+} from "../lib/perf";
 
 export function meta({}: Route.MetaArgs) {
   return [{ title: "設定 - Chat WebUI" }];
@@ -15,6 +24,25 @@ export function meta({}: Route.MetaArgs) {
 
 export async function loader() {
   return { settings: await getAppSettings() };
+}
+
+/**
+ * 設定はめったに変わらないので短時間メモリに持ち、再訪を即表示にする。
+ * 保存時は save() が新しい値で上書きするため、古い値へ戻ることはない。
+ */
+let settingsCache: { at: number; data: { settings: AppSettings } } | null =
+  null;
+const SETTINGS_TTL_MS = 5 * 60 * 1000;
+
+export async function clientLoader({
+  serverLoader,
+}: Route.ClientLoaderArgs) {
+  if (settingsCache && Date.now() - settingsCache.at < SETTINGS_TTL_MS) {
+    return settingsCache.data;
+  }
+  const data = await serverLoader();
+  settingsCache = { at: Date.now(), data };
+  return data;
 }
 
 const THEMES: { value: Theme; label: string }[] = [
@@ -72,8 +100,161 @@ function Section({
   );
 }
 
+/** 前回ビルド比の表示。速くなったら緑、遅くなったら赤。 */
+function DeltaBadge({ cur, prev }: { cur: number; prev: number | undefined }) {
+  const d = delta(cur, prev);
+  if (!d) {
+    return (
+      <span className="block text-[10px] text-neutral-300 dark:text-neutral-600">
+        —
+      </span>
+    );
+  }
+  const sign = d.ms > 0 ? "+" : "";
+  return (
+    <span
+      className={`block text-[10px] tabular-nums ${
+        d.ms < 0
+          ? "text-emerald-600 dark:text-emerald-400"
+          : d.ms > 0
+            ? "text-red-600 dark:text-red-400"
+            : "text-neutral-400 dark:text-neutral-500"
+      }`}
+    >
+      {sign}
+      {d.ms}ms / {sign}
+      {d.pct}%
+    </span>
+  );
+}
+
+/**
+ * ページ遷移の実測の集計（lib/perf.ts）。表示は常に「現行ビルド」で、
+ * デプロイするとビルドIDが変わって自動で新しい集計に切り替わる。
+ * 各項目には直前のビルドとの差（絶対値と割合）を添える。
+ */
+function PerfPanel() {
+  const [comparison, setComparison] = useState<BuildComparison | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // localStorageはSSRで読めないので描画後に読む。集計は画面表示を
+  // 待たせないよう低優先度で行う
+  useEffect(() => {
+    startTransition(() => setComparison(compareLatest(loadSamples())));
+  }, []);
+
+  const copy = async () => {
+    if (!comparison) return;
+    try {
+      await navigator.clipboard.writeText(formatComparison(comparison));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 権限がない環境では黙って何もしない
+    }
+  };
+
+  if (!comparison || (!comparison.current && !comparison.previous)) {
+    return (
+      <p className="px-1 py-2 text-sm text-neutral-400 dark:text-neutral-500">
+        まだ記録がありません。ページを行き来すると自動で貯まります。
+      </p>
+    );
+  }
+
+  const { current, previous } = comparison;
+
+  return (
+    <div className="space-y-3">
+      <p className="px-1 text-xs font-medium text-neutral-400 dark:text-neutral-500">
+        現行ビルド {currentBuildId()}
+        {current && (
+          <>
+            {" "}
+            ・ {current.total}件 ・ 最終{" "}
+            {new Date(current.lastAt).toLocaleDateString("ja-JP")}
+          </>
+        )}
+        {previous && (
+          <>
+            <br />
+            前回ビルド {previous.build}（{previous.total}件）との比較
+          </>
+        )}
+      </p>
+      {!current ? (
+        <p className="px-1 text-sm text-neutral-400 dark:text-neutral-500">
+          このビルドの記録はまだありません。ページを行き来すると貯まります。
+        </p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-neutral-400 dark:text-neutral-500">
+              <th className="px-1 py-0.5 font-normal">ページ</th>
+              <th className="px-1 py-0.5 text-right font-normal">回数</th>
+              <th className="px-1 py-0.5 text-right font-normal">中央値</th>
+              <th className="px-1 py-0.5 text-right font-normal">p90</th>
+            </tr>
+          </thead>
+          <tbody className="align-top">
+            {current.routes.map((r) => {
+              const prev = previous?.routes.find((p) => p.path === r.path);
+              return (
+                <tr key={r.path}>
+                  <td className="truncate px-1 py-1 font-mono text-xs">
+                    {r.path}
+                  </td>
+                  <td className="px-1 py-1 text-right tabular-nums">
+                    {r.count}
+                  </td>
+                  <td className="px-1 py-1 text-right tabular-nums">
+                    {r.median}ms
+                    <DeltaBadge cur={r.median} prev={prev?.median} />
+                  </td>
+                  <td className="px-1 py-1 text-right tabular-nums">
+                    {r.p90}ms
+                    <DeltaBadge cur={r.p90} prev={prev?.p90} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          type="button"
+          onClick={() => void copy()}
+          className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-50 dark:border-white/10 dark:text-neutral-300 dark:hover:bg-white/5"
+        >
+          {copied ? (
+            <IconCheck className="h-4 w-4" />
+          ) : (
+            <IconCopy className="h-4 w-4" />
+          )}
+          {copied ? "コピーしました" : "結果をコピー"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (!confirm("遷移の記録をすべて消しますか？")) return;
+            clearSamples();
+            setComparison(compareLatest([]));
+          }}
+          aria-label="記録を消去"
+          title="記録を消去"
+          className="rounded-lg border border-neutral-200 p-1.5 text-neutral-400 hover:bg-neutral-50 hover:text-neutral-600 dark:border-white/10 dark:hover:bg-white/5 dark:hover:text-neutral-300"
+        >
+          <IconTrash className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Settings({ loaderData }: Route.ComponentProps) {
   const { openSidebar } = useOutletContext<ShellContext>();
+  const revalidator = useRevalidator();
   const [settings, setSettings] = useState<AppSettings>(loaderData.settings);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +279,9 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
       if (!res.ok || !body.settings) throw new Error();
       // 範囲外の値はサーバー側で丸められるので、戻り値で上書きする
       setSettings(body.settings);
+      settingsCache = { at: Date.now(), data: { settings: body.settings } };
+      // シェル経由でChatが参照する設定も更新する（遷移では再読込しないため）
+      revalidator.revalidate();
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch {
@@ -174,6 +358,13 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             <Row label="アクセント色" description="ボタンや強調表示の色">
               <AccentPicker />
             </Row>
+          </Section>
+
+          <Section
+            title="パフォーマンス"
+            note="ページ遷移のたびに自動で記録されます（この端末のみ・最大1000件）。デプロイすると現行ビルドの集計に切り替わり、各数値に前回ビルドとの差が付きます。"
+          >
+            <PerfPanel />
           </Section>
         </div>
       </div>

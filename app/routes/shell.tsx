@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Outlet } from "react-router";
+import {
+  Outlet,
+  useNavigation,
+  type ShouldRevalidateFunctionArgs,
+} from "react-router";
 import type { Route } from "./+types/shell";
 import {
   getAppSettings,
@@ -10,9 +14,9 @@ import {
   type FolderRow,
 } from "../lib/db.server";
 import type { AppSettings } from "../lib/settings";
-import { fetchModels, type ModelInfo } from "../lib/openrouter.server";
-import { fetchUsdJpy } from "../lib/fx.server";
+import type { ModelInfo } from "../lib/openrouter.server";
 import { Sidebar } from "../components/Sidebar";
+import { recordNavigation } from "../lib/perf";
 
 /** 未読の印を引き直す間隔（表示中のみ）。 */
 const UNREAD_POLL_MS = 5_000;
@@ -28,21 +32,88 @@ export interface ShellContext {
 }
 
 export async function loader() {
-  const [models, conversations, bots, folders, usdJpy, settings] =
-    await Promise.all([
-      fetchModels(),
-      listConversations(),
-      listBots(),
-      listFolders(),
-      fetchUsdJpy(),
-      getAppSettings(),
-    ]);
-  return { models, conversations, bots, folders, usdJpy, settings };
+  const started = Date.now();
+  // モデル一覧（コールドスタート時は数MBの上流取得）と為替は
+  // ここでは待たない。D1だけで最初の画面を出し、モデルは
+  // クライアントが /api/models から遅れて読む（Shell内のuseEffect）。
+  const [conversations, bots, folders, settings] = await Promise.all([
+    listConversations(),
+    listBots(),
+    listFolders(),
+    getAppSettings(),
+  ]);
+  // 初回表示・コールドスタートの重さを数字で追うための実測
+  console.log(`[perf] shell loader ${Date.now() - started}ms`);
+  return { conversations, bots, folders, settings };
 }
 
+/**
+ * ページ遷移ではシェルのローダーを再実行しない。
+ *
+ * single fetch は既定で親レイアウトのローダーも毎遷移サーバーで走らせる。
+ * ここはモデル一覧（コールドスタート時は数MBの取得）・会話一覧・為替と
+ * 重く、全ページ遷移の裏でこれを待っていた。サイドバーの鮮度は
+ * 各操作後の revalidator.revalidate()（URLが変わらず来る）が担う。
+ */
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
+  if (currentUrl.pathname !== nextUrl.pathname) return false;
+  return defaultShouldRevalidate;
+}
+
+/** モデル一覧のローカルキャッシュ。起動直後はこれを即表示し、裏で更新する。 */
+const MODELS_CACHE_KEY = "chat-webui:models";
+
+/** 起動時間はドキュメント読み込みごとに1回だけ記録する。 */
+let startupRecorded = false;
+
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { models, conversations, bots, folders, usdJpy, settings } = loaderData;
+  const { conversations, bots, folders, settings } = loaderData;
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  /**
+   * モデル一覧と為替。初回表示を待たせないためローダーから外してある。
+   * 前回起動時のキャッシュを即座に出し（モデル選択がすぐ使える）、
+   * その裏で /api/models を取り直して差し替える。
+   */
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [usdJpy, setUsdJpy] = useState<number | null>(null);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(MODELS_CACHE_KEY);
+      if (raw) setModels(JSON.parse(raw) as ModelInfo[]);
+    } catch {
+      // 壊れたキャッシュは無視（下のfetchで直る）
+    }
+    void fetch("/api/models")
+      .then(async (res) => {
+        if (!res.ok) return;
+        const { models: fresh } = (await res.json()) as { models: ModelInfo[] };
+        setModels(fresh);
+        try {
+          localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(fresh));
+        } catch {
+          // 容量超過などで保存できなくても、次回起動が少し遅いだけ
+        }
+      })
+      .catch(() => {});
+    void fetch("/api/fx")
+      .then(async (res) => {
+        if (!res.ok) return;
+        setUsdJpy(((await res.json()) as { usdJpy: number | null }).usdJpy);
+      })
+      .catch(() => {});
+  }, []);
+
+  // 起動（PWAを開く/リロード）の所要時間もパフォーマンス一覧に載せる
+  useEffect(() => {
+    if (startupRecorded) return;
+    startupRecorded = true;
+    recordNavigation("(起動)", performance.now());
+  }, []);
   /**
    * 未読の会話ID。応答はサーバー側で進むので、別の画面にいるあいだに
    * 完成しても分からない。表示中だけ短い間隔で引き直し、印を最新にする。
@@ -75,6 +146,30 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       window.removeEventListener("focus", load);
     };
   }, []);
+  /**
+   * ページ遷移の所要時間を記録する（設定画面の「パフォーマンス」で見る）。
+   * useNavigation が idle を離れてから戻るまでが「タップ〜画面切り替わり」。
+   * 途中で行き先が変わったら（連打など）最後の行き先として記録する。
+   */
+  const navigation = useNavigation();
+  const navTiming = useRef<{ path: string; started: number } | null>(null);
+  useEffect(() => {
+    if (navigation.state !== "idle" && navigation.location) {
+      if (navTiming.current) {
+        navTiming.current.path = navigation.location.pathname;
+      } else {
+        navTiming.current = {
+          path: navigation.location.pathname,
+          started: performance.now(),
+        };
+      }
+    } else if (navigation.state === "idle" && navTiming.current) {
+      const { path, started } = navTiming.current;
+      navTiming.current = null;
+      recordNavigation(path, performance.now() - started);
+    }
+  }, [navigation.state, navigation.location]);
+
   const [sidebarClosing, setSidebarClosing] = useState(false);
 
   /** 閉じるときも開くときと同じ滑らかさで（退場アニメーション後にアンマウント）。 */
@@ -168,8 +263,8 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
     >
-      {/* デスクトップ: 常設サイドバー */}
-      <div className="hidden w-64 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
+      {/* デスクトップ: 常設サイドバー（幅はモバイルのドロワーと揃える） */}
+      <div className="hidden w-72 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
         <Sidebar
           conversations={conversations}
           folders={folders}
@@ -177,9 +272,14 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         />
       </div>
 
-      {/* モバイル: ドロワー */}
+      {/* モバイル: ドロワー。高さは fixed inset-0 に任せず、本体と同じ
+          --app-height で決める。iOSのスタンドアロン（PWA）では fixed の
+          基準がズレることがあり、下部のボタンが浮いて見えていた */}
       {sidebarOpen && (
-        <div className="fixed inset-0 z-30 md:hidden">
+        <div
+          className="fixed inset-x-0 top-0 z-30 md:hidden"
+          style={{ height: "var(--app-height, 100dvh)" }}
+        >
           <div
             className={`absolute inset-0 bg-black/40 backdrop-blur-sm ${
               sidebarClosing ? "animate-fade-out" : "animate-fade"

@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { useNavigate, useOutletContext, useRevalidator } from "react-router";
+import { startTransition, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
 import { recordModelUse } from "../lib/recent-models";
+import { invalidateChat } from "../lib/chat-cache";
 import {
   readRetryConfig,
   RETRY_CONCURRENCY_KEY,
@@ -368,6 +369,9 @@ function BranchPager({
   );
 }
 
+/** 遷移直後にまず描画する末尾のメッセージ数。残りは直後に低優先度で描く。 */
+const DEFERRED_TAIL = 24;
+
 export function Chat({
   conversationId,
   initialMessages,
@@ -402,6 +406,8 @@ export function Chat({
   const attachKey = `chat-webui:draft-files:${conversationId ?? "new"}`;
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 分岐直後などの控えめなトースト。数秒で自動的に消える。 */
+  const [notice, setNotice] = useState<string | null>(null);
   /**
    * 編集して再送信の状態。attachments は編集後のメッセージに付く添付
    * （既存分 + 追加分。削除も可能）。uploads は追加分のアップロード
@@ -435,10 +441,44 @@ export function Chat({
    */
   const [pendingRun, setPendingRun] = useState<(() => void) | null>(null);
 
+  const location = useLocation();
+  useEffect(() => {
+    if ((location.state as { forked?: boolean } | null)?.forked) {
+      setNotice("⑂ 分岐を作成しました");
+      const t = setTimeout(() => setNotice(null), 3500);
+      return () => clearTimeout(t);
+    }
+    // 分岐直後のマウント時のみ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 新規チャットで送信した時点で会話IDが確定するため ref で保持する
   const convIdRef = useRef<string | null>(conversationId);
   // スマートスクロール: 最下部付近にいるときだけ自動追従する
   const stickToBottomRef = useRef(true);
+
+  /**
+   * 遷移直後の初回描画は末尾だけにして、画面が出たらすぐ
+   * startTransition で全件に広げる（スクロールは待たない）。
+   * 低優先度の割り込み可能なレンダリングなので、広げている最中に
+   * スクロールやタップが来てもそちらが先に処理される。
+   */
+  const [renderAll, setRenderAll] = useState(
+    initialMessages.length <= DEFERRED_TAIL,
+  );
+  useEffect(() => {
+    if (renderAll) return;
+    startTransition(() => setRenderAll(true));
+    // 初回マウント時のみ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    // 全件に広がると上に内容が増える。最下部に貼り付いていたなら貼り直す
+    if (renderAll && stickToBottomRef.current) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderAll]);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ガラス面フッターの高さ（コンテンツ下部の余白に使う）
   const footerRef = useRef<HTMLElement>(null);
@@ -587,6 +627,11 @@ export function Chat({
     }
   }, [messages]);
 
+  // 本文が動いたら先読みキャッシュを無効化（古いスナップショットで再訪させない）
+  useEffect(() => {
+    if (convIdRef.current) invalidateChat(convIdRef.current);
+  }, [messages]);
+
   // 下書きの復元（マウント時のみ）。ボットを選ぶとこの画面は作り直され、
   // リロードでも状態は消えるため、本文と一緒に添付も戻す
   useEffect(() => {
@@ -690,6 +735,11 @@ export function Chat({
   };
 
   // --- 添付画像 -----------------------------------------------------------
+
+  const visibleMessages = renderAll
+    ? messages
+    : messages.slice(-DEFERRED_TAIL);
+  const hiddenCount = messages.length - visibleMessages.length;
 
   const selectedModel = models.find((m) => m.id === model);
   /**
@@ -1115,7 +1165,12 @@ export function Chat({
               }),
             }).catch(() => {});
           }
-          await navigate(`/chat/${convId}`, { replace: true });
+          // タイトル生成中にユーザーが自分で遷移していたら（分岐や別会話
+          // など）、後追いの自動遷移で引き戻さない。新規会話の最初の応答で
+          // 「ここから分岐」した直後に元の会話へ戻されるのはこれが原因
+          if (window.location.pathname === "/") {
+            await navigate(`/chat/${convId}`, { replace: true });
+          }
         } else {
           await refreshPath(convId, epoch);
           revalidator.revalidate();
@@ -1336,7 +1391,9 @@ export function Chat({
       });
       if (!res.ok) throw new Error();
       const { id } = (await res.json()) as { id: string };
-      await navigate(`/chat/${id}`);
+      // 遷移先は履歴が同一で分岐したことに気づきにくい。印を渡して通知を出す
+      await navigate(`/chat/${id}`, { state: { forked: true } });
+      revalidator.revalidate(); // 分岐先の会話をサイドバーへ反映
     } catch {
       setError("分岐の作成に失敗しました。");
     }
@@ -1556,7 +1613,8 @@ export function Chat({
             </div>
           )}
           <div className="space-y-6">
-            {messages.map((m, i) => {
+            {visibleMessages.map((m, vi) => {
+              const i = vi + hiddenCount;
               const selectable = selecting != null && m.id != null;
               const selectionClass = selecting
                 ? `cursor-pointer rounded-xl px-2 py-1 -mx-2 ${
@@ -1902,13 +1960,20 @@ export function Chat({
         コンポーザー: ChatGPT風の一体型ガラスピル。
         フッター自体は透明グラデーションにし、ピルだけが浮いて見えるようにする。
       */}
+      {notice && (
+        <div
+          className={`pointer-events-none absolute left-1/2 top-[calc(3.75rem+env(safe-area-inset-top))] z-30 max-w-[90%] -translate-x-1/2 truncate rounded-full px-4 py-2 text-sm text-neutral-700 animate-pop dark:text-neutral-200 ${GLASS_PANEL}`}
+        >
+          {notice}
+        </div>
+      )}
       {!atBottom && messages.length > 0 && (
         <button
           type="button"
           onClick={scrollToBottom}
           aria-label="最新のメッセージへ"
           title="最新のメッセージへ"
-          className={`absolute left-1/2 z-20 -translate-x-1/2 rounded-full p-2 text-neutral-500 shadow-lg animate-pop dark:text-neutral-300 ${GLASS_PANEL}`}
+          className={`absolute left-1/2 z-20 -translate-x-1/2 rounded-full p-2 text-neutral-500 animate-pop dark:text-neutral-300 ${GLASS_PANEL}`}
           style={{ bottom: footerHeight + 12 }}
         >
           <IconArrowDown className="h-5 w-5" />

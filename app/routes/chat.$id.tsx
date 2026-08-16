@@ -1,5 +1,6 @@
 import type { Route } from "./+types/chat.$id";
-import { getConversation, getConversationPath } from "../lib/db.server";
+import { getConversationWithPath } from "../lib/db.server";
+import { getCachedChat, putCachedChat } from "../lib/chat-cache";
 import { toUiMessage } from "../lib/serialize.server";
 import { parseParamsJson } from "../lib/params";
 import { Chat } from "../components/Chat";
@@ -15,12 +16,34 @@ export function meta({ loaderData }: Route.MetaArgs) {
 }
 
 export async function loader({ params }: Route.LoaderArgs) {
-  const conversation = await getConversation(params.id);
-  if (!conversation) {
+  const started = Date.now();
+  const found = await getConversationWithPath(params.id);
+  if (!found) {
     throw new Response("会話が見つかりません", { status: 404 });
   }
-  const path = await getConversationPath(conversation);
-  return { conversation, messages: path.map(toUiMessage) };
+  // 遷移の体感を数字で追うための実測。wrangler tail かダッシュボードのログで見る
+  console.log(
+    `[perf] chat/:id loader ${Date.now() - started}ms (messages=${found.path.length})`,
+  );
+  return {
+    conversation: found.conversation,
+    messages: found.path.map(toUiMessage),
+  };
+}
+
+/**
+ * サイドバーの先読み（chat-cache）があればサーバーを待たずに即返す。
+ * なければ通常どおり取得し、直近の再訪に備えて書き込んでおく。
+ */
+export async function clientLoader({
+  params,
+  serverLoader,
+}: Route.ClientLoaderArgs) {
+  const cached = getCachedChat(params.id);
+  if (cached) return cached;
+  const data = await serverLoader();
+  putCachedChat(params.id, data);
+  return data;
 }
 
 export default function ChatRoute({ loaderData }: Route.ComponentProps) {

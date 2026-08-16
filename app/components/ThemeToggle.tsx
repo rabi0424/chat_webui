@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { applyTheme, getTheme, type Theme } from "../lib/theme";
 import { ACCENTS, applyAccent, DEFAULT_ACCENT, getAccent } from "../lib/accent";
 import { IconAuto, IconMoon, IconSun } from "./icons";
+import { GLASS_ICON_BUTTON } from "../lib/ui";
 
 const CYCLE: Theme[] = ["light", "dark", "system"];
 const LABELS: Record<Theme, string> = {
@@ -11,12 +12,16 @@ const LABELS: Record<Theme, string> = {
 };
 
 function ThemeIcon({ theme }: { theme: Theme }) {
-  if (theme === "light") return <IconSun className="h-4 w-4" />;
-  if (theme === "dark") return <IconMoon className="h-4 w-4" />;
-  return <IconAuto className="h-4 w-4" />;
+  if (theme === "light") return <IconSun className="h-5 w-5" />;
+  if (theme === "dark") return <IconMoon className="h-5 w-5" />;
+  return <IconAuto className="h-5 w-5" />;
 }
 
-/** テーマをライト→ダーク→自動の順で巡回するアイコンボタン。 */
+/**
+ * テーマをライト→ダーク→自動の順で巡回するアイコンボタン。
+ * サイドバー下部にガラスの丸ボタンとして並ぶため、ラベルは持たない
+ * （現在のテーマは title / aria-label で伝える）。
+ */
 export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>("system");
 
@@ -45,10 +50,9 @@ export function ThemeToggle() {
       onClick={cycle}
       title={`テーマ: ${LABELS[theme]}（クリックで切替）`}
       aria-label={`テーマ: ${LABELS[theme]}`}
-      className="flex w-full items-center justify-center gap-2 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs text-neutral-500 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-900"
+      className={GLASS_ICON_BUTTON}
     >
       <ThemeIcon theme={theme} />
-      {LABELS[theme]}
     </button>
   );
 }
