@@ -21,8 +21,14 @@ export async function loader({ request }: Route.LoaderArgs) {
   // モデルIDそのまま（poe:Name）でも、ボット名だけでも受け付ける
   const bot = raw.startsWith(POE_PREFIX) ? raw.slice(POE_PREFIX.length) : raw;
 
-  return Response.json(
-    { bot, results: await probePoeBot(bot) },
-    { headers: { "Cache-Control": "no-store" } },
+  // charset を明示する（ブラウザで直接開くため。無いと日本語が化ける）
+  return new Response(
+    JSON.stringify({ bot, results: await probePoeBot(bot) }, null, 2),
+    {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    },
   );
 }

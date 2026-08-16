@@ -15,7 +15,7 @@
  * 組み立て時にプロバイダ側の許可リストで必ず絞る。
  */
 
-import type { ModelInfo } from "./openrouter.server";
+import type { ModelInfo, PoeBotParameter } from "./openrouter.server";
 
 /** 手動設定された値の集合。キーがない = 自動（送らない）。 */
 export type ParamsState = Record<string, number | string>;
@@ -220,13 +220,12 @@ export const POE_THINKING_BUDGET_KEY = "thinking_budget";
  * ボット独自パラメータ。ParamsState 上ではこの接頭辞付きで持ち、
  * 送信時に接頭辞を外して extra_body へ入れる。
  *
- * 画像の縦横比ひとつ取ってもボットごとに名前が違い（`aspect_ratio` /
- * `aspect` / OpenAI系の `size`）、/v1/models にも載らないため、
- * こちらでキーを決め打ちできない。実際 gpt-image-2 に `aspect_ratio` を
- * 送ると `Unknown parameter: 'aspect_ratio'` で400が返る
+ * 名前も選択肢もボットごとに違う（画像サイズが gpt-image-2 では `size`、
+ * 他のボットでは `aspect_ratio`）。Poeは /v1/models の各モデルの
+ * `parameters` でこれを公開しているので、そこから入力欄を組み立てる。
+ * 知らない名前を送ると `Unknown parameter: '...'` で400になる
  * （Poeは extra_body の中身まで検証している）。
- * 名前と値はボットのAPIページ（poe.com/<ボット名>/api）で確認できるので、
- * UIでは自由入力にして、そのまま渡す。
+ * 公開していないボット向けには自由入力の欄も残す。
  */
 export const POE_EXTRA_PREFIX = "poe_extra:";
 
@@ -311,7 +310,73 @@ function poeParamDefs(model: ModelInfo): ParamDef[] {
       defs.push(def);
     }
   }
+
+  for (const p of model.botParameters ?? []) {
+    defs.push(botParamDef(p));
+  }
   return defs;
+}
+
+/** Poeが公開するボット固有パラメータを、入力欄の定義へ変換する。 */
+function botParamDef(p: PoeBotParameter): ParamDef {
+  const key = `${POE_EXTRA_PREFIX}${p.name}`;
+  // 未指定なら既定値で動くので、何が起きるかを説明に添える
+  const fallback =
+    p.defaultValue != null ? `自動 = ${p.defaultValue}` : "このボット固有の設定";
+  const description = p.description
+    ? `${p.description}（${fallback}）`
+    : fallback;
+
+  if (p.options) {
+    return {
+      kind: "select",
+      key,
+      label: p.name,
+      description,
+      options: p.options.map((v) => ({ value: v, label: v })),
+      defaultValue:
+        typeof p.defaultValue === "string" &&
+        p.options.includes(p.defaultValue)
+          ? p.defaultValue
+          : p.options[0],
+    };
+  }
+  if (p.isBoolean) {
+    return {
+      kind: "select",
+      key,
+      label: p.name,
+      description,
+      options: [
+        { value: "true", label: "オン" },
+        { value: "false", label: "オフ" },
+      ],
+      defaultValue: p.defaultValue === true ? "true" : "false",
+    };
+  }
+  if (p.min != null || p.max != null) {
+    const min = p.min ?? 0;
+    const max = p.max ?? Number.MAX_SAFE_INTEGER;
+    return {
+      kind: "number",
+      key,
+      label: p.name,
+      description,
+      min,
+      max,
+      step: p.integer ? 1 : 0.01,
+      integer: p.integer,
+      hint: p.defaultValue != null ? `例: ${p.defaultValue}` : `${min}〜${max}`,
+      defaultValue: typeof p.defaultValue === "number" ? p.defaultValue : min,
+    };
+  }
+  return {
+    kind: "text",
+    key,
+    label: p.name,
+    description,
+    placeholder: p.defaultValue != null ? `例: ${p.defaultValue}` : "値",
+  };
 }
 
 // --- 共通 ------------------------------------------------------------------

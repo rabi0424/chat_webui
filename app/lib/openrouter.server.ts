@@ -9,6 +9,28 @@ const POE_USAGE_BASE = POE_BASE.replace(/\/v1$/, "") + "/usage";
 /** Poeモデルは "poe:" プレフィックス付きのIDで扱う。 */
 export const POE_PREFIX = "poe:";
 
+/**
+ * Poeがモデルごとに公開する、そのボット固有のパラメータ。
+ *
+ * /v1/models の各モデルの `parameters` から作る。名前も選択肢もボット任せ
+ * （画像サイズが `size` のボットもあれば `aspect_ratio` のボットもある）
+ * なので、ここから⚙パネルの入力欄を組み立てる。
+ */
+export interface PoeBotParameter {
+  name: string;
+  /** 選択肢（schema.enum）。あれば選択式にする。 */
+  options?: string[];
+  /** 真偽値のパラメータか。 */
+  isBoolean?: boolean;
+  /** 数値のパラメータの範囲。 */
+  min?: number;
+  max?: number;
+  integer?: boolean;
+  /** Poeが申告する既定値（指定しなければこの値で動く）。 */
+  defaultValue?: string | number | boolean;
+  description?: string;
+}
+
 /** Subset of the OpenRouter model metadata we expose to the client. */
 export interface ModelInfo {
   id: string;
@@ -32,6 +54,8 @@ export interface ModelInfo {
   reasoningEfforts?: string[];
   /** Poe: thinking_budget（思考に使うトークン数）の許容範囲。 */
   reasoningBudget?: { min: number; max: number };
+  /** Poe: このボット固有のパラメータ（画像サイズなど）。 */
+  botParameters?: PoeBotParameter[];
   /** 提供元。poe はサブスクのポイントで課金される。 */
   provider: "openrouter" | "poe";
   createdAt: number;
@@ -55,11 +79,67 @@ function num(v: unknown): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-/** Poeの pricing は100万トークン単価。ModelInfo は1トークン単価の文字列。 */
+/** 100万トークン単価 → 1トークン単価の文字列。 */
 function perMillionToPerToken(v: unknown): string | undefined {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return undefined;
   return String(n / 1_000_000);
+}
+
+/**
+ * Poeの価格。OpenRouterと同じ1トークン単価の文字列
+ * （pricing.prompt = "0.0000050505"）で返るが、
+ * 100万トークン単価のフィールドで返る場合もあるため両方見る。
+ */
+function poePrice(perToken: unknown, perMillion: unknown): string | undefined {
+  if (typeof perToken === "string" && Number(perToken) > 0) return perToken;
+  const n = Number(perToken);
+  if (Number.isFinite(n) && n > 0) return String(n);
+  return perMillionToPerToken(perMillion);
+}
+
+/**
+ * ボット固有パラメータの正規化。
+ *
+ * 実物: {"name":"size","schema":{"enum":["auto","1024x1024",…]},
+ *        "default_value":"auto"}
+ *      {"name":"use_mask","schema":{"type":"boolean"},
+ *        "default_value":false,"description":"…"}
+ * schema の形は今後増えうるので、解釈できないものは名前だけ残して
+ * 自由入力として扱う（送信自体はできるようにしておく）。
+ */
+function parseBotParameters(v: unknown): PoeBotParameter[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: PoeBotParameter[] = [];
+  for (const item of v) {
+    const p = item as Record<string, unknown> | null;
+    const name = typeof p?.name === "string" ? p.name : "";
+    if (!name) continue;
+    const schema = (p?.schema ?? {}) as Record<string, unknown>;
+    const def = p?.default_value;
+    const enumValues = Array.isArray(schema.enum)
+      ? schema.enum.filter((x): x is string => typeof x === "string")
+      : undefined;
+    const type = typeof schema.type === "string" ? schema.type : undefined;
+
+    out.push({
+      name,
+      options: enumValues && enumValues.length > 0 ? enumValues : undefined,
+      isBoolean: type === "boolean" || undefined,
+      min: num(schema.minimum),
+      max: num(schema.maximum),
+      integer: type === "integer" || undefined,
+      defaultValue:
+        typeof def === "string" ||
+        typeof def === "number" ||
+        typeof def === "boolean"
+          ? def
+          : undefined,
+      description:
+        typeof p?.description === "string" ? p.description : undefined,
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** Poeが値を明示しないときに出す思考の強さ（どのモデルでも概ね通る3段階）。 */
@@ -129,20 +209,26 @@ async function fetchPoeModels(): Promise<ModelInfo[]> {
         ? { min: num(budgetRaw?.min_tokens) ?? 0, max: budgetMax }
         : undefined;
 
+      const metadata = (m.metadata ?? {}) as Record<string, unknown>;
+
       return {
         id: `${POE_PREFIX}${String(m.id)}`,
-        name: String(m.display_name || m.id),
-        description: "Poe（サブスクのポイントで課金）",
+        name: String(metadata.display_name || m.display_name || m.id),
+        description:
+          typeof m.description === "string" && m.description
+            ? m.description
+            : "Poe（サブスクのポイントで課金）",
         contextLength,
-        promptPrice: perMillionToPerToken(pricing.input_per_million) ?? "0",
+        promptPrice: poePrice(pricing.prompt, pricing.input_per_million) ?? "0",
         completionPrice:
-          perMillionToPerToken(pricing.output_per_million) ?? "0",
+          poePrice(pricing.completion, pricing.output_per_million) ?? "0",
         inputModalities,
         outputModalities,
         // Poeが対応を明言しているものだけを載せる（詳細は params.ts）
         supportedParameters: poeSupportedParameters({ efforts, reasoningBudget }),
         reasoningEfforts: efforts,
         reasoningBudget,
+        botParameters: parseBotParameters(m.parameters),
         provider: "poe",
         createdAt: Number(m.created ?? 0),
       };

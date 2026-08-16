@@ -8,22 +8,31 @@ import {
   type ParamsState,
 } from "../lib/params";
 
-/** ParamsState 上のボット独自パラメータを、編集用の行に開く。 */
-function extraRows(value: ParamsState): { key: string; value: string }[] {
-  return Object.entries(value)
-    .filter(([k]) => k.startsWith(POE_EXTRA_PREFIX))
-    .map(([k, v]) => ({
-      key: k.slice(POE_EXTRA_PREFIX.length),
-      value: String(v),
-    }));
+/** この欄が扱う項目（Poeが公開していない名前）だけを取り出す。 */
+function ownEntries(
+  value: ParamsState,
+  known: Set<string>,
+): [string, number | string][] {
+  return Object.entries(value).filter(
+    ([k]) => k.startsWith(POE_EXTRA_PREFIX) && !known.has(k),
+  );
 }
 
-/** 保存済みのボット独自パラメータの署名（外部からの変更の検出用）。 */
-function extraSignature(value: ParamsState): string {
+/** ParamsState 上のボット独自パラメータを、編集用の行に開く。 */
+function extraRows(
+  value: ParamsState,
+  known: Set<string>,
+): { key: string; value: string }[] {
+  return ownEntries(value, known).map(([k, v]) => ({
+    key: k.slice(POE_EXTRA_PREFIX.length),
+    value: String(v),
+  }));
+}
+
+/** 保存済みの項目の署名（外部からの変更の検出用）。 */
+function extraSignature(value: ParamsState, known: Set<string>): string {
   return JSON.stringify(
-    Object.entries(value)
-      .filter(([k]) => k.startsWith(POE_EXTRA_PREFIX))
-      .sort(([a], [b]) => a.localeCompare(b)),
+    ownEntries(value, known).sort(([a], [b]) => a.localeCompare(b)),
   );
 }
 
@@ -38,20 +47,23 @@ function extraSignature(value: ParamsState): string {
 function ExtraParams({
   value,
   onChange,
+  knownNames,
   imageHint,
 }: {
   value: ParamsState;
   onChange: (next: ParamsState) => void;
+  /** Poeが公開しているパラメータのキー。上の一覧が担当するので触らない。 */
+  knownNames: Set<string>;
   imageHint: boolean;
 }) {
-  const [rows, setRows] = useState(() => extraRows(value));
+  const [rows, setRows] = useState(() => extraRows(value, knownNames));
   // 「初期設定に戻す」など外から書き換えられたら行を作り直す。自分の
   // 書き込みでは署名が一致するので、入力途中の行は消えない。
-  const [seen, setSeen] = useState(() => extraSignature(value));
-  const signature = extraSignature(value);
+  const [seen, setSeen] = useState(() => extraSignature(value, knownNames));
+  const signature = extraSignature(value, knownNames);
   if (signature !== seen) {
     setSeen(signature);
-    setRows(extraRows(value));
+    setRows(extraRows(value, knownNames));
   }
 
   /** 名前の付いた行だけを ParamsState へ書き戻す。 */
@@ -59,15 +71,19 @@ function ExtraParams({
     setRows(next);
     const cleaned: ParamsState = {};
     for (const [k, v] of Object.entries(value)) {
-      if (!k.startsWith(POE_EXTRA_PREFIX)) cleaned[k] = v;
+      // 公開パラメータ側の値は上の一覧が持っているのでそのまま残す
+      if (!k.startsWith(POE_EXTRA_PREFIX) || knownNames.has(k)) cleaned[k] = v;
     }
     for (const row of next) {
       const key = row.key.trim();
-      if (POE_EXTRA_KEY_PATTERN.test(key)) {
+      if (
+        POE_EXTRA_KEY_PATTERN.test(key) &&
+        !knownNames.has(`${POE_EXTRA_PREFIX}${key}`)
+      ) {
         cleaned[`${POE_EXTRA_PREFIX}${key}`] = row.value;
       }
     }
-    setSeen(extraSignature(cleaned));
+    setSeen(extraSignature(cleaned, knownNames));
     onChange(cleaned);
   }
 
@@ -78,10 +94,11 @@ function ExtraParams({
     <div className="mt-3 space-y-2 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
       <p className="px-1 text-sm font-medium">ボット独自パラメータ</p>
       <p className="px-1 text-xs text-neutral-400 dark:text-neutral-500">
-        {imageHint
-          ? "画像の縦横比など、ボット固有の設定。名前はボットごとに違う（aspect_ratio / aspect / size など）"
-          : "ボット固有の設定。web_search / thinking_level など"}
-        。使える名前と値は poe.com/&lt;ボット名&gt;/api で確認できます
+        {knownNames.size > 0
+          ? "このボットが公開していない名前です。このまま送るとエラーになるので削除してください"
+          : imageHint
+            ? "画像サイズなど、ボット固有の設定。使える名前と値は poe.com/<ボット名>/api で確認できます"
+            : "ボット固有の設定。使える名前と値は poe.com/<ボット名>/api で確認できます"}
       </p>
       {rows.map((row, i) => (
         <div key={i} className="flex items-center gap-2">
@@ -167,14 +184,27 @@ export function ParamsEditor({
       </p>
     );
   }
-  // Poeはボット固有のパラメータを一覧APIに出さないため、常に自由入力欄を添える
-  const extras = model.provider === "poe" && (
-    <ExtraParams
-      value={value}
-      onChange={onChange}
-      imageHint={model.outputModalities.includes("image")}
-    />
+  /*
+   * 自由入力の欄は、Poeがそのボットのパラメータを公開していないときの
+   * 逃げ道。公開されていれば上の一覧が自動で並ぶので出さない。
+   * ただし公開一覧に無い名前が会話に残っている場合（ボット側の変更や、
+   * 名前を手入力していた頃の設定）は、消せるように出す。
+   */
+  const published = new Set(
+    (model.botParameters ?? []).map((p) => `${POE_EXTRA_PREFIX}${p.name}`),
   );
+  const hasUnknownExtras = Object.keys(value).some(
+    (k) => k.startsWith(POE_EXTRA_PREFIX) && !published.has(k),
+  );
+  const extras = model.provider === "poe" &&
+    (published.size === 0 || hasUnknownExtras) && (
+      <ExtraParams
+        value={value}
+        onChange={onChange}
+        knownNames={published}
+        imageHint={model.outputModalities.includes("image")}
+      />
+    );
 
   if (defs.length === 0) {
     return (
