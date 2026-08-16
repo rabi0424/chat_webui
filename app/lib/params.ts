@@ -209,16 +209,29 @@ export const PARAM_DEFS: ParamDef[] = [
 /**
  * Poeのパラメータキー。OpenRouterとは名前も形式も異なる。
  *
- * - 思考の強さは reasoning_effort（GPT系など）と thinking_budget（Claude系）。
- *   OpenRouterの `reasoning: { effort }` 形式は解釈されない。
- * - 画像生成ボットの縦横比は aspect_ratio。
- *
- * 対応可否はPoeの /v1/models が返す reasoning / output_modalities から
- * モデルごとに判定する（openrouter.server.ts の fetchPoeModels 参照）。
+ * 思考の強さは reasoning_effort（GPT系など）と thinking_budget（Claude系）。
+ * OpenRouterの `reasoning: { effort }` 形式は解釈されない。対応可否は
+ * Poeの /v1/models が返す reasoning から判定する（fetchPoeModels 参照）。
  */
 export const POE_REASONING_EFFORT_KEY = "reasoning_effort";
 export const POE_THINKING_BUDGET_KEY = "thinking_budget";
-export const POE_ASPECT_RATIO_KEY = "aspect_ratio";
+
+/**
+ * ボット独自パラメータ。ParamsState 上ではこの接頭辞付きで持ち、
+ * 送信時に接頭辞を外して extra_body へ入れる。
+ *
+ * 画像の縦横比ひとつ取ってもボットごとに名前が違い（`aspect_ratio` /
+ * `aspect` / OpenAI系の `size`）、/v1/models にも載らないため、
+ * こちらでキーを決め打ちできない。実際 gpt-image-2 に `aspect_ratio` を
+ * 送ると `Unknown parameter: 'aspect_ratio'` で400が返る
+ * （Poeは extra_body の中身まで検証している）。
+ * 名前と値はボットのAPIページ（poe.com/<ボット名>/api）で確認できるので、
+ * UIでは自由入力にして、そのまま渡す。
+ */
+export const POE_EXTRA_PREFIX = "poe_extra:";
+
+/** ボット独自パラメータ名として受け付ける形。 */
+export const POE_EXTRA_KEY_PATTERN = /^[a-z][a-z0-9_]{0,39}$/i;
 
 /**
  * Poeがモデル共通で受け付ける標準パラメータ。
@@ -250,16 +263,12 @@ function defaultBudget(budget: { min: number; max: number }): number {
 export function poeSupportedParameters(model: {
   efforts?: string[];
   reasoningBudget?: { min: number; max: number };
-  outputModalities: string[];
 }): string[] {
   const keys = [...POE_STANDARD_KEYS];
   if (model.efforts && model.efforts.length > 0) {
     keys.push(POE_REASONING_EFFORT_KEY);
   }
   if (model.reasoningBudget) keys.push(POE_THINKING_BUDGET_KEY);
-  if (model.outputModalities.includes("image")) {
-    keys.push(POE_ASPECT_RATIO_KEY);
-  }
   return keys;
 }
 
@@ -294,16 +303,6 @@ function poeParamDefs(model: ModelInfo): ParamDef[] {
       integer: true,
       hint: `例: ${defaultBudget(budget)}`,
       defaultValue: defaultBudget(budget),
-    });
-  }
-
-  if (supported.has(POE_ASPECT_RATIO_KEY)) {
-    defs.push({
-      kind: "text",
-      key: POE_ASPECT_RATIO_KEY,
-      label: "アスペクト比",
-      description: "生成画像の縦横比。使える値はボットごとに異なる",
-      placeholder: "例: 16:9",
     });
   }
 
@@ -356,11 +355,12 @@ function parseStops(raw: unknown): string[] {
 /**
  * Poe向けのリクエストボディ。
  *
- * Poe独自パラメータ（thinking_budget / aspect_ratio）は extra_body に
- * 入れて送る。ボディ直下へ置くと `Unknown parameter: 'aspect_ratio'` で
- * 400が返る（Poeは未知のトップレベルフィールドを無視せず弾く）。
+ * Poe独自パラメータ（thinking_budget やボット固有のもの）は extra_body に
+ * 入れて送る。ボディ直下へ置くと未知フィールドとして400が返る。
  * OpenAI SDKの extra_body はボディ直下へ展開される仕組みだが、
  * Poeのサーバーは extra_body というキー自体を読んでボットへ渡す。
+ * ただし中身も検証しており、そのボットが知らない名前は
+ * `Unknown parameter: '...'` で弾かれる。
  *
  * reasoning_effort は独自拡張ではなくOpenAI標準のフィールドなので、
  * これはボディ直下へ置く（モデルが対応を申告したときだけ出す）。
@@ -382,20 +382,40 @@ function buildPoePayload(state: ParamsState): Record<string, unknown> {
     out[POE_REASONING_EFFORT_KEY] = effort;
   }
 
+  // ボット独自パラメータ。値はボットへそのまま渡るため、型だけ整える
+  for (const [key, raw] of Object.entries(state)) {
+    if (!key.startsWith(POE_EXTRA_PREFIX)) continue;
+    const name = key.slice(POE_EXTRA_PREFIX.length);
+    if (!POE_EXTRA_KEY_PATTERN.test(name)) continue;
+    const parsed = parseExtraValue(raw);
+    if (parsed !== undefined) custom[name] = parsed;
+  }
+
+  // 型付きの項目は独自パラメータより優先する（同名になっても壊さない）
   const budget = Number(state[POE_THINKING_BUDGET_KEY]);
   if (Number.isFinite(budget) && budget > 0) {
     custom[POE_THINKING_BUDGET_KEY] = Math.round(budget);
   }
 
-  // 比（16:9）と実寸（1280x720）のどちらもボットによって使われる
-  const aspect = state[POE_ASPECT_RATIO_KEY];
-  const aspectPattern = /^\d{1,5}\s*[:x×]\s*\d{1,5}$/i;
-  if (typeof aspect === "string" && aspectPattern.test(aspect)) {
-    custom[POE_ASPECT_RATIO_KEY] = aspect.replace(/\s+/g, "");
-  }
-
   if (Object.keys(custom).length > 0) out.extra_body = custom;
   return out;
+}
+
+/**
+ * ボット独自パラメータの値。UIでは文字列で持つが、Poeのボットは
+ * 真偽値・数値も取る（web_search: true, thinking_budget: 1000 など）ため、
+ * 見たままの型へ寄せて送る。
+ */
+function parseExtraValue(raw: unknown): string | number | boolean | undefined {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined;
+  if (typeof raw !== "string") return undefined;
+  const v = raw.trim();
+  if (v === "") return undefined;
+  if (v === "true") return true;
+  if (v === "false") return false;
+  // "16:9" のような値を数値扱いしないよう、全体が数値のときだけ変換する
+  if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  return v;
 }
 
 /** OpenRouter向けのリクエストボディ。 */

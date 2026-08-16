@@ -140,11 +140,7 @@ async function fetchPoeModels(): Promise<ModelInfo[]> {
         inputModalities,
         outputModalities,
         // Poeが対応を明言しているものだけを載せる（詳細は params.ts）
-        supportedParameters: poeSupportedParameters({
-          efforts,
-          reasoningBudget,
-          outputModalities,
-        }),
+        supportedParameters: poeSupportedParameters({ efforts, reasoningBudget }),
         reasoningEfforts: efforts,
         reasoningBudget,
         provider: "poe",
