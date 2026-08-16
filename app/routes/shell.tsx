@@ -15,7 +15,7 @@ import { fetchUsdJpy } from "../lib/fx.server";
 import { Sidebar } from "../components/Sidebar";
 
 /** 未読の印を引き直す間隔（表示中のみ）。 */
-const UNREAD_POLL_MS = 15_000;
+const UNREAD_POLL_MS = 5_000;
 
 export interface ShellContext {
   models: ModelInfo[];

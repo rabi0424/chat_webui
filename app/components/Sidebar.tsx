@@ -318,7 +318,7 @@ export function Sidebar({
           to={`/chat/${c.id}`}
           onClick={onNavigate}
           className={({ isActive }) =>
-            `block truncate rounded-lg py-2 pl-3 pr-8 text-sm ${
+            `flex items-center gap-1.5 rounded-lg py-2 pl-3 pr-8 text-sm ${
               isActive
                 ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
                 : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
@@ -330,11 +330,13 @@ export function Sidebar({
             <span
               aria-label="新しい応答があります"
               title="新しい応答があります"
-              className="mr-1.5 inline-block h-2 w-2 shrink-0 rounded-full bg-accent align-middle"
+              className="h-2 w-2 shrink-0 rounded-full bg-accent"
             />
           )}
-          {c.pinned === 1 && <span aria-hidden className="mr-1">📌</span>}
-          {c.title}
+          <span className="min-w-0 truncate">
+            {c.pinned === 1 && <span aria-hidden className="mr-1">📌</span>}
+            {c.title}
+          </span>
         </NavLink>
         <MenuButton target={{ type: "conversation", id: c.id }} />
         <MenuItems target={{ type: "conversation", id: c.id }} />
