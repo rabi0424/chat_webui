@@ -11,8 +11,12 @@ export function meta({}: Route.MetaArgs) {
   return [{ title: "画像 - Chat WebUI" }];
 }
 
-/** 一度に読む枚数。続きは「もっと見る」で足す。 */
+/** 一度に読む枚数。続きは末尾まで送ると自動で足す。 */
 const PAGE_SIZE = 60;
+/** 引っぱって更新: これだけ引いたら実行する。 */
+const PULL_THRESHOLD = 64;
+/** 引っぱれる上限（実際の指の移動はこの倍動く）。 */
+const PULL_MAX = 96;
 
 export async function loader() {
   return { images: await listGeneratedImages({ limit: PAGE_SIZE }) };
@@ -49,6 +53,15 @@ export default function Images({ loaderData }: Route.ComponentProps) {
   const loadMoreRef = useRef<() => void>(() => {});
   /** 二重読み込みの保険（状態の反映を待たずに弾く）。 */
   const loadingRef = useRef(false);
+  /** スクロール領域。引っぱって更新の判定に使う。 */
+  const scrollRef = useRef<HTMLDivElement>(null);
+  /** 引っぱっている距離(px)。0 なら通常表示。 */
+  const [pull, setPull] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  // 監視・タッチのハンドラは貼り直さないので、最新値は ref から読む
+  const pullRef = useRef(0);
+  const refreshingRef = useRef(false);
+  const reloadRef = useRef<() => Promise<void>>(async () => {});
   /** 検索・絞り込みの初回描画では読み直さない（ローダーの結果を使う）。 */
   const firstRender = useRef(true);
 
@@ -60,6 +73,19 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     return p.toString();
   };
 
+  /** 先頭のページを取り直す（検索・絞り込みの変更と、引っぱって更新）。 */
+  async function reload() {
+    try {
+      const res = await fetch(`/api/images?${params()}`);
+      const body = (await res.json()) as { images: GeneratedImageRow[] };
+      setImages(body.images);
+      setExhausted(body.images.length < PAGE_SIZE);
+    } catch {
+      // 失敗しても既に出ている分はそのまま
+    }
+  }
+  reloadRef.current = reload;
+
   // 検索語・絞り込みの変更で引き直す（入力はデバウンス）
   useEffect(() => {
     if (firstRender.current) {
@@ -69,19 +95,69 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     if (searchTimer.current) clearTimeout(searchTimer.current);
     setLoading(true);
     searchTimer.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/images?${params()}`);
-        const body = (await res.json()) as { images: GeneratedImageRow[] };
-        setImages(body.images);
-        setExhausted(body.images.length < PAGE_SIZE);
-      } catch {
-        // 失敗しても既に出ている分はそのまま
-      } finally {
-        setLoading(false);
-      }
+      await reloadRef.current();
+      setLoading(false);
     }, 250);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, favoritesOnly]);
+
+  /**
+   * 一番上で下へ引っぱると一覧を取り直す（SNSのフィードと同じ操作）。
+   *
+   * タッチは素の listener で拾う。引っぱっている間は端末側のバウンスを
+   * 止める必要があり、Reactのハンドラでは preventDefault が効かないため。
+   */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let startY: number | null = null;
+
+    const setPullBoth = (v: number) => {
+      pullRef.current = v;
+      setPull(v);
+    };
+    const onStart = (e: TouchEvent) => {
+      startY = el.scrollTop <= 0 ? e.touches[0].clientY : null;
+    };
+    const onMove = (e: TouchEvent) => {
+      if (startY == null || refreshingRef.current) return;
+      const dy = e.touches[0].clientY - startY;
+      if (dy <= 0 || el.scrollTop > 0) {
+        startY = el.scrollTop <= 0 ? startY : null;
+        if (pullRef.current !== 0) setPullBoth(0);
+        return;
+      }
+      e.preventDefault();
+      // 引くほど重くする（指の移動の半分、上限まで）
+      setPullBoth(Math.min(dy / 2, PULL_MAX));
+    };
+    const onEnd = () => {
+      startY = null;
+      if (pullRef.current >= PULL_THRESHOLD && !refreshingRef.current) {
+        refreshingRef.current = true;
+        setRefreshing(true);
+        setPullBoth(PULL_THRESHOLD);
+        void reloadRef.current().finally(() => {
+          refreshingRef.current = false;
+          setRefreshing(false);
+          setPullBoth(0);
+        });
+        return;
+      }
+      setPullBoth(0);
+    };
+
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd);
+    el.addEventListener("touchcancel", onEnd);
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, []);
 
   /**
    * 末尾が見えたら続きを読む（下スクロールでの自動読み込み）。
@@ -201,7 +277,27 @@ export default function Images({ loaderData }: Route.ComponentProps) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3"
+      >
+        {/* 引っぱって更新の余白。指の動きに追従し、離すと閉じる */}
+        <div
+          style={{ height: pull }}
+          className={`flex items-end justify-center overflow-hidden text-xs text-neutral-400 dark:text-neutral-500 ${
+            pull > 0 && !refreshing ? "" : "transition-[height] duration-200"
+          }`}
+        >
+          {pull > 0 && (
+            <span className="pb-2">
+              {refreshing
+                ? "更新中…"
+                : pull >= PULL_THRESHOLD
+                  ? "離して更新"
+                  : "引っぱって更新"}
+            </span>
+          )}
+        </div>
         {images.length === 0 ? (
           <p className="mt-16 text-center text-sm text-neutral-400 dark:text-neutral-500">
             {loading
