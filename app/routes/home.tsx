@@ -42,10 +42,10 @@ export default function Home() {
         <span className="block text-5xl" aria-hidden>
           {selected.icon}
         </span>
-        <p className="mt-3 text-lg font-medium text-neutral-600 dark:text-neutral-300">
+        <p className="mt-3 text-lg font-medium text-neutral-800 dark:text-neutral-100">
           {selected.name}
         </p>
-        <p className="mt-1 text-sm text-neutral-400 dark:text-neutral-500">
+        <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
           メッセージを送って会話を開始
         </p>
         <button
@@ -54,7 +54,7 @@ export default function Home() {
             setSelected(null);
             setSelectedModel(null);
           }}
-          className="mt-3 rounded-lg px-3 py-1 text-xs text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className="mt-3 rounded-lg px-3 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
         >
           選択を解除
         </button>

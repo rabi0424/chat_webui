@@ -1,7 +1,7 @@
 import { memo, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import type { PluggableList } from "unified";
-import type { Element, ElementContent } from "hast";
+import type { Element, ElementContent, Root, RootContent } from "hast";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
@@ -165,6 +165,94 @@ const sanitizeSchema = {
   },
 };
 
+/**
+ * ストリーミング中の本文を、語（日本語は2文字）ごとの <span> に包む。
+ *
+ * 新しく届いた分だけが新しい要素として現れるので、CSSアニメーションが
+ * その語にだけ1回走り、ChatGPTアプリのように文字が少しずつ浮かび上がる。
+ * 既に出ている語の要素は作り直されないため、再アニメーションは起きない。
+ */
+function rehypeStreamTokens() {
+  return (tree: Root) => wrapTokens(tree);
+}
+
+/** 中の文字を触ってはいけない要素（コード・数式・生SVG）。 */
+const OPAQUE_TAGS = new Set(["pre", "code", "script", "style", "svg", "math"]);
+
+function isOpaque(node: Element): boolean {
+  if (OPAQUE_TAGS.has(node.tagName)) return true;
+  const cls = node.properties?.className;
+  const names = Array.isArray(cls) ? cls.map(String) : [String(cls ?? "")];
+  return names.some((c) => c.startsWith("katex") || c.startsWith("math"));
+}
+
+/** 日本語・中国語・韓国語の文字（語の区切りが無いので短く刻む）。 */
+const CJK =
+  /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\uac00-\ud7af]/;
+
+/** 空白・CJKの2文字・それ以外の連なり（英単語など）に刻む。 */
+function tokenize(text: string): string[] {
+  const out: string[] = [];
+  let buf = "";
+  let space = false;
+  const flush = () => {
+    if (buf) out.push(buf);
+    buf = "";
+  };
+  for (const ch of text) {
+    if (/\s/.test(ch)) {
+      if (!space) flush();
+      space = true;
+      buf += ch;
+      continue;
+    }
+    if (space) {
+      flush();
+      space = false;
+    }
+    if (CJK.test(ch)) {
+      // 2文字ずつまとめる（1文字ごとだと要素が増えすぎて描き直しが重い）
+      const last = out[out.length - 1];
+      if (last && last.length === 1 && CJK.test(last) && !buf) {
+        out[out.length - 1] = last + ch;
+      } else {
+        flush();
+        out.push(ch);
+      }
+      continue;
+    }
+    buf += ch;
+  }
+  flush();
+  return out;
+}
+
+function wrapTokens(node: Root | Element): void {
+  const children: RootContent[] = [];
+  let wrapped = false;
+  for (const child of node.children) {
+    if (child.type === "text") {
+      for (const token of tokenize(child.value)) {
+        children.push(
+          token.trim()
+            ? {
+                type: "element",
+                tagName: "span",
+                properties: { className: ["stream-token"] },
+                children: [{ type: "text", value: token }],
+              }
+            : { type: "text", value: token },
+        );
+      }
+      wrapped = true;
+      continue;
+    }
+    if (child.type === "element" && !isOpaque(child)) wrapTokens(child);
+    children.push(child);
+  }
+  if (wrapped) node.children = children as typeof node.children;
+}
+
 const rehypePlugins: PluggableList = [
   // 生HTMLの解釈 → サニタイズ の順。数式とコードの装飾はこの後に付けるので、
   // ここで落とされることはない。
@@ -185,21 +273,36 @@ const rehypePlugins: PluggableList = [
   [rehypeHighlight, { detect: false, ignoreMissing: true }],
 ];
 
+/** 流入中の末尾用。語ごとの <span> を足して1語ずつ浮かび上がらせる。 */
+const rehypeAnimatedPlugins: PluggableList = [
+  ...rehypePlugins,
+  rehypeStreamTokens,
+];
+
 /**
  * memo必須: パースが重く、ストリーミング中は親が毎チャンク再描画される。
  * 本文が変わらないメッセージの再パースをここで止める。
  */
 export const Markdown = memo(function Markdown({
   children,
+  animate = false,
+  className,
 }: {
   children: string;
+  /** 新しく現れた語をふわりと出す（生成中の末尾だけに使う）。 */
+  animate?: boolean;
+  className?: string;
 }) {
   const source = useMemo(() => prepareMarkdown(children), [children]);
   return (
-    <div className="prose prose-sm prose-neutral sm:prose-base dark:prose-invert max-w-none break-words prose-code:before:content-none prose-code:after:content-none">
+    <div
+      className={`prose prose-sm prose-neutral sm:prose-base dark:prose-invert max-w-none break-words prose-code:before:content-none prose-code:after:content-none${
+        className ? ` ${className}` : ""
+      }`}
+    >
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
+        rehypePlugins={animate ? rehypeAnimatedPlugins : rehypePlugins}
         components={components}
       >
         {source}

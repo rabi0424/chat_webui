@@ -21,6 +21,7 @@ import {
   prepareImage,
 } from "../lib/image";
 import { Markdown } from "./Markdown";
+import { StreamingMessage } from "./StreamingMessage";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { NumberInput } from "./NumberInput";
@@ -52,7 +53,13 @@ export interface BotContext {
 
 const MODEL_STORAGE_KEY = "chat-webui:model";
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
-const POLL_INTERVAL_MS = 500;
+const POLL_INTERVAL_MS = 400;
+/** 会話フィードを引っぱって更新するのに必要な距離（px）。 */
+const PULL_TRIGGER_PX = 64;
+/** 引っぱりの最大量（px）。これ以上は伸びない。 */
+const PULL_MAX_PX = 96;
+/** 更新中に印を留めておく位置（px）。 */
+const PULL_REST_PX = 44;
 /** リトライ生成の追跡間隔。途中経過が無いので長めにする。 */
 const RUN_POLL_INTERVAL_MS = 1500;
 /**
@@ -429,6 +436,10 @@ export function Chat({
   const [scrolled, setScrolled] = useState(false);
   /** 最下部付近にいるか。離れているときだけ「最新へ」を出す。 */
   const [atBottom, setAtBottom] = useState(true);
+  /** 引っぱって更新の実行中。 */
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshingRef = useRef(false);
+  refreshingRef.current = refreshing;
   /** 送信前の添付画像。 */
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   /** ドラッグ&ドロップのハイライト。 */
@@ -484,6 +495,9 @@ export function Chat({
   const footerRef = useRef<HTMLElement>(null);
   const [footerHeight, setFooterHeight] = useState(88);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 引っぱって更新: 指の動きに合わせて動かす要素（再描画せずに触る）。 */
+  const feedRef = useRef<HTMLDivElement>(null);
+  const spinnerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
@@ -716,6 +730,12 @@ export function Chat({
     }
   };
 
+  /** 表示が伸びたときの追従（最下部に貼り付いているときだけ）。 */
+  const followBottom = () => {
+    const el = scrollRef.current;
+    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+  };
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -724,6 +744,129 @@ export function Chat({
     setAtBottom(near);
     setScrolled(el.scrollTop > 8);
   };
+
+  /** 引っぱり量をそのまま画面へ（再描画を挟まずDOMを直に動かす）。 */
+  const paintPull = (distance: number, animated: boolean) => {
+    const feed = feedRef.current;
+    const spinner = spinnerRef.current;
+    const ease = animated
+      ? "transform 0.25s ease-out, opacity 0.25s ease-out"
+      : "none";
+    if (feed) {
+      feed.style.transition = ease;
+      feed.style.transform = distance > 0 ? `translateY(${distance}px)` : "";
+    }
+    if (spinner) {
+      spinner.style.transition = ease;
+      spinner.style.opacity = String(Math.min(1, distance / PULL_TRIGGER_PX));
+      spinner.style.transform = `translateY(${distance}px) rotate(${distance * 2.4}deg)`;
+    }
+  };
+
+  /**
+   * 引っぱって更新: 会話フィードをサーバーから取り直す。
+   * 別の端末・別のタブで進んだ内容や、通信が途切れて取りこぼした
+   * 続きをここで拾い直せる。
+   */
+  async function pullRefresh() {
+    const convId = convIdRef.current;
+    if (!convId || refreshingRef.current) return;
+    refreshingRef.current = true;
+    setRefreshing(true);
+    invalidateChat(convId); // 先読みキャッシュも作り直させる
+    const started = performance.now();
+    try {
+      const res = await fetch(`/api/conversations/${convId}/path`);
+      if (res.ok) {
+        const { messages: fresh } = (await res.json()) as {
+          messages: UiMessage[];
+        };
+        setMessages(fresh);
+        setError(null);
+        // 別の画面で走っている生成があれば、ここから追いかける
+        const last = fresh[fresh.length - 1];
+        if (!isStreaming && last?.status === "streaming" && last.id) {
+          const epoch = ++epochRef.current;
+          setIsStreaming(true);
+          void pollUntilDone(convId, last.id, epoch).then(() => {
+            if (epochRef.current !== epoch) return;
+            setIsStreaming(false);
+            markRead(convId);
+            void refreshPath(convId, epoch);
+          });
+        }
+      }
+    } catch {
+      // 取り直せなくても、いま出ている内容はそのまま残す
+    }
+    // 一瞬で消えると更新されたのか分からないので、印は少しだけ見せる
+    const rest = 450 - (performance.now() - started);
+    if (rest > 0) await new Promise((r) => setTimeout(r, rest));
+    setRefreshing(false);
+  }
+
+  const pullRefreshRef = useRef(pullRefresh);
+  pullRefreshRef.current = pullRefresh;
+
+  /**
+   * 最上部から下へ引っぱったら更新する（iOSアプリと同じ操作）。
+   * touchmove は React 経由だと passive 扱いで preventDefault できないため、
+   * ここで直接ぶら下げる。指に追従する部分は再描画せずDOMを直に動かす。
+   */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !conversationId) return;
+    let startY = 0;
+    let pulled = 0;
+    let active = false;
+
+    const onStart = (e: TouchEvent) => {
+      active =
+        el.scrollTop <= 0 && e.touches.length === 1 && !refreshingRef.current;
+      startY = e.touches[0]?.clientY ?? 0;
+      pulled = 0;
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!active) return;
+      const dy = (e.touches[0]?.clientY ?? 0) - startY;
+      if (dy <= 0 || el.scrollTop > 0) {
+        // 上向き・途中からのスクロールは通常のスクロールに任せる
+        if (pulled > 0) paintPull(0, true);
+        active = false;
+        pulled = 0;
+        return;
+      }
+      // 引っぱるほど重くなるゴムの手ざわり
+      pulled = Math.min(PULL_MAX_PX, dy * 0.5);
+      paintPull(pulled, false);
+      if (e.cancelable) e.preventDefault();
+    };
+    const onEnd = () => {
+      if (!active) return;
+      active = false;
+      const triggered = pulled >= PULL_TRIGGER_PX;
+      pulled = 0;
+      // 更新するときは、終わるまで印を出したまま少し下げておく
+      paintPull(triggered ? PULL_REST_PX : 0, true);
+      if (triggered) void pullRefreshRef.current();
+    };
+
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd);
+    el.addEventListener("touchcancel", onEnd);
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, [conversationId]);
+
+  // 更新中は印を出したままにし、終わったら元の位置へ戻す
+  useEffect(() => {
+    paintPull(refreshing ? PULL_REST_PX : 0, true);
+  }, [refreshing]);
 
   /** 「最新へ」。押した時点から追従も再開する。 */
   const scrollToBottom = () => {
@@ -1071,6 +1214,12 @@ export function Chat({
         convId = ((await res.json()) as { id: string }).id;
         convIdRef.current = convId;
         isNew = true;
+        // この時点でURLを会話のものに差し替える。ここで navigate すると
+        // 画面が作り直されて生成の追従が切れるので、履歴のエントリだけ
+        // 書き換える（React Router の state はそのまま持ち越す）。
+        // これをしないと、生成が終わる前にリロードした人が新規チャットの
+        // 画面に戻されてしまう（会話自体はサーバーに残っているのに）
+        window.history.replaceState(window.history.state, "", `/chat/${convId}`);
         revalidator.revalidate(); // サイドバーに即反映
       }
 
@@ -1169,8 +1318,11 @@ export function Chat({
           }
           // タイトル生成中にユーザーが自分で遷移していたら（分岐や別会話
           // など）、後追いの自動遷移で引き戻さない。新規会話の最初の応答で
-          // 「ここから分岐」した直後に元の会話へ戻されるのはこれが原因
-          if (window.location.pathname === "/") {
+          // 「ここから分岐」した直後に元の会話へ戻されるのはこれが原因。
+          // URLは生成開始時に差し替え済みなので、そのままかどうかで見る。
+          // ここでの navigate は、React Router 側の現在地（まだ "/"）を
+          // 会話ページに合わせ直すためのもの
+          if (window.location.pathname === `/chat/${convId}`) {
             await navigate(`/chat/${convId}`, { replace: true });
           }
         } else {
@@ -1598,19 +1750,38 @@ export function Chat({
         </div>
       )}
 
+      {/* 引っぱって更新の印。指の動きに合わせて上のuseEffectが直接動かす */}
+      {conversationId && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute left-1/2 top-[calc(3rem+env(safe-area-inset-top))] z-10 -translate-x-1/2"
+        >
+          <div ref={spinnerRef} className="opacity-0">
+            <span
+              className={`block h-6 w-6 rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-700 dark:border-t-accent ${
+                refreshing ? "animate-spin" : ""
+              }`}
+            />
+          </div>
+        </div>
+      )}
+
       <div
         ref={scrollRef}
         onScroll={onScroll}
         className="absolute inset-0 overflow-y-auto overscroll-contain"
       >
         <div
+          ref={feedRef}
           className="mx-auto max-w-3xl px-4 pt-[calc(5rem+env(safe-area-inset-top))]"
           style={{ paddingBottom: footerHeight + 24 }}
         >
           {messages.length === 0 && (
-            <div className="flex min-h-[60vh] items-center justify-center text-neutral-300 dark:text-neutral-600">
+            <div className="flex min-h-[60vh] items-center justify-center">
               {emptyState ?? (
-                <p className="text-lg">モデルを選んでメッセージを送信</p>
+                <p className="text-lg text-neutral-400 dark:text-neutral-500">
+                  モデルを選んでメッセージを送信
+                </p>
               )}
             </div>
           )}
@@ -1844,6 +2015,13 @@ export function Chat({
                         </button>
                       )}
                     </div>
+                  ) : i === messages.length - 1 ? (
+                    // 末尾だけは、届いた本文を少しずつ滑らかに出す
+                    <StreamingMessage
+                      text={m.content}
+                      streaming={m.status === "streaming"}
+                      onReveal={followBottom}
+                    />
                   ) : (
                     <Markdown>{m.content}</Markdown>
                   )}

@@ -107,6 +107,30 @@
   }
 }
 
+/*
+ * 生成中の本文。届いたばかりの語だけがふわりと浮かび上がる
+ * （Markdown.tsx の rehypeStreamTokens が語ごとに span を付ける）。
+ */
+@keyframes stream-token {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.stream-token {
+  /*
+   * 動かすのは不透明度だけにする。ぼかし（filter）や浮き上がり
+   * （transform + inline-block）も試したが、語ごとの要素が数百個
+   * 同時に走るぶん描画が重くなった（実測でストリーミング中の処理時間が
+   * 2〜3倍）。不透明度だけなら変える前とほぼ同じ負荷で収まり、
+   * インライン要素のままなので行の折り返しや禁則も崩れない。
+   */
+  animation: stream-token 0.38s ease-out both;
+}
+
 /* 動きを減らす設定の尊重: アニメーションは実質無効化しフェードのみに */
 @media (prefers-reduced-motion: reduce) {
   *,
