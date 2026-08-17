@@ -5,15 +5,7 @@ import type { UiAttachment, UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
 import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
-import {
-  readRetryConfig,
-  RETRY_CONCURRENCY_KEY,
-  RETRY_DEFAULT_MAX_ATTEMPTS,
-  RETRY_DEFAULT_TARGET,
-  RETRY_ENABLED_KEY,
-  RETRY_MAX_KEY,
-  RETRY_TARGET_KEY,
-} from "../lib/retry";
+import { isRetryProgress, readRetryConfig } from "../lib/retry";
 import {
   ACCEPTED_IMAGE_TYPES,
   formatBytes,
@@ -24,7 +16,7 @@ import { Markdown } from "./Markdown";
 import { StreamingMessage } from "./StreamingMessage";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
-import { NumberInput } from "./NumberInput";
+import { RetrySettings } from "./RetrySettings";
 import { Lightbox } from "./Lightbox";
 import {
   IconArrowDown,
@@ -60,8 +52,11 @@ const PULL_TRIGGER_PX = 64;
 const PULL_MAX_PX = 96;
 /** 更新中に印を留めておく位置（px）。 */
 const PULL_REST_PX = 44;
-/** リトライ生成の追跡間隔。途中経過が無いので長めにする。 */
-const RUN_POLL_INTERVAL_MS = 1500;
+/**
+ * リトライ生成の追跡間隔。成功した応答が増えたかを見るだけなので
+ * 本文のポーリングより軽いが、出来上がりは1秒以内に出したい。
+ */
+const RUN_POLL_INTERVAL_MS = 1000;
 /**
  * Web検索（OpenRouterの :online プラグイン）の設定キー。
  * 他の生成パラメータと同じく会話の params に保存するが、APIへは送らず
@@ -121,48 +116,39 @@ function MessageImages({
   );
 }
 
-/** 「成功するまで生成」の数値入力1つ分。空欄なら既定に従う。 */
-function RetryField({
-  label,
-  hint,
-  value,
-  effective,
-  min,
-  max,
-  onChange,
-  onClear,
+/**
+ * 「成功するまで生成」の進捗の見出し。
+ *
+ * 成功数・試行数はサーバーが書いた本文をそのまま出すが、経過秒はここで
+ * 刻む。サーバーに秒を書かせると、毎秒表示するのに毎秒のD1書き込みと
+ * 取得が要るうえ、ポーリングの間隔しだいで数字が飛ぶ。開始時刻から
+ * 引けば、通信を増やさずにちょうど毎秒進む。
+ */
+function RetryProgress({
+  text,
+  startedAt,
 }: {
-  label: string;
-  hint: string;
-  /** 実際に入力されている値。未入力なら undefined。 */
-  value: number | undefined;
-  /** 未入力のときに使われる値（プレースホルダに出す）。 */
-  effective: number;
-  min: number;
-  max: number;
-  onChange: (value: number) => void;
-  onClear: () => void;
+  text: string;
+  /** 生成開始時刻。未保存の場合は表示した時刻から数える。 */
+  startedAt: number | undefined;
 }) {
+  const [start] = useState(() => startedAt ?? Date.now());
+  const [elapsed, setElapsed] = useState(() =>
+    Math.max(0, Math.floor((Date.now() - start) / 1000)),
+  );
+  useEffect(() => {
+    // 秒の変わり目とずれても取りこぼさないよう、短めに見て値が
+    // 変わったときだけ描き直す（同じ値のsetStateはReactが捨てる）
+    const timer = setInterval(() => {
+      setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    }, 250);
+    return () => clearInterval(timer);
+  }, [start]);
+
   return (
-    <div className="flex items-center gap-3">
-      <div className="min-w-0 flex-1">
-        <p className="text-sm">{label}</p>
-        <p className="truncate text-xs text-neutral-400 dark:text-neutral-500">
-          {hint}
-        </p>
-      </div>
-      <NumberInput
-        label={label}
-        value={value}
-        onChange={onChange}
-        onClear={onClear}
-        placeholder={String(effective)}
-        min={min}
-        max={max}
-        step={1}
-        className="w-20 shrink-0 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
-      />
-    </div>
+    <p className="text-sm text-neutral-500 dark:text-neutral-400">
+      {text}（{elapsed}秒）
+    </p>
   );
 }
 
@@ -574,38 +560,6 @@ export function Chat({
     const next = { ...params };
     if (webSearch) next[WEB_PARAM_KEY] = "off";
     else delete next[WEB_PARAM_KEY];
-    changeParams(next);
-  };
-
-  /** ⚙パネルに出す、実際に入力されている値（未入力は undefined）。 */
-  const retryValue = (key: string): number | undefined => {
-    const raw = params[key];
-    if (raw == null || raw === "") return undefined;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : undefined;
-  };
-
-  /** null を渡すと未入力に戻す（既定値に従う）。 */
-  const setRetryParam = (key: string, value: number | null) => {
-    const next = { ...params };
-    if (value == null) delete next[key];
-    else next[key] = value;
-    changeParams(next);
-  };
-
-  /** 「成功するまで生成」の有効/無効。既定値も同時に置く。 */
-  const toggleRetry = () => {
-    const next = { ...params };
-    if (retryConfig) {
-      delete next[RETRY_ENABLED_KEY];
-    } else {
-      next[RETRY_ENABLED_KEY] = "on";
-      next[RETRY_TARGET_KEY] ??= RETRY_DEFAULT_TARGET;
-      next[RETRY_MAX_KEY] ??= Math.min(
-        RETRY_DEFAULT_MAX_ATTEMPTS,
-        settings.retryAttemptCeiling,
-      );
-    }
     changeParams(next);
   };
 
@@ -1086,7 +1040,6 @@ export function Chat({
   /**
    * リトライ生成の追跡。成功するたびに応答が増えるので、
    * 1件を見張るのではなくパスごと取り直す。
-   * 画像生成には途中経過が無いため、間隔は長めでよい。
    */
   async function pollRunUntilDone(convId: string, epoch: number) {
     for (;;) {
@@ -1678,67 +1631,12 @@ export function Chat({
               </div>
             )}
             {canRetry && (
-              <div className="mb-3 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
-                <div className="flex items-center gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">成功するまで生成</p>
-                    <p className="text-xs text-neutral-400 dark:text-neutral-500">
-                      画像が返るまで同じ依頼を投げ直す（拒否の揺らぎ対策）
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={retryConfig != null}
-                    aria-label="成功するまで生成"
-                    onClick={toggleRetry}
-                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                      retryConfig
-                        ? "bg-accent"
-                        : "bg-neutral-300 dark:bg-neutral-600"
-                    }`}
-                  >
-                    <span
-                      className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                        retryConfig ? "translate-x-[22px]" : "translate-x-0.5"
-                      }`}
-                    />
-                  </button>
-                </div>
-                {retryConfig && (
-                  <div className="mt-2 space-y-1.5 border-t border-neutral-100 pt-2 dark:border-white/10">
-                    <RetryField
-                      label="目標の成功数"
-                      hint="ほしい応答の数"
-                      value={retryValue(RETRY_TARGET_KEY)}
-                      effective={retryConfig.target}
-                      min={1}
-                      max={settings.retryAttemptCeiling}
-                      onChange={(v) => setRetryParam(RETRY_TARGET_KEY, v)}
-                      onClear={() => setRetryParam(RETRY_TARGET_KEY, null)}
-                    />
-                    <RetryField
-                      label="上限の試行回数"
-                      hint={`未入力なら目標数と同じ（天井: ${settings.retryAttemptCeiling}）`}
-                      value={retryValue(RETRY_MAX_KEY)}
-                      effective={retryConfig.maxAttempts}
-                      min={1}
-                      max={settings.retryAttemptCeiling}
-                      onChange={(v) => setRetryParam(RETRY_MAX_KEY, v)}
-                      onClear={() => setRetryParam(RETRY_MAX_KEY, null)}
-                    />
-                    <RetryField
-                      label="並列数"
-                      hint="同時に走らせる数。未入力なら目標数と同じ"
-                      value={retryValue(RETRY_CONCURRENCY_KEY)}
-                      effective={retryConfig.concurrency}
-                      min={1}
-                      max={retryConfig.maxAttempts}
-                      onChange={(v) => setRetryParam(RETRY_CONCURRENCY_KEY, v)}
-                      onClear={() => setRetryParam(RETRY_CONCURRENCY_KEY, null)}
-                    />
-                  </div>
-                )}
+              <div className="mb-3">
+                <RetrySettings
+                  value={params}
+                  onChange={changeParams}
+                  ceiling={settings.retryAttemptCeiling}
+                />
               </div>
             )}
             <ParamsEditor
@@ -2000,7 +1898,10 @@ export function Chat({
                       }
                     />
                   )}
-                  {m.status === "error" ? (
+                  {m.status === "streaming" && isRetryProgress(m.content) ? (
+                    // 「成功するまで生成」の見出し。経過秒はここで毎秒進める
+                    <RetryProgress text={m.content} startedAt={m.createdAt} />
+                  ) : m.status === "error" ? (
                     <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
                       <span className="break-all">
                         {m.error ?? "生成に失敗しました"}
@@ -2025,9 +1926,12 @@ export function Chat({
                   ) : (
                     <Markdown>{m.content}</Markdown>
                   )}
-                  {isStreaming && i === messages.length - 1 && (
-                    <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-neutral-400 align-text-bottom dark:bg-neutral-500" />
-                  )}
+                  {/* 進捗の見出しは秒が動いているのでカーソルは出さない */}
+                  {isStreaming &&
+                    i === messages.length - 1 &&
+                    !isRetryProgress(m.content) && (
+                      <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-neutral-400 align-text-bottom dark:bg-neutral-500" />
+                    )}
                   {!selecting && (
                     <div className="mt-1 flex items-center gap-2">
                       <BranchPager

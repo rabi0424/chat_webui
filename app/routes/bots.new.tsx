@@ -8,10 +8,10 @@ export function meta({}: Route.MetaArgs) {
 }
 
 export default function BotNew() {
-  const { models } = useOutletContext<ShellContext>();
+  const { models, settings } = useOutletContext<ShellContext>();
   return (
     <div className="h-full overflow-y-auto">
-      <BotForm models={models} />
+      <BotForm models={models} retryCeiling={settings.retryAttemptCeiling} />
     </div>
   );
 }

@@ -70,3 +70,35 @@ export function readRetryConfig(
 
   return { target, maxAttempts, concurrency };
 }
+
+/**
+ * 進捗行の先頭。クライアントはこれを見て「リトライ生成の見出し」と判断し、
+ * 経過秒を自分で刻む（サーバーは秒を書かない）。
+ */
+export const RETRY_PROGRESS_PREFIX = "生成中…";
+
+/**
+ * 見出しメッセージに出す進捗の文言。
+ *
+ * 経過秒はここに入れない。秒をサーバーが書くと、毎秒表示するために
+ * 1秒ごとのD1書き込みとポーリング取得が要る。数字が動くだけの行なので、
+ * 開始時刻（メッセージのcreated_at）からクライアントが刻んだほうが
+ * 正確で、しかも安い。
+ */
+export function formatRetryProgress(state: {
+  successes: number;
+  attempts: number;
+  inflight: number;
+  retry: RetryConfig;
+}): string {
+  return (
+    `${RETRY_PROGRESS_PREFIX} 成功 ${state.successes}/${state.retry.target}・` +
+    `試行 ${state.attempts}/${state.retry.maxAttempts}・` +
+    `実行中 ${state.inflight}本`
+  );
+}
+
+/** 進捗の見出しメッセージか（本文の見た目で判断する）。 */
+export function isRetryProgress(content: string): boolean {
+  return content.startsWith(RETRY_PROGRESS_PREFIX);
+}

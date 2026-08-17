@@ -13,9 +13,16 @@
   /* ポップオーバー等の出現。トリガー起点に軽いスプリング感で立ち上がる */
   --animate-pop: pop 0.16s cubic-bezier(0.2, 0.8, 0.3, 1.08) both;
   --animate-fade: fade 0.15s ease-out both;
-  --animate-fade-out: fade-out 0.2s ease-in both;
   --animate-drawer: drawer 0.24s cubic-bezier(0.32, 0.72, 0, 1) both;
-  --animate-drawer-out: drawer-out 0.22s cubic-bezier(0.32, 0.72, 0, 1) both;
+  /*
+   * 退場は入場の曲線を使い回さない。入場向けの減速カーブ（0.32,0.72,0,1）を
+   * そのまま逆に流すと、最初の1/4で画面外へ抜けきってから端が数px残る
+   * 動きになり、消えるのが「唐突」に見えていた。退場は最後まで一定に
+   * 見える対称の曲線で送り出し、背景の暗幕も同じ長さ・同じ曲線で
+   * 合わせて消す。
+   */
+  --animate-drawer-out: drawer-out 0.26s cubic-bezier(0.4, 0, 0.6, 1) both;
+  --animate-fade-out: fade-out 0.26s cubic-bezier(0.4, 0, 0.6, 1) both;
 }
 
 /*

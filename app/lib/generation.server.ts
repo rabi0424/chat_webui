@@ -7,7 +7,11 @@ import {
   type ChatMessage,
 } from "./openrouter.server";
 import { buildGenerationPayload, type ParamsState } from "./params";
-import { RETRY_RATE_LIMIT_ROUNDS, type RetryConfig } from "./retry";
+import {
+  formatRetryProgress,
+  RETRY_RATE_LIMIT_ROUNDS,
+  type RetryConfig,
+} from "./retry";
 import {
   appendAssistantMessage,
   createGeneratedAttachment,
@@ -562,7 +566,10 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
 
 // --- 成功するまで生成する（リトライ生成） ---------------------------------
 
-/** 生成中の見出しメッセージを更新する間隔。中断とみなされる前に打つ。 */
+/**
+ * 見出しメッセージの打ち直し間隔。中断（放置）とみなされる前に打つための
+ * 生存確認で、内容は変わらないことが多い（成功・試行のたびに別途打つ）。
+ */
 const HEARTBEAT_MS = 3_000;
 /** レート制限に当たったときの待ち時間。 */
 const RATE_LIMIT_BACKOFF_MS = [2_000, 4_000, 8_000];
@@ -641,22 +648,6 @@ async function runAttempt(
     : { kind: "refused", text: result.content };
 }
 
-/** 見出しメッセージに出す進捗の文言。 */
-function progressText(state: {
-  successes: number;
-  attempts: number;
-  inflight: number;
-  startedAt: number;
-  retry: RetryConfig;
-}): string {
-  const elapsed = Math.round((Date.now() - state.startedAt) / 1000);
-  return (
-    `生成中… 成功 ${state.successes}/${state.retry.target}・` +
-    `試行 ${state.attempts}/${state.retry.maxAttempts}・` +
-    `実行中 ${state.inflight}本（${elapsed}秒）`
-  );
-}
-
 /**
  * 成功するまで生成するモード。
  *
@@ -707,11 +698,10 @@ async function runRetryGenerationJob(
   /** 進捗の保存を兼ねた停止確認。 */
   const touch = async (): Promise<boolean> => {
     const { stopRequested } = await flushGeneration(statusId, {
-      content: progressText({
+      content: formatRetryProgress({
         successes,
         attempts,
         inflight: inflight.size,
-        startedAt,
         retry,
       }),
       reasoning: null,

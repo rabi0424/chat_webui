@@ -171,16 +171,44 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   }, [navigation.state, navigation.location]);
 
   const [sidebarClosing, setSidebarClosing] = useState(false);
+  const closeFallback = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** 閉じるときも開くときと同じ滑らかさで（退場アニメーション後にアンマウント）。 */
+  /** 退場アニメーションを終えてドロワーを外す。 */
+  const finishClose = () => {
+    if (closeFallback.current) clearTimeout(closeFallback.current);
+    closeFallback.current = null;
+    setSidebarOpen(false);
+    setSidebarClosing(false);
+  };
+
+  /**
+   * 閉じるときも開くときと同じ滑らかさで（退場アニメーション後にアンマウント）。
+   *
+   * アンマウントは時間ではなく animationend で決める。会話を選んで閉じる
+   * ときは遷移先の描画がすぐ後に走るため、固定時間で外すとアニメーションが
+   * 始まる前に消えることがあり、これが「唐突に消えた」正体だった。
+   * イベントが来ない場合（アニメーション無効・裏に回ったタブ）の保険として
+   * 長めのタイマーも張る。
+   */
   const closeSidebar = () => {
     if (sidebarClosing) return;
     setSidebarClosing(true);
-    setTimeout(() => {
-      setSidebarOpen(false);
-      setSidebarClosing(false);
-    }, 220);
+    closeFallback.current = setTimeout(finishClose, 700);
   };
+
+  /** 閉じ切る前に開き直されたら、退場を取り消してそのまま出しておく。 */
+  const openSidebar = () => {
+    if (closeFallback.current) clearTimeout(closeFallback.current);
+    closeFallback.current = null;
+    setSidebarClosing(false);
+    setSidebarOpen(true);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (closeFallback.current) clearTimeout(closeFallback.current);
+    };
+  }, []);
 
   /**
    * アプリの高さを visualViewport の実測値に同期する。
@@ -243,7 +271,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       return;
     }
     if (!sidebarOpen && start.fromEdge && dx > 50) {
-      setSidebarOpen(true);
+      openSidebar();
       swipeRef.current = null;
     } else if (sidebarOpen && !sidebarClosing && dx < -50) {
       closeSidebar();
@@ -281,15 +309,20 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
           style={{ height: "var(--app-height, 100dvh)" }}
         >
           <div
-            className={`absolute inset-0 bg-black/40 backdrop-blur-sm ${
+            className={`absolute inset-0 bg-black/40 backdrop-blur-sm [will-change:opacity] ${
               sidebarClosing ? "animate-fade-out" : "animate-fade"
             }`}
             onClick={closeSidebar}
           />
+          {/* 遷移先の描画と重なってもコマ落ちしないよう、
+              変形はあらかじめ合成レイヤに載せておく */}
           <div
-            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl dark:bg-neutral-950 ${
+            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl will-change-transform dark:bg-neutral-950 ${
               sidebarClosing ? "animate-drawer-out" : "animate-drawer"
             }`}
+            onAnimationEnd={(e) => {
+              if (sidebarClosing && e.target === e.currentTarget) finishClose();
+            }}
           >
             <Sidebar
               conversations={conversations}
@@ -309,7 +342,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
               bots,
               usdJpy,
               settings,
-              openSidebar: () => setSidebarOpen(true),
+              openSidebar,
             } satisfies ShellContext
           }
         />

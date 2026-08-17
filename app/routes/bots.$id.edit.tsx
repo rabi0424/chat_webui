@@ -17,10 +17,10 @@ export async function loader({ params }: Route.LoaderArgs) {
 }
 
 export default function BotEdit({ loaderData }: Route.ComponentProps) {
-  const { models } = useOutletContext<ShellContext>();
+  const { models, settings } = useOutletContext<ShellContext>();
   return (
     <div className="h-full overflow-y-auto">
-      <BotForm models={models} initial={loaderData.bot} />
+      <BotForm models={models} initial={loaderData.bot} retryCeiling={settings.retryAttemptCeiling} />
     </div>
   );
 }
