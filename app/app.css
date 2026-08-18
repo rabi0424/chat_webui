@@ -258,6 +258,76 @@ body {
 }
 
 /*
+ * 警告ブロック（`> [!NOTE]` など）。配色は GitHub のライト / ダークに合わせ、
+ * 種類ごとの色は --alert 1つだけ差し替えて、枠・見出し・背景で使い回す。
+ */
+.prose .md-alert {
+  margin: 1.25em 0;
+  border-left: 3px solid var(--alert);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: color-mix(in srgb, var(--alert) 7%, transparent);
+}
+/* 枠の内側では、最初と最後の余白を枠の余白に任せる */
+.prose .md-alert > :first-child {
+  margin-top: 0;
+}
+.prose .md-alert > :last-child {
+  margin-bottom: 0;
+}
+.prose .md-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+  color: var(--alert);
+}
+
+.prose .md-alert-note {
+  --alert: #0969da;
+}
+.prose .md-alert-tip {
+  --alert: #1a7f37;
+}
+.prose .md-alert-important {
+  --alert: #8250df;
+}
+.prose .md-alert-warning {
+  --alert: #9a6700;
+}
+.prose .md-alert-caution {
+  --alert: #cf222e;
+}
+
+.dark .prose .md-alert-note {
+  --alert: #4493f8;
+}
+.dark .prose .md-alert-tip {
+  --alert: #3fb950;
+}
+.dark .prose .md-alert-important {
+  --alert: #ab7df8;
+}
+.dark .prose .md-alert-warning {
+  --alert: #d29922;
+}
+.dark .prose .md-alert-caution {
+  --alert: #f85149;
+}
+
+/*
+ * Mermaid の図。mermaid は svg に固定幅を持たせてくるので、狭い画面では
+ * 枠に収まるまで縮める。それでも横に長い図は枠側で横スクロールさせる。
+ */
+.mermaid-figure svg {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  height: auto;
+}
+
+/*
  * コードブロックのシンタックスハイライト（highlight.js のクラスに対する配色）。
  * GitHub のライト / ダークテーマに合わせている。
  */

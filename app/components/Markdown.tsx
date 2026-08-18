@@ -1,4 +1,11 @@
-import { memo, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import type { PluggableList } from "unified";
 import type { Element, ElementContent, Root, RootContent } from "hast";
@@ -11,6 +18,9 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { IconCheck, IconCopy } from "./icons";
 import { prepareMarkdown } from "../lib/markdown";
+import { alertTypeOf, remarkAlert } from "../lib/remark-alert";
+import { MarkdownAlert } from "./MarkdownAlert";
+import { MermaidBlock } from "./MermaidBlock";
 
 /** 言語表示に使う名前。hljs のクラス名から拾えなかったものはそのまま出す。 */
 const LANGUAGE_LABELS: Record<string, string> = {
@@ -30,6 +40,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
   kotlin: "Kotlin",
   markdown: "Markdown",
   md: "Markdown",
+  mermaid: "Mermaid",
   php: "PHP",
   plaintext: "Text",
   python: "Python",
@@ -85,6 +96,14 @@ function CopyCodeButton({ text }: { text: string }) {
   );
 }
 
+/**
+ * 本文がまだ流れてきている最中か。
+ *
+ * 図（Mermaid）は書きかけのソースを描いても意味が無いので、これを見て
+ * 落ち着くまで待つ。コードブロックの奥から参照するので context で渡す。
+ */
+const StreamingContext = createContext(false);
+
 /** コードブロック。言語名とコピーボタンを付けた枠で囲む。 */
 function CodeBlock({ node, children }: { node?: Element; children?: ReactNode }) {
   const code = node?.children.find(
@@ -95,8 +114,9 @@ function CodeBlock({ node, children }: { node?: Element; children?: ReactNode })
     : String(code?.properties?.className ?? "");
   const lang = /language-([\w+#-]+)/.exec(className)?.[1]?.toLowerCase();
   const text = nodeText(code);
+  const streaming = useContext(StreamingContext);
 
-  return (
+  const frame = (
     <div className="not-prose my-4 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-1 dark:border-neutral-800">
         <span className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -109,10 +129,22 @@ function CodeBlock({ node, children }: { node?: Element; children?: ReactNode })
       </pre>
     </div>
   );
+
+  // 図にできるなら図で。できないうちは、そのままソースを見せておく。
+  if (lang === "mermaid") {
+    return <MermaidBlock code={text} streaming={streaming} fallback={frame} />;
+  }
+  return frame;
 }
 
 const components: Components = {
   pre: CodeBlock,
+  // remark-alert が印を付けた引用ブロックだけ、警告ブロックとして描く
+  div: ({ node, children, ...props }) => {
+    const type = alertTypeOf(node?.properties?.className);
+    if (!type) return <div {...props}>{children}</div>;
+    return <MarkdownAlert type={type}>{children}</MarkdownAlert>;
+  },
   // 表は横に長くなりがちなので、はみ出す分だけ横スクロールさせる
   table: ({ children }) => (
     <div className="-mx-1 overflow-x-auto px-1">
@@ -147,6 +179,8 @@ const remarkPlugins: PluggableList = [
   // `$100 と $200` のような通貨表記を数式にしないため、1個の `$` は数式扱いしない。
   // 数式にすべき `$x$` は前処理（normalizeMath）で `$$x$$` に寄せてある。
   [remarkMath, { singleDollarTextMath: false }],
+  // `> [!NOTE]` の目印を消すのは改行の変換より先（目印の行を丸ごと落とすため）
+  remarkAlert,
   // 1行の改行をそのまま改行として見せる（チャットの表示としてはこちらが自然）
   remarkBreaks,
 ];
@@ -286,11 +320,14 @@ const rehypeAnimatedPlugins: PluggableList = [
 export const Markdown = memo(function Markdown({
   children,
   animate = false,
+  streaming = false,
   className,
 }: {
   children: string;
   /** 新しく現れた語をふわりと出す（生成中の末尾だけに使う）。 */
   animate?: boolean;
+  /** 本文がまだ伸びている最中か（図を描くのを待たせるのに使う）。 */
+  streaming?: boolean;
   className?: string;
 }) {
   const source = useMemo(() => prepareMarkdown(children), [children]);
@@ -300,13 +337,15 @@ export const Markdown = memo(function Markdown({
         className ? ` ${className}` : ""
       }`}
     >
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={animate ? rehypeAnimatedPlugins : rehypePlugins}
-        components={components}
-      >
-        {source}
-      </ReactMarkdown>
+      <StreamingContext.Provider value={streaming}>
+        <ReactMarkdown
+          remarkPlugins={remarkPlugins}
+          rehypePlugins={animate ? rehypeAnimatedPlugins : rehypePlugins}
+          components={components}
+        >
+          {source}
+        </ReactMarkdown>
+      </StreamingContext.Provider>
     </div>
   );
 });

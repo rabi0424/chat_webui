@@ -159,12 +159,15 @@ export function StreamingMessage({
     return <Markdown>{text}</Markdown>;
   }
 
+  // 閉じていないコードフェンスがあると分割できず、書きかけのブロックも
+  // head に入る。どちらにも「まだ伸びている」ことを伝えておく。
   return (
     <>
-      {shown.head && <Markdown>{shown.head}</Markdown>}
+      {shown.head && <Markdown streaming>{shown.head}</Markdown>}
       {shown.tail && (
         <Markdown
           animate
+          streaming
           className={shown.head ? (shown.tight ? "mt-0" : "mt-4") : undefined}
         >
           {shown.tail}
