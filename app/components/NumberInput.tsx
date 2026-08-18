@@ -10,6 +10,10 @@ import { useState } from "react";
  * 空欄の扱いは2通り。
  * - onClear あり: 空欄そのものが「未設定」として意味を持つ（既定値に従う）。
  * - onClear なし: 入力途中の状態とみなし、離れたときに元の値へ戻す。
+ *
+ * フォーカスすると中身を選択済みにする。この欄は「15を1にする」ような
+ * 置き換えがほとんどで、末尾にカーソルが立つと消してから打ち直す手間に
+ * なる（そのまま打つと151になる）。
  */
 export function NumberInput({
   value,
@@ -51,6 +55,12 @@ export function NumberInput({
       max={max}
       step={step}
       placeholder={placeholder}
+      onFocus={(e) => {
+        // iOS Safari はフォーカス直後の select() を取りこぼすことがある
+        const el = e.currentTarget;
+        el.select();
+        requestAnimationFrame(() => el.select());
+      }}
       onChange={(e) => {
         const raw = e.target.value;
         setText(raw);

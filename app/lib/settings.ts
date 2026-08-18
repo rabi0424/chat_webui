@@ -19,4 +19,4 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 };
 
 /** 天井として受け付ける範囲。 */
-export const RETRY_CEILING_RANGE = { min: 1, max: 100 };
+export const RETRY_CEILING_RANGE = { min: 1, max: 1000 };

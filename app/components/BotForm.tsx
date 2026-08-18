@@ -5,13 +5,17 @@ import type { ModelInfo } from "../lib/openrouter.server";
 import { parseParamsJson, type ParamsState } from "../lib/params";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
+import { RetrySettings } from "./RetrySettings";
 
 export function BotForm({
   models,
   initial,
+  retryCeiling,
 }: {
   models: ModelInfo[];
   initial?: BotRow;
+  /** アプリ全体の試行回数の天井（設定画面）。 */
+  retryCeiling: number;
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState(initial?.name ?? "");
@@ -29,6 +33,11 @@ export function BotForm({
   const [error, setError] = useState<string | null>(null);
 
   const model = models.find((m) => m.id === modelId);
+  /**
+   * 「成功するまで生成」は成功の判定が「画像が返ったか」なので、
+   * 会話の⚙パネルと同じく画像を出せるモデルのときだけ出す。
+   */
+  const canRetry = model?.outputModalities.includes("image") ?? false;
 
   function resetParams() {
     if (
@@ -129,6 +138,19 @@ export function BotForm({
           className="w-full resize-y rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 outline-none placeholder:text-neutral-400 focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
         />
       </div>
+
+      {canRetry && (
+        <div>
+          <label className="mb-2 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
+            生成のしかた
+          </label>
+          <RetrySettings
+            value={params}
+            onChange={setParams}
+            ceiling={retryCeiling}
+          />
+        </div>
+      )}
 
       <div>
         <div className="mb-2 flex items-center justify-between">
