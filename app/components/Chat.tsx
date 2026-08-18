@@ -169,18 +169,26 @@ function GenerationProgress({
   /** 生成開始時刻。未保存の場合は表示した時刻から数える。 */
   startedAt: number | undefined;
 }) {
-  const [start] = useState(() => startedAt ?? Date.now());
-  const [elapsed, setElapsed] = useState(() =>
-    Math.max(0, Math.floor((Date.now() - start) / 1000)),
-  );
+  /**
+   * null = まだ数え始めていない（サーバー描画と最初の描画）。
+   *
+   * 秒をいきなり描くと、サーバーが書いた数字とブラウザが数えた数字が
+   * 食い違ってハイドレーションが失敗する。失敗すると React は文書ごと
+   * 描き直し、<html> に載せたテーマ・アクセント・文字サイズまで消える
+   * （lib/appearance.ts 参照）。最初は秒を出さず、マウント後に足す。
+   */
+  const [elapsed, setElapsed] = useState<number | null>(null);
+
   useEffect(() => {
+    const start = startedAt ?? Date.now();
+    const tick = () =>
+      setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    tick();
     // 秒の変わり目とずれても取りこぼさないよう、短めに見て値が
     // 変わったときだけ描き直す（同じ値のsetStateはReactが捨てる）
-    const timer = setInterval(() => {
-      setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
-    }, 250);
+    const timer = setInterval(tick, 250);
     return () => clearInterval(timer);
-  }, [start]);
+  }, [startedAt]);
 
   return (
     <p className="flex items-center gap-2 text-sm text-neutral-500 dark:text-neutral-400">
@@ -189,7 +197,8 @@ function GenerationProgress({
         className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-700 dark:border-t-accent"
       />
       <span>
-        {text}（{elapsed}秒）
+        {text}
+        {elapsed != null && `（${elapsed}秒）`}
       </span>
     </p>
   );

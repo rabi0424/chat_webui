@@ -29,13 +29,24 @@ export const THEME_INIT_SCRIPT = `
 })();
 `;
 
+/** 保存されている選択。読めなければ「端末に合わせる」。 */
 export function getTheme(): Theme {
-  const t = localStorage.getItem(THEME_STORAGE_KEY);
-  return t === "light" || t === "dark" ? t : "system";
+  try {
+    const t = localStorage.getItem(THEME_STORAGE_KEY);
+    return t === "light" || t === "dark" ? t : "system";
+  } catch {
+    return "system";
+  }
 }
 
+/**
+ * DOMへ反映するだけ（保存はしない）。
+ *
+ * 保存と分けてあるのは、端末の外観設定が変わったときの貼り直しでも
+ * 使うため。ここで保存まですると、そういう「反映したいだけ」の場面が
+ * ユーザーの選択を書き換えてしまう。
+ */
 export function applyTheme(theme: Theme): void {
-  localStorage.setItem(THEME_STORAGE_KEY, theme);
   const dark =
     theme === "dark" ||
     (theme === "system" &&
@@ -44,4 +55,19 @@ export function applyTheme(theme: Theme): void {
   document
     .querySelector('meta[name="theme-color"]')
     ?.setAttribute("content", dark ? THEME_COLOR_DARK : THEME_COLOR_LIGHT);
+}
+
+/** 選択を保存して反映する（ユーザーが切り替えたとき）。 */
+export function saveTheme(theme: Theme): void {
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch {
+    // 保存できなくても、この画面のあいだは反映しておく
+  }
+  applyTheme(theme);
+}
+
+/** 保存値を読み直してDOMへ貼り直す。 */
+export function syncTheme(): void {
+  applyTheme(getTheme());
 }

@@ -46,11 +46,30 @@ export const ACCENT_INIT_SCRIPT = `
 `;
 
 export function getAccent(): string {
-  const a = localStorage.getItem(ACCENT_STORAGE_KEY);
-  return a && ACCENTS.some((x) => x.id === a) ? a : DEFAULT_ACCENT;
+  try {
+    const a = localStorage.getItem(ACCENT_STORAGE_KEY);
+    return a && ACCENTS.some((x) => x.id === a) ? a : DEFAULT_ACCENT;
+  } catch {
+    return DEFAULT_ACCENT;
+  }
 }
 
+/** DOMへ反映するだけ（保存はしない）。理由は lib/theme.ts と同じ。 */
 export function applyAccent(id: string): void {
-  localStorage.setItem(ACCENT_STORAGE_KEY, id);
   document.documentElement.dataset.accent = id;
+}
+
+/** 選択を保存して反映する。 */
+export function saveAccent(id: string): void {
+  try {
+    localStorage.setItem(ACCENT_STORAGE_KEY, id);
+  } catch {
+    // 保存できなくても、この画面のあいだは反映しておく
+  }
+  applyAccent(id);
+}
+
+/** 保存値を読み直してDOMへ貼り直す。 */
+export function syncAccent(): void {
+  applyAccent(getAccent());
 }

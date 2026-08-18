@@ -8,12 +8,12 @@ import {
   RETRY_CEILING_RANGE,
   type AppSettings,
 } from "../lib/settings";
-import { applyTheme, getTheme, type Theme } from "../lib/theme";
+import { getTheme, saveTheme, type Theme } from "../lib/theme";
 import {
   CHAT_FONT_SIZES,
   DEFAULT_CHAT_FONT_SIZE,
-  applyChatFontSize,
   getChatFontSize,
+  saveChatFontSize,
   type ChatFontSize,
 } from "../lib/chat-font";
 import { AccentPicker } from "../components/ThemeToggle";
@@ -378,7 +378,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 onChange={(e) => {
                   const next = e.target.value as Theme;
                   setTheme(next);
-                  applyTheme(next);
+                  saveTheme(next);
                 }}
                 aria-label="テーマ"
                 className="rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
@@ -405,7 +405,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                     aria-pressed={chatFont === f.value}
                     onClick={() => {
                       setChatFont(f.value);
-                      applyChatFontSize(f.value);
+                      saveChatFontSize(f.value);
                     }}
                     className={`px-3 py-1.5 text-sm transition-colors ${
                       chatFont === f.value

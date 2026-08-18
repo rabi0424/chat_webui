@@ -47,16 +47,35 @@ export const CHAT_FONT_INIT_SCRIPT = `
 `;
 
 export function getChatFontSize(): ChatFontSize {
-  const v = localStorage.getItem(CHAT_FONT_STORAGE_KEY);
-  return CHAT_FONT_SIZES.some((s) => s.value === v)
-    ? (v as ChatFontSize)
-    : DEFAULT_CHAT_FONT_SIZE;
+  try {
+    const v = localStorage.getItem(CHAT_FONT_STORAGE_KEY);
+    return CHAT_FONT_SIZES.some((s) => s.value === v)
+      ? (v as ChatFontSize)
+      : DEFAULT_CHAT_FONT_SIZE;
+  } catch {
+    return DEFAULT_CHAT_FONT_SIZE;
+  }
 }
 
+/** DOMへ反映するだけ（保存はしない）。理由は lib/theme.ts と同じ。 */
 export function applyChatFontSize(size: ChatFontSize): void {
-  localStorage.setItem(CHAT_FONT_STORAGE_KEY, size);
   document.documentElement.style.setProperty(
     "--chat-font-scale",
     String(chatFontScale(size)),
   );
+}
+
+/** 選択を保存して反映する。 */
+export function saveChatFontSize(size: ChatFontSize): void {
+  try {
+    localStorage.setItem(CHAT_FONT_STORAGE_KEY, size);
+  } catch {
+    // 保存できなくても、この画面のあいだは反映しておく
+  }
+  applyChatFontSize(size);
+}
+
+/** 保存値を読み直してDOMへ貼り直す。 */
+export function syncChatFontSize(): void {
+  applyChatFontSize(getChatFontSize());
 }

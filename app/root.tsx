@@ -11,11 +11,18 @@ import type { Route } from "./+types/root";
 import { THEME_COLOR_LIGHT, THEME_INIT_SCRIPT } from "./lib/theme";
 import { ACCENT_INIT_SCRIPT } from "./lib/accent";
 import { CHAT_FONT_INIT_SCRIPT } from "./lib/chat-font";
+import { useAppearanceSync } from "./lib/appearance";
 import "./app.css";
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  // <html> に載せた見た目（テーマ等）は React の管理外なので、
+  // 描き直しで消されても保存値から貼り直す（lib/appearance.ts）
+  useAppearanceSync();
   return (
-    <html lang="ja">
+    // <html> の class / data-accent / style は下のインラインスクリプトと
+    // lib/appearance.ts が持つ（Reactは描かない）。サーバーの出力と
+    // 食い違うのは想定どおりなので、この要素だけ警告を止める
+    <html lang="ja" suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
