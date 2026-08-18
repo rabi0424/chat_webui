@@ -438,7 +438,7 @@ export function Sidebar({
           )}
           {c.favorite === 1 && (
             <IconStarSolid
-              className="h-3.5 w-3.5 shrink-0 text-amber-400"
+              className="h-3.5 w-3.5 shrink-0 text-neutral-500 dark:text-white"
             />
           )}
           <span className="min-w-0 truncate">{c.title}</span>
@@ -484,10 +484,14 @@ export function Sidebar({
             title="お気に入り（削除できない常設フォルダ）"
             className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg py-2 pl-1 pr-3 text-left text-[0.9375rem] text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
           >
-            <IconStarSolid className="h-4 w-4 shrink-0 text-amber-400" />
-            <span className="min-w-0 truncate">お気に入り</span>
-            <span className="text-xs text-neutral-400 dark:text-neutral-600">
-              {children.length}
+            <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
+            {/* 件数は名前と同じ行に置く。別のflex項目にすると
+                items-center で箱の中央が揃い、小さい字だけ上にずれて見える */}
+            <span className="min-w-0 flex-1 truncate">
+              お気に入り
+              <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
+                {children.length}
+              </span>
             </span>
           </button>
         </div>
@@ -683,7 +687,7 @@ export function Sidebar({
                 <IconArrowLeft className="h-4 w-4" />
               </button>
               <span className="flex items-center gap-1.5 truncate text-[0.9375rem] font-medium">
-                <IconStarSolid className="h-4 w-4 shrink-0 text-amber-400" />
+                <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
                 お気に入り
               </span>
             </div>
@@ -858,7 +862,7 @@ export function Sidebar({
                 className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
               >
                 {moveConv.favorite === 1 ? (
-                  <IconStarSolid className="h-4 w-4 shrink-0 text-amber-400" />
+                  <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
                 ) : (
                   <IconStar className="h-4 w-4 shrink-0 text-neutral-400" />
                 )}
