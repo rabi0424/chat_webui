@@ -10,6 +10,7 @@ import {
 import type { Route } from "./+types/root";
 import { THEME_COLOR_LIGHT, THEME_INIT_SCRIPT } from "./lib/theme";
 import { ACCENT_INIT_SCRIPT } from "./lib/accent";
+import { CHAT_FONT_INIT_SCRIPT } from "./lib/chat-font";
 import "./app.css";
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -32,10 +33,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Chat" />
-        {/* ハイドレーション前にテーマ・アクセントを適用してちらつきを防ぐ */}
+        {/* ハイドレーション前にテーマ・アクセント・文字サイズを適用してちらつきを防ぐ */}
         <script
           dangerouslySetInnerHTML={{
-            __html: THEME_INIT_SCRIPT + ACCENT_INIT_SCRIPT,
+            __html:
+              THEME_INIT_SCRIPT + ACCENT_INIT_SCRIPT + CHAT_FONT_INIT_SCRIPT,
           }}
         />
         <Meta />

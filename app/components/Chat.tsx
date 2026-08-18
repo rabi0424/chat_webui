@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useRef, useState } from "react";
+import { Fragment, startTransition, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
@@ -22,6 +22,7 @@ import {
   IconArrowDown,
   IconArrowUp,
   IconCheck,
+  IconContextCut,
   IconCopy,
   IconGlobe,
   IconInfo,
@@ -50,6 +51,17 @@ const POLL_INTERVAL_MS = 400;
 const PULL_TRIGGER_PX = 64;
 /** 引っぱりの最大量（px）。これ以上は伸びない。 */
 const PULL_MAX_PX = 96;
+/**
+ * 引っぱりとみなすまでの遊び（px）。
+ *
+ * これが無いと、指が1px下へぶれただけで引っぱり扱いになり touchmove を
+ * preventDefault していた。仕様上、打ち消されたタッチ列からは互換の
+ * マウスイベント（= click）が出ない決まりで、WebKit はこれに従う。
+ * 会話の先頭（scrollTop = 0）ではその条件がいつでも成立するので、
+ * 指がわずかにぶれたタップが黙って消えることになる。
+ * 遊びのぶんは通常のタップとして通し、超えてから引っぱりに移る。
+ */
+const PULL_SLOP_PX = 14;
 /** 更新中に印を留めておく位置（px）。 */
 const PULL_REST_PX = 44;
 /**
@@ -73,6 +85,20 @@ function formatJpy(jpy: number): string {
   if (jpy >= 100) return `¥${Math.round(jpy).toLocaleString()}`;
   if (jpy >= 1) return `¥${jpy.toFixed(2)}`;
   return `¥${jpy.toFixed(4)}`;
+}
+
+/**
+ * モデルへ送る履歴を、コンテキストの境界線で切り落とす。
+ *
+ * 境界線が立ったメッセージまで（それ自身を含む）は送らない。複数ある
+ * ときは最後のものが効く。履歴の表示は一切変えず、送る範囲だけを狭める。
+ */
+function contextWindow(history: UiMessage[]): UiMessage[] {
+  let start = 0;
+  for (let i = 0; i < history.length; i++) {
+    if (history[i].contextBoundary) start = i + 1;
+  }
+  return start === 0 ? history : history.slice(start);
 }
 
 /** 送信前の添付。アップロード完了で id（添付ID）が入る。 */
@@ -117,14 +143,17 @@ function MessageImages({
 }
 
 /**
- * 「成功するまで生成」の進捗の見出し。
+ * 生成中の見出し（本文 + 経過秒）。
  *
- * 成功数・試行数はサーバーが書いた本文をそのまま出すが、経過秒はここで
- * 刻む。サーバーに秒を書かせると、毎秒表示するのに毎秒のD1書き込みと
- * 取得が要るうえ、ポーリングの間隔しだいで数字が飛ぶ。開始時刻から
- * 引けば、通信を増やさずにちょうど毎秒進む。
+ * 経過秒はここで刻む。サーバーに秒を書かせると、毎秒表示するのに
+ * 毎秒のD1書き込みと取得が要るうえ、ポーリングの間隔しだいで数字が
+ * 飛ぶ。開始時刻から引けば、通信を増やさずにちょうど毎秒進む。
+ *
+ * 「成功するまで生成」の進捗（成功数・試行数）も、1枚だけの画像生成も
+ * これで出す。画像生成は本文が流れてこないぶん、待っているあいだ
+ * 手がかりが秒数しかない。
  */
-function RetryProgress({
+function GenerationProgress({
   text,
   startedAt,
 }: {
@@ -146,8 +175,14 @@ function RetryProgress({
   }, [start]);
 
   return (
-    <p className="text-sm text-neutral-500 dark:text-neutral-400">
-      {text}（{elapsed}秒）
+    <p className="flex items-center gap-2 text-sm text-neutral-500 dark:text-neutral-400">
+      <span
+        aria-hidden
+        className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-700 dark:border-t-accent"
+      />
+      <span>
+        {text}（{elapsed}秒）
+      </span>
     </p>
   );
 }
@@ -323,7 +358,49 @@ function MessageDetails({
   );
 }
 
-/** 分岐点に表示する ‹ 2/3 › 型の控えめなページャ。 */
+/**
+ * コンテキストの境界線。
+ *
+ * ここまでの発言は以後モデルへ送らない、という目印。履歴そのものには
+ * 手を触れていないので、解除すれば元どおり全部が文脈に戻る。
+ * 解除はメッセージの削除選択モードでだけ出す（普段の会話中に
+ * うっかり触れて文脈が伸びてしまわないように）。
+ */
+function ContextBoundaryLine({
+  onRemove,
+}: {
+  /** null = 解除の操作を出さない（通常表示）。 */
+  onRemove: (() => void) | null;
+}) {
+  return (
+    <div className="flex items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
+      <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
+      <span className="whitespace-nowrap rounded-full border border-dashed border-neutral-300 px-2.5 py-1 dark:border-neutral-700">
+        ここまではコンテキストに含めません
+      </span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          title="境界線を解除して、すべてを文脈に戻す"
+          className="shrink-0 touch-manipulation rounded-full border border-neutral-300 px-2.5 py-1 hover:bg-neutral-100 hover:text-neutral-600 dark:border-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        >
+          解除
+        </button>
+      )}
+      <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
+    </div>
+  );
+}
+
+/**
+ * 分岐点に表示する ‹ 2/3 › 型の控えめなページャ。
+ *
+ * 見た目は控えめでも、当たり判定は指で押せる大きさを確保する
+ * （文字ぶんの幅しかないと、狙ったつもりで隣を叩くか外れる）。
+ * touch-manipulation はダブルタップ拡大の待ち時間を外し、
+ * タップしてから切り替わるまでの間を詰めるため。
+ */
 function BranchPager({
   message,
   disabled,
@@ -335,26 +412,33 @@ function BranchPager({
 }) {
   const { siblingIds, siblingIndex } = message;
   if (!siblingIds || siblingIds.length < 2 || siblingIndex == null) return null;
+  const arrowClass =
+    "grid h-8 w-8 touch-manipulation place-items-center rounded-md text-base leading-none " +
+    "hover:bg-neutral-100 hover:text-neutral-600 active:scale-90 disabled:opacity-30 " +
+    "dark:hover:bg-neutral-800 dark:hover:text-neutral-300";
   return (
-    <span className="inline-flex items-center gap-0.5 text-xs text-neutral-400 dark:text-neutral-500">
+    // -my-1: 当たり判定を広げても、操作の行そのものは高くしない
+    <span className="-my-1 inline-flex items-center text-xs text-neutral-400 dark:text-neutral-500">
       <button
         type="button"
         disabled={disabled || siblingIndex === 0}
         onClick={() => onSwitch(siblingIds[siblingIndex - 1])}
-        className="rounded px-1 hover:bg-neutral-100 hover:text-neutral-600 disabled:opacity-30 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        className={arrowClass}
         aria-label="前のブランチ"
+        title="前のブランチ"
       >
         ‹
       </button>
-      <span className="tabular-nums">
+      <span className="tabular-nums" title="この位置の分岐">
         {siblingIndex + 1}/{siblingIds.length}
       </span>
       <button
         type="button"
         disabled={disabled || siblingIndex === siblingIds.length - 1}
         onClick={() => onSwitch(siblingIds[siblingIndex + 1])}
-        className="rounded px-1 hover:bg-neutral-100 hover:text-neutral-600 disabled:opacity-30 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        className={arrowClass}
         aria-label="次のブランチ"
+        title="次のブランチ"
       >
         ›
       </button>
@@ -438,12 +522,24 @@ export function Chat({
    */
   const [pendingRun, setPendingRun] = useState<(() => void) | null>(null);
 
+  /** 数秒で消えるトーストを出す（続けて出しても前のタイマーは畳む）。 */
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showNotice = (text: string) => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    setNotice(text);
+    noticeTimer.current = setTimeout(() => setNotice(null), 3500);
+  };
+  useEffect(
+    () => () => {
+      if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    },
+    [],
+  );
+
   const location = useLocation();
   useEffect(() => {
     if ((location.state as { forked?: boolean } | null)?.forked) {
-      setNotice("⑂ 分岐を作成しました");
-      const t = setTimeout(() => setNotice(null), 3500);
-      return () => clearTimeout(t);
+      showNotice("⑂ 分岐を作成しました");
     }
     // 分岐直後のマウント時のみ
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -774,11 +870,22 @@ export function Chat({
     let pulled = 0;
     let active = false;
 
+    // 遊びを超えて初めて「引っぱり」に切り替える（それまではタップ扱い）
+    let engaged = false;
+
     const onStart = (e: TouchEvent) => {
+      const target = e.target as HTMLElement | null;
       active =
-        el.scrollTop <= 0 && e.touches.length === 1 && !refreshingRef.current;
+        el.scrollTop <= 0 &&
+        e.touches.length === 1 &&
+        !refreshingRef.current &&
+        // ボタンや入力欄の上から始まった指は、最初から引っぱりに使わない
+        !target?.closest(
+          'button, a, input, textarea, select, label, summary, [role="button"]',
+        );
       startY = e.touches[0]?.clientY ?? 0;
       pulled = 0;
+      engaged = false;
     };
     const onMove = (e: TouchEvent) => {
       if (!active) return;
@@ -787,17 +894,25 @@ export function Chat({
         // 上向き・途中からのスクロールは通常のスクロールに任せる
         if (pulled > 0) paintPull(0, true);
         active = false;
+        engaged = false;
         pulled = 0;
         return;
       }
-      // 引っぱるほど重くなるゴムの手ざわり
-      pulled = Math.min(PULL_MAX_PX, dy * 0.5);
+      // 遊びの内側はまだ何もしない。ここで preventDefault すると
+      // 指がわずかにぶれただけのタップが click を失う
+      if (!engaged) {
+        if (dy < PULL_SLOP_PX) return;
+        engaged = true;
+      }
+      // 引っぱるほど重くなるゴムの手ざわり（遊びぶんは差し引く）
+      pulled = Math.min(PULL_MAX_PX, (dy - PULL_SLOP_PX) * 0.5);
       paintPull(pulled, false);
       if (e.cancelable) e.preventDefault();
     };
     const onEnd = () => {
       if (!active) return;
       active = false;
+      engaged = false;
       const triggered = pulled >= PULL_TRIGGER_PX;
       pulled = 0;
       // 更新するときは、終わるまで印を出したまま少し下げておく
@@ -848,6 +963,19 @@ export function Chat({
   const retryConfig = canRetry
     ? readRetryConfig(params, settings.retryAttemptCeiling)
     : null;
+  /**
+   * この応答が画像を出しにいくか。生成中に経過秒を出すかの判断に使う。
+   *
+   * 画像生成は本文が流れてこないので、待っているあいだ画面に動きがなく、
+   * どれだけ待ったのかも分からない。応答ごとに使ったモデルは違いうるので、
+   * メッセージに記録されたモデルを優先し、無ければ今の選択を使う
+   * （送信直後のまだIDが付いていないプレースホルダ用）。
+   */
+  const isImageGeneration = (modelId: string | undefined) =>
+    models
+      .find((mm) => mm.id === (modelId ?? model))
+      ?.outputModalities.includes("image") ?? false;
+
   /** 画像入力に対応したモデルか。Poeも supports_images を返すので同じ扱い。 */
   const supportsImages =
     !selectedModel || selectedModel.inputModalities.includes("image");
@@ -1199,7 +1327,7 @@ export function Chat({
             // 画像を送るのはユーザーの発言だけ。生成画像もアシスタントの
             // メッセージに紐づくが、応答に画像を差し戻す形式は
             // OpenAI互換APIに無く、送ると弾かれる
-            ...history.map(({ role, content, attachments }) => ({
+            ...contextWindow(history).map(({ role, content, attachments }) => ({
               role,
               content,
               attachmentIds:
@@ -1479,6 +1607,41 @@ export function Chat({
     }
   }
 
+  /**
+   * コンテキストの境界線を立てる / 解除する。
+   *
+   * 履歴は一切消さない。以後の生成でモデルへ送る範囲が狭まるだけで、
+   * 解除すれば元どおり全部が文脈に戻る（可逆）。
+   */
+  async function toggleBoundary(messageId: string, enabled: boolean) {
+    const convId = convIdRef.current;
+    if (!convId) return;
+    try {
+      const res = await fetch(`/api/conversations/${convId}/context`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messageId, enabled }),
+      });
+      if (!res.ok) throw new Error();
+      const { messages: fresh } = (await res.json()) as {
+        messages: UiMessage[];
+      };
+      setMessages(fresh);
+      setError(null);
+      showNotice(
+        enabled
+          ? "これ以前はコンテキストに渡しません（履歴は残ります）"
+          : "境界線を解除しました。すべてが再びコンテキストになります",
+      );
+    } catch {
+      setError(
+        enabled
+          ? "コンテキストの区切りを作成できませんでした。"
+          : "境界線を解除できませんでした。",
+      );
+    }
+  }
+
   /** ここから分岐: この地点までの履歴で独立した新会話を作る。 */
   async function fork(messageId: string) {
     const convId = convIdRef.current;
@@ -1507,6 +1670,8 @@ export function Chat({
   }
 
   const lastMessage = messages[messages.length - 1];
+  /** 表示中の枝にコンテキストの区切りがあるか（入力欄のアイコンの色）。 */
+  const hasContextBoundary = messages.some((m) => m.contextBoundary);
 
   return (
     <div
@@ -1671,7 +1836,7 @@ export function Chat({
       >
         <div
           ref={feedRef}
-          className="mx-auto max-w-3xl px-4 pt-[calc(5rem+env(safe-area-inset-top))]"
+          className="chat-text mx-auto max-w-3xl px-4 pt-[calc(5rem+env(safe-area-inset-top))]"
           style={{ paddingBottom: footerHeight + 24 }}
         >
           {messages.length === 0 && (
@@ -1694,7 +1859,7 @@ export function Chat({
                       : "hover:bg-neutral-50 dark:hover:bg-neutral-900"
                   }`
                 : "";
-              return m.role === "user" ? (
+              const body = m.role === "user" ? (
                 <div
                   key={m.id ?? `u${i}`}
                   className={`group/msg ${selectionClass}`}
@@ -1900,7 +2065,14 @@ export function Chat({
                   )}
                   {m.status === "streaming" && isRetryProgress(m.content) ? (
                     // 「成功するまで生成」の見出し。経過秒はここで毎秒進める
-                    <RetryProgress text={m.content} startedAt={m.createdAt} />
+                    <GenerationProgress text={m.content} startedAt={m.createdAt} />
+                  ) : m.status === "streaming" &&
+                    isImageGeneration(m.modelId) ? (
+                    // 1枚だけの画像生成。本文が流れてこないので秒だけ進める
+                    <GenerationProgress
+                      text="画像を生成中…"
+                      startedAt={m.createdAt}
+                    />
                   ) : m.status === "error" ? (
                     <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
                       <span className="break-all">
@@ -1929,7 +2101,8 @@ export function Chat({
                   {/* 進捗の見出しは秒が動いているのでカーソルは出さない */}
                   {isStreaming &&
                     i === messages.length - 1 &&
-                    !isRetryProgress(m.content) && (
+                    !isRetryProgress(m.content) &&
+                    !(m.status === "streaming" && isImageGeneration(m.modelId)) && (
                       <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-neutral-400 align-text-bottom dark:bg-neutral-500" />
                     )}
                   {!selecting && (
@@ -1989,6 +2162,22 @@ export function Chat({
                     </div>
                   )}
                 </div>
+              );
+              // 境界線はメッセージの「後ろ」に置く。Fragment なので
+              // 一覧の space-y はメッセージと同じ間隔のまま効く
+              return m.contextBoundary ? (
+                <Fragment key={`w${m.id ?? i}`}>
+                  {body}
+                  <ContextBoundaryLine
+                    onRemove={
+                      selecting && m.id
+                        ? () => void toggleBoundary(m.id!, false)
+                        : null
+                    }
+                  />
+                </Fragment>
+              ) : (
+                body
               );
             })}
           </div>
@@ -2070,10 +2259,15 @@ export function Chat({
       >
         {selecting ? (
           <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-3xl border border-neutral-200/80 bg-white/85 px-4 py-2.5 shadow-lg shadow-black/5 backdrop-blur-xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-900/80">
-            <span className="text-sm text-neutral-500 dark:text-neutral-400">
-              {selecting.size}件選択中（メッセージをタップで選択/解除）
+            <span className="min-w-0 flex-1 text-sm text-neutral-500 dark:text-neutral-400">
+              {selecting.size}件選択中（タップで選択/解除）
+              {hasContextBoundary && (
+                <span className="block text-xs text-neutral-400 dark:text-neutral-500">
+                  境界線は「解除」で消せます
+                </span>
+              )}
             </span>
-            <div className="flex gap-2">
+            <div className="flex shrink-0 gap-2">
               <button
                 type="button"
                 onClick={() => setSelecting(null)}
@@ -2156,6 +2350,36 @@ export function Chat({
                     e.target.value = ""; // 同じファイルの再選択を許す
                   }}
                 />
+                {/*
+                  コンテキストのクリア。履歴は消さず、ここから前を
+                  モデルへ渡さなくするだけ（境界線は削除選択モードで解除できる）。
+                */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const last = messages[messages.length - 1];
+                    if (last?.id) void toggleBoundary(last.id, true);
+                  }}
+                  disabled={
+                    !convIdRef.current ||
+                    isStreaming ||
+                    !lastMessage?.id ||
+                    lastMessage.contextBoundary === true
+                  }
+                  aria-label="コンテキストをクリア"
+                  title={
+                    lastMessage?.contextBoundary
+                      ? "ここにコンテキストの区切りがあります（削除選択モードで解除できます）"
+                      : "コンテキストをクリア（履歴は残したまま、ここから前をモデルへ渡さない）"
+                  }
+                  className={`grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-neutral-100 active:scale-90 disabled:opacity-30 dark:hover:bg-white/10 ${
+                    hasContextBoundary
+                      ? "text-accent"
+                      : "text-neutral-500 dark:text-neutral-400"
+                  }`}
+                >
+                  <IconContextCut className="h-5 w-5" />
+                </button>
                 <button
                   type="button"
                   onClick={openFilePicker}
@@ -2186,7 +2410,7 @@ export function Chat({
                   placeholder={
                     isNarrow ? "メッセージ" : "メッセージを入力…（Shift+Enterで改行）"
                   }
-                  className="max-h-[200px] min-h-[36px] flex-1 resize-none bg-transparent px-1.5 py-1.5 leading-6 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
+                  className="chat-text max-h-[200px] min-h-[36px] flex-1 resize-none bg-transparent px-1.5 py-1.5 leading-6 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
                 />
                 {isStreaming ? (
                   <button

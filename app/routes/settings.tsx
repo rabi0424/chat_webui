@@ -5,6 +5,13 @@ import type { ShellContext } from "./shell";
 import { getAppSettings } from "../lib/db.server";
 import { RETRY_CEILING_RANGE, type AppSettings } from "../lib/settings";
 import { applyTheme, getTheme, type Theme } from "../lib/theme";
+import {
+  CHAT_FONT_SIZES,
+  DEFAULT_CHAT_FONT_SIZE,
+  applyChatFontSize,
+  getChatFontSize,
+  type ChatFontSize,
+} from "../lib/chat-font";
 import { AccentPicker } from "../components/ThemeToggle";
 import { NumberInput } from "../components/NumberInput";
 import { IconCheck, IconCopy, IconMenu, IconTrash } from "../components/icons";
@@ -261,8 +268,12 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
 
   // 端末ごとの設定はlocalStorage。描画後に読む（SSRでは参照できない）
   const [theme, setTheme] = useState<Theme>("system");
+  const [chatFont, setChatFont] = useState<ChatFontSize>(
+    DEFAULT_CHAT_FONT_SIZE,
+  );
   useEffect(() => {
     setTheme(getTheme());
+    setChatFont(getChatFontSize());
   }, []);
 
   async function save(patch: Partial<AppSettings>) {
@@ -358,6 +369,39 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             <Row label="アクセント色" description="ボタンや強調表示の色">
               <AccentPicker />
             </Row>
+            <Row
+              label="チャットの文字サイズ"
+              description="会話画面の本文と入力欄の大きさ"
+            >
+              <div className="flex overflow-hidden rounded-lg border border-neutral-200 dark:border-white/10">
+                {CHAT_FONT_SIZES.map((f) => (
+                  <button
+                    key={f.value}
+                    type="button"
+                    aria-pressed={chatFont === f.value}
+                    onClick={() => {
+                      setChatFont(f.value);
+                      applyChatFontSize(f.value);
+                    }}
+                    className={`px-3 py-1.5 text-sm transition-colors ${
+                      chatFont === f.value
+                        ? "bg-accent text-accent-fg"
+                        : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-white/5"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+            <p className="px-1 pb-1 text-xs text-neutral-400 dark:text-neutral-500">
+              <span
+                className="chat-text"
+                style={{ display: "inline-block", lineHeight: 1.6 }}
+              >
+                この大きさで表示されます。
+              </span>
+            </p>
           </Section>
 
           <Section

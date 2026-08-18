@@ -20,6 +20,7 @@ export default [
   route("api/conversations/:id/messages/:mid", "routes/api.conversations.$id.messages.$mid.ts"),
   route("api/conversations/:id/title", "routes/api.conversations.$id.title.ts"),
   route("api/conversations/:id/path", "routes/api.conversations.$id.path.ts"),
+  route("api/conversations/:id/context", "routes/api.conversations.$id.context.ts"),
   route("api/conversations/:id/full", "routes/api.conversations.$id.full.ts"),
   route("api/conversations/:id/fork", "routes/api.conversations.$id.fork.ts"),
   route("api/conversations/:id/delete-messages", "routes/api.conversations.$id.delete-messages.ts"),
