@@ -10,11 +10,19 @@ import {
 import type { Route } from "./+types/root";
 import { THEME_COLOR_LIGHT, THEME_INIT_SCRIPT } from "./lib/theme";
 import { ACCENT_INIT_SCRIPT } from "./lib/accent";
+import { CHAT_FONT_INIT_SCRIPT } from "./lib/chat-font";
+import { useAppearanceSync } from "./lib/appearance";
 import "./app.css";
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  // <html> に載せた見た目（テーマ等）は React の管理外なので、
+  // 描き直しで消されても保存値から貼り直す（lib/appearance.ts）
+  useAppearanceSync();
   return (
-    <html lang="ja">
+    // <html> の class / data-accent / style は下のインラインスクリプトと
+    // lib/appearance.ts が持つ（Reactは描かない）。サーバーの出力と
+    // 食い違うのは想定どおりなので、この要素だけ警告を止める
+    <html lang="ja" suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -32,10 +40,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Chat" />
-        {/* ハイドレーション前にテーマ・アクセントを適用してちらつきを防ぐ */}
+        {/* ハイドレーション前にテーマ・アクセント・文字サイズを適用してちらつきを防ぐ */}
         <script
           dangerouslySetInnerHTML={{
-            __html: THEME_INIT_SCRIPT + ACCENT_INIT_SCRIPT,
+            __html:
+              THEME_INIT_SCRIPT + ACCENT_INIT_SCRIPT + CHAT_FONT_INIT_SCRIPT,
           }}
         />
         <Meta />

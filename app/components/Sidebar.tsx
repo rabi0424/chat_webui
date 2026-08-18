@@ -14,6 +14,8 @@ import {
   IconPhoto,
   IconPlus,
   IconSearch,
+  IconStar,
+  IconStarSolid,
   IconX,
 } from "./icons";
 import {
@@ -25,6 +27,16 @@ import {
 type MenuTarget =
   | { type: "conversation"; id: string }
   | { type: "folder"; id: string };
+
+/**
+ * 常設の「お気に入り」フォルダ。
+ *
+ * D1に行は持たない。conversations.favorite が立った会話を集めて見せる
+ * だけの入れ物なので、名前の変更も削除もできない（消える心配なく、
+ * 「あとで見返す会話はここ」と決め打ちで使える）。実フォルダへの
+ * 所属とは独立していて、フォルダに入れた会話もお気に入りにできる。
+ */
+const FAVORITES_ID = "__favorites__";
 
 /**
  * 会話リンクが画面に入ったら一度だけデータを先読みする。
@@ -182,7 +194,11 @@ export function Sidebar({
     }, 300);
   }, [searchQuery]);
 
-  const viewFolder = view ? folders.find((f) => f.id === view) ?? null : null;
+  const viewFolder =
+    view && view !== FAVORITES_ID
+      ? folders.find((f) => f.id === view) ?? null
+      : null;
+  const favoriteConversations = conversations.filter((c) => c.favorite === 1);
 
   /** 太字ハイライト対象の検索語（マイナス検索の除外語は含めない）。 */
   const highlightTerms = useMemo(
@@ -327,6 +343,9 @@ export function Sidebar({
           <button type="button" className={itemClass} onClick={() => { close(); renameConversation(c); }}>
             名前を変更
           </button>
+          <button type="button" className={itemClass} onClick={() => { close(); void patchConversation(c.id, { favorite: c.favorite !== 1 }); }}>
+            {c.favorite === 1 ? "お気に入りから外す" : "お気に入りに追加"}
+          </button>
           <button type="button" className={itemClass} onClick={() => { close(); void patchConversation(c.id, { pinned: !c.pinned }); }}>
             {c.pinned ? "ピン留めを解除" : "ピン留め"}
           </button>
@@ -417,10 +436,77 @@ export function Sidebar({
           {c.pinned === 1 && (
             <IconChatBubble className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
           )}
+          {c.favorite === 1 && (
+            <IconStarSolid
+              className="h-3.5 w-3.5 shrink-0 text-neutral-500 dark:text-white"
+            />
+          )}
           <span className="min-w-0 truncate">{c.title}</span>
         </NavLink>
         <MenuButton target={{ type: "conversation", id: c.id }} />
         <MenuItems target={{ type: "conversation", id: c.id }} />
+      </li>
+    );
+  }
+
+  /**
+   * 常設の「お気に入り」フォルダの行。
+   *
+   * 見た目は他のフォルダと揃えるが、「…」メニューは出さない
+   * （名前の変更も削除もできないため、出すものが無い）。
+   */
+  function FavoritesFolderItem() {
+    const isExpanded = expanded.has(FAVORITES_ID);
+    const children = favoriteConversations;
+    return (
+      <li className="relative">
+        <div className="flex items-center">
+          <button
+            type="button"
+            onClick={() =>
+              setExpanded((prev) => {
+                const next = new Set(prev);
+                if (next.has(FAVORITES_ID)) next.delete(FAVORITES_ID);
+                else next.add(FAVORITES_ID);
+                return next;
+              })
+            }
+            aria-label={isExpanded ? "折りたたむ" : "展開"}
+            className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          >
+            <IconChevronRight
+              className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={() => setView(FAVORITES_ID)}
+            title="お気に入り（削除できない常設フォルダ）"
+            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg py-2 pl-1 pr-3 text-left text-[0.9375rem] text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+          >
+            <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
+            {/* 件数は名前と同じ行に置く。別のflex項目にすると
+                items-center で箱の中央が揃い、小さい字だけ上にずれて見える */}
+            <span className="min-w-0 flex-1 truncate">
+              お気に入り
+              <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
+                {children.length}
+              </span>
+            </span>
+          </button>
+        </div>
+        {isExpanded && (
+          <ul className="mt-0.5 space-y-0.5">
+            {children.length === 0 && (
+              <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+                （まだありません）
+              </li>
+            )}
+            {children.map((c) => (
+              <ConversationItem key={c.id} c={c} indent />
+            ))}
+          </ul>
+        )}
       </li>
     );
   }
@@ -523,9 +609,16 @@ export function Sidebar({
           </div>
         ) : (
           <>
-            <span className="min-w-0 flex-1 truncate px-2 text-xl font-semibold tracking-tight">
+            {/* アプリ名は「新規チャット」の入口も兼ねる（下の丸ボタンと同じ行き先） */}
+            <NavLink
+              to="/"
+              prefetch="intent"
+              onClick={onNavigate}
+              title="新規チャット"
+              className="min-w-0 flex-1 truncate rounded-lg px-2 py-1 text-xl font-semibold tracking-tight transition-colors hover:bg-neutral-100 active:scale-[0.98] dark:hover:bg-neutral-800"
+            >
               Chat
-            </span>
+            </NavLink>
             <button
               type="button"
               onClick={openSearch}
@@ -579,6 +672,38 @@ export function Sidebar({
                   見つかりませんでした
                 </li>
               )}
+            </ul>
+          </>
+        ) : view === FAVORITES_ID ? (
+          /* --- お気に入りフォルダの階層表示 --- */
+          <>
+            <div className="mb-1 flex items-center gap-1 px-1">
+              <button
+                type="button"
+                onClick={() => setView(null)}
+                aria-label="戻る"
+                className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              >
+                <IconArrowLeft className="h-4 w-4" />
+              </button>
+              <span className="flex items-center gap-1.5 truncate text-[0.9375rem] font-medium">
+                <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
+                お気に入り
+              </span>
+            </div>
+            <ul className="space-y-0.5">
+              {favoriteConversations.length === 0 && (
+                <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-neutral-400 dark:text-neutral-600">
+                  まだありません。
+                  <br />
+                  会話の「…」から
+                  <br />
+                  「お気に入りに追加」で入ります。
+                </li>
+              )}
+              {favoriteConversations.map((c) => (
+                <ConversationItem key={c.id} c={c} />
+              ))}
             </ul>
           </>
         ) : viewFolder ? (
@@ -646,6 +771,8 @@ export function Sidebar({
               </button>
             </div>
             <ul className="space-y-0.5">
+              {/* 常設。削除も名前の変更もできないので、常に先頭に置く */}
+              <FavoritesFolderItem />
               {unpinnedFolders.map((f) => (
                 <FolderItem key={f.id} f={f} />
               ))}
@@ -720,6 +847,33 @@ export function Sidebar({
               「{moveConv.title}」をフォルダへ移動
             </p>
             <div className="max-h-60 space-y-1 overflow-y-auto">
+              {/*
+                お気に入りは実フォルダではないので「移動」ではなく印の
+                付け外し。フォルダに入れたままお気に入りにもできる。
+              */}
+              <button
+                type="button"
+                onClick={() => {
+                  void patchConversation(moveConv.id, {
+                    favorite: moveConv.favorite !== 1,
+                  });
+                  setMoveTarget(null);
+                }}
+                className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
+              >
+                {moveConv.favorite === 1 ? (
+                  <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
+                ) : (
+                  <IconStar className="h-4 w-4 shrink-0 text-neutral-400" />
+                )}
+                {moveConv.favorite === 1
+                  ? "お気に入りから外す"
+                  : "お気に入りに追加"}
+              </button>
+              <div
+                role="separator"
+                className="my-1 border-t border-neutral-200/70 dark:border-white/10"
+              />
               {moveConv.folder_id != null && (
                 <button
                   type="button"

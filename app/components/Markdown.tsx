@@ -296,7 +296,7 @@ export const Markdown = memo(function Markdown({
   const source = useMemo(() => prepareMarkdown(children), [children]);
   return (
     <div
-      className={`prose prose-sm prose-neutral sm:prose-base dark:prose-invert max-w-none break-words prose-code:before:content-none prose-code:after:content-none${
+      className={`prose prose-neutral dark:prose-invert max-w-none break-words prose-code:before:content-none prose-code:after:content-none${
         className ? ` ${className}` : ""
       }`}
     >

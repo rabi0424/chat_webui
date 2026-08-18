@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useOutletContext } from "react-router";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useOutletContext } from "react-router";
 import type { Route } from "./+types/home";
 import type { ShellContext } from "./shell";
 import { parseParamsJson } from "../lib/params";
@@ -14,6 +14,21 @@ export default function Home() {
   const { bots, models } = useOutletContext<ShellContext>();
   const [selected, setSelected] = useState<BotContext | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+
+  /**
+   * 「新規チャット」でこの画面へ来たら、選んでいたボットを外して
+   * ランチャーに戻す。
+   *
+   * ホームに居るまま同じ行き先（"/"）へ遷移してもこの画面は
+   * アンマウントされないので、状態を持ったままだと押しても何も
+   * 起きないように見えていた。location.key は同じパスへの遷移でも
+   * 毎回変わるので、これを合図に初期状態へ戻す。
+   */
+  const location = useLocation();
+  useEffect(() => {
+    setSelected(null);
+    setSelectedModel(null);
+  }, [location.key]);
 
   const modelNames = useMemo(
     () => new Map(models.map((m) => [m.id, m.name])),

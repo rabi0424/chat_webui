@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { deleteFiles } from "./r2.server";
 import {
   DEFAULT_APP_SETTINGS,
+  NEW_MODEL_DAYS_RANGE,
   RETRY_CEILING_RANGE,
   type AppSettings,
 } from "./settings";
@@ -124,6 +125,17 @@ ALTER TABLE attachments ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE attachments ADD COLUMN prompt TEXT;
 CREATE INDEX IF NOT EXISTS idx_attachments_favorite ON attachments(favorite, created_at);
 `,
+  // v11: 会話のお気に入り。ピン留め（サイドバー最上部への固定）とは別で、
+  // 常設の「お気に入り」フォルダに集める印。両方付けられる。
+  `
+ALTER TABLE conversations ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_conversations_favorite ON conversations(favorite, updated_at);
+`,
+  // v12: コンテキストの境界線。1 が立ったメッセージまでを以後モデルへ
+  // 送らない（履歴自体は残る）。解除すれば元どおり全部が文脈に戻る。
+  `
+ALTER TABLE messages ADD COLUMN context_boundary INTEGER NOT NULL DEFAULT 0;
+`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -171,6 +183,8 @@ export interface ConversationRow {
   sort_order: number;
   /** 応答が完成したがまだ開いていない会話は 1。 */
   unread: number;
+  /** お気に入り。ピン留めとは別で、常設の「お気に入り」フォルダに集まる。 */
+  favorite: number;
   created_at: number;
   updated_at: number;
 }
@@ -211,6 +225,8 @@ export interface MessageRow {
   stop_requested: number;
   /** 生成中の最終フラッシュ時刻。中断検知に使う。 */
   flushed_at: number | null;
+  /** 1 = この直後にコンテキストの境界線がある（ここまでは以後送らない）。 */
+  context_boundary: number;
   created_at: number;
 }
 
@@ -243,6 +259,14 @@ export async function updateAppSettings(
     next.retryAttemptCeiling = Math.min(
       Math.max(Math.round(ceiling), RETRY_CEILING_RANGE.min),
       RETRY_CEILING_RANGE.max,
+    );
+  }
+
+  const days = Number(patch.newModelDays);
+  if (Number.isFinite(days)) {
+    next.newModelDays = Math.min(
+      Math.max(Math.round(days), NEW_MODEL_DAYS_RANGE.min),
+      NEW_MODEL_DAYS_RANGE.max,
     );
   }
 
@@ -348,6 +372,7 @@ export async function createConversation(params: {
     bot_name: bot?.name ?? null,
     bot_icon: bot?.icon ?? null,
     unread: 0,
+    favorite: 0,
     system_prompt: bot ? bot.system_prompt : null,
     params_json: bot?.params_json ?? null,
     folder_id: null,
@@ -549,7 +574,12 @@ export async function deleteFolder(id: string): Promise<void> {
 
 export async function updateConversationMeta(
   id: string,
-  fields: { title?: string; pinned?: boolean; folderId?: string | null },
+  fields: {
+    title?: string;
+    pinned?: boolean;
+    favorite?: boolean;
+    folderId?: string | null;
+  },
 ): Promise<void> {
   const d = await db();
   const sets: string[] = [];
@@ -561,6 +591,10 @@ export async function updateConversationMeta(
   if (fields.pinned !== undefined) {
     sets.push("pinned = ?");
     binds.push(fields.pinned ? 1 : 0);
+  }
+  if (fields.favorite !== undefined) {
+    sets.push("favorite = ?");
+    binds.push(fields.favorite ? 1 : 0);
   }
   if (fields.folderId !== undefined) {
     sets.push("folder_id = ?");
@@ -898,9 +932,20 @@ export async function forkConversation(
     statements.push(
       d
         .prepare(
-          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, context_boundary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(id, newConvId, parent, m.role, m.content, m.model_id, m.usage_json, now + i),
+        .bind(
+          id,
+          newConvId,
+          parent,
+          m.role,
+          m.content,
+          m.model_id,
+          m.usage_json,
+          // コンテキストの境界線も引き継ぐ（分岐先だけ文脈が伸びるのを防ぐ）
+          m.context_boundary ?? 0,
+          now + i,
+        ),
     );
     // 添付はR2の実体を共有したまま行だけ複製する（元の会話を消しても残る）
     statements.push(
@@ -1433,12 +1478,48 @@ export async function deleteMessages(
     );
   }
 
+  // 境界線が乗ったメッセージを消したら、生き残る直近の祖先へ移す。
+  // そうしないと、1件消しただけで文脈が黙って元の長さに戻ってしまう。
+  // 祖先が残らない（先頭ごと消した）ときは、遡る先が無いので落とすだけ。
+  for (const m of all) {
+    if (!deleteSet.has(m.id) || m.context_boundary !== 1) continue;
+    const host = surviveParent(m.parent_id);
+    if (host) {
+      statements.push(
+        d
+          .prepare("UPDATE messages SET context_boundary = 1 WHERE id = ?")
+          .bind(host),
+      );
+    }
+  }
+
   for (const id of deleteSet) {
     statements.push(d.prepare("DELETE FROM messages WHERE id = ?").bind(id));
   }
 
   await deleteAttachmentsOfMessages([...deleteSet]);
   await d.batch(statements);
+}
+
+/**
+ * コンテキストの境界線を立てる/解除する。
+ *
+ * 立てたメッセージまで（それ自身を含む）は、以後の生成でモデルへ送らない。
+ * 履歴そのものには手を触れないので、解除すれば元どおり全部が文脈に戻る。
+ */
+export async function setContextBoundary(
+  conversationId: string,
+  messageId: string,
+  enabled: boolean,
+): Promise<boolean> {
+  const d = await db();
+  const res = await d
+    .prepare(
+      "UPDATE messages SET context_boundary = ? WHERE id = ? AND conversation_id = ?",
+    )
+    .bind(enabled ? 1 : 0, messageId, conversationId)
+    .run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
 /**

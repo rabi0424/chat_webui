@@ -20,14 +20,33 @@ function formatContext(len: number): string {
 /** 「最近よく使うモデル」に出す件数。 */
 const RECENT_LIMIT = 5;
 
+/**
+ * 公開されたばかりのモデルか（`createdAt` は秒。0 は日付不明）。
+ *
+ * 判定はモデル一覧の公開日（OpenRouter の `created` / Poe の同名フィールド）
+ * だけで行う。手で新着リストを持つと必ず腐るので、上流が申告する日付を
+ * そのまま使い、日が経てば自然に外れるようにしてある。
+ * 何日出すかは設定画面（モデル一覧 > 新着として出す日数）で変えられる。
+ */
+function isNewModel(m: ModelInfo, now: number, windowDays: number): boolean {
+  if (!m.createdAt || windowDays <= 0) return false;
+  const published = m.createdAt * 1000;
+  return (
+    published <= now && now - published < windowDays * 24 * 60 * 60 * 1000
+  );
+}
+
 /** 一覧の1行。よく使う節と一覧本体で同じ見た目を使う。 */
 function ModelRow({
   model: m,
   selected,
+  isNew,
   onSelect,
 }: {
   model: ModelInfo;
   selected: boolean;
+  /** 公開されたばかり。左端のバーと NEW バッジで目立たせる。 */
+  isNew: boolean;
   onSelect: (id: string) => void;
 }) {
   return (
@@ -35,15 +54,27 @@ function ModelRow({
       <button
         type="button"
         onClick={() => onSelect(m.id)}
-        className={`w-full rounded-lg px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-white/10 ${
+        className={`relative w-full rounded-lg px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-white/10 ${
           selected ? "bg-neutral-100 dark:bg-white/10" : ""
-        }`}
+        } ${isNew ? "pl-4" : ""}`}
       >
+        {/* 新着の印。行の左端に立てたアクセントのバー */}
+        {isNew && (
+          <span
+            aria-hidden
+            className="absolute inset-y-1.5 left-1 w-1 rounded-full bg-accent"
+          />
+        )}
         <div className="flex items-baseline justify-between gap-2">
           <span className="truncate text-sm font-medium text-neutral-800 dark:text-neutral-100">
             {m.name}
           </span>
           <span className="flex shrink-0 gap-1">
+            {isNew && (
+              <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-accent-fg">
+                NEW
+              </span>
+            )}
             {m.provider === "poe" && (
               <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
                 Poe
@@ -81,10 +112,13 @@ function ModelRow({
 export function ModelPicker({
   models,
   value,
+  newModelDays,
   onChange,
 }: {
   models: ModelInfo[];
   value: string;
+  /** 公開から何日間「NEW」を出すか（0 = 出さない）。 */
+  newModelDays: number;
   onChange: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -140,6 +174,17 @@ export function ModelPicker({
       return terms.every((t) => haystack.includes(t));
     });
   }, [models, query]);
+
+  /**
+   * 新着モデルのID。一覧が入れ替わったときだけ数え直す
+   * （サーバー側では models が空なので、印は付かない = 不一致も出ない）。
+   */
+  const newModelIds = useMemo(() => {
+    const now = Date.now();
+    return new Set(
+      models.filter((m) => isNewModel(m, now, newModelDays)).map((m) => m.id),
+    );
+  }, [models, newModelDays]);
 
   /** よく使う順の上位。提供終了などで一覧に無いIDは落とす。 */
   const recent = useMemo(() => {
@@ -240,6 +285,7 @@ export function ModelPicker({
                     key={`recent-${m.id}`}
                     model={m}
                     selected={m.id === value}
+                    isNew={newModelIds.has(m.id)}
                     onSelect={select}
                   />
                 ))}
@@ -254,6 +300,7 @@ export function ModelPicker({
                 key={m.id}
                 model={m}
                 selected={m.id === value}
+                isNew={newModelIds.has(m.id)}
                 onSelect={select}
               />
             ))}

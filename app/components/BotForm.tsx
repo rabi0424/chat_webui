@@ -11,11 +11,14 @@ export function BotForm({
   models,
   initial,
   retryCeiling,
+  newModelDays,
 }: {
   models: ModelInfo[];
   initial?: BotRow;
   /** アプリ全体の試行回数の天井（設定画面）。 */
   retryCeiling: number;
+  /** モデル一覧で「NEW」を出す日数（設定画面）。 */
+  newModelDays: number;
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState(initial?.name ?? "");
@@ -121,7 +124,12 @@ export function BotForm({
           モデル *
         </label>
         <div className="rounded-xl border border-neutral-200 p-1 dark:border-neutral-700">
-          <ModelPicker models={models} value={modelId} onChange={setModelId} />
+          <ModelPicker
+            models={models}
+            value={modelId}
+            newModelDays={newModelDays}
+            onChange={setModelId}
+          />
         </div>
       </div>
 

@@ -20,7 +20,12 @@ export default function BotEdit({ loaderData }: Route.ComponentProps) {
   const { models, settings } = useOutletContext<ShellContext>();
   return (
     <div className="h-full overflow-y-auto">
-      <BotForm models={models} initial={loaderData.bot} retryCeiling={settings.retryAttemptCeiling} />
+      <BotForm
+        models={models}
+        initial={loaderData.bot}
+        retryCeiling={settings.retryAttemptCeiling}
+        newModelDays={settings.newModelDays}
+      />
     </div>
   );
 }

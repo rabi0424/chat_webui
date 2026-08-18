@@ -13,6 +13,7 @@ export function toUiMessage(m: PathMessage): UiMessage {
     modelId: m.model_id ?? undefined,
     createdAt: m.created_at,
     finishedAt: m.flushed_at ?? undefined,
+    contextBoundary: m.context_boundary === 1 ? true : undefined,
     siblingIds: m.sibling_ids.length > 1 ? m.sibling_ids : undefined,
     siblingIndex: m.sibling_ids.length > 1 ? m.sibling_index : undefined,
     attachments:

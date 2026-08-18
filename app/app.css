@@ -157,6 +157,30 @@ html {
   font-size: 106.25%; /* 17px */
 }
 
+/*
+ * チャット本文の文字サイズ。倍率は設定画面（外観 > 文字サイズ）が
+ * localStorage に保存し、:root の --chat-font-scale として与える
+ * （初期値の適用は lib/chat-font.ts の初期スクリプト）。
+ *
+ * 基準を rem で持ち倍率を掛けるだけにしてあるので、見出し・コード・
+ * 数式など em で組まれた中身もそのまま一緒に伸び縮みする。
+ */
+:root {
+  --chat-font-scale: 1;
+}
+
+.chat-text {
+  font-size: calc(1.0625rem * var(--chat-font-scale));
+}
+
+/*
+ * 本文（Markdown）は prose の固定サイズではなく、上の .chat-text から
+ * 継承させる。prose の内側は em 指定なので、これだけで全体が揃う。
+ */
+.chat-text .prose {
+  font-size: inherit;
+}
+
 html,
 body {
   @apply bg-white dark:bg-neutral-950;

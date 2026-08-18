@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { applyTheme, getTheme, type Theme } from "../lib/theme";
-import { ACCENTS, applyAccent, DEFAULT_ACCENT, getAccent } from "../lib/accent";
+import { getTheme, saveTheme, type Theme } from "../lib/theme";
+import { ACCENTS, DEFAULT_ACCENT, getAccent, saveAccent } from "../lib/accent";
 import { IconAuto, IconMoon, IconSun } from "./icons";
 import { GLASS_ICON_BUTTON } from "../lib/ui";
 
@@ -29,19 +29,15 @@ export function ThemeToggle() {
     setTheme(getTheme());
   }, []);
 
-  // 「自動」のときは端末設定の変化に追従する
-  useEffect(() => {
-    if (theme !== "system") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => applyTheme("system");
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [theme]);
+  // 「自動」での端末設定への追従は、アプリ全体の貼り直し
+  // （lib/appearance.ts の useAppearanceSync）がまとめて見ている。
+  // ここで持つと、このボタンが載る/外れるたびに listener が付け替わり、
+  // 保存値を読む前の既定値（system）で反応してしまうことがあった。
 
   const cycle = () => {
     const next = CYCLE[(CYCLE.indexOf(theme) + 1) % CYCLE.length];
     setTheme(next);
-    applyTheme(next);
+    saveTheme(next);
   };
 
   return (
@@ -70,7 +66,7 @@ export function AccentPicker() {
 
   const select = (id: string) => {
     setAccent(id);
-    applyAccent(id);
+    saveAccent(id);
   };
 
   return (

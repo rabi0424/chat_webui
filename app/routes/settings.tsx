@@ -3,8 +3,19 @@ import { useOutletContext, useRevalidator } from "react-router";
 import type { Route } from "./+types/settings";
 import type { ShellContext } from "./shell";
 import { getAppSettings } from "../lib/db.server";
-import { RETRY_CEILING_RANGE, type AppSettings } from "../lib/settings";
-import { applyTheme, getTheme, type Theme } from "../lib/theme";
+import {
+  NEW_MODEL_DAYS_RANGE,
+  RETRY_CEILING_RANGE,
+  type AppSettings,
+} from "../lib/settings";
+import { getTheme, saveTheme, type Theme } from "../lib/theme";
+import {
+  CHAT_FONT_SIZES,
+  DEFAULT_CHAT_FONT_SIZE,
+  getChatFontSize,
+  saveChatFontSize,
+  type ChatFontSize,
+} from "../lib/chat-font";
 import { AccentPicker } from "../components/ThemeToggle";
 import { NumberInput } from "../components/NumberInput";
 import { IconCheck, IconCopy, IconMenu, IconTrash } from "../components/icons";
@@ -261,8 +272,12 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
 
   // 端末ごとの設定はlocalStorage。描画後に読む（SSRでは参照できない）
   const [theme, setTheme] = useState<Theme>("system");
+  const [chatFont, setChatFont] = useState<ChatFontSize>(
+    DEFAULT_CHAT_FONT_SIZE,
+  );
   useEffect(() => {
     setTheme(getTheme());
+    setChatFont(getChatFontSize());
   }, []);
 
   async function save(patch: Partial<AppSettings>) {
@@ -336,6 +351,26 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             </Row>
           </Section>
 
+          <Section
+            title="モデル一覧"
+            note="公開日はモデル一覧APIが申告する値。日付を返さないモデルには印を付けません。"
+          >
+            <Row
+              label="新着として出す日数"
+              description={`公開からこの日数だけ NEW を表示（0 で表示しない・最大${NEW_MODEL_DAYS_RANGE.max}）`}
+            >
+              <NumberInput
+                label="新着として出す日数"
+                value={settings.newModelDays}
+                min={NEW_MODEL_DAYS_RANGE.min}
+                max={NEW_MODEL_DAYS_RANGE.max}
+                step={1}
+                onChange={(v) => void save({ newModelDays: v })}
+                className="w-24 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+              />
+            </Row>
+          </Section>
+
           <Section title="外観" note="この端末にのみ適用されます。">
             <Row label="テーマ" description="ライト / ダーク / 端末設定に追従">
               <select
@@ -343,7 +378,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 onChange={(e) => {
                   const next = e.target.value as Theme;
                   setTheme(next);
-                  applyTheme(next);
+                  saveTheme(next);
                 }}
                 aria-label="テーマ"
                 className="rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
@@ -358,6 +393,39 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             <Row label="アクセント色" description="ボタンや強調表示の色">
               <AccentPicker />
             </Row>
+            <Row
+              label="チャットの文字サイズ"
+              description="会話画面の本文と入力欄の大きさ"
+            >
+              <div className="flex overflow-hidden rounded-lg border border-neutral-200 dark:border-white/10">
+                {CHAT_FONT_SIZES.map((f) => (
+                  <button
+                    key={f.value}
+                    type="button"
+                    aria-pressed={chatFont === f.value}
+                    onClick={() => {
+                      setChatFont(f.value);
+                      saveChatFontSize(f.value);
+                    }}
+                    className={`px-3 py-1.5 text-sm transition-colors ${
+                      chatFont === f.value
+                        ? "bg-accent text-accent-fg"
+                        : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-white/5"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </Row>
+            <p className="px-1 pb-1 text-xs text-neutral-400 dark:text-neutral-500">
+              <span
+                className="chat-text"
+                style={{ display: "inline-block", lineHeight: 1.6 }}
+              >
+                この大きさで表示されます。
+              </span>
+            </p>
           </Section>
 
           <Section

@@ -25,6 +25,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       params?: Record<string, unknown> | null;
       title?: string;
       pinned?: boolean;
+      favorite?: boolean;
       folderId?: string | null;
       /** true で既読にする。 */
       read?: boolean;
@@ -40,11 +41,13 @@ export async function action({ request, params }: Route.ActionArgs) {
     if (
       body.title !== undefined ||
       body.pinned !== undefined ||
+      body.favorite !== undefined ||
       body.folderId !== undefined
     ) {
       await updateConversationMeta(params.id, {
         title: body.title?.trim().slice(0, 60),
         pinned: body.pinned,
+        favorite: body.favorite,
         folderId: body.folderId,
       });
     }

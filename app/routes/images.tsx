@@ -22,6 +22,12 @@ export async function loader() {
   return { images: await listGeneratedImages({ limit: PAGE_SIZE }) };
 }
 
+/**
+ * 日付。サーバー（Workers = UTC）とブラウザ（端末のタイムゾーン）では
+ * 日付がずれることがあるので、出す側で suppressHydrationWarning を付けて
+ * ブラウザ側の値を正とする。付けないとハイドレーションのやり直しになり、
+ * <html> に載せたテーマなどが巻き添えで消える（lib/appearance.ts 参照）。
+ */
 function formatDate(ms: number): string {
   const d = new Date(ms);
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
@@ -390,7 +396,9 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                       </p>
                     )}
                     <p className="truncate text-[11px] text-neutral-400 dark:text-neutral-500">
-                      {formatDate(img.created_at)}
+                      <span suppressHydrationWarning>
+                        {formatDate(img.created_at)}
+                      </span>
                       {img.model_id && ` · ${modelName(img.model_id)}`}
                     </p>
                   </div>
