@@ -21,21 +21,19 @@ function formatContext(len: number): string {
 const RECENT_LIMIT = 5;
 
 /**
- * 「新着」とみなす日数。
+ * 公開されたばかりのモデルか（`createdAt` は秒。0 は日付不明）。
  *
  * 判定はモデル一覧の公開日（OpenRouter の `created` / Poe の同名フィールド）
  * だけで行う。手で新着リストを持つと必ず腐るので、上流が申告する日付を
- * そのまま使い、日が経てば自然に外れるようにしてある。日付を返さない
- * モデル（0）は新着扱いしない。
+ * そのまま使い、日が経てば自然に外れるようにしてある。
+ * 何日出すかは設定画面（モデル一覧 > 新着として出す日数）で変えられる。
  */
-const NEW_MODEL_DAYS = 30;
-const NEW_MODEL_WINDOW_MS = NEW_MODEL_DAYS * 24 * 60 * 60 * 1000;
-
-/** 公開されたばかりのモデルか（createdAt は秒。0 は不明）。 */
-function isNewModel(m: ModelInfo, now: number): boolean {
-  if (!m.createdAt) return false;
+function isNewModel(m: ModelInfo, now: number, windowDays: number): boolean {
+  if (!m.createdAt || windowDays <= 0) return false;
   const published = m.createdAt * 1000;
-  return published <= now && now - published < NEW_MODEL_WINDOW_MS;
+  return (
+    published <= now && now - published < windowDays * 24 * 60 * 60 * 1000
+  );
 }
 
 /** 一覧の1行。よく使う節と一覧本体で同じ見た目を使う。 */
@@ -114,10 +112,13 @@ function ModelRow({
 export function ModelPicker({
   models,
   value,
+  newModelDays,
   onChange,
 }: {
   models: ModelInfo[];
   value: string;
+  /** 公開から何日間「NEW」を出すか（0 = 出さない）。 */
+  newModelDays: number;
   onChange: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -180,8 +181,10 @@ export function ModelPicker({
    */
   const newModelIds = useMemo(() => {
     const now = Date.now();
-    return new Set(models.filter((m) => isNewModel(m, now)).map((m) => m.id));
-  }, [models]);
+    return new Set(
+      models.filter((m) => isNewModel(m, now, newModelDays)).map((m) => m.id),
+    );
+  }, [models, newModelDays]);
 
   /** よく使う順の上位。提供終了などで一覧に無いIDは落とす。 */
   const recent = useMemo(() => {

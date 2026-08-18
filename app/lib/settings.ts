@@ -12,11 +12,20 @@ export interface AppSettings {
    * 会話ごとの設定はこの値を超えられない。
    */
   retryAttemptCeiling: number;
+  /**
+   * モデル一覧で「NEW」を出す日数（公開日からの経過日数）。
+   * 0 にすると新着の強調をしない。
+   */
+  newModelDays: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   retryAttemptCeiling: 100,
+  newModelDays: 3,
 };
 
 /** 天井として受け付ける範囲。 */
 export const RETRY_CEILING_RANGE = { min: 1, max: 1000 };
+
+/** 新着表示の日数として受け付ける範囲（0 = 表示しない）。 */
+export const NEW_MODEL_DAYS_RANGE = { min: 0, max: 90 };

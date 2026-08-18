@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { deleteFiles } from "./r2.server";
 import {
   DEFAULT_APP_SETTINGS,
+  NEW_MODEL_DAYS_RANGE,
   RETRY_CEILING_RANGE,
   type AppSettings,
 } from "./settings";
@@ -258,6 +259,14 @@ export async function updateAppSettings(
     next.retryAttemptCeiling = Math.min(
       Math.max(Math.round(ceiling), RETRY_CEILING_RANGE.min),
       RETRY_CEILING_RANGE.max,
+    );
+  }
+
+  const days = Number(patch.newModelDays);
+  if (Number.isFinite(days)) {
+    next.newModelDays = Math.min(
+      Math.max(Math.round(days), NEW_MODEL_DAYS_RANGE.min),
+      NEW_MODEL_DAYS_RANGE.max,
     );
   }
 

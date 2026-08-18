@@ -22,7 +22,7 @@ import {
   IconArrowDown,
   IconArrowUp,
   IconCheck,
-  IconContextCut,
+  IconBroom,
   IconCopy,
   IconGlobe,
   IconInfo,
@@ -79,6 +79,14 @@ const RUN_POLL_INTERVAL_MS = 1000;
 const WEB_PARAM_KEY = "web";
 /** 1メッセージに添付できる画像の枚数（サーバー側の上限と揃える）。 */
 const MAX_ATTACHMENTS = 8;
+/**
+ * 削除選択モードでコンテキストクリアを指す印。
+ *
+ * 選択の集合にはメッセージIDが入るので、境界線はこの接頭辞を付けて
+ * 区別する（メッセージIDはUUIDなので衝突しない）。境界線もメッセージと
+ * 同じように選んで削除ボタンで消せるようにするための仕掛け。
+ */
+const BOUNDARY_SELECT_PREFIX = "boundary:";
 
 /** 円建てコストの表示。額の大きさに応じて桁数を変える。 */
 function formatJpy(jpy: number): string {
@@ -359,37 +367,52 @@ function MessageDetails({
 }
 
 /**
- * コンテキストの境界線。
+ * コンテキストクリアの区切り線。
  *
  * ここまでの発言は以後モデルへ送らない、という目印。履歴そのものには
- * 手を触れていないので、解除すれば元どおり全部が文脈に戻る。
- * 解除はメッセージの削除選択モードでだけ出す（普段の会話中に
- * うっかり触れて文脈が伸びてしまわないように）。
+ * 手を触れていないので、消せば元どおり全部が文脈に戻る。
+ * 消し方はメッセージと同じで、削除選択モードで選んで削除ボタンを押す。
  */
 function ContextBoundaryLine({
-  onRemove,
+  selecting,
+  selected,
+  onToggle,
 }: {
-  /** null = 解除の操作を出さない（通常表示）。 */
-  onRemove: (() => void) | null;
+  /** 削除選択モードか。 */
+  selecting: boolean;
+  selected: boolean;
+  onToggle: () => void;
 }) {
-  return (
-    <div className="flex items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
-      <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
+  const line = <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />;
+  const body = (
+    <>
+      {line}
       <span className="whitespace-nowrap rounded-full border border-dashed border-neutral-300 px-2.5 py-1 dark:border-neutral-700">
-        ここまではコンテキストに含めません
+        コンテキストクリア
       </span>
-      {onRemove && (
-        <button
-          type="button"
-          onClick={onRemove}
-          title="境界線を解除して、すべてを文脈に戻す"
-          className="shrink-0 touch-manipulation rounded-full border border-neutral-300 px-2.5 py-1 hover:bg-neutral-100 hover:text-neutral-600 dark:border-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-        >
-          解除
-        </button>
-      )}
-      <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
-    </div>
+      {line}
+    </>
+  );
+  if (!selecting) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
+        {body}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title="選択して削除するとコンテキストクリアが外れ、すべてが文脈に戻ります"
+      className={`-mx-2 flex w-[calc(100%+1rem)] touch-manipulation items-center gap-2 rounded-xl px-2 py-1 text-xs text-neutral-400 dark:text-neutral-500 ${
+        selected
+          ? "bg-accent/10 ring-1 ring-accent/50"
+          : "hover:bg-neutral-50 dark:hover:bg-neutral-900"
+      }`}
+    >
+      {body}
+    </button>
   );
 }
 
@@ -936,6 +959,25 @@ export function Chat({
   useEffect(() => {
     paintPull(refreshing ? PULL_REST_PX : 0, true);
   }, [refreshing]);
+
+  /**
+   * いま読んでいる位置を覚え、描き直しのあとに戻す関数を返す。
+   *
+   * 一覧の差し替え（コンテキストクリアの付け外しなど）で行が増減すると、
+   * 見ていた場所から飛ばされることがある。最下部に貼り付いていたなら
+   * 最下部へ、そうでなければ元の位置へ戻す。
+   */
+  const captureScroll = () => {
+    const wasAtBottom = stickToBottomRef.current;
+    const top = scrollRef.current?.scrollTop ?? 0;
+    return () => {
+      requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        el.scrollTop = wasAtBottom ? el.scrollHeight : top;
+      });
+    };
+  };
 
   /** 「最新へ」。押した時点から追従も再開する。 */
   const scrollToBottom = () => {
@@ -1556,32 +1598,71 @@ export function Chat({
     });
   }
 
-  /** 選択したメッセージを一括削除する。 */
+  /**
+   * 選択したものを一括削除する。
+   *
+   * 選択にはメッセージとコンテキストクリアが混ざりうる。前者は本当に
+   * 消えるが、後者は「モデルへ渡す範囲の区切り」が外れるだけで
+   * 履歴には何も起きない。文面もそれに合わせて出し分ける。
+   */
   async function deleteSelected() {
     const convId = convIdRef.current;
     if (!convId || !selecting || selecting.size === 0) return;
+    const picked = [...selecting];
+    const boundaryIds = picked
+      .filter((id) => id.startsWith(BOUNDARY_SELECT_PREFIX))
+      .map((id) => id.slice(BOUNDARY_SELECT_PREFIX.length));
+    const messageIds = picked.filter(
+      (id) => !id.startsWith(BOUNDARY_SELECT_PREFIX),
+    );
+
+    const what = [
+      messageIds.length > 0 ? `メッセージ${messageIds.length}件` : null,
+      boundaryIds.length > 0 ? `コンテキストクリア${boundaryIds.length}件` : null,
+    ]
+      .filter(Boolean)
+      .join("と");
     if (
       !confirm(
-        `選択した${selecting.size}件のメッセージを削除します。この操作は取り消せません。よろしいですか？`,
+        `${what}を削除します。` +
+          (messageIds.length > 0
+            ? "メッセージの削除は取り消せません。"
+            : "履歴はそのままで、すべてが再びコンテキストになります。") +
+          "よろしいですか？",
       )
     ) {
       return;
     }
+
     try {
-      const res = await fetch(`/api/conversations/${convId}/delete-messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: [...selecting] }),
-      });
-      if (!res.ok) throw new Error();
-      const { messages: fresh } = (await res.json()) as {
-        messages: UiMessage[];
-      };
-      setMessages(fresh);
+      let fresh: UiMessage[] | null = null;
+      // 区切りを先に外す。メッセージを消すと区切りは生き残る祖先へ移る
+      // 決まりなので、順番が逆だと消したはずの区切りが残ってしまう
+      for (const id of boundaryIds) {
+        const res = await fetch(`/api/conversations/${convId}/context`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messageId: id, enabled: false }),
+        });
+        if (!res.ok) throw new Error();
+        fresh = ((await res.json()) as { messages: UiMessage[] }).messages;
+      }
+      if (messageIds.length > 0) {
+        const res = await fetch(`/api/conversations/${convId}/delete-messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: messageIds }),
+        });
+        if (!res.ok) throw new Error();
+        fresh = ((await res.json()) as { messages: UiMessage[] }).messages;
+      }
+      const keepScroll = captureScroll();
+      if (fresh) setMessages(fresh);
       setSelecting(null);
+      keepScroll();
       revalidator.revalidate();
     } catch {
-      setError("メッセージの削除に失敗しました。");
+      setError("削除に失敗しました。");
       setSelecting(null);
     }
   }
@@ -1616,6 +1697,8 @@ export function Chat({
   async function toggleBoundary(messageId: string, enabled: boolean) {
     const convId = convIdRef.current;
     if (!convId) return;
+    // 区切りを足す/外すだけなので、読んでいた位置はそのままにする
+    const keepScroll = captureScroll();
     try {
       const res = await fetch(`/api/conversations/${convId}/context`, {
         method: "POST",
@@ -1628,16 +1711,12 @@ export function Chat({
       };
       setMessages(fresh);
       setError(null);
-      showNotice(
-        enabled
-          ? "これ以前はコンテキストに渡しません（履歴は残ります）"
-          : "境界線を解除しました。すべてが再びコンテキストになります",
-      );
+      keepScroll();
     } catch {
       setError(
         enabled
-          ? "コンテキストの区切りを作成できませんでした。"
-          : "境界線を解除できませんでした。",
+          ? "コンテキストクリアを作成できませんでした。"
+          : "コンテキストクリアを外せませんでした。",
       );
     }
   }
@@ -1720,7 +1799,12 @@ export function Chat({
             <span className="truncate">{bot.name}</span>
           </span>
         )}
-        <ModelPicker models={models} value={model} onChange={selectModel} />
+        <ModelPicker
+          models={models}
+          value={model}
+          newModelDays={settings.newModelDays}
+          onChange={selectModel}
+        />
         <div className="ml-auto">
           <button
             type="button"
@@ -2165,15 +2249,14 @@ export function Chat({
               );
               // 境界線はメッセージの「後ろ」に置く。Fragment なので
               // 一覧の space-y はメッセージと同じ間隔のまま効く
+              const boundaryKey = BOUNDARY_SELECT_PREFIX + m.id;
               return m.contextBoundary ? (
                 <Fragment key={`w${m.id ?? i}`}>
                   {body}
                   <ContextBoundaryLine
-                    onRemove={
-                      selecting && m.id
-                        ? () => void toggleBoundary(m.id!, false)
-                        : null
-                    }
+                    selecting={selecting != null && m.id != null}
+                    selected={selecting?.has(boundaryKey) ?? false}
+                    onToggle={() => toggleSelect(boundaryKey)}
                   />
                 </Fragment>
               ) : (
@@ -2263,7 +2346,7 @@ export function Chat({
               {selecting.size}件選択中（タップで選択/解除）
               {hasContextBoundary && (
                 <span className="block text-xs text-neutral-400 dark:text-neutral-500">
-                  境界線は「解除」で消せます
+                  コンテキストクリアも選んで消せます
                 </span>
               )}
             </span>
@@ -2351,8 +2434,8 @@ export function Chat({
                   }}
                 />
                 {/*
-                  コンテキストのクリア。履歴は消さず、ここから前を
-                  モデルへ渡さなくするだけ（境界線は削除選択モードで解除できる）。
+                  コンテキストクリア。履歴は消さず、ここから前を
+                  モデルへ渡さなくするだけ（消すときは削除選択モードで選ぶ）。
                 */}
                 <button
                   type="button"
@@ -2369,7 +2452,7 @@ export function Chat({
                   aria-label="コンテキストをクリア"
                   title={
                     lastMessage?.contextBoundary
-                      ? "ここにコンテキストの区切りがあります（削除選択モードで解除できます）"
+                      ? "ここでコンテキストをクリア済み（削除モードで選んで消せます）"
                       : "コンテキストをクリア（履歴は残したまま、ここから前をモデルへ渡さない）"
                   }
                   className={`grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-neutral-100 active:scale-90 disabled:opacity-30 dark:hover:bg-white/10 ${
@@ -2378,7 +2461,7 @@ export function Chat({
                       : "text-neutral-500 dark:text-neutral-400"
                   }`}
                 >
-                  <IconContextCut className="h-5 w-5" />
+                  <IconBroom className="h-5 w-5" />
                 </button>
                 <button
                   type="button"

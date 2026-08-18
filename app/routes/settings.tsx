@@ -3,7 +3,11 @@ import { useOutletContext, useRevalidator } from "react-router";
 import type { Route } from "./+types/settings";
 import type { ShellContext } from "./shell";
 import { getAppSettings } from "../lib/db.server";
-import { RETRY_CEILING_RANGE, type AppSettings } from "../lib/settings";
+import {
+  NEW_MODEL_DAYS_RANGE,
+  RETRY_CEILING_RANGE,
+  type AppSettings,
+} from "../lib/settings";
 import { applyTheme, getTheme, type Theme } from "../lib/theme";
 import {
   CHAT_FONT_SIZES,
@@ -342,6 +346,26 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 max={RETRY_CEILING_RANGE.max}
                 step={1}
                 onChange={(v) => void save({ retryAttemptCeiling: v })}
+                className="w-24 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+              />
+            </Row>
+          </Section>
+
+          <Section
+            title="モデル一覧"
+            note="公開日はモデル一覧APIが申告する値。日付を返さないモデルには印を付けません。"
+          >
+            <Row
+              label="新着として出す日数"
+              description={`公開からこの日数だけ NEW を表示（0 で表示しない・最大${NEW_MODEL_DAYS_RANGE.max}）`}
+            >
+              <NumberInput
+                label="新着として出す日数"
+                value={settings.newModelDays}
+                min={NEW_MODEL_DAYS_RANGE.min}
+                max={NEW_MODEL_DAYS_RANGE.max}
+                step={1}
+                onChange={(v) => void save({ newModelDays: v })}
                 className="w-24 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
               />
             </Row>

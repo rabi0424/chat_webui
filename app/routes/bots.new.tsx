@@ -11,7 +11,11 @@ export default function BotNew() {
   const { models, settings } = useOutletContext<ShellContext>();
   return (
     <div className="h-full overflow-y-auto">
-      <BotForm models={models} retryCeiling={settings.retryAttemptCeiling} />
+      <BotForm
+        models={models}
+        retryCeiling={settings.retryAttemptCeiling}
+        newModelDays={settings.newModelDays}
+      />
     </div>
   );
 }
