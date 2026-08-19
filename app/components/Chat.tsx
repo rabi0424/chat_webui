@@ -658,18 +658,7 @@ export function Chat({
 
   // 別端末やリロードで開いたとき、生成中の応答があればポーリングで追いかける
   useEffect(() => {
-    const last = initialMessages[initialMessages.length - 1];
-    if (last?.status === "streaming" && last.id && conversationId) {
-      const epoch = ++epochRef.current;
-      setIsStreaming(true);
-      void pollUntilDone(conversationId, last.id, epoch).then(() => {
-        if (epochRef.current === epoch) {
-          setIsStreaming(false);
-          markRead(conversationId);
-          void refreshPath(conversationId, epoch);
-        }
-      });
-    }
+    if (conversationId) trackRunning(conversationId, initialMessages);
     // 初回マウント時のみ
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -874,17 +863,7 @@ export function Chat({
         setMessages(fresh);
         setError(null);
         // 別の画面で走っている生成があれば、ここから追いかける
-        const last = fresh[fresh.length - 1];
-        if (!isStreaming && last?.status === "streaming" && last.id) {
-          const epoch = ++epochRef.current;
-          setIsStreaming(true);
-          void pollUntilDone(convId, last.id, epoch).then(() => {
-            if (epochRef.current !== epoch) return;
-            setIsStreaming(false);
-            markRead(convId);
-            void refreshPath(convId, epoch);
-          });
-        }
+        if (!isStreaming) trackRunning(convId, fresh);
       }
     } catch {
       // 取り直せなくても、いま出ている内容はそのまま残す
@@ -1285,6 +1264,38 @@ export function Chat({
     });
   }
 
+  /**
+   * 表示中のパスに生成中の応答があれば、そこから追跡を再開する。
+   * リロード・別端末・別タブ・引っぱって更新のいずれからも同じ入口を使う。
+   *
+   * 「成功するまで生成」では、生成中なのは**見出し**のほうで、その下に
+   * 成功した応答が積まれていく。末尾だけを見ていると生成中に気づけず、
+   * 見出しだけを見張っても後から増えた応答を拾えない。生成中の行が
+   * どこにあるかで、1件追い（安くて滑らか）とパス追いを選び分ける。
+   */
+  function trackRunning(convId: string, list: UiMessage[]): void {
+    const index = list.findIndex((m) => m.status === "streaming");
+    const running = index >= 0 ? list[index] : null;
+    if (!running?.id) return;
+
+    const epoch = ++epochRef.current;
+    setIsStreaming(true);
+    // 生成中の行の下にすでに応答が積まれている＝リトライ生成の見出し。
+    // 始まったばかりで見出しがまだ末尾のときは本文の見た目で判断する
+    const wholePath =
+      index < list.length - 1 || isRetryProgress(running.content);
+    const done = wholePath
+      ? pollRunUntilDone(convId, epoch)
+      : pollUntilDone(convId, running.id, epoch);
+    void done.then(() => {
+      if (epochRef.current !== epoch) return;
+      setIsStreaming(false);
+      markRead(convId);
+      // パス追いは最後の取得が確定後の状態なので、取り直す必要はない
+      if (!wholePath) void refreshPath(convId, epoch);
+    });
+  }
+
   /** 生成中メッセージをポーリングで追いかける（生成完了で返る）。 */
   async function pollUntilDone(convId: string, messageId: string, epoch: number) {
     for (;;) {
@@ -1304,6 +1315,13 @@ export function Chat({
         if (epochRef.current !== epoch) return;
         applyRemoteState(remote);
         if (remote.status !== "streaming") return;
+        // リトライ生成だと分かったら、パスごと追う方へ移る。見出しの下に
+        // 成功が積まれていくので、1件だけ見張っていても増えた応答に
+        // 気づけない（開始直後は見出しの本文がまだ空で判別できない）
+        if (isRetryProgress(remote.content)) {
+          await pollRunUntilDone(convId, epoch);
+          return;
+        }
       } catch {
         // 一時的な失敗はリトライ
       }
