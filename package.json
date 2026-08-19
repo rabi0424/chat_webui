@@ -12,8 +12,10 @@
     "postinstall": "wrangler types"
   },
   "dependencies": {
+    "dompurify": "^3.4.13",
     "isbot": "^5.1.36",
-    "katex": "^0.18.4",
+    "katex": "^0.16.22",
+    "mermaid": "^11.16.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",

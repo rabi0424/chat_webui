@@ -1,4 +1,11 @@
-import { memo, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import type { PluggableList } from "unified";
 import type { Element, ElementContent, Root, RootContent } from "hast";
@@ -9,8 +16,20 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+// 化学式（`$\ce{H2O}$` `$\ce{2H2 + O2 -> 2H2O}$`）。KaTeX にマクロを足すだけ
+// なので、読み込んだ時点で数式の描画に乗る。モデルは化学式をTeXで書くことが
+// 多いので、独自記法を増やすよりこちらのほうが実際の出力に当たる。
+import "katex/contrib/mhchem";
+// 数式のコピーで元のTeXを渡す（ブラウザ専用・副作用のみ）
+import "../lib/katex-copy-tex.client";
 import { IconCheck, IconCopy } from "./icons";
 import { prepareMarkdown } from "../lib/markdown";
+import { alertTypeOf, remarkAlert } from "../lib/remark-alert";
+import { remarkSup } from "../lib/remark-sup";
+import { MarkdownAlert } from "./MarkdownAlert";
+import { MarkdownTable } from "./MarkdownTable";
+import { MermaidBlock } from "./MermaidBlock";
+import { SvgBlock } from "./SvgBlock";
 
 /** 言語表示に使う名前。hljs のクラス名から拾えなかったものはそのまま出す。 */
 const LANGUAGE_LABELS: Record<string, string> = {
@@ -30,6 +49,8 @@ const LANGUAGE_LABELS: Record<string, string> = {
   kotlin: "Kotlin",
   markdown: "Markdown",
   md: "Markdown",
+  mermaid: "Mermaid",
+  svg: "SVG",
   php: "PHP",
   plaintext: "Text",
   python: "Python",
@@ -56,6 +77,25 @@ function nodeText(node: ElementContent | Element | undefined): string {
   if (node.type === "text") return node.value;
   if ("children" in node) return node.children.map(nodeText).join("");
   return "";
+}
+
+/**
+ * リンク先のドメイン（http/https の絶対URLのみ）。
+ *
+ * 相対リンク・ページ内リンク・`mailto:` などは対象外。ここで拾えたものだけ
+ * 本文の脇に出して、`[公式サイト](https://例のよく似た別ドメイン)` のような
+ * 行き先の食い違いに気づけるようにする。
+ */
+function externalHost(href: string | undefined): string | null {
+  if (!href) return null;
+  try {
+    const url = new URL(href, "https://relative.invalid");
+    if (url.origin === "https://relative.invalid") return null;
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return null;
+  }
 }
 
 function CopyCodeButton({ text }: { text: string }) {
@@ -85,6 +125,21 @@ function CopyCodeButton({ text }: { text: string }) {
   );
 }
 
+/**
+ * コードブロックの奥から参照したい、描き方の設定。
+ *
+ * - streaming: 本文がまだ伸びている最中か。図（Mermaid）は書きかけの
+ *   ソースを描いても意味が無いので、これを見て落ち着くまで待つ。
+ * - diagrams: 図を描いてよい場所か。思考プロセスや入力の吹き出しでは、
+ *   本文より目立ってしまうのでソースのまま見せる。
+ */
+type BlockConfig = { streaming: boolean; diagrams: boolean };
+
+const BlockContext = createContext<BlockConfig>({
+  streaming: false,
+  diagrams: true,
+});
+
 /** コードブロック。言語名とコピーボタンを付けた枠で囲む。 */
 function CodeBlock({ node, children }: { node?: Element; children?: ReactNode }) {
   const code = node?.children.find(
@@ -95,8 +150,9 @@ function CodeBlock({ node, children }: { node?: Element; children?: ReactNode })
     : String(code?.properties?.className ?? "");
   const lang = /language-([\w+#-]+)/.exec(className)?.[1]?.toLowerCase();
   const text = nodeText(code);
+  const { streaming, diagrams } = useContext(BlockContext);
 
-  return (
+  const frame = (
     <div className="not-prose my-4 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-1 dark:border-neutral-800">
         <span className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -109,26 +165,43 @@ function CodeBlock({ node, children }: { node?: Element; children?: ReactNode })
       </pre>
     </div>
   );
+
+  // 図にできるなら図で。できないうちは、そのままソースを見せておく。
+  if (diagrams && lang === "mermaid") {
+    return <MermaidBlock code={text} streaming={streaming} fallback={frame} />;
+  }
+  // `xml` は SVG 以外にも使われるので、中身を見て判断するのは SvgBlock 側
+  if (diagrams && (lang === "svg" || lang === "xml")) {
+    return <SvgBlock code={text} streaming={streaming} fallback={frame} />;
+  }
+  return frame;
 }
 
 const components: Components = {
   pre: CodeBlock,
-  // 表は横に長くなりがちなので、はみ出す分だけ横スクロールさせる
-  table: ({ children }) => (
-    <div className="-mx-1 overflow-x-auto px-1">
-      <table>{children}</table>
-    </div>
-  ),
-  // 外部リンクは別タブで開く（脚注などのページ内リンクはそのまま）
-  a: ({ children, href }) => {
+  // remark-alert が印を付けた引用ブロックだけ、警告ブロックとして描く
+  div: ({ node, children, ...props }) => {
+    const type = alertTypeOf(node?.properties?.className);
+    if (!type) return <div {...props}>{children}</div>;
+    return <MarkdownAlert type={type}>{children}</MarkdownAlert>;
+  },
+  // 表は横スクロール・並べ替え・コピーを付けた専用の描き方にする
+  table: MarkdownTable,
+  // 外部リンクは別タブで開く（脚注などのページ内リンクはそのまま）。
+  // 行き先が本文と違うことがあるので、表示に無いときはドメインを添える。
+  a: ({ node, children, href }) => {
     const external = !!href && !href.startsWith("#");
+    const host = externalHost(href);
+    const shown = host && !nodeText(node).toLowerCase().includes(host);
     return (
       <a
         href={href}
+        title={external ? href : undefined}
         target={external ? "_blank" : undefined}
         rel={external ? "noopener noreferrer" : undefined}
       >
         {children}
+        {shown && <span className="md-link-host">{host}</span>}
       </a>
     );
   },
@@ -147,6 +220,10 @@ const remarkPlugins: PluggableList = [
   // `$100 と $200` のような通貨表記を数式にしないため、1個の `$` は数式扱いしない。
   // 数式にすべき `$x$` は前処理（normalizeMath）で `$$x$$` に寄せてある。
   [remarkMath, { singleDollarTextMath: false }],
+  // `> [!NOTE]` の目印を消すのは改行の変換より先（目印の行を丸ごと落とすため）
+  remarkAlert,
+  // `^2^` を上付きに
+  remarkSup,
   // 1行の改行をそのまま改行として見せる（チャットの表示としてはこちらが自然）
   remarkBreaks,
 ];
@@ -279,27 +356,50 @@ const rehypeAnimatedPlugins: PluggableList = [
   rehypeStreamTokens,
 ];
 
-/**
- * memo必須: パースが重く、ストリーミング中は親が毎チャンク再描画される。
- * 本文が変わらないメッセージの再パースをここで止める。
- */
-export const Markdown = memo(function Markdown({
-  children,
-  animate = false,
-  className,
-}: {
+/** 本文を囲む枠のクラス。塊に分けて描くときも同じ枠に入れる。 */
+export function proseClassName(className?: string): string {
+  return `prose prose-neutral dark:prose-invert max-w-none break-words prose-code:before:content-none prose-code:after:content-none${
+    className ? ` ${className}` : ""
+  }`;
+}
+
+type BodyProps = {
   children: string;
   /** 新しく現れた語をふわりと出す（生成中の末尾だけに使う）。 */
   animate?: boolean;
-  className?: string;
-}) {
-  const source = useMemo(() => prepareMarkdown(children), [children]);
+  /** 本文がまだ伸びている最中か（図を描くのを待たせるのに使う）。 */
+  streaming?: boolean;
+  /** ```mermaid を図にしてよいか。false ならソースのまま見せる。 */
+  diagrams?: boolean;
+  /** すでに prepareMarkdown を通してあるか（塊に分けて渡すときに使う）。 */
+  prepared?: boolean;
+};
+
+/**
+ * 枠を持たない本文。ReactMarkdown は要素をそのまま並べる（囲みを作らない）
+ * ので、これを同じ枠の中に複数置いても、1つとして描いたときと同じ並びに
+ * なる——余白も `:first-child` / `:last-child` も崩れない。
+ *
+ * memo必須: パースが重く、ストリーミング中は親が毎チャンク再描画される。
+ * 本文が変わらない塊の再パースをここで止める。
+ */
+export const MarkdownBody = memo(function MarkdownBody({
+  children,
+  animate = false,
+  streaming = false,
+  diagrams = true,
+  prepared = false,
+}: BodyProps) {
+  const source = useMemo(
+    () => (prepared ? children : prepareMarkdown(children)),
+    [children, prepared],
+  );
+  const config = useMemo<BlockConfig>(
+    () => ({ streaming, diagrams }),
+    [streaming, diagrams],
+  );
   return (
-    <div
-      className={`prose prose-neutral dark:prose-invert max-w-none break-words prose-code:before:content-none prose-code:after:content-none${
-        className ? ` ${className}` : ""
-      }`}
-    >
+    <BlockContext.Provider value={config}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={animate ? rehypeAnimatedPlugins : rehypePlugins}
@@ -307,6 +407,18 @@ export const Markdown = memo(function Markdown({
       >
         {source}
       </ReactMarkdown>
+    </BlockContext.Provider>
+  );
+});
+
+/** 本文ひとかたまり。 */
+export const Markdown = memo(function Markdown({
+  className,
+  ...body
+}: BodyProps & { className?: string }) {
+  return (
+    <div className={proseClassName(className)}>
+      <MarkdownBody {...body} />
     </div>
   );
 });

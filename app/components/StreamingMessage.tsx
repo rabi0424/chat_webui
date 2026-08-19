@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Markdown } from "./Markdown";
+import { Markdown, MarkdownBody, proseClassName } from "./Markdown";
+import { splitBlocks } from "../lib/markdown-blocks";
+import { prepareMarkdown } from "../lib/markdown";
 
 /**
  * 生成中の応答の表示。
@@ -148,6 +150,17 @@ export function StreamingMessage({
   const revealed = useRevealedText(text, streaming, commitMs);
   const shown = useMemo(() => splitStream(revealed), [revealed]);
 
+  /**
+   * 確定ぶんは塊に分けて描く。増えた末尾の塊だけが解析し直され、
+   * すでに出ている塊は memo でそのまま残る（長い応答ほど効く）。
+   * 分ける前に一度だけ前処理するのは、画像URLの重複除去のように
+   * 本文全体を見ないと判断できないものがあるため。
+   */
+  const blocks = useMemo(
+    () => (shown.head ? splitBlocks(prepareMarkdown(shown.head)) : []),
+    [shown.head],
+  );
+
   const reveal = useRef(onReveal);
   reveal.current = onReveal;
   useLayoutEffect(() => {
@@ -159,12 +172,23 @@ export function StreamingMessage({
     return <Markdown>{text}</Markdown>;
   }
 
+  // 閉じていないコードフェンスがあると分割できず、書きかけのブロックも
+  // head に入る。どちらにも「まだ伸びている」ことを伝えておく。
   return (
     <>
-      {shown.head && <Markdown>{shown.head}</Markdown>}
+      {blocks.length > 0 && (
+        <div className={proseClassName()}>
+          {blocks.map((block, i) => (
+            <MarkdownBody key={i} prepared streaming>
+              {block}
+            </MarkdownBody>
+          ))}
+        </div>
+      )}
       {shown.tail && (
         <Markdown
           animate
+          streaming
           className={shown.head ? (shown.tight ? "mt-0" : "mt-4") : undefined}
         >
           {shown.tail}

@@ -225,8 +225,16 @@ function ReasoningBlock({
         {streaming ? "思考中…" : show ? "思考プロセスを隠す" : "思考プロセスを表示"}
       </button>
       {show && (
-        <div className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
-          {reasoning}
+        // 思考プロセスにも数式やコードが混ざるので、本文と同じ描き方をする。
+        // 図まで描くと本文より目立ってしまうので、ここはソースのまま。
+        <div className="mt-1 max-h-64 overflow-y-auto rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+          <Markdown
+            streaming={streaming}
+            diagrams={false}
+            className="chat-bubble"
+          >
+            {reasoning}
+          </Markdown>
         </div>
       )}
     </div>
@@ -2086,8 +2094,16 @@ export function Chat({
                       )}
                       {m.content && (
                         <div className="flex justify-end">
-                          <div className="max-w-[85%] min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere] rounded-3xl rounded-br-lg bg-accent px-4 py-2.5 text-accent-fg">
-                            {m.content}
+                          <div className="max-w-[85%] min-w-0 [overflow-wrap:anywhere] rounded-3xl rounded-br-lg bg-accent px-4 py-2.5 text-accent-fg">
+                            {/*
+                              貼り付けた表やコードがそのまま読める形で残るよう、
+                              入力もマークダウンとして描く。吹き出しの中は
+                              アクセント色に載るので、prose の配色は使わず
+                              文字色を継いで見出しや線だけを整える（.chat-bubble）。
+                            */}
+                            <Markdown diagrams={false} className="chat-bubble">
+                              {m.content}
+                            </Markdown>
                           </div>
                         </div>
                       )}

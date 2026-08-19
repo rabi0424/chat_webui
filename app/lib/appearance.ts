@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { syncAccent } from "./accent";
 import { syncChatFontSize } from "./chat-font";
 import { syncTheme } from "./theme";
@@ -51,4 +51,29 @@ export function useAppearanceSync(): void {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+}
+
+/**
+ * いまダークで表示しているか（`<html>` の `dark` クラス）を購読する。
+ *
+ * テーマの切替も端末設定の変化も、最終的には applyTheme が同じクラスを
+ * 付け外しするので、そこだけを見ていれば両方に追従できる。
+ * サーバー側では判断材料が無いので false から始め、描画後に貼り直す
+ * （この値を使うのは図の配色などブラウザでしか動かないものに限る）。
+ */
+export function useIsDark(): boolean {
+  const [dark, setDark] = useState(false);
+
+  useEffect(() => {
+    const read = () => document.documentElement.classList.contains("dark");
+    setDark(read());
+    const observer = new MutationObserver(() => setDark(read()));
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  return dark;
 }
