@@ -173,7 +173,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   const [sidebarClosing, setSidebarClosing] = useState(false);
   const closeFallback = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** 退場アニメーションを終えてドロワーを外す。 */
+  /** 板が元の位置へ戻り切ったところでサイドバーを外す。 */
   const finishClose = () => {
     if (closeFallback.current) clearTimeout(closeFallback.current);
     closeFallback.current = null;
@@ -182,12 +182,12 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   };
 
   /**
-   * 閉じるときも開くときと同じ滑らかさで（退場アニメーション後にアンマウント）。
+   * 閉じるときも開くときと同じ滑らかさで（板が戻り切ってからアンマウント）。
    *
-   * アンマウントは時間ではなく animationend で決める。会話を選んで閉じる
+   * アンマウントは時間ではなく transitionend で決める。会話を選んで閉じる
    * ときは遷移先の描画がすぐ後に走るため、固定時間で外すとアニメーションが
    * 始まる前に消えることがあり、これが「唐突に消えた」正体だった。
-   * イベントが来ない場合（アニメーション無効・裏に回ったタブ）の保険として
+   * イベントが来ない場合（動きを減らす設定・裏に回ったタブ）の保険として
    * 長めのタイマーも張る。
    */
   const closeSidebar = () => {
@@ -300,41 +300,49 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         />
       </div>
 
-      {/* モバイル: ドロワー。高さは fixed inset-0 に任せず、本体と同じ
-          --app-height で決める。iOSのスタンドアロン（PWA）では fixed の
-          基準がズレることがあり、下部のボタンが浮いて見えていた */}
+      {/* モバイル: 本体の下に敷くサイドバー。かぶせるのではなく、上の板
+          （チャット領域）が右へどいて下から現れる。高さは fixed inset-0 に
+          任せず本体と同じ --app-height で決める。iOSのスタンドアロン（PWA）
+          では fixed の基準がズレることがあり、下部のボタンが浮いて見えた */}
       {sidebarOpen && (
         <div
-          className="fixed inset-x-0 top-0 z-30 md:hidden"
-          style={{ height: "var(--app-height, 100dvh)" }}
+          className={`fixed left-0 top-0 z-0 bg-white will-change-transform md:hidden dark:bg-black ${
+            sidebarClosing ? "animate-drawer-out" : "animate-drawer"
+          }`}
+          style={{
+            width: "var(--drawer-w)",
+            height: "var(--app-height, 100dvh)",
+          }}
         >
-          <div
-            className={`absolute inset-0 bg-black/40 backdrop-blur-sm [will-change:opacity] ${
-              sidebarClosing ? "animate-fade-out" : "animate-fade"
-            }`}
-            onClick={closeSidebar}
+          <Sidebar
+            conversations={conversations}
+            folders={folders}
+            unreadIds={unreadIds}
+            onNavigate={closeSidebar}
           />
-          {/* 遷移先の描画と重なってもコマ落ちしないよう、
-              変形はあらかじめ合成レイヤに載せておく */}
-          <div
-            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl will-change-transform dark:bg-neutral-950 ${
-              sidebarClosing ? "animate-drawer-out" : "animate-drawer"
-            }`}
-            onAnimationEnd={(e) => {
-              if (sidebarClosing && e.target === e.currentTarget) finishClose();
-            }}
-          >
-            <Sidebar
-              conversations={conversations}
-              folders={folders}
-              unreadIds={unreadIds}
-              onNavigate={closeSidebar}
-            />
-          </div>
         </div>
       )}
 
-      <div className="min-w-0 flex-1">
+      {/*
+        チャット領域。開閉で動くのはこの板だけで、サイドバーは下に敷いたまま
+        （わずかな視差だけ付く）。退場の終わりはアニメーションの時間ではなく
+        transitionend で拾い、遷移先の描画と重なっても「唐突に消える」ことが
+        ないようにする（保険のタイマーは closeSidebar 側）。
+      */}
+      <div
+        className={`drawer-scene relative z-10 min-w-0 flex-1 ${
+          sidebarOpen ? "drawer-scene-raised will-change-transform" : ""
+        } ${sidebarOpen && !sidebarClosing ? "drawer-scene-shifted" : ""}`}
+        onTransitionEnd={(e) => {
+          if (
+            sidebarClosing &&
+            e.target === e.currentTarget &&
+            e.propertyName === "transform"
+          ) {
+            finishClose();
+          }
+        }}
+      >
         <Outlet
           context={
             {
@@ -346,6 +354,17 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
             } satisfies ShellContext
           }
         />
+        {/* どいた板の上に敷く暗幕。板の内側に置くので角丸で一緒に切られる */}
+        {sidebarOpen && (
+          <button
+            type="button"
+            aria-label="サイドバーを閉じる"
+            onClick={closeSidebar}
+            className={`drawer-scrim absolute inset-0 z-50 bg-black/35 [will-change:opacity] md:hidden dark:bg-black/25 ${
+              sidebarClosing ? "animate-fade-out" : "animate-fade"
+            }`}
+          />
+        )}
       </div>
     </div>
   );

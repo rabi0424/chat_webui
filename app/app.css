@@ -13,15 +13,14 @@
   /* ポップオーバー等の出現。トリガー起点に軽いスプリング感で立ち上がる */
   --animate-pop: pop 0.16s cubic-bezier(0.2, 0.8, 0.3, 1.08) both;
   --animate-fade: fade 0.15s ease-out both;
-  --animate-drawer: drawer 0.24s cubic-bezier(0.32, 0.72, 0, 1) both;
   /*
-   * 退場は入場の曲線を使い回さない。入場向けの減速カーブ（0.32,0.72,0,1）を
-   * そのまま逆に流すと、最初の1/4で画面外へ抜けきってから端が数px残る
-   * 動きになり、消えるのが「唐突」に見えていた。退場は最後まで一定に
-   * 見える対称の曲線で送り出し、背景の暗幕も同じ長さ・同じ曲線で
-   * 合わせて消す。
+   * サイドバーは本体の下に敷いてあり、自分では滑ってこない（動くのは
+   * 上に載ったチャット側）。ここで付けるのは、板がどく速さより
+   * わずかに遅れて追いつく視差だけ。奥にあるものほど動きが小さい、
+   * という見え方で「下から出てきた」を作る。
    */
-  --animate-drawer-out: drawer-out 0.26s cubic-bezier(0.4, 0, 0.6, 1) both;
+  --animate-drawer: drawer var(--drawer-dur) var(--drawer-ease) both;
+  --animate-drawer-out: drawer-out var(--drawer-dur) var(--drawer-ease) both;
   --animate-fade-out: fade-out 0.26s cubic-bezier(0.4, 0, 0.6, 1) both;
 }
 
@@ -89,7 +88,7 @@
 
 @keyframes drawer {
   from {
-    transform: translateX(-100%);
+    transform: translateX(-12%);
   }
   to {
     transform: none;
@@ -101,7 +100,7 @@
     transform: none;
   }
   to {
-    transform: translateX(-100%);
+    transform: translateX(-12%);
   }
 }
 
@@ -111,6 +110,87 @@
   }
   to {
     opacity: 0;
+  }
+}
+
+/*
+ * サイドバーの現れ方（モバイル）。
+ *
+ * ドロワーを本体の上にかぶせるのではなく、チャットの板ごと右へ寄せて、
+ * その下に敷いてあるサイドバーを見せる。動かすのは1枚の板だけなので、
+ * 「めくれて下が出た」という奥行きがそのまま伝わる。
+ */
+:root {
+  /* チャットをどける量 = 下から出てくるサイドバーの幅（w-72 と同値） */
+  --drawer-w: min(18rem, 85vw);
+  --drawer-dur: 0.28s;
+  --drawer-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  /*
+   * 端末の画面そのものの角丸。
+   *
+   * 寄せたチャットの左端は画面の内側に現れるので、ここが直角だと
+   * 「画面を切り出した板」に見えず、右端（＝端末の角丸で切られている側）
+   * と釣り合わない。左右の角を同じ丸みに揃えて初めて、1枚の板が
+   * 横にずれただけに見える。
+   *
+   * 角丸の実寸はCSSからは取れないため、ホームインジケータ／ノッチの
+   * 余白があるか（= 角の丸い世代か）で当たりをつける。100倍は
+   * 「0か否か」を取り出すためだけの係数で、0pxなら0px、少しでも
+   * 値があれば上限の47pxに張り付く。47pxはiPhone 12〜16世代の
+   * 画面角丸（44〜55pt）のほぼ中央。
+   */
+  --screen-radius: min(
+    calc(
+      max(env(safe-area-inset-top, 0px), env(safe-area-inset-bottom, 0px)) * 100
+    ),
+    47px
+  );
+}
+
+/* 動くのはこの板（チャット領域）だけ。サイドバーはこの下に敷いてある */
+.drawer-scene {
+  transition: transform var(--drawer-dur) var(--drawer-ease);
+}
+.drawer-scene-shifted {
+  transform: translateX(var(--drawer-w));
+}
+/*
+ * 寄せているあいだだけ角を丸めて浮かせる。ふだんは切り抜きも影も持たない
+ * （transform / overflow は中の fixed なポップオーバーの基準を変えるため、
+ * 必要な間だけに留める）。
+ */
+.drawer-scene-raised {
+  overflow: hidden;
+  border-top-left-radius: var(--screen-radius);
+  border-bottom-left-radius: var(--screen-radius);
+  box-shadow: -16px 0 34px rgba(0, 0, 0, 0.32);
+}
+
+/*
+ * 板の上に敷く暗幕。角丸は板と同じ値を持たせて、縁のふち取りが角の
+ * カーブをそのままなぞるようにする。
+ *
+ * 明るい配色では暗幕そのものが境界になるが、暗い配色は下のサイドバー
+ * （黒）と板（ほぼ黒）の差がほとんど出ず、せっかくの角丸が見えない。
+ * 縁に細い光を置いて板の輪郭だけを起こす。
+ */
+.drawer-scrim {
+  border-top-left-radius: var(--screen-radius);
+  border-bottom-left-radius: var(--screen-radius);
+}
+.dark .drawer-scrim {
+  border-left: 1px solid rgb(255 255 255 / 0.12);
+}
+
+/* デスクトップは常設サイドバーなので、板は動かさず角も丸めない */
+@media (width >= 48rem) {
+  .drawer-scene-shifted {
+    transform: none;
+  }
+  .drawer-scene-raised {
+    overflow: visible;
+    border-radius: 0;
+    box-shadow: none;
   }
 }
 
