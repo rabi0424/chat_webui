@@ -476,9 +476,10 @@ body {
   background: color-mix(in srgb, currentColor 6%, transparent);
 }
 .prose .md-table-arrow {
-  margin-left: 0.35em;
-  font-size: 0.75em;
-  opacity: 0.3;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 0.3em;
+  opacity: 0.35;
 }
 .prose th[aria-sort="ascending"] .md-table-arrow,
 .prose th[aria-sort="descending"] .md-table-arrow {

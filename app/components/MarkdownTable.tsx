@@ -8,7 +8,13 @@ import {
   type ReactNode,
 } from "react";
 import type { Element, ElementContent } from "hast";
-import { IconCheck, IconCopy } from "./icons";
+import {
+  IconCheck,
+  IconChevronDown,
+  IconChevronUp,
+  IconChevronUpDown,
+  IconCopy,
+} from "./icons";
 
 /**
  * 表。横スクロールに加えて、列の並べ替えと表全体のコピーを付ける。
@@ -200,8 +206,21 @@ export function MarkdownTable({
                   } as Record<string, unknown>,
                   <>
                     {th.props.children}
+                    {/*
+                      並べ替えの印は文字ではなくアイコンで描く。「↕」などの
+                      記号は端末によって絵文字として色付きで表示され、
+                      見出しの中で浮いてしまうため。
+                    */}
                     <span aria-hidden className="md-table-arrow">
-                      {sort?.column === i ? (sort.desc ? "▼" : "▲") : "↕"}
+                      {sort?.column === i ? (
+                        sort.desc ? (
+                          <IconChevronDown className="h-3 w-3" />
+                        ) : (
+                          <IconChevronUp className="h-3 w-3" />
+                        )
+                      ) : (
+                        <IconChevronUpDown className="h-3 w-3" />
+                      )}
                     </span>
                   </>,
                 ),

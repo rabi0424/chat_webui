@@ -92,6 +92,12 @@ export const IconX = makeIcon(<path d="M6 18 18 6M6 6l12 12" />);
 /** シェブロン (chevron-down / -right / -left) */
 export const IconChevronDown = makeIcon(<path d="m19.5 8.25-7.5 7.5-7.5-7.5" />);
 export const IconChevronRight = makeIcon(<path d="m8.25 4.5 7.5 7.5-7.5 7.5" />);
+export const IconChevronUp = makeIcon(<path d="m4.5 15.75 7.5-7.5 7.5 7.5" />);
+
+/** 並べ替えできる列の印 (chevron-up-down)。まだ並べ替えていない状態。 */
+export const IconChevronUpDown = makeIcon(
+  <path d="m8.25 15 3.75 3.75L15.75 15m-7.5-6L12 5.25 15.75 9" />,
+);
 
 /** 戻る (arrow-left) */
 export const IconArrowLeft = makeIcon(
