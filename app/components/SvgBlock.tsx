@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { IconCheck, IconCopy, IconDownload } from "./icons";
+import { useIsDark } from "../lib/appearance";
+import { IconCheck, IconCopy, IconDownload, IconSwatch } from "./icons";
 
 /**
  * ` ```svg ` / ` ```xml ` のコードブロックが SVG なら、図として描く。
@@ -12,6 +13,9 @@ import { IconCheck, IconCopy, IconDownload } from "./icons";
  * SVG の外——ページ全体にも効いてしまう（`<style>*{display:none}` だけで
  * 画面を白紙にできる）。shadow の中なら外へ出ない。消毒（svg-sanitize）と
  * 合わせて、実行・外部通信・描画への干渉の3つを塞ぐ。
+ *
+ * 暗いときは配色を作り直して出す（svg-dark）。自動の置き換えなので必ず
+ * 当たるとは限らず、ツールバーから元の配色にも戻せるようにしてある。
  */
 
 /** 図にする前に本文が落ち着くのを待つ時間（ms）。Mermaid と同じ考え方。 */
@@ -24,10 +28,13 @@ const SHADOW_STYLE =
 function ToolbarButton({
   label,
   onClick,
+  active = false,
   children,
 }: {
   label: string;
   onClick: () => void;
+  /** 押しっぱなしの状態（切替ボタン用）。 */
+  active?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -35,8 +42,13 @@ function ToolbarButton({
       type="button"
       aria-label={label}
       title={label}
+      aria-pressed={active}
       onClick={onClick}
-      className="rounded p-1 text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+      className={`rounded p-1 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-200 ${
+        active
+          ? "text-neutral-700 dark:text-neutral-200"
+          : "text-neutral-400 dark:text-neutral-500"
+      }`}
     >
       {children}
     </button>
@@ -55,27 +67,40 @@ export function SvgBlock({
   /** 図にできないときに見せるもの（ふつうのコードブロック）。 */
   fallback: ReactNode;
 }) {
-  const [svg, setSvg] = useState<string | null>(null);
+  const [variants, setVariants] = useState<{
+    light: string;
+    dark: string;
+  } | null>(null);
   const [showSource, setShowSource] = useState(false);
+  const [asAuthored, setAsAuthored] = useState(false);
   const [copied, setCopied] = useState(false);
+  const isDark = useIsDark();
   const host = useRef<HTMLDivElement>(null);
   const shadow = useRef<ShadowRoot | null>(null);
+
+  // 暗いときだけ配色を置き換える。切替を待たせないよう両方を先に作っておく
+  const darkened = isDark && !asAuthored;
+  const svg = variants && (darkened ? variants.dark : variants.light);
 
   useEffect(() => {
     let alive = true;
 
     const draw = async () => {
-      const { looksLikeSvg, sanitizeSvg } = await import(
-        "../lib/svg-sanitize.client"
-      );
+      const [{ looksLikeSvg, sanitizeSvg }, { recolorForDark }] =
+        await Promise.all([
+          import("../lib/svg-sanitize.client"),
+          import("../lib/svg-dark.client"),
+        ]);
       if (!alive) return;
       // 書きかけのうちは閉じていないので、まだ図にしない
       if (!looksLikeSvg(code) || !/<\/svg\s*>\s*$/i.test(code.trimEnd())) {
-        setSvg(null);
+        setVariants(null);
         return;
       }
       const clean = sanitizeSvg(code);
-      if (alive) setSvg(clean);
+      if (alive) {
+        setVariants(clean ? { light: clean, dark: recolorForDark(clean) } : null);
+      }
     };
 
     if (!streaming) {
@@ -132,6 +157,16 @@ export function SvgBlock({
           SVG{showSource ? "（ソース）" : ""}
         </button>
         <div className="flex items-center gap-0.5">
+          {/* 自動の置き換えが外れることもあるので、元の配色にも戻せるようにする */}
+          {isDark && (
+            <ToolbarButton
+              label={asAuthored ? "暗い画面に合わせる" : "元の配色で見る"}
+              onClick={() => setAsAuthored((v) => !v)}
+              active={asAuthored}
+            >
+              <IconSwatch className="h-3.5 w-3.5" />
+            </ToolbarButton>
+          )}
           <ToolbarButton label="ソースをコピー" onClick={copySource}>
             {copied ? (
               <IconCheck className="h-3.5 w-3.5 text-green-500" />
@@ -150,11 +185,16 @@ export function SvgBlock({
         </pre>
       ) : (
         /*
-         * 明るい下地に置く。モデルの SVG は白い紙を前提に、黒い線と文字で
-         * 描かれていることが多く、暗い地の上では読めなくなるため。
+         * 下地は出している配色に合わせる。置き換え後は暗い面（配色の変換も
+         * この色を基準に contrast を見ている）、元の配色のままなら明るい面
+         * ——モデルの SVG は白い紙を前提に描かれていることが多いため。
          */
-        <div className="max-h-[70vh] overflow-auto bg-white p-3 dark:bg-neutral-200">
-          <div ref={host} data-svg-figure />
+        <div
+          className={`max-h-[70vh] overflow-auto p-3 ${
+            darkened ? "bg-neutral-900" : "bg-white dark:bg-neutral-200"
+          }`}
+        >
+          <div ref={host} data-svg-figure data-palette={darkened ? "dark" : "authored"} />
         </div>
       )}
     </div>
