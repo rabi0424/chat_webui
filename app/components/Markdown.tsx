@@ -29,6 +29,7 @@ import { remarkSup } from "../lib/remark-sup";
 import { MarkdownAlert } from "./MarkdownAlert";
 import { MarkdownTable } from "./MarkdownTable";
 import { MermaidBlock } from "./MermaidBlock";
+import { SvgBlock } from "./SvgBlock";
 
 /** 言語表示に使う名前。hljs のクラス名から拾えなかったものはそのまま出す。 */
 const LANGUAGE_LABELS: Record<string, string> = {
@@ -49,6 +50,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
   markdown: "Markdown",
   md: "Markdown",
   mermaid: "Mermaid",
+  svg: "SVG",
   php: "PHP",
   plaintext: "Text",
   python: "Python",
@@ -165,8 +167,12 @@ function CodeBlock({ node, children }: { node?: Element; children?: ReactNode })
   );
 
   // 図にできるなら図で。できないうちは、そのままソースを見せておく。
-  if (lang === "mermaid" && diagrams) {
+  if (diagrams && lang === "mermaid") {
     return <MermaidBlock code={text} streaming={streaming} fallback={frame} />;
+  }
+  // `xml` は SVG 以外にも使われるので、中身を見て判断するのは SvgBlock 側
+  if (diagrams && (lang === "svg" || lang === "xml")) {
+    return <SvgBlock code={text} streaming={streaming} fallback={frame} />;
   }
   return frame;
 }
