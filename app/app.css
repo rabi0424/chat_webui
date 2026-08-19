@@ -220,11 +220,19 @@ body {
 }
 
 /*
- * インラインコード。prose 既定のバッククォート装飾は Markdown.tsx 側で消し、
- * 代わりに薄い背景で囲う。
+ * インラインコード。prose 既定のバッククォート装飾を消して、代わりに
+ * 薄い背景で囲う。
+ *
+ * 打ち消しはユーティリティ（prose-code:after:content-none）でも指定して
+ * あるが、::after のほうは typography プラグインの規則に競り負けていて
+ * 閉じ側のバッククォートだけが出ていた。ここで両側とも確実に消す。
  */
 .prose :where(code):not(:where(pre code, [class~="not-prose"] *)) {
   @apply rounded bg-neutral-100 px-1 py-0.5 font-normal dark:bg-neutral-800;
+}
+.prose :where(code):not(:where(pre code, [class~="not-prose"] *))::before,
+.prose :where(code):not(:where(pre code, [class~="not-prose"] *))::after {
+  content: none;
 }
 
 /*
@@ -314,6 +322,29 @@ body {
 }
 .dark .prose .md-alert-caution {
   --alert: #f85149;
+}
+
+/*
+ * リンクに添えるドメイン。本文の一部ではないので、小さく淡く、
+ * 下線も外して「行き先の注記」に見えるようにする。
+ */
+.prose .md-link-host {
+  margin-left: 0.25em;
+  font-size: 0.8em;
+  opacity: 0.55;
+  text-decoration: none;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.prose .md-link-host::before {
+  content: "(";
+}
+.prose .md-link-host::after {
+  content: ")";
+}
+/* 表の中は幅が限られていて崩れるので、ドメインは title（長押し/ホバー）だけ */
+.prose :where(td, th) .md-link-host {
+  display: none;
 }
 
 /*
@@ -424,4 +455,62 @@ body {
 }
 .dark .hljs-deletion {
   color: #ffa198;
+}
+
+/*
+ * 表の見出し。並べ替えできることが分かるよう、押せる見た目にする。
+ * 矢印はふだん薄く、その列で並べ替え中のときだけはっきり出す。
+ */
+.prose .md-table {
+  margin: 1.25em 0;
+}
+.prose .md-table table {
+  margin: 0;
+}
+.prose th.md-table-sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.prose th.md-table-sortable:hover {
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+.prose .md-table-arrow {
+  margin-left: 0.35em;
+  font-size: 0.75em;
+  opacity: 0.3;
+}
+.prose th[aria-sort="ascending"] .md-table-arrow,
+.prose th[aria-sort="descending"] .md-table-arrow {
+  opacity: 0.9;
+}
+
+/*
+ * 周りの色を継ぐ本文（入力の吹き出し・思考プロセスの枠）。
+ *
+ * どちらも prose の既定の配色とは違う地の上に載るため、文字色は継がせて、
+ * 区切り線や下敷きだけを currentColor から作る。余白は枠側に任せる。
+ */
+.prose.chat-bubble,
+.prose.chat-bubble :where(*):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  color: inherit;
+}
+.prose.chat-bubble > :first-child {
+  margin-top: 0;
+}
+.prose.chat-bubble > :last-child {
+  margin-bottom: 0;
+}
+.prose.chat-bubble :where(a) {
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+}
+.prose.chat-bubble :where(code):not(:where(pre code, [class~="not-prose"] *)) {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+.prose.chat-bubble :where(hr),
+.prose.chat-bubble :where(blockquote),
+.prose.chat-bubble :where(th),
+.prose.chat-bubble :where(td),
+.prose.chat-bubble :where(thead) {
+  border-color: color-mix(in srgb, currentColor 28%, transparent);
 }
