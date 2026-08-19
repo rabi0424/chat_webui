@@ -1338,23 +1338,27 @@ export async function beginGeneration(params: {
 
 /**
  * 生成中の部分保存。停止要求が入っていれば true を返す。
+ *
+ * 保存と停止要求の確認は1回のbatchにまとめる。D1への呼び出しも
+ * サブリクエストとして数えられ、生成中はこれが最も高い頻度で走るため
+ * （1回の実行あたりの上限に一番近づくのがここ）。
  */
 export async function flushGeneration(
   messageId: string,
   partial: { content: string; reasoning: string | null },
 ): Promise<{ stopRequested: boolean }> {
   const d = await db();
-  await d
-    .prepare(
-      "UPDATE messages SET content = ?, reasoning = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'",
-    )
-    .bind(partial.content, partial.reasoning, Date.now(), messageId)
-    .run();
-  const row = await d
-    .prepare("SELECT stop_requested FROM messages WHERE id = ?")
-    .bind(messageId)
-    .first<{ stop_requested: number }>();
-  return { stopRequested: (row?.stop_requested ?? 0) === 1 };
+  const [, check] = await d.batch<{ stop_requested: number }>([
+    d
+      .prepare(
+        "UPDATE messages SET content = ?, reasoning = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'",
+      )
+      .bind(partial.content, partial.reasoning, Date.now(), messageId),
+    d
+      .prepare("SELECT stop_requested FROM messages WHERE id = ?")
+      .bind(messageId),
+  ]);
+  return { stopRequested: (check.results[0]?.stop_requested ?? 0) === 1 };
 }
 
 /** 生成の完了・エラー・停止を確定させる。 */
