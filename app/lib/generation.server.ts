@@ -27,6 +27,31 @@ import {
   putFile,
   toBase64,
 } from "./r2.server";
+import type { UiCitation } from "./types";
+
+/**
+ * OpenRouterのサーバーツール（beta）。
+ *
+ * 実行するのはOpenRouter側なので、こちらにツール実行のループは要らない
+ * （届くのは今までどおり content と、根拠の annotations だけ）。
+ * web_fetch が渡されたURLの本文取得、web_search が検索で、両方渡すと
+ * 「URLを読み、必要ならその先のリンクを自分で辿る」動きが成立する。
+ *
+ * tool calling に対応したモデルでしか使えないため、非対応のモデルでは
+ * 従来どおり :online（検索を1回前置きするプラグイン）へ落とす。
+ * 対応可否の判定はモデル一覧の supported_parameters で行い、
+ * クライアントが webTools として申告する。
+ */
+const WEB_SERVER_TOOLS = [
+  { type: "openrouter:web_fetch" },
+  { type: "openrouter:web_search" },
+];
+
+/**
+ * 1応答あたりに保存する参照元の上限。
+ * リンクを辿るほど増えるので、表示が本文を押しのけない程度で止める。
+ */
+const MAX_CITATIONS = 30;
 
 /**
  * サーバー側生成のジョブ実行。
@@ -474,6 +499,12 @@ export interface GenerationJob {
   assistantMessageId: string;
   model: string;
   web: boolean;
+  /**
+   * Webをサーバーツールとして渡すか（OpenRouterのみ）。
+   * false でも web が立っていれば :online へ落とす。ジョブは
+   * デプロイをまたいで残りうるので、未指定は従来動作とみなす。
+   */
+  webTools?: boolean;
   /** 画像を出力できるモデルか（OpenRouterでは modalities の指定が要る）。 */
   imageOutput?: boolean;
   /** 成功するまで生成するモード。無効なら undefined。 */
@@ -490,26 +521,47 @@ async function requestUpstream(
 ): Promise<Response> {
   const isPoe = job.model.startsWith(POE_PREFIX);
   const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
-  // Web検索プラグイン（:online）はOpenRouter専用
-  const model = !isPoe && job.web ? `${modelName}:online` : modelName;
 
-  return isPoe
-    ? await poeChatRequest({
-        model,
-        messages,
-        stream: true,
-        stream_options: { include_usage: true },
-        ...buildGenerationPayload(job.paramsState, "poe"),
-      })
-    : await openRouterChatRequest({
-        model,
-        messages: applyPromptCaching(job.model, messages),
-        stream: true,
-        usage: { include: true },
-        // 画像を出せるモデルでも、明示しないとテキストしか返らない
-        ...(job.imageOutput ? { modalities: ["image", "text"] } : {}),
-        ...buildGenerationPayload(job.paramsState, "openrouter"),
-      });
+  // Webの扱いはOpenRouter専用。Poeは素のモデル名で投げる
+  if (isPoe) {
+    return await poeChatRequest({
+      model: modelName,
+      messages,
+      stream: true,
+      stream_options: { include_usage: true },
+      ...buildGenerationPayload(job.paramsState, "poe"),
+    });
+  }
+
+  const send = (tools: boolean) =>
+    openRouterChatRequest({
+      // 検索プラグインはモデル名の接尾辞で指定する。サーバーツールを
+      // 渡すときは付けない（同じ検索を二重に走らせないため）
+      model: !tools && job.web ? `${modelName}:online` : modelName,
+      messages: applyPromptCaching(job.model, messages),
+      stream: true,
+      usage: { include: true },
+      // 画像を出せるモデルでも、明示しないとテキストしか返らない
+      ...(job.imageOutput ? { modalities: ["image", "text"] } : {}),
+      ...(tools ? { tools: WEB_SERVER_TOOLS } : {}),
+      ...buildGenerationPayload(job.paramsState, "openrouter"),
+    });
+
+  if (!job.web || !job.webTools) return await send(false);
+
+  const res = await send(true);
+  // サーバーツールはbetaで、指定の形は変わりうる。弾かれたときに応答ごと
+  // 失わせず、検索プラグインの側へ下がってもう一度だけ投げる。
+  // 400の原因が⚙のパラメータ側なら、ツール抜きでも同じエラーが返るので
+  // 利用者に見せる文言は変わらない（外部リクエストを1件余計に使うのは、
+  // このやり直しの経路だけ）。
+  if (res.status !== 400) return res;
+  try {
+    await res.body?.cancel();
+  } catch {
+    // 既に閉じている場合は無視
+  }
+  return await send(false);
 }
 
 /** 上流のエラー応答から、利用者に見せる文言を組み立てる。 */
@@ -546,12 +598,36 @@ async function upstreamErrorMessage(
   );
 }
 
+/**
+ * annotations から参照元を拾う。
+ *
+ * 実物: {"type":"url_citation",
+ *        "url_citation":{"url":"https://…","title":"…",
+ *                        "start_index":100,"end_index":200}}
+ * title が欠けて届くことがあるので、URLだけを必須にする。
+ * 同じページを何度も引くことがあるためURLで重複を落とす。
+ */
+function collectCitations(v: unknown, out: UiCitation[]): void {
+  if (!Array.isArray(v)) return;
+  for (const item of v) {
+    const cite = (item as { url_citation?: Record<string, unknown> } | null)
+      ?.url_citation;
+    const url = typeof cite?.url === "string" ? cite.url : "";
+    if (!url || out.some((c) => c.url === url)) continue;
+    if (out.length >= MAX_CITATIONS) return;
+    const title = typeof cite?.title === "string" ? cite.title : "";
+    out.push(title ? { url, title } : { url });
+  }
+}
+
 interface StreamResult {
   content: string;
   reasoning: string;
   usageJson: string | null;
   /** images フィールドで返ってきた生成画像（多くは data: URL）。 */
   imageUrls: string[];
+  /** Webツールを使った応答の参照元（使わなければ空）。 */
+  citations: UiCitation[];
   finishReason?: string;
   /** 停止要求で打ち切ったか。 */
   stopped: boolean;
@@ -578,6 +654,7 @@ async function readUpstreamStream(
   let usageJson: string | null = null;
   let finishReason: string | undefined;
   const imageUrls: string[] = [];
+  const citations: UiCitation[] = [];
   let stopped = false;
   let lastProgress = Date.now();
   let flushes = 0;
@@ -602,8 +679,9 @@ async function readUpstreamStream(
                 content?: string;
                 reasoning?: string | null;
                 images?: unknown;
+                annotations?: unknown;
               };
-              message?: { images?: unknown };
+              message?: { images?: unknown; annotations?: unknown };
               finish_reason?: string | null;
             }[];
             usage?: {
@@ -626,6 +704,9 @@ async function readUpstreamStream(
           // message で返す実装もある
           collectImageUrls(choice?.delta?.images, imageUrls);
           collectImageUrls(choice?.message?.images, imageUrls);
+          // 参照元も同じく、delta と message の両方に載りうる
+          collectCitations(choice?.delta?.annotations, citations);
+          collectCitations(choice?.message?.annotations, citations);
           if (chunk.usage) {
             usageJson = JSON.stringify({
               promptTokens: chunk.usage.prompt_tokens ?? 0,
@@ -663,7 +744,15 @@ async function readUpstreamStream(
     // 上流の切断・エラー: ここまでの内容で確定する
   }
 
-  return { content, reasoning, usageJson, imageUrls, finishReason, stopped };
+  return {
+    content,
+    reasoning,
+    usageJson,
+    imageUrls,
+    citations,
+    finishReason,
+    stopped,
+  };
 }
 
 /**
@@ -771,6 +860,8 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
     content: finalContent,
     reasoning: result.reasoning || null,
     usageJson,
+    citationsJson:
+      result.citations.length > 0 ? JSON.stringify(result.citations) : null,
     status: empty ? "error" : "done",
     error: empty
       ? result.stopped

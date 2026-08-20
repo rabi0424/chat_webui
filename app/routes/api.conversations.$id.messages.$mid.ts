@@ -1,5 +1,6 @@
 import type { Route } from "./+types/api.conversations.$id.messages.$mid";
 import { getMessage } from "../lib/db.server";
+import { parseCitations } from "../lib/serialize.server";
 
 /** ポーリング用: 生成中メッセージの現在状態を返す。 */
 export async function loader({ params }: Route.LoaderArgs) {
@@ -14,6 +15,7 @@ export async function loader({ params }: Route.LoaderArgs) {
       status: message.status,
       error: message.error,
       usage: message.usage_json ? JSON.parse(message.usage_json) : null,
+      citations: parseCitations(message.citations_json) ?? null,
     },
     { headers: { "Cache-Control": "no-store" } },
   );

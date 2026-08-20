@@ -1,7 +1,7 @@
 import { Fragment, startTransition, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
-import type { UiAttachment, UiMessage } from "../lib/types";
+import type { UiAttachment, UiCitation, UiMessage } from "../lib/types";
 import { type ParamsState } from "../lib/params";
 import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
@@ -236,6 +236,65 @@ function ReasoningBlock({
             {reasoning}
           </Markdown>
         </div>
+      )}
+    </div>
+  );
+}
+
+/** URLの見出しに使うホスト名。 */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * 参照元の一覧。
+ *
+ * 本文とは別に返ってきたデータをそのまま並べるだけで、本文には一切
+ * 手を入れない（コピーしても、次のターンでモデルへ送り返す履歴にも
+ * 出典は混ざらない）。使わなかった応答には何も出ない。
+ */
+function CitationList({ citations }: { citations: UiCitation[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+      >
+        <span aria-hidden>🔗</span>
+        {open ? "参照元を隠す" : `参照元 ${citations.length}件`}
+      </button>
+      {open && (
+        <ol className="mt-1 space-y-1 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:border-neutral-800 dark:bg-neutral-900">
+          {citations.map((c, n) => (
+            <li key={c.url} className="flex gap-2">
+              <span className="shrink-0 text-neutral-400 dark:text-neutral-600">
+                {n + 1}.
+              </span>
+              <a
+                href={c.url}
+                target="_blank"
+                rel="noreferrer"
+                title={c.url}
+                className="min-w-0 text-accent hover:underline"
+              >
+                <span className="line-clamp-2 break-all">
+                  {c.title || hostOf(c.url)}
+                </span>
+                {c.title && (
+                  <span className="block text-neutral-400 dark:text-neutral-600">
+                    {hostOf(c.url)}
+                  </span>
+                )}
+              </a>
+            </li>
+          ))}
+        </ol>
       )}
     </div>
   );
@@ -1247,6 +1306,7 @@ export function Chat({
     status: string;
     error: string | null;
     usage: UiMessage["usage"] | null;
+    citations?: UiCitation[] | null;
   }) {
     setMessages((prev) => {
       const next = [...prev];
@@ -1259,6 +1319,7 @@ export function Chat({
         status: remote.status === "done" ? undefined : (remote.status as UiMessage["status"]),
         error: remote.error ?? undefined,
         usage: remote.usage ?? last.usage,
+        citations: remote.citations ?? last.citations,
       };
       return next;
     });
@@ -1311,6 +1372,7 @@ export function Chat({
           status: string;
           error: string | null;
           usage: UiMessage["usage"] | null;
+          citations: UiCitation[] | null;
         };
         if (epochRef.current !== epoch) return;
         applyRemoteState(remote);
@@ -1392,6 +1454,12 @@ export function Chat({
         body: JSON.stringify({
           model,
           web: webSearch && !model.startsWith("poe:"),
+          // サーバーツールは tool calling 対応モデルだけ。非対応なら
+          // web だけが立ち、サーバー側で :online へ落ちる
+          webTools:
+            webSearch &&
+            !model.startsWith("poe:") &&
+            (selectedModel?.supportedParameters.includes("tools") ?? false),
           imageOutput: selectedModel?.outputModalities.includes("image") ?? false,
           params,
           parentId: persistInfo.parentId,
@@ -2232,6 +2300,9 @@ export function Chat({
                     !(m.status === "streaming" && isImageGeneration(m.modelId)) && (
                       <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-neutral-400 align-text-bottom dark:bg-neutral-500" />
                     )}
+                  {m.citations && m.citations.length > 0 && (
+                    <CitationList citations={m.citations} />
+                  )}
                   {!selecting && (
                     <div className="mt-1 flex items-center gap-2">
                       <BranchPager
