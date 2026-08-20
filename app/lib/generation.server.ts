@@ -1047,8 +1047,18 @@ export interface RetryRunState {
   rateLimitRounds: number;
   /** 次の成功を繋ぐ先。 */
   parentId: string;
-  /** 画像が返らなかった応答の数と、要約に出す最初の1件。 */
+  /**
+   * 試行の内訳。successes と合わせた合計が attempts に一致する
+   * （どの試行がどう終わったのか、要約から追えるようにするため）。
+   *
+   * - refusals: 画像は無いが本文は返ってきた応答（拒否文など）
+   * - emptyResponses: 画像も本文も無い空の応答
+   * - errors: 接続失敗・上流のエラー・結果の取り込み失敗
+   */
   refusals: number;
+  emptyResponses: number;
+  errors: number;
+  /** 要約に出す拒否文の最初の1件。 */
   firstRefusal: string | null;
   lastError: string | null;
   /** 画像の取り込みが途中で終わった成功メッセージのID。 */
@@ -1068,9 +1078,32 @@ function initialRetryState(statusId: string): RetryRunState {
     rateLimitRounds: 0,
     parentId: statusId,
     refusals: 0,
+    emptyResponses: 0,
+    errors: 0,
     firstRefusal: null,
     lastError: null,
     pendingCapture: [],
+  };
+}
+
+/**
+ * 持ち越された途中経過を、いまの形へ揃える。
+ *
+ * 前の版が保存した state には後から足した数え上げが無い。欠けたまま
+ * 加算すると NaN になり、以後の進捗も要約も丸ごと壊れるため補う。
+ */
+function restoreRetryState(
+  previous: RetryRunState | null,
+  statusId: string,
+): RetryRunState {
+  const base = initialRetryState(statusId);
+  if (!previous) return base;
+  return {
+    ...base,
+    ...previous,
+    refusals: previous.refusals ?? 0,
+    emptyResponses: previous.emptyResponses ?? 0,
+    errors: previous.errors ?? 0,
   };
 }
 
@@ -1134,7 +1167,7 @@ async function runRetryGenerationJob(
   const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
   const statusId = job.assistantMessageId;
   const budget = createBudget();
-  const state = previous ?? initialRetryState(statusId);
+  const state = restoreRetryState(previous, statusId);
 
   let finished = false;
   let wakeHeartbeat = () => {};
@@ -1195,6 +1228,7 @@ async function runRetryGenerationJob(
   };
 
   const acceptOne = async (r: AttemptOutcome): Promise<void> => {
+    let counted = false;
     try {
       if (r.kind === "rate_limited") {
         // レート制限は上流の都合なので試行回数は消費しない。
@@ -1216,14 +1250,24 @@ async function runRetryGenerationJob(
         return;
       }
 
+      // 試行に数えた以上、必ずどれか1つの内訳にも数える
+      // （数え漏れると要約の内訳が試行回数と合わなくなる）。
+      // 取り込みの途中で失敗した分は catch 側で拾う
       state.attempts++;
       if (r.kind === "error") {
+        state.errors++;
+        counted = true;
         state.lastError = r.error;
       } else if (r.kind === "refused") {
+        // 画像が無い応答。本文があるかで分ける（空の応答は上流の
+        // 揺らぎで、拒否文が返るのとは原因も対処も違う）
         if (r.text.trim()) {
           state.refusals++;
           state.firstRefusal ??= r.text.trim().slice(0, 301);
+        } else {
+          state.emptyResponses++;
         }
+        counted = true;
       } else {
         // 成功: 応答を1件足し、画像を自前のストレージへ移す。
         // 待たずにここで保存するので、実行中でも順に見えるようになる
@@ -1251,11 +1295,14 @@ async function runRetryGenerationJob(
         if (captured.deferred) state.pendingCapture.push(id);
         state.parentId = id;
         state.successes++;
+        counted = true;
       }
       await touch();
     } catch (e) {
       // D1の一時障害などで1件取り込めなかった場合。実行は続け、
-      // 見出しの要約に理由を残す
+      // 見出しの要約に理由を残す。まだどの内訳にも数えていなければ
+      // ここでエラーとして数える（合計が試行回数からずれないように）
+      if (!counted) state.errors++;
       state.lastError = `結果の取り込みに失敗しました: ${(e as Error).message}`;
     }
   };
@@ -1370,20 +1417,35 @@ async function runRetryGenerationJob(
       `目標に届きませんでした（上限${state.attempts >= retry.maxAttempts ? "の試行回数" : ""}に達しました）。`,
     );
   }
+  // 試行の内訳。成功と合わせた合計が試行回数に一致する
+  const breakdown: string[] = [];
   if (state.refusals > 0) {
-    lines.push(`\n画像が返らなかった応答: ${state.refusals}回`);
-    if (state.firstRefusal) {
-      lines.push(
-        `\n> ${state.firstRefusal.slice(0, 300).replace(/\n+/g, " ")}${
-          state.firstRefusal.length > 300 ? "…" : ""
-        }`,
-      );
-    }
+    breakdown.push(`画像が返らなかった応答 ${state.refusals}回`);
   }
-  if (state.lastError) lines.push(`\nエラー: ${state.lastError}`);
+  if (state.emptyResponses > 0) {
+    breakdown.push(`空の応答 ${state.emptyResponses}回`);
+  }
+  if (state.errors > 0) breakdown.push(`エラー ${state.errors}回`);
+  if (breakdown.length > 0) lines.push(`\n内訳: ${breakdown.join("・")}`);
+
+  if (state.firstRefusal) {
+    lines.push(
+      `\n> ${state.firstRefusal.slice(0, 300).replace(/\n+/g, " ")}${
+        state.firstRefusal.length > 300 ? "…" : ""
+      }`,
+    );
+  }
+  // 待ち直しは試行を消費しないので、内訳とは別に出す。
+  // 出しておかないと「時間だけ経って試行が進まない」ように見える
+  if (state.rateLimitRounds > 0) {
+    lines.push(
+      `\nレート制限による待ち直し: ${state.rateLimitRounds}回（試行には数えません）`,
+    );
+  }
+  if (state.lastError) lines.push(`\n最後のエラー: ${state.lastError}`);
 
   console.log(
-    `[gen] retry run finished: external=${budget.spent()}/${CHUNK_EXTERNAL_LIMIT} touch=${budget.touched()}/${CHUNK_TOUCH_LIMIT} attempts=${state.attempts} successes=${state.successes}`,
+    `[gen] retry run finished: external=${budget.spent()}/${CHUNK_EXTERNAL_LIMIT} touch=${budget.touched()}/${CHUNK_TOUCH_LIMIT} attempts=${state.attempts} successes=${state.successes} refusals=${state.refusals} empty=${state.emptyResponses} errors=${state.errors} rateLimited=${state.rateLimitRounds}`,
   );
 
   const summary = lines.join("\n");
