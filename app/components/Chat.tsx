@@ -54,6 +54,46 @@ export interface BotContext {
 const MODEL_STORAGE_KEY = "chat-webui:model";
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
 const POLL_INTERVAL_MS = 400;
+/**
+ * ポーリングを諦めるまでの連続失敗回数。
+ *
+ * 一過性の失敗（5xx・通信断）で追跡をやめると、生成は続いているのに
+ * 表示が生成中のまま誰も追わない状態になる。かといって永久に叩き続ける
+ * わけにもいかないので、続けて失敗した回数で打ち切る。
+ */
+const POLL_MAX_FAILURES = 10;
+
+/**
+ * 追いかけている生成ひとつぶんの合図。
+ *
+ * epoch は「この追跡がまだ最新か」の判定に使い、signal は既に飛んで
+ * いる通信を打ち切るために使う。番号だけでは、画面を離れたあとも
+ * 応答待ちの fetch が残ってしまう。
+ */
+interface Tracking {
+  epoch: number;
+  signal: AbortSignal;
+}
+
+/** 待っても直らない失敗か（会話が消えた・URLが違う等）。 */
+function terminalStatus(status: number): boolean {
+  // 408（タイムアウト）と429（混雑）は待てば直るので除く
+  if (status === 408 || status === 429) return false;
+  return status >= 400 && status < 500;
+}
+
+/** 中断されたらすぐ起きる待ち。画面を離れた直後に空回りしない。 */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 /* 引っぱって更新の寸法は lib/pull-to-refresh.ts に集約（画像一覧と共通） */
 /**
  * リトライ生成の追跡間隔。成功した応答が増えたかを見るだけなので
@@ -567,10 +607,19 @@ export function Chat({
   const [paramsOpen, setParamsOpen] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>(initialMessages);
   const [input, setInput] = useState("");
-  // 未送信の下書きを端末に保存する（リロード・ページ遷移後に復元）
-  const draftKey = `chat-webui:draft:${conversationId ?? "new"}`;
+  /**
+   * 未送信の下書きを端末に保存する（リロード・ページ遷移後に復元）。
+   *
+   * 新規チャットは会話IDが無いので "new" を使うが、最初の送信でIDが
+   * 決まったあともこの画面は作り直されない。props の conversationId を
+   * そのまま見ていると "new" のまま書き続け、2通目を打ちかけたまま
+   * 遷移すると（読む側は会話IDのキーを見るので）消えたように見え、
+   * 次に開いた新規チャットには無関係な下書きが出てきていた。
+   */
+  const [draftScope, setDraftScope] = useState(conversationId ?? "new");
+  const draftKey = `chat-webui:draft:${draftScope}`;
   /** 未送信の添付。本文と同じく端末に残し、画面の作り直しでも失わない。 */
-  const attachKey = `chat-webui:draft-files:${conversationId ?? "new"}`;
+  const attachKey = `chat-webui:draft-files:${draftScope}`;
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 分岐直後などの控えめなトースト。数秒で自動的に消える。 */
@@ -679,6 +728,60 @@ export function Chat({
   const pendingRef = useRef<PendingAttachment[]>([]);
   // 古い非同期処理が新しいストリームの表示を上書きしないための世代カウンタ
   const epochRef = useRef(0);
+  /**
+   * 進行中の追跡を中断するための制御。世代が変わるたび、また画面を
+   * 離れるときに差し替える。世代の番号だけでは既に飛んでいる fetch を
+   * 止められず、会話を渡り歩くほど通信が積み重なっていた。
+   */
+  const abortRef = useRef<AbortController | null>(null);
+
+  /**
+   * 会話IDが決まったので、下書きの置き場をその会話へ移す。
+   *
+   * 送信の直後に呼ばれる。送信ぶんの本文は既に消してあるが、返事を
+   * 待つあいだに打ち始めた続きが "new" に残っていることがあるので、
+   * 一緒に移し替える（残すと次の新規チャットに出てきてしまう）。
+   */
+  function adoptDraftScope(convId: string) {
+    const move = (prefix: string) => {
+      try {
+        const from = `${prefix}:new`;
+        const value = localStorage.getItem(from);
+        if (value === null) return;
+        localStorage.setItem(`${prefix}:${convId}`, value);
+        localStorage.removeItem(from);
+      } catch {
+        // 端末の保存が使えなくても、この画面のあいだは入力欄が持っている
+      }
+    };
+    move("chat-webui:draft");
+    move("chat-webui:draft-files");
+    setDraftScope(convId);
+  }
+
+  /** 新しい世代を始める。前の世代の追跡は中断する。 */
+  function startTracking(): Tracking {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    return { epoch: ++epochRef.current, signal: controller.signal };
+  }
+
+  /** この世代がまだ有効か（別の生成が始まった・画面を離れたら無効）。 */
+  function alive(track: Tracking): boolean {
+    return epochRef.current === track.epoch;
+  }
+
+  /*
+   * 画面を離れたら追跡をやめる。世代を進めないままだと、ポーリングの
+   * ループが生成の完了まで回り続け、別の会話へ移るたびに多重化していた。
+   */
+  useEffect(() => {
+    return () => {
+      epochRef.current++;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (!initialModel) {
@@ -717,6 +820,9 @@ export function Chat({
     setModel(id);
     localStorage.setItem(MODEL_STORAGE_KEY, id);
     if (convIdRef.current) {
+      // 先読みキャッシュにも会話のモデルが入っている。捨てておかないと
+      // 別の会話へ移って60秒以内に戻ったとき、選択が巻き戻って見える
+      invalidateChat(convIdRef.current);
       void fetch(`/api/conversations/${convIdRef.current}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -743,6 +849,7 @@ export function Chat({
     setParams(next);
     const convId = convIdRef.current;
     if (!convId) return;
+    invalidateChat(convId); // モデルと同じ理由（巻き戻って見えるのを防ぐ）
     if (paramsSaveTimer.current) clearTimeout(paramsSaveTimer.current);
     paramsSaveTimer.current = setTimeout(() => {
       void fetch(`/api/conversations/${convId}`, {
@@ -1255,36 +1362,47 @@ export function Chat({
    * リトライ生成の追跡。成功するたびに応答が増えるので、
    * 1件を見張るのではなくパスごと取り直す。
    */
-  async function pollRunUntilDone(convId: string, epoch: number) {
+  async function pollRunUntilDone(convId: string, track: Tracking) {
+    let failures = 0;
     for (;;) {
-      if (epochRef.current !== epoch) return;
+      if (!alive(track)) return;
       try {
-        const res = await fetch(`/api/conversations/${convId}/path`);
+        const res = await fetch(`/api/conversations/${convId}/path`, {
+          signal: track.signal,
+        });
         if (res.ok) {
+          failures = 0;
           const { messages: fresh } = (await res.json()) as {
             messages: UiMessage[];
           };
-          if (epochRef.current !== epoch) return;
+          if (!alive(track)) return;
           setMessages(fresh);
           if (!fresh.some((m) => m.status === "streaming")) return;
+        } else {
+          // 会話が消えた等の確定的な失敗は、待っても直らない
+          if (terminalStatus(res.status)) return;
+          if (++failures >= POLL_MAX_FAILURES) return;
         }
-      } catch {
-        // 一時的な失敗はリトライ
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        if (++failures >= POLL_MAX_FAILURES) return;
       }
-      await new Promise((r) => setTimeout(r, RUN_POLL_INTERVAL_MS));
+      await sleep(RUN_POLL_INTERVAL_MS, track.signal);
     }
   }
 
-  async function refreshPath(convId: string, epoch: number) {
+  async function refreshPath(convId: string, track: Tracking) {
     try {
-      const res = await fetch(`/api/conversations/${convId}/path`);
+      const res = await fetch(`/api/conversations/${convId}/path`, {
+        signal: track.signal,
+      });
       if (!res.ok) return;
       const { messages: fresh } = (await res.json()) as {
         messages: UiMessage[];
       };
-      if (epochRef.current === epoch) setMessages(fresh);
+      if (alive(track)) setMessages(fresh);
     } catch {
-      // 表示更新に失敗しても実害はない
+      // 表示更新に失敗しても実害はない（中断も同じ扱いでよい）
     }
   }
 
@@ -1328,33 +1446,47 @@ export function Chat({
     const running = index >= 0 ? list[index] : null;
     if (!running?.id) return;
 
-    const epoch = ++epochRef.current;
+    const track = startTracking();
     setIsStreaming(true);
     // 生成中の行の下にすでに応答が積まれている＝リトライ生成の見出し。
     // 始まったばかりで見出しがまだ末尾のときは本文の見た目で判断する
     const wholePath =
       index < list.length - 1 || isRetryProgress(running.content);
     const done = wholePath
-      ? pollRunUntilDone(convId, epoch)
-      : pollUntilDone(convId, running.id, epoch);
+      ? pollRunUntilDone(convId, track)
+      : pollUntilDone(convId, running.id, track);
     void done.then(() => {
-      if (epochRef.current !== epoch) return;
+      if (!alive(track)) return;
       setIsStreaming(false);
       markRead(convId);
       // パス追いは最後の取得が確定後の状態なので、取り直す必要はない
-      if (!wholePath) void refreshPath(convId, epoch);
+      if (!wholePath) void refreshPath(convId, track);
     });
   }
 
   /** 生成中メッセージをポーリングで追いかける（生成完了で返る）。 */
-  async function pollUntilDone(convId: string, messageId: string, epoch: number) {
+  async function pollUntilDone(
+    convId: string,
+    messageId: string,
+    track: Tracking,
+  ) {
+    let failures = 0;
     for (;;) {
-      if (epochRef.current !== epoch) return;
+      if (!alive(track)) return;
       try {
         const res = await fetch(
           `/api/conversations/${convId}/messages/${messageId}`,
+          { signal: track.signal },
         );
-        if (!res.ok) return;
+        if (!res.ok) {
+          // 一過性の失敗で追跡をやめると、生成は続いているのに
+          // 表示が生成中のまま誰も追わない状態になる
+          if (terminalStatus(res.status)) return;
+          if (++failures >= POLL_MAX_FAILURES) return;
+          await sleep(POLL_INTERVAL_MS, track.signal);
+          continue;
+        }
+        failures = 0;
         const remote = (await res.json()) as {
           content: string;
           reasoning: string | null;
@@ -1363,20 +1495,21 @@ export function Chat({
           usage: UiMessage["usage"] | null;
           citations: UiCitation[] | null;
         };
-        if (epochRef.current !== epoch) return;
+        if (!alive(track)) return;
         applyRemoteState(remote);
         if (remote.status !== "streaming") return;
         // リトライ生成だと分かったら、パスごと追う方へ移る。見出しの下に
         // 成功が積まれていくので、1件だけ見張っていても増えた応答に
         // 気づけない（開始直後は見出しの本文がまだ空で判別できない）
         if (isRetryProgress(remote.content)) {
-          await pollRunUntilDone(convId, epoch);
+          await pollRunUntilDone(convId, track);
           return;
         }
-      } catch {
-        // 一時的な失敗はリトライ
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        if (++failures >= POLL_MAX_FAILURES) return;
       }
-      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      await sleep(POLL_INTERVAL_MS, track.signal);
     }
   }
 
@@ -1398,7 +1531,7 @@ export function Chat({
     setIsStreaming(true);
     // ⚙パネルを開いたまま送信できるので、生成が始まったら畳んで会話を見せる
     setParamsOpen(false);
-    const epoch = ++epochRef.current;
+    const track = startTracking();
     // モデルピッカーの「最近よく使うモデル」の材料。選択ではなく実際に
     // 生成へ使ったときだけ数える
     recordModelUse(model);
@@ -1429,6 +1562,8 @@ export function Chat({
         // これをしないと、生成が終わる前にリロードした人が新規チャットの
         // 画面に戻されてしまう（会話自体はサーバーに残っているのに）
         window.history.replaceState(window.history.state, "", `/chat/${convId}`);
+        // 以後の下書きはこの会話のものとして書く（"new" に溜め続けない）
+        adoptDraftScope(convId);
         revalidator.revalidate(); // サイドバーに即反映
       }
 
@@ -1503,14 +1638,14 @@ export function Chat({
 
       // 生成過程・最終状態はサーバーを正とし、ポーリングで追いかける
       if (retryConfig) {
-        await pollRunUntilDone(convId, epoch);
+        await pollRunUntilDone(convId, track);
       } else {
-        await pollUntilDone(convId, assistantMessageId, epoch);
+        await pollUntilDone(convId, assistantMessageId, track);
       }
       // 見届けたので既読に戻す（確定時に未読が立つ）
       markRead(convId);
 
-      if (epochRef.current === epoch) {
+      if (alive(track)) {
         setIsStreaming(false);
         if (isNew) {
           // タイトル生成 → 会話ページへ
@@ -1541,12 +1676,12 @@ export function Chat({
             await navigate(`/chat/${convId}`, { replace: true });
           }
         } else {
-          await refreshPath(convId, epoch);
+          await refreshPath(convId, track);
           revalidator.revalidate();
         }
       }
     } catch (e) {
-      if (epochRef.current === epoch) {
+      if (alive(track)) {
         setError((e as Error).message);
         setIsStreaming(false);
         // 開始できなかった場合は空のプレースホルダを取り除く

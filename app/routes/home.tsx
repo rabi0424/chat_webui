@@ -78,7 +78,18 @@ export default function Home() {
 
   return (
     <Chat
-      key={selected?.id ?? "plain"}
+      /*
+       * 「新規チャット」を押すたびに作り直す。
+       *
+       * 最初の送信では、生成の追従を切らないために navigate せず URL だけ
+       * 差し替える（Chat 側を参照）。そのため React Router から見た現在地は
+       * "/" のままで、ここで「新規チャット」を押しても "/" → "/" の遷移に
+       * なり、ボットを選んでいなければ key が変わらず作り直されない。
+       * すると画面は前の会話を映したままで、次の送信がその会話へ
+       * 追記されてしまう。location.key は同じ行き先への遷移でも毎回
+       * 変わるので、これを合図に作り直す。
+       */
+      key={`${selected?.id ?? "plain"}:${location.key}`}
       conversationId={null}
       initialMessages={[]}
       bot={selected}
