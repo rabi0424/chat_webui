@@ -1,5 +1,16 @@
 import type { PathMessage } from "./db.server";
-import type { UiMessage } from "./types";
+import type { UiCitation, UiMessage } from "./types";
+
+/** citations_json を読む。壊れていても表示を止めない。 */
+export function parseCitations(json: string | null): UiCitation[] | undefined {
+  if (!json) return undefined;
+  try {
+    const list = JSON.parse(json) as UiCitation[];
+    return Array.isArray(list) && list.length > 0 ? list : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function toUiMessage(m: PathMessage): UiMessage {
   return {
@@ -7,6 +18,7 @@ export function toUiMessage(m: PathMessage): UiMessage {
     role: m.role,
     content: m.content,
     reasoning: m.reasoning ?? undefined,
+    citations: parseCitations(m.citations_json),
     status: m.status === "done" ? undefined : m.status,
     error: m.error ?? undefined,
     usage: m.usage_json ? JSON.parse(m.usage_json) : undefined,

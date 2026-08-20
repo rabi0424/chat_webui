@@ -136,6 +136,11 @@ CREATE INDEX IF NOT EXISTS idx_conversations_favorite ON conversations(favorite,
   `
 ALTER TABLE messages ADD COLUMN context_boundary INTEGER NOT NULL DEFAULT 0;
 `,
+  // v13: 応答の参照元。本文（content）とは別に持つ。ここへ混ぜると
+  // 次のターンでモデルへ送り返す履歴が変わってしまうため。
+  `
+ALTER TABLE messages ADD COLUMN citations_json TEXT;
+`,
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -227,6 +232,8 @@ export interface MessageRow {
   flushed_at: number | null;
   /** 1 = この直後にコンテキストの境界線がある（ここまでは以後送らない）。 */
   context_boundary: number;
+  /** 参照元（url_citation）の配列をJSONにしたもの。無ければ null。 */
+  citations_json: string | null;
   created_at: number;
 }
 
@@ -1370,13 +1377,15 @@ export async function finalizeGeneration(
     usageJson: string | null;
     status: "done" | "error";
     error?: string | null;
+    /** 参照元のJSON。Webツールを使わなかった応答では null。 */
+    citationsJson?: string | null;
   },
 ): Promise<void> {
   const d = await db();
   await d.batch([
     d
       .prepare(
-        "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, flushed_at = ? WHERE id = ?",
+        "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, citations_json = ?, flushed_at = ? WHERE id = ?",
       )
       .bind(
         result.content,
@@ -1384,6 +1393,7 @@ export async function finalizeGeneration(
         result.usageJson,
         result.status,
         result.error ?? null,
+        result.citationsJson ?? null,
         Date.now(),
         messageId,
       ),

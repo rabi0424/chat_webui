@@ -6,6 +6,19 @@ export interface UiAttachment {
   size: number;
 }
 
+/**
+ * 応答の根拠として上流が申告した参照元。
+ *
+ * モデルに「出典を書け」と指示して本文へ書かせるのではなく、本文とは
+ * 別枠で返ってくる構造化データ（OpenRouterの url_citation）をそのまま
+ * 持つ。本文を書き換えないので、次のターンで送り返す履歴は変わらない。
+ */
+export interface UiCitation {
+  url: string;
+  /** 上流が題名を返さないことがあるので、無いときはホスト名で代替する。 */
+  title?: string;
+}
+
 /** チャット画面で扱うメッセージ。サーバー/クライアント共用。 */
 export interface UiMessage {
   /** DB上のID。未保存メッセージでは undefined。 */
@@ -48,4 +61,6 @@ export interface UiMessage {
   siblingIndex?: number;
   /** 添付画像（ユーザーメッセージのみ）。 */
   attachments?: UiAttachment[];
+  /** Webツールを使った応答の参照元（使わなかった応答には付かない）。 */
+  citations?: UiCitation[];
 }

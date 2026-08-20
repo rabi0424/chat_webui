@@ -13,6 +13,12 @@ import { MAX_ATTACHMENTS_PER_MESSAGE } from "../lib/r2.server";
 interface GenerateBody {
   model: string;
   web?: boolean;
+  /**
+   * Webをサーバーツール（openrouter:web_fetch / web_search）として渡すか。
+   * tool calling 対応モデルでしか使えないので、モデル一覧の
+   * supported_parameters を見たクライアントが申告する。
+   */
+  webTools?: boolean;
   /** 画像を出力できるモデルか（OpenRouterでは modalities の指定が要る）。 */
   imageOutput?: boolean;
   params?: ParamsState | null;
@@ -84,6 +90,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       assistantMessageId,
       model: body.model,
       web: body.web === true,
+      webTools: body.webTools === true,
       imageOutput: body.imageOutput === true,
       retry: retry ?? undefined,
       paramsState: body.params ?? null,
