@@ -192,6 +192,13 @@ function promptOf(job: GenerationJob): string | null {
 }
 
 /** 1応答あたりに取り込む生成画像の枚数と、1枚あたりの上限。 */
+/**
+ * ストリームが無音のまま経過してよい時間。
+ * 上流が接続だけ維持して何も送らないと read() は永久に返らないため、
+ * ここで打ち切ってその時点の内容で確定させる。
+ */
+const UPSTREAM_IDLE_TIMEOUT_MS = 120_000;
+
 const MAX_CAPTURED_IMAGES = 8;
 const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
 
@@ -632,6 +639,14 @@ interface StreamResult {
   finishReason?: string;
   /** 停止要求で打ち切ったか。 */
   stopped: boolean;
+  /**
+   * 上流が最後まで送らずに終わったか（切断・読み取りエラー）。
+   *
+   * 握りつぶすと、途中で切れた応答が完結したものと見分けられないまま
+   * 確定してしまう。リトライ生成では「拒否」や「成功」として誤って
+   * 数えられるので、呼び出し側が区別できるように持ち帰る。
+   */
+  interrupted?: string;
 }
 
 /**
@@ -649,11 +664,33 @@ async function readUpstreamStream(
 ): Promise<StreamResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
+  /**
+   * 上流が1バイトも送ってこないまま経過してよい時間。
+   *
+   * 応答が始まったあとに黙り込む上流もあり、その場合 read() は永久に
+   * 返らない。読むたびに時計を張り直し、超えたら打ち切って
+   * ここまでの内容で確定させる（実行が固まったままにならないように）。
+   */
+  const readOnce = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("上流からの応答が途絶えました")),
+        UPSTREAM_IDLE_TIMEOUT_MS,
+      );
+    });
+    try {
+      return await Promise.race([reader.read(), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   let buffer = "";
   let content = "";
   let reasoning = "";
   let usageJson: string | null = null;
   let finishReason: string | undefined;
+  let interrupted: string | undefined;
   const imageUrls: string[] = [];
   const citations: UiCitation[] = [];
   let stopped = false;
@@ -662,7 +699,7 @@ async function readUpstreamStream(
 
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readOnce();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -741,8 +778,41 @@ async function readUpstreamStream(
         }
       }
     }
-  } catch {
-    // 上流の切断・エラー: ここまでの内容で確定する
+  } catch (e) {
+    // 上流の切断・エラー: ここまでの内容で確定するが、途中で切れたことは
+    // 呼び出し側へ伝える（停止操作による打ち切りは正常な終わり方なので除く）
+    if (!stopped) interrupted = (e as Error).message || "接続が途中で切れました";
+    // 無音で打ち切った場合、読み手はまだ待っている。掴んだままにしない
+    try {
+      await reader.cancel();
+    } catch {
+      // 既に閉じていれば何もしない
+    }
+  }
+
+  // 終端後に残ったぶんを取りこぼさない。改行で終わらないストリームでは
+  // 最後の1行が buffer に、マルチバイト文字の断片が decoder に残る
+  buffer += decoder.decode();
+  const tail = buffer.trim();
+  if (tail.startsWith("data:")) {
+    const payload = tail.slice(5).trim();
+    if (payload && payload !== "[DONE]") {
+      try {
+        const chunk = JSON.parse(payload) as {
+          choices?: {
+            delta?: { content?: string | null };
+            finish_reason?: string | null;
+          }[];
+        };
+        const choice = chunk.choices?.[0];
+        if (typeof choice?.delta?.content === "string") {
+          content += choice.delta.content;
+        }
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+      } catch {
+        // 途中で切れた不完全なJSONは捨てる
+      }
+    }
   }
 
   return {
@@ -753,6 +823,7 @@ async function readUpstreamStream(
     citations,
     finishReason,
     stopped,
+    interrupted,
   };
 }
 
@@ -896,7 +967,12 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
   const empty = finalContent === "";
 
   await finalizeGeneration(job.assistantMessageId, {
-    content: finalContent,
+    // 途中で切れた応答は、完結したものと見分けが付かないまま残すと
+    // 利用者がそのまま次の話へ進んでしまう。本文に注記を足しておく
+    content:
+      !empty && result.interrupted
+        ? `${finalContent}\n\n---\n\n※ 応答が途中で終わりました（${result.interrupted}）。もう一度生成すると続きが得られることがあります。`
+        : finalContent,
     reasoning: result.reasoning || null,
     usageJson,
     citationsJson:
@@ -905,9 +981,11 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
     error: empty
       ? result.stopped
         ? "生成開始直後に停止されました"
-        : `モデルから本文のない応答が返りました${
-            result.finishReason ? `（finish_reason: ${result.finishReason}）` : ""
-          }`
+        : result.interrupted
+          ? `応答を受け取る前に接続が切れました（${result.interrupted}）`
+          : `モデルから本文のない応答が返りました${
+              result.finishReason ? `（finish_reason: ${result.finishReason}）` : ""
+            }`
       : null,
   });
 }
@@ -1021,6 +1099,15 @@ async function runAttempt(
   const result = await readUpstreamStream(upstream.body);
   const hasImage =
     result.imageUrls.length > 0 || extractImageUrls(result.content).length > 0;
+  // 画像が揃っているなら、途中で切れていても成果は成果なので受け取る。
+  // 揃っていないのに切れた場合は「拒否」ではなく通信の失敗として数える
+  // （拒否として数えると、モデルが断ったのか回線が切れたのか分からなくなる）
+  if (!hasImage && result.interrupted) {
+    return {
+      kind: "error",
+      error: `応答が途中で切れました: ${result.interrupted}`,
+    };
+  }
   return hasImage
     ? {
         kind: "success",

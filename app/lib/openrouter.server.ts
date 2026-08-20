@@ -522,8 +522,17 @@ export async function fetchPoeRunPoints(
  * OpenRouterの chat/completions へのリクエスト。APIキーはサーバー側のみ。
  */
 /** Poeの chat/completions（OpenAI互換）へのリクエスト。 */
+/**
+ * 上流が応答ヘッダを返すまでの猶予。
+ *
+ * これが無いと、接続だけ張って何も返さない上流に当たったとき、
+ * 生成の実行（DOのアラーム）がそこで永久に止まる。
+ */
+const UPSTREAM_CONNECT_TIMEOUT_MS = 60_000;
+
 export async function poeChatRequest(
   body: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<Response> {
   return await fetch(`${POE_BASE}/chat/completions`, {
     method: "POST",
@@ -532,6 +541,7 @@ export async function poeChatRequest(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    signal: signal ?? AbortSignal.timeout(UPSTREAM_CONNECT_TIMEOUT_MS),
   });
 }
 
@@ -549,6 +559,6 @@ export async function openRouterChatRequest(
       "X-Title": "chat_webui",
     },
     body: JSON.stringify(body),
-    signal,
+    signal: signal ?? AbortSignal.timeout(UPSTREAM_CONNECT_TIMEOUT_MS),
   });
 }
