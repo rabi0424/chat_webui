@@ -4,7 +4,7 @@ import type { ShellContext } from "./shell";
 import { getBot } from "../lib/db.server";
 import { BotForm } from "../components/BotForm";
 
-export function meta({}: Route.MetaArgs) {
+export function meta() {
   return [{ title: "ボットを編集 - Chat WebUI" }];
 }
 

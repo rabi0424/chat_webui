@@ -38,7 +38,6 @@ import {
   IconPlus,
   IconSliders,
   IconTrash,
-  IconX,
 } from "./icons";
 import { GLASS_PANEL } from "../lib/ui";
 

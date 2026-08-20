@@ -12,6 +12,10 @@
  *  4. アニメーションによる属性の書き換え —— `<animate attributeName="href">`
  *     のように、後から危険な属性を生やす手口
  *
+ * なお `<use>` と `<symbol>` の中身は DOMPurify 自身が落とす（内部参照でも）。
+ * アイコンを1か所に定義して使い回す書き方の図では、その部分が空になる。
+ * 安全側に倒した結果なので、戻すなら参照先を `#` に限る仕掛けが要る。
+ *
  * `<style>` は落とさずに残す。モデルの SVG はクラスで色を付けていることが
  * 多く、消すと図が崩れるため。ページ全体に漏れる問題のほうは、描画側
  * （SvgBlock）が shadow DOM に入れて閉じ込めることで防ぐ。
@@ -42,11 +46,18 @@ const FORBIDDEN_TAGS = [
   "set",
 ];
 
-/** 参照してよい先。図の中の再利用と、埋め込み済みの画像だけ。 */
+/**
+ * 参照してよい先。図の中の再利用と、埋め込み済みの画像だけ。
+ *
+ * data: は画素の画像に限る。SVGを data: で埋め込むと、その中身は
+ * ここの消毒を通らないまま参照されることになり、参照する側の要素
+ * しだいでは中の記述が生きてしまう（歴史的に知られた抜け道）。
+ * 図として必要になるのは画素の画像なので、SVGは許さない。
+ */
 function safeRef(value: string): boolean {
   const url = value.trim();
   if (url.startsWith("#")) return true;
-  return /^data:image\/(png|jpeg|gif|webp|svg\+xml);/i.test(url);
+  return /^data:image\/(png|jpeg|gif|webp);/i.test(url);
 }
 
 /** CSS から外部を取りに行く書き方を落とす。 */

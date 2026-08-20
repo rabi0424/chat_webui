@@ -29,7 +29,7 @@ import {
   type BuildComparison,
 } from "../lib/perf";
 
-export function meta({}: Route.MetaArgs) {
+export function meta() {
   return [{ title: "設定 - Chat WebUI" }];
 }
 

@@ -1,9 +1,8 @@
 import { Link, useNavigate, useOutletContext, useRevalidator } from "react-router";
-import type { Route } from "./+types/bots";
 import type { ShellContext } from "./shell";
 import { IconMenu } from "../components/icons";
 
-export function meta({}: Route.MetaArgs) {
+export function meta() {
   return [{ title: "ボット管理 - Chat WebUI" }];
 }
 

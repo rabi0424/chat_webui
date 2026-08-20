@@ -11,7 +11,6 @@ import {
   listConversations,
   listFolders,
   type BotRow,
-  type FolderRow,
 } from "../lib/db.server";
 import type { AppSettings } from "../lib/settings";
 import type { ModelInfo } from "../lib/openrouter.server";

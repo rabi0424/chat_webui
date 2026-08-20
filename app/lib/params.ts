@@ -407,6 +407,21 @@ export function buildGenerationPayload(
     : buildOpenRouterPayload(state);
 }
 
+/**
+ * 数値として送ってよい値か判定する。送れないなら undefined。
+ *
+ * Number("") は 0 になる。空欄は「未設定（モデルの既定に任せる）」の
+ * つもりなので、0 として送ってしまうと temperature 0（毎回同じ答え）の
+ * ように挙動が黙って変わる。UIはキーごと消すが、APIは params を
+ * 無検証で受け取るため、ここでも空欄を弾く。
+ */
+function toNumber(raw: unknown): number | undefined {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined;
+  if (typeof raw !== "string" || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 /** カンマ区切りの停止文字列をAPIの配列形式へ。 */
 function parseStops(raw: unknown): string[] {
   if (typeof raw !== "string") return [];
@@ -434,8 +449,8 @@ function buildPoePayload(state: ParamsState): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const custom: Record<string, unknown> = {};
 
-  const temperature = Number(state.temperature);
-  if (state.temperature != null && Number.isFinite(temperature)) {
+  const temperature = toNumber(state.temperature);
+  if (temperature !== undefined) {
     out.temperature = Math.min(Math.max(temperature, 0), 2);
   }
 
@@ -457,8 +472,8 @@ function buildPoePayload(state: ParamsState): Record<string, unknown> {
   }
 
   // 型付きの項目は独自パラメータより優先する（同名になっても壊さない）
-  const budget = Number(state[POE_THINKING_BUDGET_KEY]);
-  if (Number.isFinite(budget) && budget > 0) {
+  const budget = toNumber(state[POE_THINKING_BUDGET_KEY]);
+  if (budget !== undefined && budget > 0) {
     custom[POE_THINKING_BUDGET_KEY] = Math.round(budget);
   }
 
@@ -500,9 +515,13 @@ function buildOpenRouterPayload(state: ParamsState): Record<string, unknown> {
     }
 
     if (def.kind === "number") {
-      const value = typeof raw === "number" ? raw : Number(raw);
-      if (Number.isNaN(value)) continue;
-      out[def.key] = def.integer ? Math.round(value) : value;
+      const value = toNumber(raw);
+      if (value === undefined) continue;
+      // 範囲に収めてから送る。保存済みの設定に範囲外の値が残っていると
+      // （UIの制限が変わった後など）上流が400で弾き、生成そのものが
+      // 英語のエラーで失敗する。Poe側は既にクランプしていて非対称だった
+      const clamped = Math.min(Math.max(value, def.min), def.max);
+      out[def.key] = def.integer ? Math.round(clamped) : clamped;
     } else if (def.kind === "select") {
       if (
         typeof raw === "string" &&

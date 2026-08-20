@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { NumberInput } from "./NumberInput";
 import type { ModelInfo } from "../lib/openrouter.server";
 import {
   paramsForModel,

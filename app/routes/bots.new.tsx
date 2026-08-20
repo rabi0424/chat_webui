@@ -1,9 +1,8 @@
 import { useOutletContext } from "react-router";
-import type { Route } from "./+types/bots.new";
 import type { ShellContext } from "./shell";
 import { BotForm } from "../components/BotForm";
 
-export function meta({}: Route.MetaArgs) {
+export function meta() {
   return [{ title: "新しいボット - Chat WebUI" }];
 }
 

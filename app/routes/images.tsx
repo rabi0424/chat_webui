@@ -14,7 +14,7 @@ import { Lightbox } from "../components/Lightbox";
 import { IconEllipsis, IconMenu, IconSearch, IconX } from "../components/icons";
 import { GLASS_PANEL } from "../lib/ui";
 
-export function meta({}: Route.MetaArgs) {
+export function meta() {
   return [{ title: "画像 - Chat WebUI" }];
 }
 
@@ -73,7 +73,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
   const pullRef = useRef(0);
   const spacerRef = useRef<HTMLDivElement>(null);
   const pullLabelRef = useRef<HTMLSpanElement>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  /** 更新中か。表示は直接DOMへ書くので、状態は ref だけで足りる。 */
   const refreshingRef = useRef(false);
   const reloadRef = useRef<() => Promise<void>>(async () => {});
   /** 検索・絞り込みの初回描画では読み直さない（ローダーの結果を使う）。 */
@@ -188,11 +188,9 @@ export default function Images({ loaderData }: Route.ComponentProps) {
         return;
       }
       refreshingRef.current = true;
-      setRefreshing(true);
       paint(PULL_REST_PX, true);
       void reloadRef.current().finally(() => {
         refreshingRef.current = false;
-        setRefreshing(false);
         paint(0, true);
       });
     };

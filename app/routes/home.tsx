@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useOutletContext } from "react-router";
-import type { Route } from "./+types/home";
 import type { ShellContext } from "./shell";
 import { parseParamsJson } from "../lib/params";
 import { Chat, type BotContext } from "../components/Chat";
 import { HomeEmptyState } from "../components/HomeEmptyState";
 
-export function meta({}: Route.MetaArgs) {
+export function meta() {
   return [{ title: "Chat WebUI" }];
 }
 
