@@ -1,4 +1,5 @@
 import { fetchUsdJpy } from "../lib/fx.server";
+import { apiJson, type FxResponse } from "../lib/api-types";
 
 /**
  * USD/JPYレート。シェルの初回表示を軽くするため、ローダーではなく
@@ -6,7 +7,7 @@ import { fetchUsdJpy } from "../lib/fx.server";
  */
 export async function loader() {
   const usdJpy = await fetchUsdJpy();
-  return Response.json(
+  return apiJson<FxResponse>(
     { usdJpy },
     { headers: { "Cache-Control": "private, max-age=3600" } },
   );

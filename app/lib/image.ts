@@ -12,16 +12,10 @@ const MAX_EDGE = 2048;
 /** これ以下のサイズなら再エンコードせずそのまま送る。 */
 const REENCODE_THRESHOLD_BYTES = 512 * 1024;
 
-/** サーバー側の ALLOWED_IMAGE_TYPES（r2.server.ts）と揃える。 */
-export const ACCEPTED_IMAGE_TYPES = [
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-];
+import { ALLOWED_IMAGE_TYPES } from "./constants";
 
 export function isAcceptedImage(file: File): boolean {
-  return ACCEPTED_IMAGE_TYPES.includes(file.type.split(";")[0].toLowerCase());
+  return ALLOWED_IMAGE_TYPES.includes(file.type.split(";")[0].toLowerCase());
 }
 
 function loadImage(file: File): Promise<HTMLImageElement> {

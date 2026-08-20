@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { poeSupportedParameters } from "./params";
+import { MAX_TITLE_LENGTH, TITLE_MODEL } from "./constants";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const POE_BASE = "https://api.poe.com/v1";
@@ -378,7 +379,6 @@ export interface ChatMessage {
 }
 
 /** Cheap model used for auto-generating conversation titles. */
-const TITLE_MODEL = "openai/gpt-4o-mini";
 
 /**
  * Generates a short conversation title from the first exchange.
@@ -412,7 +412,7 @@ export async function generateTitle(params: {
     };
     const title = body.choices?.[0]?.message?.content?.trim();
     if (!title) return null;
-    return title.replace(/^["「『]|["」』]$/g, "").slice(0, 60);
+    return title.replace(/^["「『]|["」』]$/g, "").slice(0, MAX_TITLE_LENGTH);
   } catch {
     return null;
   }

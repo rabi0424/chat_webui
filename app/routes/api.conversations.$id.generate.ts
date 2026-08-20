@@ -9,6 +9,7 @@ import { readRetryConfig } from "../lib/retry";
 import type { ChatMessage } from "../lib/openrouter.server";
 import type { ParamsState } from "../lib/params";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "../lib/r2.server";
+import { apiJson, type GenerateResponse } from "../lib/api-types";
 
 interface GenerateBody {
   model: string;
@@ -111,5 +112,5 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     );
   }
 
-  return Response.json({ userMessageId, assistantMessageId });
+  return apiJson<GenerateResponse>({ userMessageId, assistantMessageId });
 }

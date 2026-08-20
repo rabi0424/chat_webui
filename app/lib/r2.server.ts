@@ -8,19 +8,15 @@ import { env } from "cloudflare:workers";
  * アプリ全体が落ちないよう、呼び出し側が扱えるエラーに変換する。
  */
 
-/** 画像として受け入れるMIMEタイプ。LLM各社が共通で扱える形式に限定する。 */
-export const ALLOWED_IMAGE_TYPES = [
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-];
-
-/** 1ファイルあたりの上限。これ以上はクライアント側で縮小してから送る。 */
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-
-/** 1メッセージに添付できる枚数の上限。 */
-export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
+/*
+ * 添付の決まりごとはクライアントとも共有する（lib/constants.ts）。
+ * ここからも読めるように通しておく。
+ */
+export {
+  ALLOWED_IMAGE_TYPES,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_UPLOAD_BYTES,
+} from "./constants";
 
 export class StorageUnavailableError extends Error {
   constructor() {

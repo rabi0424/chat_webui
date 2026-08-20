@@ -7,6 +7,7 @@ import {
   updateConversationModel,
   updateConversationParams,
 } from "../lib/db.server";
+import { MAX_TITLE_LENGTH } from "../lib/constants";
 
 export async function action({ request, params }: Route.ActionArgs) {
   const conversation = await getConversation(params.id);
@@ -45,7 +46,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       body.folderId !== undefined
     ) {
       await updateConversationMeta(params.id, {
-        title: body.title?.trim().slice(0, 60),
+        title: body.title?.trim().slice(0, MAX_TITLE_LENGTH),
         pinned: body.pinned,
         favorite: body.favorite,
         folderId: body.folderId,

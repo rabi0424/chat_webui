@@ -6,6 +6,7 @@ import {
   RETRY_CEILING_RANGE,
   type AppSettings,
 } from "./settings";
+import { MAX_TITLE_LENGTH } from "./constants";
 
 /**
  * Data access layer for D1.
@@ -969,7 +970,7 @@ export async function forkConversation(
   const d = await db();
   const now = Date.now();
   const newConvId = crypto.randomUUID();
-  const title = `${conversation.title}（分岐）`.slice(0, 60);
+  const title = `${conversation.title}（分岐）`.slice(0, MAX_TITLE_LENGTH);
 
   const statements: D1PreparedStatement[] = [
     // ボット・システムプロンプト・生成パラメータも引き継ぐ。落とすと、

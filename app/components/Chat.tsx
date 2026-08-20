@@ -3,6 +3,12 @@ import { useLocation, useNavigate, useOutletContext, useRevalidator } from "reac
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiCitation, UiMessage } from "../lib/types";
 import {
+  ALLOWED_IMAGE_TYPES,
+  DEFAULT_MODEL,
+  MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
+  MAX_TITLE_LENGTH,
+} from "../lib/constants";
+import {
   PULL_IGNORE_SELECTOR,
   PULL_MAX_PX,
   PULL_REST_PX,
@@ -14,7 +20,6 @@ import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
 import { isRetryProgress, readRetryConfig } from "../lib/retry";
 import {
-  ACCEPTED_IMAGE_TYPES,
   formatBytes,
   isAcceptedImage,
   prepareImage,
@@ -25,6 +30,13 @@ import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
 import { Lightbox } from "./Lightbox";
+import type {
+  CreateConversationResponse,
+  ErrorResponse,
+  GenerateResponse,
+  MessageStateResponse,
+  PathResponse,
+} from "../lib/api-types";
 import {
   IconArrowDown,
   IconArrowUp,
@@ -51,7 +63,6 @@ export interface BotContext {
 }
 
 const MODEL_STORAGE_KEY = "chat-webui:model";
-const DEFAULT_MODEL = "openai/gpt-4o-mini";
 const POLL_INTERVAL_MS = 400;
 /**
  * ポーリングを諦めるまでの連続失敗回数。
@@ -108,7 +119,6 @@ const RUN_POLL_INTERVAL_MS = 1000;
  */
 const WEB_PARAM_KEY = "web";
 /** 1メッセージに添付できる画像の枚数（サーバー側の上限と揃える）。 */
-const MAX_ATTACHMENTS = 8;
 /**
  * 削除選択モードでコンテキストクリアを指す印。
  *
@@ -1013,9 +1023,7 @@ export function Chat({
     try {
       const res = await fetch(`/api/conversations/${convId}/path`);
       if (res.ok) {
-        const { messages: fresh } = (await res.json()) as {
-          messages: UiMessage[];
-        };
+        const { messages: fresh } = (await res.json()) as PathResponse;
         setMessages(fresh);
         setError(null);
         // 別の画面で走っている生成があれば、ここから追いかける
@@ -1371,9 +1379,7 @@ export function Chat({
         });
         if (res.ok) {
           failures = 0;
-          const { messages: fresh } = (await res.json()) as {
-            messages: UiMessage[];
-          };
+          const { messages: fresh } = (await res.json()) as PathResponse;
           if (!alive(track)) return;
           setMessages(fresh);
           if (!fresh.some((m) => m.status === "streaming")) return;
@@ -1396,9 +1402,7 @@ export function Chat({
         signal: track.signal,
       });
       if (!res.ok) return;
-      const { messages: fresh } = (await res.json()) as {
-        messages: UiMessage[];
-      };
+      const { messages: fresh } = (await res.json()) as PathResponse;
       if (alive(track)) setMessages(fresh);
     } catch {
       // 表示更新に失敗しても実害はない（中断も同じ扱いでよい）
@@ -1486,14 +1490,7 @@ export function Chat({
           continue;
         }
         failures = 0;
-        const remote = (await res.json()) as {
-          content: string;
-          reasoning: string | null;
-          status: string;
-          error: string | null;
-          usage: UiMessage["usage"] | null;
-          citations: UiCitation[] | null;
-        };
+        const remote = (await res.json()) as MessageStateResponse;
         if (!alive(track)) return;
         applyRemoteState(remote);
         if (remote.status !== "streaming") return;
@@ -1548,11 +1545,11 @@ export function Chat({
             modelId: model,
             botId: bot?.id ?? undefined,
             params: Object.keys(params).length > 0 ? params : undefined,
-            title: (firstUser?.content?.trim() || "新しいチャット").slice(0, 40),
+            title: (firstUser?.content?.trim() || "新しいチャット").slice(0, MAX_TITLE_LENGTH),
           }),
         });
         if (!res.ok) throw new Error("会話の作成に失敗しました");
-        convId = ((await res.json()) as { id: string }).id;
+        convId = ((await res.json()) as CreateConversationResponse).id;
         convIdRef.current = convId;
         isNew = true;
         // この時点でURLを会話のものに差し替える。ここで navigate すると
@@ -1607,15 +1604,13 @@ export function Chat({
 
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as
-          | { error?: string }
+          | ErrorResponse
           | null;
         throw new Error(body?.error ?? `エラーが発生しました (${res.status})`);
       }
 
-      const { userMessageId, assistantMessageId } = (await res.json()) as {
-        userMessageId: string | null;
-        assistantMessageId: string;
-      };
+      const { userMessageId, assistantMessageId } =
+        (await res.json()) as GenerateResponse;
 
       // サーバーが採番したIDをローカル状態へ反映
       setMessages((prev) => {
@@ -1933,9 +1928,7 @@ export function Chat({
         body: JSON.stringify({ messageId: targetId }),
       });
       if (!res.ok) throw new Error();
-      const { messages: fresh } = (await res.json()) as {
-        messages: UiMessage[];
-      };
+      const { messages: fresh } = (await res.json()) as PathResponse;
       setMessages(fresh);
       setError(null);
     } catch {
@@ -1961,9 +1954,7 @@ export function Chat({
         body: JSON.stringify({ messageId, enabled }),
       });
       if (!res.ok) throw new Error();
-      const { messages: fresh } = (await res.json()) as {
-        messages: UiMessage[];
-      };
+      const { messages: fresh } = (await res.json()) as PathResponse;
       setMessages(fresh);
       setError(null);
       keepScroll();
@@ -2273,7 +2264,7 @@ export function Chat({
                         <input
                           ref={editFileInputRef}
                           type="file"
-                          accept={ACCEPTED_IMAGE_TYPES.join(",")}
+                          accept={ALLOWED_IMAGE_TYPES.join(",")}
                           multiple
                           hidden
                           onChange={(e) => {
@@ -2691,7 +2682,7 @@ export function Chat({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept={ACCEPTED_IMAGE_TYPES.join(",")}
+                  accept={ALLOWED_IMAGE_TYPES.join(",")}
                   multiple
                   hidden
                   onChange={(e) => {

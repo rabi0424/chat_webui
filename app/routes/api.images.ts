@@ -1,5 +1,6 @@
 import type { Route } from "./+types/api.images";
 import { listGeneratedImages } from "../lib/db.server";
+import { apiJson, type ImagesResponse } from "../lib/api-types";
 
 /** 生成画像一覧の続き読みと検索。 */
 export async function loader({ request }: Route.LoaderArgs) {
@@ -11,5 +12,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     query: url.searchParams.get("q") ?? undefined,
     favoritesOnly: url.searchParams.get("favorites") === "1",
   });
-  return Response.json({ images }, { headers: { "Cache-Control": "no-store" } });
+  return apiJson<ImagesResponse>(
+    { images },
+    { headers: { "Cache-Control": "no-store" } },
+  );
 }

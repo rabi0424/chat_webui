@@ -4,6 +4,8 @@ import {
   getBot,
   updateConversationParams,
 } from "../lib/db.server";
+import { MAX_TITLE_LENGTH } from "../lib/constants";
+import { apiJson, type CreateConversationResponse } from "../lib/api-types";
 
 export async function action({ request }: Route.ActionArgs) {
   if (request.method !== "POST") {
@@ -29,7 +31,7 @@ export async function action({ request }: Route.ActionArgs) {
   const bot = body.botId ? await getBot(body.botId) : null;
 
   const conversation = await createConversation({
-    title: (body.title ?? "新しいチャット").slice(0, 60),
+    title: (body.title ?? "新しいチャット").slice(0, MAX_TITLE_LENGTH),
     modelId: body.modelId,
     bot,
   });
@@ -41,5 +43,5 @@ export async function action({ request }: Route.ActionArgs) {
       JSON.stringify(body.params),
     );
   }
-  return Response.json({ id: conversation.id });
+  return apiJson<CreateConversationResponse>({ id: conversation.id });
 }

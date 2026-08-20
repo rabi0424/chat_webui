@@ -1,4 +1,5 @@
 import { listUnreadConversationIds } from "../lib/db.server";
+import { apiJson, type UnreadResponse } from "../lib/api-types";
 
 /**
  * 未読の会話ID。
@@ -7,7 +8,7 @@ import { listUnreadConversationIds } from "../lib/db.server";
  * クライアントは気づけない。サイドバーはこれを短い間隔で引いて印を更新する。
  */
 export async function loader() {
-  return Response.json(
+  return apiJson<UnreadResponse>(
     { ids: await listUnreadConversationIds() },
     { headers: { "Cache-Control": "no-store" } },
   );

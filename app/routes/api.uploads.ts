@@ -9,6 +9,7 @@ import {
   putFile,
 } from "../lib/r2.server";
 import { cloudflareContext } from "../lib/cloudflare-context";
+import { apiJson, type UploadResponse } from "../lib/api-types";
 
 /**
  * 画像のアップロード。R2へ実体を保存し、D1にメタデータ行を作って
@@ -95,7 +96,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     sweepOrphanAttachments().catch(() => {}),
   );
 
-  return Response.json({
+  return apiJson<UploadResponse>({
     id: attachment.id,
     mimeType: attachment.mime_type,
     name: attachment.name,

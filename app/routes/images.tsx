@@ -11,6 +11,7 @@ import type { Route } from "./+types/images";
 import type { ShellContext } from "./shell";
 import { listGeneratedImages, type GeneratedImageRow } from "../lib/db.server";
 import { Lightbox } from "../components/Lightbox";
+import type { ImagesResponse } from "../lib/api-types";
 import { IconEllipsis, IconMenu, IconSearch, IconX } from "../components/icons";
 import { GLASS_PANEL } from "../lib/ui";
 
@@ -91,7 +92,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
   async function reload() {
     try {
       const res = await fetch(`/api/images?${params()}`);
-      const body = (await res.json()) as { images: GeneratedImageRow[] };
+      const body = (await res.json()) as ImagesResponse;
       setImages(body.images);
       setExhausted(body.images.length < PAGE_SIZE);
     } catch {
@@ -232,7 +233,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     setLoading(true);
     try {
       const res = await fetch(`/api/images?${params(last.created_at)}`);
-      const body = (await res.json()) as { images: GeneratedImageRow[] };
+      const body = (await res.json()) as ImagesResponse;
       setImages([...images, ...body.images]);
       if (body.images.length < PAGE_SIZE) setExhausted(true);
     } catch {

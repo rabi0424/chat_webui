@@ -1,6 +1,7 @@
 import { Link, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "./shell";
 import { IconMenu } from "../components/icons";
+import { MAX_TITLE_LENGTH } from "../lib/constants";
 
 export function meta() {
   return [{ title: "ボット管理 - Chat WebUI" }];
@@ -26,7 +27,7 @@ export default function Bots() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: `${bot.name}のコピー`.slice(0, 60),
+        name: `${bot.name}のコピー`.slice(0, MAX_TITLE_LENGTH),
         icon: bot.icon,
         modelId: bot.model_id,
         systemPrompt: bot.system_prompt,
