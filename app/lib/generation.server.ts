@@ -19,6 +19,7 @@ import {
   flushGeneration,
   getAttachments,
   getMessage,
+  rewriteMessageContent,
 } from "./db.server";
 import {
   ALLOWED_IMAGE_TYPES,
@@ -807,13 +808,51 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
     return;
   }
 
-  const result = await readUpstreamStream(upstream.body, async (partial) => {
+  /**
+   * 上流が無言のあいだも「生きている」印を打ち直す。
+   *
+   * 部分保存は上流からチャンクが届いたときにしか走らないため、最初の
+   * トークンまで時間のかかるモデル（長考・画像生成）では flushed_at が
+   * 更新されないまま sweepStaleStreaming の中断判定（60秒）に掛かる。
+   * そうなると生成はまだ走っているのに行だけ確定してしまい、停止も効かず、
+   * 完了時の確定（status='streaming' 条件）も空振りして結果が失われる。
+   */
+  let latest = { content: "", reasoning: null as string | null };
+  let lastWrite = Date.now();
+  let streamDone = false;
+  let wakeHeartbeat = () => {};
+
+  const write = async (): Promise<boolean> => {
+    lastWrite = Date.now();
     const { stopRequested } = await flushGeneration(job.assistantMessageId, {
-      content: partial.content,
-      reasoning: partial.reasoning || null,
+      content: latest.content,
+      reasoning: latest.reasoning,
     });
     return stopRequested;
+  };
+
+  const heartbeat = (async () => {
+    while (!streamDone && Date.now() - startedAt < MAX_HEARTBEAT_MS) {
+      const nap = cancellableSleep(IDLE_HEARTBEAT_MS);
+      wakeHeartbeat = nap.cancel;
+      await nap.promise;
+      // 直前にチャンクが届いて保存済みなら、打ち直す必要はない
+      if (streamDone || Date.now() - lastWrite < IDLE_HEARTBEAT_MS) continue;
+      try {
+        await write();
+      } catch {
+        // 打ち直しの失敗そのものは致命的ではない。次の周期で拾う
+      }
+    }
+  })();
+
+  const result = await readUpstreamStream(upstream.body, async (partial) => {
+    latest = { content: partial.content, reasoning: partial.reasoning || null };
+    return await write();
   });
+  streamDone = true;
+  wakeHeartbeat();
+  await heartbeat;
   let usageJson = result.usageJson;
 
   // Poe: ポイント消費はレスポンスに載らないため、Usage APIの履歴を
@@ -884,6 +923,23 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
  * 打ち直しの総回数は CHUNK_TOUCH_LIMIT で頭打ちにしてある。
  */
 const HEARTBEAT_MS = 1_000;
+
+/**
+ * 単発生成で「まだ生きている」印を打ち直す間隔。
+ * 中断とみなされるまでの猶予（db.server.ts の STALE_STREAMING_MS = 60秒）に
+ * 対して十分に短く、かつD1への書き込みが増えすぎない程度に空ける。
+ */
+const IDLE_HEARTBEAT_MS = 15_000;
+
+/**
+ * 打ち直しを続ける上限。
+ *
+ * 印を打ち続けている限り中断とみなされないので、上流が永久に沈黙した
+ * 場合に「生成中」の表示が二度と解けなくなる。ここで打ち直しをやめれば
+ * 60秒後には中断として確定し、UIが固まったままにならずに済む。
+ */
+const MAX_HEARTBEAT_MS = 30 * 60 * 1000;
+
 /**
  * 続けて発射するときに挟む間隔。
  *
@@ -1049,12 +1105,7 @@ async function drainPendingCaptures(
       budget,
     );
     if (captured.content !== row.content) {
-      await finalizeGeneration(messageId, {
-        content: captured.content,
-        reasoning: null,
-        usageJson: row.usage_json,
-        status: "done",
-      });
+      await rewriteMessageContent(messageId, captured.content);
     }
     if (captured.deferred) remaining.push(messageId);
   }
@@ -1136,7 +1187,15 @@ async function runRetryGenerationJob(
    */
   let queue: Promise<void> = Promise.resolve();
   const accept = (r: AttemptOutcome): Promise<void> => {
-    queue = queue.then(async () => {
+    // 1件の取り込みが失敗しても、キュー自体は必ず成功で繋ぐ。
+    // ここで握らないとキューが reject のまま固まり、以降に届いた
+    // 成功応答の取り込みが丸ごと飛ばされる（課金済みの結果が消える）
+    queue = queue.then(() => acceptOne(r)).catch(() => {});
+    return queue;
+  };
+
+  const acceptOne = async (r: AttemptOutcome): Promise<void> => {
+    try {
       if (r.kind === "rate_limited") {
         // レート制限は上流の都合なので試行回数は消費しない。
         // ただし待ち直しの回数には上限を設ける
@@ -1186,12 +1245,7 @@ async function runRetryGenerationJob(
           budget,
         );
         if (captured.content !== r.content) {
-          await finalizeGeneration(id, {
-            content: captured.content,
-            reasoning: null,
-            usageJson: r.usageJson,
-            status: "done",
-          });
+          await rewriteMessageContent(id, captured.content);
         }
         // 枠が尽きて取り込めなかったぶんは次の実行で拾う
         if (captured.deferred) state.pendingCapture.push(id);
@@ -1199,8 +1253,11 @@ async function runRetryGenerationJob(
         state.successes++;
       }
       await touch();
-    });
-    return queue;
+    } catch (e) {
+      // D1の一時障害などで1件取り込めなかった場合。実行は続け、
+      // 見出しの要約に理由を残す
+      state.lastError = `結果の取り込みに失敗しました: ${(e as Error).message}`;
+    }
   };
 
   const launch = () => {

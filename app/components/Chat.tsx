@@ -1600,7 +1600,7 @@ export function Chat({
     setPending([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     stickToBottomRef.current = true; // 送信時は必ず最下部へ
-    const parentId = messages[messages.length - 1]?.id ?? null;
+    const parentId = lastSavedId(messages);
     void runGeneration(
       [
         ...messages,
@@ -1629,6 +1629,41 @@ export function Chat({
   }
 
   /**
+   * 応答をぶら下げる親のID。末尾から遡って、実際にサーバーへ保存されて
+   * いる直近のメッセージを選ぶ。
+   *
+   * 送信そのものが失敗すると、楽観表示したユーザー発言はIDを持たないまま
+   * 画面に残る。それを親として扱うと親なし（= 新しい根）の応答ができて
+   * しまい、会話の木が枝分かれして壊れる。
+   */
+  function lastSavedId(list: UiMessage[]): string | null {
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].id) return list[i].id!;
+    }
+    return null;
+  }
+
+  /**
+   * 再生成のときに、末尾のユーザー発言がまだ保存されていなければ
+   * 保存し直すための情報を組み立てる。
+   */
+  function persistFor(history: UiMessage[]): {
+    parentId: string | null;
+    userContent: string | null;
+    userAttachmentIds?: string[];
+  } {
+    const last = history[history.length - 1];
+    if (last?.role === "user" && !last.id) {
+      return {
+        parentId: lastSavedId(history.slice(0, -1)),
+        userContent: last.content,
+        userAttachmentIds: last.attachments?.map((a) => a.id),
+      };
+    }
+    return { parentId: lastSavedId(history), userContent: null };
+  }
+
+  /**
    * 最後尾がユーザーメッセージのとき（分岐直後や応答削除後）、
    * 新しい入力なしでそのまま応答を生成する。
    */
@@ -1639,11 +1674,8 @@ export function Chat({
       return;
     }
     const last = messages[messages.length - 1];
-    if (!last || last.role !== "user" || !last.id) return;
-    void runGeneration([...messages], {
-      parentId: last.id,
-      userContent: null,
-    });
+    if (!last || last.role !== "user") return;
+    void runGeneration([...messages], persistFor([...messages]));
   }
 
   function regenerate(confirmed = false) {
@@ -1657,10 +1689,7 @@ export function Chat({
       history.pop();
     }
     if (history.length === 0) return;
-    void runGeneration(history, {
-      parentId: history[history.length - 1]?.id ?? null,
-      userContent: null,
-    });
+    void runGeneration(history, persistFor(history));
   }
 
   /** 過去メッセージの編集・再送信（同一会話内で分岐を作る）。 */
