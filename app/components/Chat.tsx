@@ -2,6 +2,13 @@ import { Fragment, startTransition, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiCitation, UiMessage } from "../lib/types";
+import {
+  PULL_IGNORE_SELECTOR,
+  PULL_MAX_PX,
+  PULL_REST_PX,
+  PULL_SLOP_PX,
+  PULL_TRIGGER_PX,
+} from "../lib/pull-to-refresh";
 import { type ParamsState } from "../lib/params";
 import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
@@ -47,23 +54,7 @@ export interface BotContext {
 const MODEL_STORAGE_KEY = "chat-webui:model";
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
 const POLL_INTERVAL_MS = 400;
-/** 会話フィードを引っぱって更新するのに必要な距離（px）。 */
-const PULL_TRIGGER_PX = 64;
-/** 引っぱりの最大量（px）。これ以上は伸びない。 */
-const PULL_MAX_PX = 96;
-/**
- * 引っぱりとみなすまでの遊び（px）。
- *
- * これが無いと、指が1px下へぶれただけで引っぱり扱いになり touchmove を
- * preventDefault していた。仕様上、打ち消されたタッチ列からは互換の
- * マウスイベント（= click）が出ない決まりで、WebKit はこれに従う。
- * 会話の先頭（scrollTop = 0）ではその条件がいつでも成立するので、
- * 指がわずかにぶれたタップが黙って消えることになる。
- * 遊びのぶんは通常のタップとして通し、超えてから引っぱりに移る。
- */
-const PULL_SLOP_PX = 14;
-/** 更新中に印を留めておく位置（px）。 */
-const PULL_REST_PX = 44;
+/* 引っぱって更新の寸法は lib/pull-to-refresh.ts に集約（画像一覧と共通） */
 /**
  * リトライ生成の追跡間隔。成功した応答が増えたかを見るだけなので
  * 本文のポーリングより軽いが、出来上がりは1秒以内に出したい。
@@ -281,7 +272,7 @@ function CitationList({ citations }: { citations: UiCitation[] }) {
                 target="_blank"
                 rel="noreferrer"
                 title={c.url}
-                className="min-w-0 text-accent hover:underline"
+                className="min-w-0 text-accent-ink hover:underline"
               >
                 <span className="line-clamp-2 break-all">
                   {c.title || hostOf(c.url)}
@@ -958,9 +949,7 @@ export function Chat({
         e.touches.length === 1 &&
         !refreshingRef.current &&
         // ボタンや入力欄の上から始まった指は、最初から引っぱりに使わない
-        !target?.closest(
-          'button, a, input, textarea, select, label, summary, [role="button"]',
-        );
+        !target?.closest(PULL_IGNORE_SELECTOR);
       startY = e.touches[0]?.clientY ?? 0;
       pulled = 0;
       engaged = false;
@@ -1945,7 +1934,7 @@ export function Chat({
             title="生成パラメータ（この会話にのみ適用）"
             className={`rounded-lg p-2 ${
               Object.keys(params).length > 0
-                ? "text-accent hover:bg-accent/10"
+                ? "text-accent-ink hover:bg-accent/10"
                 : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
             }`}
           >
@@ -2446,7 +2435,7 @@ export function Chat({
                 <button
                   type="button"
                   onClick={() => generateFromLast()}
-                  className="rounded-lg border border-accent/40 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/10"
+                  className="rounded-lg border border-accent/40 px-3 py-1.5 text-xs font-medium text-accent-ink hover:bg-accent/10"
                 >
                   ↵ 応答を生成
                 </button>
@@ -2600,7 +2589,7 @@ export function Chat({
                   }
                   className={`grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-neutral-100 active:scale-90 disabled:opacity-30 dark:hover:bg-white/10 ${
                     hasContextBoundary
-                      ? "text-accent"
+                      ? "text-accent-ink"
                       : "text-neutral-500 dark:text-neutral-400"
                   }`}
                 >
@@ -2669,7 +2658,7 @@ export function Chat({
       </footer>
 
       {dragOver && (
-        <div className="pointer-events-none absolute inset-3 z-40 grid animate-fade place-items-center rounded-3xl border-2 border-dashed border-accent/60 bg-accent/10 text-sm font-medium text-accent backdrop-blur-sm">
+        <div className="pointer-events-none absolute inset-3 z-40 grid animate-fade place-items-center rounded-3xl border-2 border-dashed border-accent/60 bg-accent/10 text-sm font-medium text-accent-ink backdrop-blur-sm">
           画像をドロップして添付
         </div>
       )}

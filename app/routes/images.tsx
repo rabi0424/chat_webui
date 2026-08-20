@@ -1,4 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  PULL_IGNORE_SELECTOR,
+  PULL_MAX_PX,
+  PULL_REST_PX,
+  PULL_SLOP_PX,
+  PULL_TRIGGER_PX,
+} from "../lib/pull-to-refresh";
 import { useNavigate, useOutletContext } from "react-router";
 import type { Route } from "./+types/images";
 import type { ShellContext } from "./shell";
@@ -13,10 +20,7 @@ export function meta({}: Route.MetaArgs) {
 
 /** 一度に読む枚数。続きは末尾まで送ると自動で足す。 */
 const PAGE_SIZE = 60;
-/** 引っぱって更新: これだけ引いたら実行する。 */
-const PULL_THRESHOLD = 64;
-/** 引っぱれる上限（実際の指の移動はこの倍動く）。 */
-const PULL_MAX = 96;
+/* 引っぱって更新の寸法は lib/pull-to-refresh.ts に集約（会話画面と共通） */
 
 export async function loader() {
   return { images: await listGeneratedImages({ limit: PAGE_SIZE }) };
@@ -61,11 +65,15 @@ export default function Images({ loaderData }: Route.ComponentProps) {
   const loadingRef = useRef(false);
   /** スクロール領域。引っぱって更新の判定に使う。 */
   const scrollRef = useRef<HTMLDivElement>(null);
-  /** 引っぱっている距離(px)。0 なら通常表示。 */
-  const [pull, setPull] = useState(0);
-  const [refreshing, setRefreshing] = useState(false);
-  // 監視・タッチのハンドラは貼り直さないので、最新値は ref から読む
+  /**
+   * 引っぱりの余白。指に追従する部分は state を通さず直接DOMへ書く。
+   * touchmove ごとに再描画すると、画像が数十枚並んだグリッドを毎フレーム
+   * 作り直すことになり、指の動きから遅れる。
+   */
   const pullRef = useRef(0);
+  const spacerRef = useRef<HTMLDivElement>(null);
+  const pullLabelRef = useRef<HTMLSpanElement>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const refreshingRef = useRef(false);
   const reloadRef = useRef<() => Promise<void>>(async () => {});
   /** 検索・絞り込みの初回描画では読み直さない（ローダーの結果を使う）。 */
@@ -116,41 +124,77 @@ export default function Images({ loaderData }: Route.ComponentProps) {
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    let startY: number | null = null;
+    let startY = 0;
+    let active = false;
+    // 遊びを超えて初めて「引っぱり」に切り替える（それまではタップ扱い）
+    let engaged = false;
 
-    const setPullBoth = (v: number) => {
-      pullRef.current = v;
-      setPull(v);
+    const paint = (distance: number, animated: boolean) => {
+      pullRef.current = distance;
+      const spacer = spacerRef.current;
+      if (spacer) {
+        spacer.style.transition = animated ? "height 0.2s ease-out" : "none";
+        spacer.style.height = `${distance}px`;
+      }
+      const label = pullLabelRef.current;
+      if (label) {
+        label.style.opacity = distance > 0 ? "1" : "0";
+        label.textContent = refreshingRef.current
+          ? "更新中…"
+          : distance >= PULL_TRIGGER_PX
+            ? "離して更新"
+            : "引っぱって更新";
+      }
     };
+
     const onStart = (e: TouchEvent) => {
-      startY = el.scrollTop <= 0 ? e.touches[0].clientY : null;
+      const target = e.target as HTMLElement | null;
+      active =
+        el.scrollTop <= 0 &&
+        e.touches.length === 1 &&
+        !refreshingRef.current &&
+        // ボタンや画像の上から始まった指は、最初から引っぱりに使わない
+        !target?.closest(PULL_IGNORE_SELECTOR);
+      startY = e.touches[0]?.clientY ?? 0;
+      engaged = false;
     };
     const onMove = (e: TouchEvent) => {
-      if (startY == null || refreshingRef.current) return;
-      const dy = e.touches[0].clientY - startY;
+      if (!active) return;
+      const dy = (e.touches[0]?.clientY ?? 0) - startY;
       if (dy <= 0 || el.scrollTop > 0) {
-        startY = el.scrollTop <= 0 ? startY : null;
-        if (pullRef.current !== 0) setPullBoth(0);
+        // 上向き・途中からのスクロールは通常のスクロールに任せる
+        if (pullRef.current > 0) paint(0, true);
+        active = false;
+        engaged = false;
         return;
       }
-      e.preventDefault();
-      // 引くほど重くする（指の移動の半分、上限まで）
-      setPullBoth(Math.min(dy / 2, PULL_MAX));
+      // 遊びの内側はまだ何もしない。ここで preventDefault すると
+      // 指がわずかにぶれただけのタップが click を失う
+      if (!engaged) {
+        if (dy < PULL_SLOP_PX) return;
+        engaged = true;
+      }
+      // 引くほど重くする（遊びぶんを差し引いた移動の半分、上限まで）
+      paint(Math.min(PULL_MAX_PX, (dy - PULL_SLOP_PX) * 0.5), false);
+      if (e.cancelable) e.preventDefault();
     };
     const onEnd = () => {
-      startY = null;
-      if (pullRef.current >= PULL_THRESHOLD && !refreshingRef.current) {
-        refreshingRef.current = true;
-        setRefreshing(true);
-        setPullBoth(PULL_THRESHOLD);
-        void reloadRef.current().finally(() => {
-          refreshingRef.current = false;
-          setRefreshing(false);
-          setPullBoth(0);
-        });
+      if (!active) return;
+      active = false;
+      engaged = false;
+      const triggered = pullRef.current >= PULL_TRIGGER_PX;
+      if (!triggered) {
+        paint(0, true);
         return;
       }
-      setPullBoth(0);
+      refreshingRef.current = true;
+      setRefreshing(true);
+      paint(PULL_REST_PX, true);
+      void reloadRef.current().finally(() => {
+        refreshingRef.current = false;
+        setRefreshing(false);
+        paint(0, true);
+      });
     };
 
     el.addEventListener("touchstart", onStart, { passive: true });
@@ -251,7 +295,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
           title="お気に入りだけ表示"
           className={`ml-auto rounded-lg px-2.5 py-1.5 text-xs font-medium ${
             favoritesOnly
-              ? "bg-accent/10 text-accent"
+              ? "bg-accent/10 text-accent-ink"
               : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
           }`}
         >
@@ -287,22 +331,20 @@ export default function Images({ loaderData }: Route.ComponentProps) {
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3"
       >
-        {/* 引っぱって更新の余白。指の動きに追従し、離すと閉じる */}
+        {/*
+          引っぱって更新の余白。高さと文言は touchmove ごとに直接書き換える
+          （state を通すと一覧全体が毎フレーム作り直しになる）。
+        */}
         <div
-          style={{ height: pull }}
-          className={`flex items-end justify-center overflow-hidden text-xs text-neutral-400 dark:text-neutral-500 ${
-            pull > 0 && !refreshing ? "" : "transition-[height] duration-200"
-          }`}
+          ref={spacerRef}
+          style={{ height: 0 }}
+          className="flex items-end justify-center overflow-hidden text-xs text-neutral-400 dark:text-neutral-500"
         >
-          {pull > 0 && (
-            <span className="pb-2">
-              {refreshing
-                ? "更新中…"
-                : pull >= PULL_THRESHOLD
-                  ? "離して更新"
-                  : "引っぱって更新"}
-            </span>
-          )}
+          <span
+            ref={pullLabelRef}
+            style={{ opacity: 0 }}
+            className="pb-2 transition-opacity duration-150"
+          />
         </div>
         {images.length === 0 ? (
           <p className="mt-16 text-center text-sm text-neutral-400 dark:text-neutral-500">

@@ -81,7 +81,7 @@ function ModelRow({
               </span>
             )}
             {m.inputModalities.includes("image") && (
-              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-ink">
                 画像
               </span>
             )}

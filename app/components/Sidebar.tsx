@@ -820,7 +820,7 @@ export function Sidebar({
             aria-label="設定"
             title="設定"
             className={({ isActive }) =>
-              `${GLASS_ICON_BUTTON} ${isActive ? "text-accent" : ""}`
+              `${GLASS_ICON_BUTTON} ${isActive ? "text-accent-ink" : ""}`
             }
           >
             <IconCog className="h-5 w-5" />
