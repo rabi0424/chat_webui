@@ -185,14 +185,28 @@ const CHUNK_EXTERNAL_LIMIT = 44;
  * （Poeは本文にCDNのURLを返すため、1枚につき1件の外部取得が要る）。
  */
 const CHUNK_LAUNCH_LIMIT = 30;
+/**
+ * 見出しの打ち直しに使ってよい回数（D1への書き込み）。
+ *
+ * 内部サービスへのサブリクエストは無料プランで1回の呼び出しにつき
+ * 1,000件。見出しは毎秒打ち直すので、実行が長引くとここが先に尽きる。
+ * 成功の保存や画像の取り込みで使う分（発射の上限から見て多くても
+ * 150件ほど）と、切り上げ後に走っている分を受け取り切るまでの分を
+ * 残すため、打ち直しはこの回数で頭打ちにして次のアラームへ送る。
+ */
+const CHUNK_TOUCH_LIMIT = 500;
 
-/** この実行で使った外部リクエストの本数を数える。 */
+/** この実行で使ったサブリクエストの本数を数える。 */
 interface ExternalBudget {
-  /** 1件使う。 */
+  /** 外部リクエストを1件使う。 */
   spend(): void;
-  /** ここまでに使った本数。 */
+  /** ここまでに使った外部リクエストの本数。 */
   spent(): number;
-  /** あと1件使える枠があるか。 */
+  /** 見出しの打ち直しを1回使う。 */
+  spendTouch(): void;
+  /** ここまでに打ち直した回数。 */
+  touched(): number;
+  /** あと1件、外部リクエストを使える枠があるか。 */
   available(): boolean;
   /** 新しい試行を始めてよいか。 */
   canLaunch(): boolean;
@@ -200,13 +214,85 @@ interface ExternalBudget {
 
 function createBudget(): ExternalBudget {
   let spent = 0;
+  let touched = 0;
   return {
     spend: () => {
       spent++;
     },
     spent: () => spent,
+    spendTouch: () => {
+      touched++;
+    },
+    touched: () => touched,
     available: () => spent < CHUNK_EXTERNAL_LIMIT,
-    canLaunch: () => spent < CHUNK_LAUNCH_LIMIT,
+    canLaunch: () => spent < CHUNK_LAUNCH_LIMIT && touched < CHUNK_TOUCH_LIMIT,
+  };
+}
+
+/**
+ * 上流が申告するレート制限。
+ *
+ * Poe は1分あたりの上限と、残り・枠が戻るまでの時間をヘッダで返す
+ * （x-ratelimit-limit-requests / -remaining-requests / -reset-requests）。
+ * 429 のときは Retry-After も見る。これらがあれば「決め打ちの秒数」では
+ * なく上流が言った通りに待てるので、待ちすぎも待たなすぎも避けられる。
+ * ヘッダを返さない上流もあるため、無ければ従来の固定バックオフに落ちる。
+ */
+const RATE_LIMIT_MAX_WAIT_MS = 60_000;
+/** 残りがこれ以下になったら、枠が戻るまで新しい発射を控える。 */
+const RATE_LIMIT_MIN_REMAINING = 2;
+
+/**
+ * "3" / "1.5s" / "500ms" / "1m30s" のいずれもミリ秒にする。
+ * 単位なしの数値は秒（Retry-After の形式）とみなす。
+ */
+function parseDurationMs(value: string | null): number | null {
+  if (!value) return null;
+  const text = value.trim().toLowerCase();
+  if (!text) return null;
+  if (/^\d+(\.\d+)?$/.test(text)) return Number(text) * 1000;
+  const parts = text.match(/\d+(?:\.\d+)?(?:ms|s|m|h)/g);
+  if (!parts) return null;
+  const unitMs: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  let total = 0;
+  for (const part of parts) {
+    const unit = part.replace(/^[\d.]+/, "");
+    total += Number(part.slice(0, part.length - unit.length)) * unitMs[unit];
+  }
+  return total;
+}
+
+interface RateLimitGate {
+  /** 応答のヘッダを見る。残りが尽きかけていたら発射を控える。 */
+  note(res: Response): void;
+  /** 429 応答から、待つべき時間を読む。分からなければ null。 */
+  waitAfter(res: Response): number | null;
+  /** この時刻まで新しい発射を控える。 */
+  until(): number;
+}
+
+function createRateLimitGate(): RateLimitGate {
+  let until = 0;
+  const resetMs = (res: Response) =>
+    parseDurationMs(res.headers.get("x-ratelimit-reset-requests"));
+  return {
+    note(res) {
+      const remaining = Number(
+        res.headers.get("x-ratelimit-remaining-requests"),
+      );
+      if (!Number.isFinite(remaining) || remaining > RATE_LIMIT_MIN_REMAINING) {
+        return;
+      }
+      // 枠が戻る時刻を上流が言っていなければ、ひと呼吸だけ置く
+      const wait = Math.min(resetMs(res) ?? 1000, RATE_LIMIT_MAX_WAIT_MS);
+      until = Math.max(until, Date.now() + wait);
+    },
+    waitAfter(res) {
+      const wait = parseDurationMs(res.headers.get("retry-after")) ?? resetMs(res);
+      if (wait == null) return null;
+      return Math.min(Math.max(wait, 500), RATE_LIMIT_MAX_WAIT_MS);
+    },
+    until: () => until,
   };
 }
 
@@ -248,6 +334,18 @@ function extractImageUrls(content: string): string[] {
     if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(m[0])) add(m[0]);
   }
   return urls.slice(0, MAX_CAPTURED_IMAGES);
+}
+
+/**
+ * そのURLが画像記法 `![...](url)` の中に書かれているか。
+ *
+ * URLだけを返すボットがあり（extractImageUrls は裸のURLも拾う）、
+ * その場合に自前の配信URLへ素で差し替えると、本文がただのパス文字列に
+ * なって画像として出なくなる。包み直すかどうかの判断に使う。
+ */
+function isMarkdownImage(content: string, url: string): boolean {
+  const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`!\\[[^\\]]*\\]\\(\\s*<?${escaped}`).test(content);
 }
 
 /** base64のdata: URLを実体へ戻す。Workersのfetchは data: を扱わない。 */
@@ -350,7 +448,13 @@ async function captureGeneratedImages(
       break;
     }
     const id = await storeImage(url, target, budget);
-    if (id) out = out.split(url).join(`/api/files/${id}`);
+    if (!id) continue;
+    const served = `/api/files/${id}`;
+    // 画像記法で書かれていないURLは、差し替えるときに記法を足す。
+    // 素で置き換えると本文が `/api/files/…` というテキストだけになる
+    out = isMarkdownImage(out, url)
+      ? out.split(url).join(served)
+      : out.split(url).join(`![生成画像](${served})`);
   }
   for (const url of imageUrls.slice(0, MAX_CAPTURED_IMAGES)) {
     if (needsFetch(url) && !budget.available()) {
@@ -425,6 +529,17 @@ async function upstreamErrorMessage(
   const hint = /unknown parameter|unsupported parameter/i.test(detail)
     ? "\nこのモデルが対応していないパラメータが含まれています。⚙の生成パラメータを見直してください。"
     : "";
+  // レート制限は「いつ投げ直せるか」が分かれば十分なので、上流が
+  // 申告している枠の戻り時刻をそのまま伝える
+  if (upstream.status === 429) {
+    const wait =
+      parseDurationMs(upstream.headers.get("retry-after")) ??
+      parseDurationMs(upstream.headers.get("x-ratelimit-reset-requests"));
+    const when = wait == null ? "" : `約${Math.ceil(wait / 1000)}秒後に`;
+    return `レート制限に達しました。${when}投げ直してください。${
+      detail ? `\n${detail}` : ""
+    }`;
+  }
   return (
     (detail || `${isPoe ? "Poe" : "OpenRouter"} APIエラー (${upstream.status})`) +
     hint
@@ -670,10 +785,21 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
 // --- 成功するまで生成する（リトライ生成） ---------------------------------
 
 /**
- * 見出しメッセージの打ち直し間隔。中断（放置）とみなされる前に打つための
- * 生存確認で、内容は変わらないことが多い（成功・試行のたびに別途打つ）。
+ * 見出しメッセージの打ち直し間隔。
+ *
+ * 進捗の表示であると同時に、中断（放置）とみなされる前に打つ生存確認、
+ * そして**停止要求を拾う経路**でもある。ここを短くするほど停止が速く
+ * 効き、実行中の本数も細かく見えるが、そのぶんD1への書き込みが増える。
+ * 打ち直しの総回数は CHUNK_TOUCH_LIMIT で頭打ちにしてある。
  */
-const HEARTBEAT_MS = 3_000;
+const HEARTBEAT_MS = 1_000;
+/**
+ * 続けて発射するときに挟む間隔。
+ *
+ * 並列数ぶんを一度に投げると上流へ同時に当たる。生成自体は数十秒
+ * かかるので、ここで少しずらしても体感は変わらない。
+ */
+const LAUNCH_STAGGER_MS = 200;
 /** レート制限に当たったときの待ち時間。 */
 const RATE_LIMIT_BACKOFF_MS = [2_000, 4_000, 8_000];
 
@@ -704,7 +830,8 @@ type AttemptOutcome =
     }
   /** 画像が返らなかった応答。揺らぎの可能性があるので投げ直す対象。 */
   | { kind: "refused"; text: string }
-  | { kind: "rate_limited" }
+  /** waitMs は上流が申告した待ち時間。無ければ null（固定の待ちに落ちる）。 */
+  | { kind: "rate_limited"; waitMs: number | null }
   | { kind: "error"; error: string };
 
 /**
@@ -715,6 +842,7 @@ async function runAttempt(
   job: GenerationJob,
   messages: OutgoingMessage[],
   budget: ExternalBudget,
+  gate: RateLimitGate,
 ): Promise<AttemptOutcome> {
   const isPoe = job.model.startsWith(POE_PREFIX);
   let upstream: Response;
@@ -728,13 +856,16 @@ async function runAttempt(
     };
   }
 
+  gate.note(upstream);
+
   if (upstream.status === 429) {
+    const waitMs = gate.waitAfter(upstream);
     try {
       await upstream.body?.cancel();
     } catch {
       // 読み捨てるだけ
     }
-    return { kind: "rate_limited" };
+    return { kind: "rate_limited", waitMs };
   }
   if (!upstream.ok || !upstream.body) {
     return { kind: "error", error: await upstreamErrorMessage(upstream, isPoe) };
@@ -885,9 +1016,13 @@ async function runRetryGenerationJob(
   let pauseUntil = 0;
   let rateLimitExhausted = false;
   const inflight = new Set<Promise<void>>();
+  const gate = createRateLimitGate();
+  /** 自分で決めた待ちと、上流が申告した待ちの遅いほう。 */
+  const waitUntil = () => Math.max(pauseUntil, gate.until());
 
   /** 進捗の保存を兼ねた停止確認。 */
   const touch = async (): Promise<boolean> => {
+    budget.spendTouch();
     const { stopRequested } = await flushGeneration(statusId, {
       content: formatRetryProgress({
         successes: state.successes,
@@ -919,11 +1054,14 @@ async function runRetryGenerationJob(
           rateLimitExhausted = true;
           return;
         }
+        // 上流が待ち時間を言っていればそれに従う（決め打ちより正確で、
+        // 待ちすぎも待たなすぎも避けられる）。無ければ従来のバックオフ
         pauseUntil =
           Date.now() +
-          RATE_LIMIT_BACKOFF_MS[
-            Math.min(state.rateLimitRounds, RATE_LIMIT_BACKOFF_MS.length - 1)
-          ];
+          (r.waitMs ??
+            RATE_LIMIT_BACKOFF_MS[
+              Math.min(state.rateLimitRounds, RATE_LIMIT_BACKOFF_MS.length - 1)
+            ]);
         state.rateLimitRounds++;
         return;
       }
@@ -975,7 +1113,7 @@ async function runRetryGenerationJob(
   };
 
   const launch = () => {
-    const p = runAttempt(job, messages, budget)
+    const p = runAttempt(job, messages, budget, gate)
       .then(accept)
       .catch(() => {
         // 取り込みに失敗しても実行自体は続ける
@@ -1001,23 +1139,33 @@ async function runRetryGenerationJob(
   })();
 
   while (!stopped && !rateLimitExhausted) {
-    if (Date.now() < pauseUntil) {
-      await sleep(pauseUntil - Date.now());
+    if (Date.now() < waitUntil()) {
+      await sleep(waitUntil() - Date.now());
       continue;
     }
     // 目標に届くまで、上限と並列数の範囲で発射し続ける
+    let burst = 0;
     while (
       !stopped &&
       state.successes < retry.target &&
       state.attempts + inflight.size < retry.maxAttempts &&
       inflight.size < retry.concurrency &&
-      Date.now() >= pauseUntil &&
+      Date.now() >= waitUntil() &&
       // 外部リクエストの枠を使い切る手前で切り上げ、続きは次の実行へ
       budget.canLaunch()
     ) {
+      // 並列数ぶんを一度に投げると上流へ同時に当たる。2本目以降はずらす。
+      // ずらしの待ちは停止確認より**前**に置く。待っている間に停止要求が
+      // 届くことがあり、確認が先だとその1本を止められない
+      if (burst > 0) await sleep(LAUNCH_STAGGER_MS);
+      // 停止要求は発射の直前に見る。発射してから気づいたのでは、
+      // 押したあとに1本ぶん余計に投げて課金されてしまう
+      if (await touch()) break;
       launch();
-      await touch();
+      burst++;
     }
+    // 発射した分を見出しへ反映する（上の touch は発射前の状態のため）
+    if (burst > 0) await touch();
     if (inflight.size === 0) break;
     await Promise.race(inflight);
   }
@@ -1042,7 +1190,7 @@ async function runRetryGenerationJob(
     await touch();
     // 枠の使い方を追えるように残す。wrangler tail かダッシュボードのログで見る
     console.log(
-      `[gen] retry chunk paused: external=${budget.spent()}/${CHUNK_EXTERNAL_LIMIT} attempts=${state.attempts} successes=${state.successes} pendingCapture=${state.pendingCapture.length}`,
+      `[gen] retry chunk paused: external=${budget.spent()}/${CHUNK_EXTERNAL_LIMIT} touch=${budget.touched()}/${CHUNK_TOUCH_LIMIT} attempts=${state.attempts} successes=${state.successes} pendingCapture=${state.pendingCapture.length}`,
     );
     return { done: false, state };
   }
@@ -1087,7 +1235,7 @@ async function runRetryGenerationJob(
   if (state.lastError) lines.push(`\nエラー: ${state.lastError}`);
 
   console.log(
-    `[gen] retry run finished: external=${budget.spent()}/${CHUNK_EXTERNAL_LIMIT} attempts=${state.attempts} successes=${state.successes}`,
+    `[gen] retry run finished: external=${budget.spent()}/${CHUNK_EXTERNAL_LIMIT} touch=${budget.touched()}/${CHUNK_TOUCH_LIMIT} attempts=${state.attempts} successes=${state.successes}`,
   );
 
   const summary = lines.join("\n");
