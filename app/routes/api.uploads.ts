@@ -4,16 +4,18 @@ import {
   ALLOWED_IMAGE_TYPES,
   MAX_UPLOAD_BYTES,
   StorageUnavailableError,
+  deleteFiles,
   isStorageConfigured,
   putFile,
 } from "../lib/r2.server";
+import { cloudflareContext } from "../lib/cloudflare-context";
 
 /**
  * 画像のアップロード。R2へ実体を保存し、D1にメタデータ行を作って
  * 添付IDを返す。この時点ではまだどのメッセージにも属さず、
  * 送信時に `generate` がユーザーメッセージへ紐づける。
  */
-export async function action({ request }: Route.ActionArgs) {
+export async function action({ request, context }: Route.ActionArgs) {
   if (request.method !== "POST") {
     return Response.json({ error: "Method Not Allowed" }, { status: 405 });
   }
@@ -68,15 +70,30 @@ export async function action({ request }: Route.ActionArgs) {
     );
   }
 
-  const attachment = await createAttachment({
-    r2Key: key,
-    mimeType,
-    name: file.name ? file.name.slice(0, 120) : null,
-    size: buffer.byteLength,
-  });
+  let attachment;
+  try {
+    attachment = await createAttachment({
+      r2Key: key,
+      mimeType,
+      name: file.name ? file.name.slice(0, 120) : null,
+      size: buffer.byteLength,
+    });
+  } catch (e) {
+    // 実体だけ置いてメタデータを書けないと、どの行からも辿れない
+    // 完全な孤児になる（孤児の掃除はDBの行を起点に探すので拾えない）
+    await deleteFiles([key]).catch(() => {});
+    return Response.json(
+      { error: `アップロードに失敗しました: ${(e as Error).message}` },
+      { status: 500 },
+    );
+  }
 
-  // 送信されないまま残った古い添付をついでに掃除する
-  void sweepOrphanAttachments().catch(() => {});
+  // 送信されないまま残った古い添付をついでに掃除する。
+  // 応答を返したあとも走らせるため waitUntil に預ける（そのまま投げると
+  // ランタイムに打ち切られ、掃除が実質走らないことがある）
+  context.get(cloudflareContext).ctx.waitUntil(
+    sweepOrphanAttachments().catch(() => {}),
+  );
 
   return Response.json({
     id: attachment.id,

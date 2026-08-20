@@ -780,17 +780,26 @@ export async function deleteBot(id: string): Promise<void> {
   await d.prepare("DELETE FROM bots WHERE id = ?").bind(id).run();
 }
 
+/**
+ * 会話を、ぶら下がるメッセージ・添付ごと削除する。
+ *
+ * 行はまとめて1回の batch で消す。添付だけ先に消していると、後続の
+ * 削除が失敗したときに「会話は残っているのに画像だけ全滅」した状態が
+ * 残り、やり直す手立ても無かった。R2の実体は行が消えたあとに片づける
+ * （消し損ねても孤児として後から掃除できるが、逆は取り返しがつかない）。
+ */
 export async function deleteConversation(id: string): Promise<void> {
   const d = await db();
   const { results } = await d
-    .prepare("SELECT id FROM attachments WHERE conversation_id = ?")
+    .prepare("SELECT r2_key FROM attachments WHERE conversation_id = ?")
     .bind(id)
-    .all<{ id: string }>();
-  await deleteAttachmentRows(results.map((r) => r.id));
+    .all<{ r2_key: string }>();
   await d.batch([
+    d.prepare("DELETE FROM attachments WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM conversations WHERE id = ?").bind(id),
   ]);
+  await deleteUnreferencedFiles([...new Set(results.map((r) => r.r2_key))]);
 }
 
 export interface PathMessage extends MessageRow {
@@ -963,11 +972,24 @@ export async function forkConversation(
   const title = `${conversation.title}（分岐）`.slice(0, 60);
 
   const statements: D1PreparedStatement[] = [
+    // ボット・システムプロンプト・生成パラメータも引き継ぐ。落とすと、
+    // ボットの会話を分岐した先だけ性格と設定が消えて応答が変わる
     d
       .prepare(
-        "INSERT INTO conversations (id, title, model_id, pinned, current_leaf_message_id, created_at, updated_at) VALUES (?, ?, ?, 0, NULL, ?, ?)",
+        "INSERT INTO conversations (id, title, model_id, pinned, current_leaf_message_id, bot_id, bot_name, bot_icon, system_prompt, params_json, created_at, updated_at) VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .bind(newConvId, title, conversation.model_id, now, now),
+      .bind(
+        newConvId,
+        title,
+        conversation.model_id,
+        conversation.bot_id,
+        conversation.bot_name,
+        conversation.bot_icon,
+        conversation.system_prompt,
+        conversation.params_json,
+        now,
+        now,
+      ),
   ];
 
   const attachments = await attachmentsOfConversation(conversation.id);
@@ -979,7 +1001,7 @@ export async function forkConversation(
     statements.push(
       d
         .prepare(
-          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, context_boundary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, reasoning, citations_json, status, error, context_boundary, created_at, flushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(
           id,
@@ -989,9 +1011,19 @@ export async function forkConversation(
           m.content,
           m.model_id,
           m.usage_json,
+          // 思考・参照元も引き継ぐ（分岐先で折りたたみや出典が消えないように）
+          m.reasoning,
+          m.citations_json,
+          // 生成中の行は分岐先では追えないので、確定した形で持っていく。
+          // 既定の 'done' で写すと、失敗した応答が成功として複製される
+          m.status === "streaming" ? "error" : (m.status ?? "done"),
+          m.status === "streaming"
+            ? "分岐元で生成中だった応答です。再試行してください。"
+            : m.error,
           // コンテキストの境界線も引き継ぐ（分岐先だけ文脈が伸びるのを防ぐ）
           m.context_boundary ?? 0,
           now + i,
+          m.flushed_at,
         ),
     );
     // 添付はR2の実体を共有したまま行だけ複製する（元の会話を消しても残る）
@@ -1145,7 +1177,10 @@ function linkAttachmentStatements(
           .bind(target.messageId, target.conversationId, now + i, a.id)
       : d
           .prepare(
-            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            // prompt と favorite も複製する。落とすと、画像一覧は同じ実体の
+            // うち最も新しい行（＝この複製）を代表として出すため、
+            // 一覧から依頼文が消え、お気に入りも外れて見える
+            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind, prompt, favorite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .bind(
             crypto.randomUUID(),
@@ -1157,6 +1192,8 @@ function linkAttachmentStatements(
             a.size,
             now + i,
             a.kind ?? "upload",
+            a.prompt ?? null,
+            a.favorite ?? 0,
           ),
   );
 }
@@ -1285,8 +1322,30 @@ export async function listGeneratedImages(params: {
 }
 
 /**
+ * 渡したキーのうち、もうどの添付行からも参照されていないものを
+ * R2から消す。分岐・フォークで実体を共有するため、行を消したあとに
+ * 生き残りを数え直してから落とす。
+ */
+async function deleteUnreferencedFiles(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  const d = await db();
+  const stillUsed = new Set<string>();
+  for (const part of chunked(keys)) {
+    const { results } = await d
+      .prepare(
+        `SELECT DISTINCT r2_key FROM attachments WHERE r2_key IN (${part
+          .map(() => "?")
+          .join(",")})`,
+      )
+      .bind(...part)
+      .all<{ r2_key: string }>();
+    for (const r of results) stillUsed.add(r.r2_key);
+  }
+  await deleteFiles(keys.filter((k) => !stillUsed.has(k)));
+}
+
+/**
  * 添付行を削除し、どのメッセージからも参照されなくなったR2オブジェクトを消す。
- * 分岐・フォークで実体を共有するため、キー単位の参照数を数えてから削除する。
  */
 async function deleteAttachmentRows(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
@@ -1306,41 +1365,29 @@ async function deleteAttachmentRows(ids: string[]): Promise<void> {
       .run();
     for (const r of doomed) keys.add(r.r2_key);
   }
-  if (keys.size === 0) return;
-
-  const stillUsed = new Set<string>();
-  for (const part of chunked([...keys])) {
-    const { results: survivors } = await d
-      .prepare(
-        `SELECT DISTINCT r2_key FROM attachments WHERE r2_key IN (${part
-          .map(() => "?")
-          .join(",")})`,
-      )
-      .bind(...part)
-      .all<{ r2_key: string }>();
-    for (const r of survivors) stillUsed.add(r.r2_key);
-  }
-  await deleteFiles([...keys].filter((k) => !stillUsed.has(k)));
+  await deleteUnreferencedFiles([...keys]);
 }
 
-/** 指定メッセージ群に属する添付をすべて削除する。 */
-async function deleteAttachmentsOfMessages(messageIds: string[]): Promise<void> {
-  if (messageIds.length === 0) return;
+/** 指定メッセージ群に属する添付行を引く。 */
+async function attachmentsOfMessages(
+  messageIds: string[],
+): Promise<{ id: string; r2_key: string }[]> {
+  if (messageIds.length === 0) return [];
   const d = await db();
-  const ids: string[] = [];
+  const rows: { id: string; r2_key: string }[] = [];
   // 101件以上のメッセージをまとめて消してもバインド上限で落ちないように切る
   for (const part of chunked(messageIds)) {
     const { results } = await d
       .prepare(
-        `SELECT id FROM attachments WHERE message_id IN (${part
+        `SELECT id, r2_key FROM attachments WHERE message_id IN (${part
           .map(() => "?")
           .join(",")})`,
       )
       .bind(...part)
-      .all<{ id: string }>();
-    ids.push(...results.map((r) => r.id));
+      .all<{ id: string; r2_key: string }>();
+    rows.push(...results);
   }
-  await deleteAttachmentRows(ids);
+  return rows;
 }
 
 /**
@@ -1613,8 +1660,24 @@ export async function deleteMessages(
     statements.push(d.prepare("DELETE FROM messages WHERE id = ?").bind(id));
   }
 
-  await deleteAttachmentsOfMessages([...deleteSet]);
+  // 添付は行の削除を同じ batch に入れる。先に消してしまうと、後続の
+  // 削除が失敗したときにメッセージだけ残って画像が消えた形になる
+  const doomed = await attachmentsOfMessages([...deleteSet]);
+  for (const part of chunked(doomed.map((a) => a.id))) {
+    statements.push(
+      d
+        .prepare(
+          `DELETE FROM attachments WHERE id IN (${part
+            .map(() => "?")
+            .join(",")})`,
+        )
+        .bind(...part),
+    );
+  }
   await d.batch(statements);
+  // R2の実体は行が消えたあとに片づける（消し損ねは孤児として拾えるが、
+  // 逆に実体だけ先に消すと取り返しがつかない）
+  await deleteUnreferencedFiles([...new Set(doomed.map((a) => a.r2_key))]);
 }
 
 /**
