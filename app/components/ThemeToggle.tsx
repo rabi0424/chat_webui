@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
-import { getTheme, saveTheme, type Theme } from "../lib/theme";
-import { ACCENTS, DEFAULT_ACCENT, getAccent, saveAccent } from "../lib/accent";
+import { saveTheme, useTheme, type Theme } from "../lib/theme";
+import { ACCENTS, saveAccent, useAccent } from "../lib/accent";
 import { IconAuto, IconMoon, IconSun } from "./icons";
 import { GLASS_ICON_BUTTON } from "../lib/ui";
 
@@ -23,21 +22,15 @@ function ThemeIcon({ theme }: { theme: Theme }) {
  * （現在のテーマは title / aria-label で伝える）。
  */
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>("system");
-
-  useEffect(() => {
-    setTheme(getTheme());
-  }, []);
-
+  // 保存値を購読する。設定画面で変えたときもここが揃って動く
+  // （自分で state を持つと、片方で変えたあとに押すと一手ずれた）。
+  //
   // 「自動」での端末設定への追従は、アプリ全体の貼り直し
   // （lib/appearance.ts の useAppearanceSync）がまとめて見ている。
-  // ここで持つと、このボタンが載る/外れるたびに listener が付け替わり、
-  // 保存値を読む前の既定値（system）で反応してしまうことがあった。
+  const theme = useTheme();
 
   const cycle = () => {
-    const next = CYCLE[(CYCLE.indexOf(theme) + 1) % CYCLE.length];
-    setTheme(next);
-    saveTheme(next);
+    saveTheme(CYCLE[(CYCLE.indexOf(theme) + 1) % CYCLE.length]);
   };
 
   return (
@@ -58,16 +51,8 @@ export function ThemeToggle() {
  * 色付きの丸を並べ、選択中の色にリングを付ける。
  */
 export function AccentPicker() {
-  const [accent, setAccent] = useState(DEFAULT_ACCENT);
-
-  useEffect(() => {
-    setAccent(getAccent());
-  }, []);
-
-  const select = (id: string) => {
-    setAccent(id);
-    saveAccent(id);
-  };
+  const accent = useAccent();
+  const select = (id: string) => saveAccent(id);
 
   return (
     <div
@@ -85,7 +70,12 @@ export function AccentPicker() {
           title={a.label}
           onClick={() => select(a.id)}
           style={{ backgroundColor: a.swatch }}
-          className={`h-4 w-4 rounded-full transition active:scale-90 ${
+          /*
+            指の端末では縦だけ当たり判定を伸ばす（bg-clip-content と
+            合わせて、見た目の丸は16pxのまま）。横に広げると隣の色と
+            重なって、押したつもりと違う色が選ばれる。
+          */
+          className={`h-4 w-4 rounded-full bg-clip-content transition active:scale-90 touch:h-11 touch:border-y-[0.875rem] touch:border-y-transparent ${
             accent === a.id
               ? "ring-2 ring-neutral-400 ring-offset-2 ring-offset-white dark:ring-neutral-500 dark:ring-offset-neutral-950"
               : "hover:scale-110"

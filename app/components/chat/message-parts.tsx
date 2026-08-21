@@ -6,6 +6,7 @@
  * 見た目の都合だけで育つ部分を外に出しておく。
  */
 import { useEffect, useRef, useState } from "react";
+import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
 import { GLASS_PANEL } from "../../lib/ui";
 import { IconCheck, IconCopy, IconInfo } from "../icons";
@@ -23,9 +24,19 @@ export function formatJpy(jpy: number): string {
 export function MessageImages({
   attachments,
   onOpen,
+  onLoad,
 }: {
   attachments: UiAttachment[];
   onOpen: (id: string) => void;
+  /**
+   * 画像が1枚表示し終わったとき。
+   *
+   * 大きさが分かるのは読み込みが終わってからで、それまでこの枠は
+   * ほぼ高さを持たない。あとから高さが増えるぶん下の内容が押し下がり、
+   * 最下部に居たはずが少し上に取り残される（読んでいる途中なら
+   * 読み位置が跳ぶ）。追従していたなら、ここで貼り直す。
+   */
+  onLoad?: () => void;
 }) {
   return (
     <div className="mb-1.5 flex flex-wrap items-end justify-end gap-1.5">
@@ -35,12 +46,18 @@ export function MessageImages({
           type="button"
           onClick={() => onOpen(a.id)}
           title={a.name ?? "画像"}
-          className="overflow-hidden rounded-xl border border-neutral-200 transition hover:opacity-90 active:scale-[0.98] dark:border-neutral-700"
+          /*
+            読み込みが終わるまでの下敷き。高さゼロから一気に伸びるのを
+            防ぐぶん、跳ぶ量が小さくなる（縦横は分からないので、
+            正方形に近い最小の箱だけ置く）
+          */
+          className="grid min-h-24 min-w-24 place-items-center overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 transition hover:opacity-90 active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-900"
         >
           <img
             src={`/api/files/${a.id}`}
             alt={a.name ?? "添付画像"}
             loading="lazy"
+            onLoad={onLoad}
             className="max-h-56 max-w-[min(16rem,60vw)] object-contain"
           />
         </button>
@@ -172,7 +189,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
         <ol className="mt-1 space-y-1 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:border-neutral-800 dark:bg-neutral-900">
           {citations.map((c, n) => (
             <li key={c.url} className="flex gap-2">
-              <span className="shrink-0 text-neutral-400 dark:text-neutral-600">
+              <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
                 {n + 1}.
               </span>
               <a
@@ -186,7 +203,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
                   {c.title || hostOf(c.url)}
                 </span>
                 {c.title && (
-                  <span className="block text-neutral-400 dark:text-neutral-600">
+                  <span className="block text-neutral-500 dark:text-neutral-400">
                     {hostOf(c.url)}
                   </span>
                 )}
@@ -201,7 +218,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
 
 /** ワンタップコピー（1.5秒だけ✓を表示）。 */
 export function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied] = useCopied();
   return (
     <button
       type="button"
@@ -210,8 +227,7 @@ export function CopyButton({ text }: { text: string }) {
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
+          flashCopied();
         } catch {
           // クリップボード不許可時は何もしない
         }

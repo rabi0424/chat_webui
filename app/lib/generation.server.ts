@@ -9,10 +9,13 @@ import {
 import { buildGenerationPayload, type ParamsState } from "./params";
 import {
   formatRetryProgress,
-  RETRY_RATE_LIMIT_ROUNDS,
+  onRateLimited,
   type RetryConfig,
 } from "./retry";
 import { checkMonthlyLimit } from "./limit.server";
+import { isFetchableImageUrl, looksLikeImageUrl } from "./image-url";
+import { readBounded } from "./read-bounded";
+import { flushInterval } from "./flush-cadence";
 import {
   appendAssistantMessage,
   createGeneratedAttachment,
@@ -64,27 +67,6 @@ const MAX_CITATIONS = 30;
  * 生成過程を閲覧する（イベントとして完了まで実行が保証される）。
  */
 
-/**
- * D1へ部分保存する間隔。ここがそのまま「本文が届く粒度」になる。
- * 短くすると表示は細かくなるが、そのぶんD1への書き込みと
- * クライアントのポーリング取得が増える（生成1回あたり数十回 → 百数十回）。
- * 表示の滑らかさは受け取ったあとの見せ方（StreamingMessage）で作るので、
- * ここは体感が変わる範囲で控えめに詰めている。
- */
-const FLUSH_INTERVAL_MS = 500;
-
-/**
- * 長い応答での部分保存の間隔と、そこへ切り替えるまでの回数。
- *
- * D1への保存もサブリクエストとして数えられ、1回の実行あたりの上限
- * （無料プランでは内部サービスへ1,000件）を超えると以降の保存が
- * 失敗する。長考モデルの応答は数分続くことがあるので、序盤だけ細かく
- * 保存し、あとは粗くして上限に届かないようにする。読み手にとっては
- * 序盤ほど「動いている」ことが分かればよく、粒度の粗さは
- * StreamingMessage 側の見せ方が吸収する。
- */
-const LONG_FLUSH_INTERVAL_MS = 2_000;
-const SMOOTH_FLUSHES = 300;
 
 /** OpenAI互換のマルチモーダルコンテンツ要素。 */
 type ContentPart =
@@ -365,7 +347,7 @@ function extractImageUrls(content: string): string[] {
   }
   // 画像記法を使わず、URLだけを返すボットもある
   for (const m of content.matchAll(/https?:\/\/[^\s<>()[\]"']+/g)) {
-    if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(m[0])) add(m[0]);
+    if (looksLikeImageUrl(m[0])) add(m[0]);
   }
   return urls.slice(0, MAX_CAPTURED_IMAGES);
 }
@@ -411,6 +393,9 @@ async function storeImage(
     if (url.startsWith("data:")) {
       payload = decodeDataUrl(url);
     } else {
+      // 取りに行く宛先はモデルが本文に書いたもの。こちらが決めた値では
+      // ないので、仕組みと宛先を確かめてから出す
+      if (!isFetchableImageUrl(url)) return null;
       budget.spend();
       const res = await fetch(url);
       if (!res.ok) return null;
@@ -419,7 +404,14 @@ async function storeImage(
         .trim()
         .toLowerCase();
       if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) return null;
-      payload = { buffer: await res.arrayBuffer(), mimeType };
+      // 申告されている大きさで先に弾く（読む前に分かるなら読まない）
+      const declared = Number(res.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > MAX_CAPTURED_BYTES) {
+        return null;
+      }
+      const buffer = await readBounded(res, MAX_CAPTURED_BYTES);
+      if (!buffer) return null;
+      payload = { buffer, mimeType };
     }
     if (
       !payload ||
@@ -524,15 +516,25 @@ export interface GenerationJob {
 
 /** 例外を投げず、必ずメッセージ行を確定させて終了する。 */
 /** 上流へのリクエスト。プロバイダごとの差はここに閉じる。 */
-async function requestUpstream(
+export async function requestUpstream(
   job: GenerationJob,
   messages: OutgoingMessage[],
+  /**
+   * 外部へ1件投げる直前に呼ばれる。枠を数えるために使う。
+   *
+   * この関数は**1回の呼び出しで2件投げることがある**（サーバーツールが
+   * 弾かれたときのやり直し）。呼ぶ側が「1回 = 1件」で数えていたので、
+   * 実際の本数が枠の数えを追い越し、上限の手前で切り上げる仕組みが
+   * 効かなくなっていた。投げる場所を1つにまとめて、そこで数える。
+   */
+  onRequest: () => void = () => {},
 ): Promise<Response> {
   const isPoe = job.model.startsWith(POE_PREFIX);
   const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
 
   // Webの扱いはOpenRouter専用。Poeは素のモデル名で投げる
   if (isPoe) {
+    onRequest();
     return await poeChatRequest({
       model: modelName,
       messages,
@@ -542,8 +544,9 @@ async function requestUpstream(
     });
   }
 
-  const send = (tools: boolean) =>
-    openRouterChatRequest({
+  const send = (tools: boolean) => {
+    onRequest();
+    return openRouterChatRequest({
       // 検索プラグインはモデル名の接尾辞で指定する。サーバーツールを
       // 渡すときは付けない（同じ検索を二重に走らせないため）
       model: !tools && job.web ? `${modelName}:online` : modelName,
@@ -555,6 +558,7 @@ async function requestUpstream(
       ...(tools ? { tools: WEB_SERVER_TOOLS } : {}),
       ...buildGenerationPayload(job.paramsState, "openrouter"),
     });
+  };
 
   if (!job.web || !job.webTools) return await send(false);
 
@@ -562,8 +566,8 @@ async function requestUpstream(
   // サーバーツールはbetaで、指定の形は変わりうる。弾かれたときに応答ごと
   // 失わせず、検索プラグインの側へ下がってもう一度だけ投げる。
   // 400の原因が⚙のパラメータ側なら、ツール抜きでも同じエラーが返るので
-  // 利用者に見せる文言は変わらない（外部リクエストを1件余計に使うのは、
-  // このやり直しの経路だけ）。
+  // 利用者に見せる文言は変わらない。ここで1件余計に使うぶんは
+  // onRequest で数えられる。
   if (res.status !== 400) return res;
   try {
     await res.body?.cancel();
@@ -763,9 +767,7 @@ async function readUpstreamStream(
         }
       }
 
-      const interval =
-        flushes < SMOOTH_FLUSHES ? FLUSH_INTERVAL_MS : LONG_FLUSH_INTERVAL_MS;
-      if (onProgress && Date.now() - lastProgress >= interval) {
+      if (onProgress && Date.now() - lastProgress >= flushInterval(flushes)) {
         lastProgress = Date.now();
         flushes++;
         if (await onProgress({ content, reasoning })) {
@@ -854,10 +856,13 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
 
   let upstream: Response;
   try {
-    budget.spend();
     // 添付画像はここでR2から読み出して data: URL に展開する
     // （DOのストレージに実体を持ち込まないため、ジョブにはIDだけを載せている）
-    upstream = await requestUpstream(job, await expandAttachments(job.messages));
+    upstream = await requestUpstream(
+      job,
+      await expandAttachments(job.messages),
+      budget.spend,
+    );
   } catch (e) {
     await finalizeGeneration(job.assistantMessageId, {
       content: "",
@@ -1027,7 +1032,6 @@ const MAX_HEARTBEAT_MS = 30 * 60 * 1000;
  */
 const LAUNCH_STAGGER_MS = 200;
 /** レート制限に当たったときの待ち時間。 */
-const RATE_LIMIT_BACKOFF_MS = [2_000, 4_000, 8_000];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -1073,8 +1077,9 @@ async function runAttempt(
   const isPoe = job.model.startsWith(POE_PREFIX);
   let upstream: Response;
   try {
-    budget.spend();
-    upstream = await requestUpstream(job, messages);
+    // 枠は requestUpstream の中で、投げるたびに数える
+    // （サーバーツールが弾かれると2件投げるため）
+    upstream = await requestUpstream(job, messages, budget.spend);
   } catch (e) {
     return {
       kind: "error",
@@ -1333,21 +1338,24 @@ async function runRetryGenerationJob(
     try {
       if (r.kind === "rate_limited") {
         // レート制限は上流の都合なので試行回数は消費しない。
-        // ただし待ち直しの回数には上限を設ける
-        if (state.rateLimitRounds >= RETRY_RATE_LIMIT_ROUNDS) {
+        // 待ち直しの回数だけを数えるが、**並列で走っている本数ぶんの
+        // 応答がほぼ同時に 429 で返る**ので、1つ受けるたびに増やすと
+        // 並列4なら1回の制限で上限を使い切る（onRateLimited を参照）。
+        // 上流が待ち時間を言っていればそれに従う
+        const next = onRateLimited(
+          {
+            pauseUntil,
+            rounds: state.rateLimitRounds,
+            exhausted: rateLimitExhausted,
+          },
+          { now: Date.now(), waitMs: r.waitMs ?? undefined },
+        );
+        pauseUntil = next.pauseUntil;
+        state.rateLimitRounds = next.rounds;
+        if (next.exhausted) {
           state.lastError = "レート制限が続いたため打ち切りました";
           rateLimitExhausted = true;
-          return;
         }
-        // 上流が待ち時間を言っていればそれに従う（決め打ちより正確で、
-        // 待ちすぎも待たなすぎも避けられる）。無ければ従来のバックオフ
-        pauseUntil =
-          Date.now() +
-          (r.waitMs ??
-            RATE_LIMIT_BACKOFF_MS[
-              Math.min(state.rateLimitRounds, RATE_LIMIT_BACKOFF_MS.length - 1)
-            ]);
-        state.rateLimitRounds++;
         return;
       }
 

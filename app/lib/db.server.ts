@@ -9,7 +9,12 @@ import {
   type AppSettings,
 } from "./settings";
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
-import { MIGRATIONS, statementsOf } from "./schema";
+import {
+  MIGRATIONS,
+  generatedImagesSql,
+  statementsOf,
+  undoGenerationStatements,
+} from "./schema";
 import { EMPTY_TOTALS, type UsageTotals } from "./usage";
 
 /**
@@ -497,10 +502,11 @@ export async function createFolder(name: string): Promise<FolderRow> {
   return row;
 }
 
+/** 更新できたかを返す（存在しないIDへの更新を、成功として返さないため）。 */
 export async function updateFolder(
   id: string,
   fields: { name?: string; pinned?: boolean },
-): Promise<void> {
+): Promise<boolean> {
   const d = await db();
   const sets: string[] = ["updated_at = ?"];
   const binds: unknown[] = [Date.now()];
@@ -513,10 +519,11 @@ export async function updateFolder(
     binds.unshift(fields.pinned ? 1 : 0);
   }
   binds.push(id);
-  await d
+  const res = await d
     .prepare(`UPDATE folders SET ${sets.join(", ")} WHERE id = ?`)
     .bind(...binds)
     .run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
 /** フォルダ削除。中の会話はフォルダなしに戻る（会話自体は消えない）。 */
@@ -1143,17 +1150,19 @@ export async function createGeneratedAttachment(params: {
 }
 
 /** お気に入りの切り替え。実体を共有する行（フォーク先）もまとめて揃える。 */
+/** 更新できたかを返す（存在しないIDへの更新を、成功として返さないため）。 */
 export async function setImageFavorite(
   id: string,
   favorite: boolean,
-): Promise<void> {
+): Promise<boolean> {
   const d = await db();
-  await d
+  const res = await d
     .prepare(
       "UPDATE attachments SET favorite = ? WHERE r2_key = (SELECT r2_key FROM attachments WHERE id = ?)",
     )
     .bind(favorite ? 1 : 0, id)
     .run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
 export interface GeneratedImageRow {
@@ -1193,10 +1202,8 @@ export async function listGeneratedImages(params: {
     .filter(Boolean)
     .slice(0, 5);
 
-  const conditions: string[] = ["a.kind = 'generated'", "a.created_at < ?"];
-  const binds: (string | number)[] = [
-    params.before ?? Number.MAX_SAFE_INTEGER,
-  ];
+  const conditions: string[] = [];
+  const binds: (string | number)[] = [];
   if (params.favoritesOnly) conditions.push("a.favorite = 1");
   for (const term of terms) {
     conditions.push(
@@ -1209,24 +1216,11 @@ export async function listGeneratedImages(params: {
     const like = `%${escapeLike(term)}%`;
     binds.push(like, like, like);
   }
+  binds.push(params.before ?? Number.MAX_SAFE_INTEGER);
   binds.push(params.limit);
 
   const { results } = await d
-    .prepare(
-      // フォークで実体を共有する行は重複させない。MAX() と併記した列は
-      // その最大行の値になる（SQLiteの規定の挙動）ので、最新の1行が残る。
-      `SELECT a.id, a.conversation_id, a.message_id,
-              MAX(a.created_at) AS created_at,
-              a.favorite, a.prompt,
-              c.title AS title, m.model_id AS model_id
-         FROM attachments a
-         LEFT JOIN conversations c ON c.id = a.conversation_id
-         LEFT JOIN messages m ON m.id = a.message_id
-        WHERE ${conditions.join(" AND ")}
-        GROUP BY a.r2_key
-        ORDER BY created_at DESC
-        LIMIT ?`,
-    )
+    .prepare(generatedImagesSql(conditions))
     .bind(...binds)
     .all<GeneratedImageRow>();
   return results;
@@ -1375,6 +1369,34 @@ export async function beginGeneration(params: {
 
   await d.batch(statements);
   return { userMessageId, assistantMessageId };
+}
+
+/**
+ * 生成の開始を取り消す。
+ *
+ * beginGeneration は行を保存してから返る。そのあとで生成の実行を
+ * 登録できなかった場合（Durable Object の起動に失敗した等）、保存だけが
+ * 残る——ユーザーの発言と、永久に「生成中」のままの応答が木に積まれる。
+ * 利用者から見ると失敗したので送り直すが、そのたびに**同じ発言が
+ * 増えていく**。
+ *
+ * 始める前の状態へ戻す。添付は消さずに紐づけだけ外す（アップロード
+ * 済みのものを捨てる理由は無い。使われないまま残ったものは、既存の
+ * 掃除が拾う）。
+ */
+export async function undoGeneration(params: {
+  conversationId: string;
+  userMessageId: string | null;
+  assistantMessageId: string;
+  /** 開始前の葉。生成前に見ていた位置へ戻す。 */
+  previousLeafId: string | null;
+}): Promise<void> {
+  const d = await db();
+  await d.batch(
+    undoGenerationStatements(params).map((st) =>
+      d.prepare(st.sql).bind(...st.binds),
+    ),
+  );
 }
 
 /**

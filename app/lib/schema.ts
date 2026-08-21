@@ -169,3 +169,83 @@ export function statementsOf(sql: string): string[] {
     .map((t) => t.trim())
     .filter((t) => t !== "");
 }
+
+/**
+ * 生成画像の一覧を引くSQL。
+ *
+ * 本体（db.server.ts）と、SQLite に流して確かめるテストの両方が
+ * これを使う。手で書き写すと、片方だけ直したときに気づけない。
+ *
+ * 続きを読む位置（before）は HAVING で切る。WHERE で切ると、まとめる前の
+ * 1行ずつに効いてしまう——フォークで実体を共有する画像は行が複数あるので、
+ * 1ページ目に新しいほうの行で出たあと、2ページ目では古いほうの行が残って
+ * **同じ画像がもう一度出る**。
+ *
+ * HAVING では別名（created_at）ではなく MAX(a.created_at) と書く。
+ * messages にも created_at があるため、別名だとどちらを指すのか
+ * 決まらず「ambiguous column name」で問い合わせごと失敗する。
+ *
+ * @param conditions WHERE に足す条件（お気に入りのみ・検索語など）
+ */
+export function generatedImagesSql(conditions: string[]): string {
+  const where = ["a.kind = 'generated'", ...conditions].join(" AND ");
+  // MAX() と併記した列はその最大行の値になる（SQLiteの規定の挙動）ので、
+  // まとめたあとに残るのは最新の1行
+  return `SELECT a.id, a.conversation_id, a.message_id,
+              MAX(a.created_at) AS created_at,
+              a.favorite, a.prompt,
+              c.title AS title, m.model_id AS model_id
+         FROM attachments a
+         LEFT JOIN conversations c ON c.id = a.conversation_id
+         LEFT JOIN messages m ON m.id = a.message_id
+        WHERE ${where}
+        GROUP BY a.r2_key
+       HAVING MAX(a.created_at) < ?
+        ORDER BY created_at DESC
+        LIMIT ?`;
+}
+
+/** 実行する1文。バインドする値と組で返す。 */
+export interface Statement {
+  sql: string;
+  binds: (string | number | null)[];
+}
+
+/**
+ * 生成の開始を取り消す文。
+ *
+ * 本体（db.server.ts）と、SQLite に流して確かめるテストの両方がこれを
+ * 使う。手で書き写すと、片方だけ直したときに気づけない。
+ *
+ * 順序に意味がある。添付の紐づけを外すのは、行を消すより**先**——
+ * メッセージの行が消えたあとでは、どの添付だったのか辿れない。
+ */
+export function undoGenerationStatements(params: {
+  conversationId: string;
+  userMessageId: string | null;
+  assistantMessageId: string;
+  previousLeafId: string | null;
+}): Statement[] {
+  const out: Statement[] = [];
+  if (params.userMessageId) {
+    out.push({
+      sql: "UPDATE attachments SET message_id = NULL, conversation_id = NULL WHERE message_id = ?",
+      binds: [params.userMessageId],
+    });
+  }
+  out.push({
+    sql: "DELETE FROM messages WHERE id = ?",
+    binds: [params.assistantMessageId],
+  });
+  if (params.userMessageId) {
+    out.push({
+      sql: "DELETE FROM messages WHERE id = ?",
+      binds: [params.userMessageId],
+    });
+  }
+  out.push({
+    sql: "UPDATE conversations SET current_leaf_message_id = ? WHERE id = ?",
+    binds: [params.previousLeafId, params.conversationId],
+  });
+  return out;
+}

@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
@@ -37,6 +37,7 @@ import {
 import { Composer } from "./chat/Composer";
 import { SelectionBar } from "./chat/SelectionBar";
 import { type MessageActions } from "./chat/message-context";
+import { useEscapeToClose } from "../lib/dismiss";
 import type {
   CreateConversationResponse,
   ErrorResponse,
@@ -49,7 +50,7 @@ import {
   IconMenu,
   IconSliders,
 } from "./icons";
-import { GLASS_PANEL } from "../lib/ui";
+import { GLASS_PANEL, scrollBehavior } from "../lib/ui";
 
 /** この会話に適用されるボット設定（会話開始時のスナップショット）。 */
 export interface BotContext {
@@ -640,7 +641,7 @@ export function Chat({
     if (!el) return;
     stickToBottomRef.current = true;
     setAtBottom(true);
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    el.scrollTo({ top: el.scrollHeight, behavior: scrollBehavior() });
   };
 
   // --- 添付画像 -----------------------------------------------------------
@@ -760,6 +761,9 @@ export function Chat({
   ) {
     setError(null);
     setIsStreaming(true);
+    // 前の生成で押された停止を持ち越さない（押した直後に始まった
+    // 別の生成が、その場で止まってしまう）
+    stopWantedRef.current = false;
     // ⚙パネルを開いたまま送信できるので、生成が始まったら畳んで会話を見せる
     setParamsOpen(false);
     const track = startTracking();
@@ -869,6 +873,9 @@ export function Chat({
         return next;
       });
 
+      // 返事を待っているあいだに停止を押されていたら、ここで送る
+      if (stopWantedRef.current) sendStop(convId, assistantMessageId);
+
       // 生成過程・最終状態はサーバーを正とし、ポーリングで追いかける
       if (retryConfig) {
         await pollRunUntilDone(convId, track);
@@ -971,18 +978,44 @@ export function Chat({
     );
   }
 
+  /**
+   * 押されたのに、止める相手がまだ決まっていない停止。
+   *
+   * 送信した直後は、応答の行にサーバーのIDがまだ付いていない（保存の
+   * 返事を待っている最中）。以前はここで黙って何もしなかったので、
+   * **停止ボタンを押しても無反応**に見えた。押した意思を覚えておき、
+   * IDが付いた時点で送る。
+   */
+  const stopWantedRef = useRef(false);
+
+  function sendStop(convId: string, messageId: string) {
+    stopWantedRef.current = false;
+    void fetch(`/api/conversations/${convId}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId }),
+    })
+      // 失敗はトーストで出す。エラーの帯は取り直しで消えることがあり、
+      // 一瞬しか出ないことがある。止め損ねたことは伝わってほしい
+      .then((res) => {
+        if (!res.ok) showNotice("停止できませんでした");
+      })
+      .catch(() => showNotice("停止できませんでした"));
+  }
+
   function stop() {
     const convId = convIdRef.current;
     // リトライ生成では末尾が完了済みの応答なので、生成中の行を探す
     const target = [...messages]
       .reverse()
       .find((m) => m.role === "assistant" && m.id && m.status === "streaming");
-    if (!convId || !target?.id) return;
-    void fetch(`/api/conversations/${convId}/stop`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messageId: target.id }),
-    }).catch(() => {});
+    if (!convId || !target?.id) {
+      // 保存の返事待ち。IDが付いた時点で送る
+      stopWantedRef.current = true;
+      showNotice("停止しています…");
+      return;
+    }
+    sendStop(convId, target.id);
   }
 
   /**
@@ -1156,10 +1189,20 @@ export function Chat({
     }
   }
 
+  /**
+   * ブランチ切替（ページャ）の世代。
+   *
+   * 連打すると要求が並んで飛び、返る順は投げた順とは限らない。古いほうが
+   * 後に返ると、押したのとは違う枝が最後に表示されて残る。いちばん新しい
+   * 要求の結果だけを受け取る。
+   */
+  const branchSeq = useRef(0);
+
   /** ブランチ切替（ページャ）。 */
   async function switchBranch(targetId: string) {
     const convId = convIdRef.current;
     if (isStreaming || !convId) return;
+    const seq = ++branchSeq.current;
     try {
       const res = await fetch(`/api/conversations/${convId}/path`, {
         method: "POST",
@@ -1168,9 +1211,12 @@ export function Chat({
       });
       if (!res.ok) throw new Error();
       const { messages: fresh } = (await res.json()) as PathResponse;
+      // 追い越されていたら、こちらの結果は捨てる
+      if (seq !== branchSeq.current) return;
       setMessages(fresh);
       setError(null);
     } catch {
+      if (seq !== branchSeq.current) return;
       setError("ブランチの切替に失敗しました。");
     }
   }
@@ -1255,6 +1301,15 @@ export function Chat({
     followBottom,
   };
 
+  // 重ねて出しているものは Escape で閉じる。内側から順に1枚ずつ
+  const closeParams = useCallback(() => setParamsOpen(false), []);
+  const closePending = useCallback(() => setPendingRun(null), []);
+  const cancelSelecting = useCallback(() => setSelecting(null), []);
+  useEscapeToClose(selecting != null, cancelSelecting);
+  useEscapeToClose(paramsOpen, closeParams);
+  useEscapeToClose(pendingRun != null, closePending);
+  // 拡大表示（Lightbox）は自前で Escape を見ているので、ここでは足さない
+
   const lastMessage = messages[messages.length - 1];
   /** 表示中の枝にコンテキストの区切りがあるか（入力欄のアイコンの色）。 */
   const hasContextBoundary = messages.some((m) => m.contextBoundary);
@@ -1329,8 +1384,13 @@ export function Chat({
         </div>
       </header>
 
+      {/*
+        ⚙のパネル。フッター（コンポーザー）と同じ z-20 だったため、
+        画面が低いとパネルの下端がコンポーザーに隠れ、そこのタップも
+        奪われていた。あとから開く「上に載せるもの」なので z-30。
+      */}
       {paramsOpen && (
-        <div className="fixed inset-0 z-20" onClick={() => setParamsOpen(false)}>
+        <div className="fixed inset-0 z-30" onClick={() => setParamsOpen(false)}>
           <div
             className={`absolute right-2 top-[calc(3.5rem+env(safe-area-inset-top))] max-h-[70vh] w-[min(94vw,26rem)] origin-top-right overflow-y-auto rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
             onClick={(e) => e.stopPropagation()}

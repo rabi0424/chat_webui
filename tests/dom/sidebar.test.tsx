@@ -273,3 +273,300 @@ describe("お気に入りフォルダ", () => {
     expect(screen.queryByText("ふつうの会話")).toBeNull();
   });
 });
+
+/**
+ * 開いたものが Escape で閉じるか。
+ *
+ * フック単体の挙動は dismiss.test が見ている。ここが見るのは配線——
+ * 呼び忘れても型は通り、キーボードで閉じられないまま残る。
+ */
+describe("Escape で閉じる", () => {
+  it("「…」メニューが閉じる", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    await openMenu(user, "対象の会話");
+    expect(screen.getByText("名前を変更")).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByText("名前を変更")).toBeNull();
+  });
+
+  it("フォルダ移動のモーダルが閉じる", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+      folders: [folder("f1", "仕事")],
+    });
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("フォルダへ移動…"));
+    expect(screen.getByText(/をフォルダへ移動/)).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByText(/をフォルダへ移動/)).toBeNull();
+  });
+});
+
+/**
+ * 操作が失敗したとき。
+ *
+ * これまでは fetch を .catch(() => {}) で握りつぶしていた。名前を変えた
+ * つもりが変わっていない・消したつもりが残っている、という結果だけが
+ * 残り、しかも一覧は取り直されるので**元に戻ったように見える**。
+ */
+describe("操作の失敗", () => {
+  it("名前の変更が失敗したら、そう出る", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.failAll(500);
+    answerPrompt("新しい名前");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/失敗/);
+  });
+
+  it("削除が失敗したら、そう出る", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.failAll(500);
+    answerConfirm(true);
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("削除"));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/失敗/);
+  });
+
+  it("成功したときは何も出さない", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    answerPrompt("新しい名前");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+
+    await waitFor(() => expect(server.countOf("/conversations/c1")).toBe(1));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("閉じられる", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.failAll(500);
+    answerPrompt("新しい名前");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+
+    await screen.findByRole("status");
+    await user.click(screen.getByLabelText("閉じる"));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+describe("操作の失敗（続き）", () => {
+  it("通信そのものが切れた場合も伝える", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.throwAll();
+    answerPrompt("新しい名前");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/失敗/);
+  });
+
+  it("次に成功したら消える", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.failAll(500);
+    answerPrompt("一度目");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+    await screen.findByRole("status");
+
+    server.succeed();
+    answerPrompt("二度目");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
+  /** 消せていないのに画面だけ移ると、消えたように見えてしまう。 */
+  it("削除に失敗したら、その会話から移動しない", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+      current: "c1",
+    });
+    expect(screen.getByTestId("here").textContent).toBe("/chat/c1");
+
+    server.failAll(500);
+    answerConfirm(true);
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("削除"));
+
+    await screen.findByRole("status");
+    expect(screen.getByTestId("here").textContent).toBe("/chat/c1");
+  });
+
+  it("削除に成功したら、その会話から移動する", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+      current: "c1",
+    });
+    answerConfirm(true);
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("削除"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("here").textContent).toBe("/"),
+    );
+  });
+  it("フォルダの削除に失敗したら、フォルダは残る", () => {
+    // 消えたように見せない。一覧は取り直されるので、失敗していれば行は戻る
+    return (async () => {
+      const { user } = renderSidebar({
+        conversations: [],
+        folders: [folder("f1", "仕事")],
+      });
+      server.failAll(500);
+      answerConfirm(true);
+      await openMenu(user, "仕事");
+      await user.click(screen.getByText("削除"));
+
+      await screen.findByRole("status");
+      expect(screen.getByText("仕事")).toBeTruthy();
+    })();
+  });
+});
+
+
+/**
+ * 検索の連打。
+ *
+ * 打つのを止めた分は待つが、それでも要求は並びうる（前の語の検索が
+ * 遅いと、後の語の結果が先に返る）。古いほうが後に返ると、いま入って
+ * いる語と合わない結果が残る。
+ */
+describe("検索の順序", () => {
+  it("古い結果が後から返っても、最新の語の結果が残る", async () => {
+    const { user } = renderSidebar({ conversations: [] });
+    await user.click(screen.getByLabelText("会話を検索"));
+    const box = screen.getByLabelText("会話を検索");
+
+    let releaseFirst: (() => void) | null = null;
+    let nth = 0;
+    server.onSearch((q) => {
+      nth++;
+      const body = { results: [{ id: `r${nth}`, title: `${q} の結果` }] };
+      if (nth === 1) {
+        return new Promise((resolve) => {
+          releaseFirst = () => resolve(body);
+        });
+      }
+      return body;
+    });
+
+    await user.type(box, "あ");
+    await new Promise((r) => setTimeout(r, 350));
+    await user.type(box, "い");
+    await new Promise((r) => setTimeout(r, 350));
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("あい の結果"),
+    );
+
+    releaseFirst?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(document.body.textContent).toContain("あい の結果");
+    expect(document.body.textContent).not.toContain("あ の結果");
+  });
+});
+
+/**
+ * フォルダの開閉状態。
+ *
+ * スマホのドロワーは閉じるたびに外される。状態を中に持っていたので、
+ * 開き直すたびにフォルダが畳まれ、**中を見るには毎回開き直す**ことに
+ * なっていた。保存して持ち回る形にした。
+ */
+describe("フォルダの開閉が残る", () => {
+  it("開いた状態が保存される", async () => {
+    const { user, unmount } = renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    const row = () => screen.getByText("仕事").closest("li") as HTMLElement;
+    await user.click(within(row()).getByLabelText("展開"));
+    expect(within(row()).getByText("中の会話")).toBeTruthy();
+
+    // ドロワーが閉じて外される、に相当
+    unmount();
+
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    // 開いたまま
+    expect(screen.getByText("中の会話")).toBeTruthy();
+  });
+
+  it("畳んだ状態も残る", async () => {
+    const { user, unmount } = renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    const row = () => screen.getByText("仕事").closest("li") as HTMLElement;
+    await user.click(within(row()).getByLabelText("展開"));
+    await user.click(within(row()).getByLabelText("折りたたむ"));
+    unmount();
+
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    expect(screen.queryByText("中の会話")).toBeNull();
+  });
+
+  it("読めない保存値は、畳んだ状態として扱う", () => {
+    localStorage.setItem("chat-webui:expanded-folders", "{壊れている");
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    expect(screen.queryByText("中の会話")).toBeNull();
+    expect(screen.getByText("仕事")).toBeTruthy();
+  });
+
+  /**
+   * JSON としては読めるが形が違うもの。前のバージョンが書いた値や、
+   * 手で書き換えたものがこの形になる。読めてしまうぶん、素通りしやすい。
+   */
+  it("形の違う保存値も、畳んだ状態として扱う", () => {
+    localStorage.setItem(
+      "chat-webui:expanded-folders",
+      JSON.stringify({ f1: true }),
+    );
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    // 「畳んでいる」と「そもそも描けていない」は、queryByText では
+    // 区別が付かない。一覧が出ていることも確かめる
+    expect(screen.getByText("仕事")).toBeTruthy();
+    expect(screen.queryByText("中の会話")).toBeNull();
+  });
+
+  it("配列だが中身が文字列でないものも同じ", () => {
+    localStorage.setItem("chat-webui:expanded-folders", JSON.stringify([1, 2]));
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    expect(screen.getByText("仕事")).toBeTruthy();
+    expect(screen.queryByText("中の会話")).toBeNull();
+  });
+});

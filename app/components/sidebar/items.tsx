@@ -32,7 +32,7 @@ export function MenuButton({ target }: { target: MenuTarget }) {
         setMenu(open ? null : target);
       }}
       aria-label="メニュー"
-      className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block [@media(hover:none)]:block"
+      className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block touch:block touch:p-2.5"
     >
       <IconEllipsis className="h-4 w-4" />
     </button>
@@ -181,7 +181,7 @@ export function ConversationItem({ c, indent = false }: { c: ConversationRow; in
  * （名前の変更も削除もできないため、出すものが無い）。
  */
 export function FavoritesFolderItem() {
-  const { expanded, setExpanded, setView, favorites } = useSidebar();
+  const { expanded, toggleExpanded, setView, favorites } = useSidebar();
   const isExpanded = expanded.has(FAVORITES_ID);
   const children = favorites;
   return (
@@ -189,16 +189,9 @@ export function FavoritesFolderItem() {
       <div className="flex items-center">
         <button
           type="button"
-          onClick={() =>
-            setExpanded((prev) => {
-              const next = new Set(prev);
-              if (next.has(FAVORITES_ID)) next.delete(FAVORITES_ID);
-              else next.add(FAVORITES_ID);
-              return next;
-            })
-          }
+          onClick={() => toggleExpanded(FAVORITES_ID)}
           aria-label={isExpanded ? "折りたたむ" : "展開"}
-          className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 touch:p-2.5 dark:hover:bg-neutral-800"
         >
           <IconChevronRight
             className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`}
@@ -215,7 +208,7 @@ export function FavoritesFolderItem() {
               items-center で箱の中央が揃い、小さい字だけ上にずれて見える */}
           <span className="min-w-0 flex-1 truncate">
             お気に入り
-            <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
+            <span className="ml-1.5 text-xs text-neutral-500 dark:text-neutral-400">
               {children.length}
             </span>
           </span>
@@ -224,7 +217,7 @@ export function FavoritesFolderItem() {
       {isExpanded && (
         <ul className="mt-0.5 space-y-0.5">
           {children.length === 0 && (
-            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
               （まだありません）
             </li>
           )}
@@ -238,7 +231,8 @@ export function FavoritesFolderItem() {
 }
 
 export function FolderItem({ f }: { f: FolderRow }) {
-  const { menu, expanded, setExpanded, setView, conversationsIn } = useSidebar();
+  const { menu, expanded, toggleExpanded, setView, conversationsIn } =
+    useSidebar();
   const open = menu?.type === "folder" && menu.id === f.id;
   const isExpanded = expanded.has(f.id);
   const children = conversationsIn(f.id);
@@ -247,16 +241,9 @@ export function FolderItem({ f }: { f: FolderRow }) {
       <div className="flex items-center">
         <button
           type="button"
-          onClick={() =>
-            setExpanded((prev) => {
-              const next = new Set(prev);
-              if (next.has(f.id)) next.delete(f.id);
-              else next.add(f.id);
-              return next;
-            })
-          }
+          onClick={() => toggleExpanded(f.id)}
           aria-label={isExpanded ? "折りたたむ" : "展開"}
-          className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 touch:p-2.5 dark:hover:bg-neutral-800"
         >
           <IconChevronRight
             className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`}
@@ -269,7 +256,7 @@ export function FolderItem({ f }: { f: FolderRow }) {
         >
           <span aria-hidden className="mr-1.5">📁</span>
           {f.name}
-          <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
+          <span className="ml-1.5 text-xs text-neutral-500 dark:text-neutral-400">
             {children.length}
           </span>
         </button>
@@ -279,7 +266,7 @@ export function FolderItem({ f }: { f: FolderRow }) {
       {isExpanded && (
         <ul className="mt-0.5 space-y-0.5">
           {children.length === 0 && (
-            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
               （空のフォルダ）
             </li>
           )}

@@ -21,9 +21,26 @@ export default defineConfig({
         test: {
           name: "node",
           include: ["tests/*.test.ts"],
-          exclude: ["tests/schema.test.ts"],
+          exclude: ["tests/schema.test.ts", "tests/touch-variant.test.ts"],
           // localStorage を触るものがあるので DOM を用意する
           environment: "jsdom",
+        },
+      },
+      {
+        // サーバー側のモジュール（cloudflare:workers を読むもの）のうち、
+        // バインディングに触らない部分を試す
+        resolve: {
+          alias: {
+            "cloudflare:workers": new URL(
+              "./tests/stubs/cloudflare-workers.ts",
+              import.meta.url,
+            ).pathname,
+          },
+        },
+        test: {
+          name: "server",
+          include: ["tests/server/*.test.ts"],
+          environment: "node",
         },
       },
       {
@@ -31,6 +48,14 @@ export default defineConfig({
           name: "schema",
           include: ["tests/schema.test.ts"],
           // node:sqlite を読むので、DOM を被せない
+          environment: "node",
+        },
+      },
+      {
+        test: {
+          name: "css",
+          // ビルド結果の CSS を読むので、素の Node で
+          include: ["tests/touch-variant.test.ts"],
           environment: "node",
         },
       },

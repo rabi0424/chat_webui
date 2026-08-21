@@ -38,7 +38,7 @@ const TAIL_MAX = 400;
  * 一定に保てる。切れ目は段落 → 行 の順に探し、コードブロックや
  * ブロック数式の途中では切らない（前半だけが壊れて見えるため）。
  */
-function splitStream(text: string): {
+export function splitStream(text: string): {
   head: string;
   /** null = 分割できない（全体をそのまま描く）。 */
   tail: string | null;
@@ -55,8 +55,13 @@ function splitStream(text: string): {
     const head = text.slice(0, cut + keep);
     const tail = text.slice(cut + keep);
     if (!tail.trim() || tail.length > TAIL_MAX) return null;
-    // ブロック数式（$$）を跨いで切ると前半が数式のまま閉じない
+    // ブロック数式を跨いで切ると、前半が数式のまま閉じない。
+    // $$…$$ だけでなく \[…\] の書き方もあるので、両方を見る
+    // （こちらは開きと閉じが別の記号なので、数を突き合わせる）
     if ((head.match(/\$\$/g)?.length ?? 0) % 2 === 1) return null;
+    const opens = head.match(/\\\[/g)?.length ?? 0;
+    const closes = head.match(/\\\]/g)?.length ?? 0;
+    if (opens !== closes) return null;
     return { head, tail, tight };
   };
 

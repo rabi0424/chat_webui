@@ -1,4 +1,5 @@
 import { startTransition, useEffect, useState } from "react";
+import { useCopied } from "../lib/use-copied";
 import { useOutletContext, useRevalidator } from "react-router";
 import type { Route } from "./+types/settings";
 import type { ShellContext } from "./shell";
@@ -11,13 +12,11 @@ import {
   type AppSettings,
 } from "../lib/settings";
 import { monthLabelJst } from "../lib/usage";
-import { getTheme, saveTheme, type Theme } from "../lib/theme";
+import { saveTheme, useTheme, type Theme } from "../lib/theme";
 import {
   CHAT_FONT_SIZES,
-  DEFAULT_CHAT_FONT_SIZE,
-  getChatFontSize,
   saveChatFontSize,
-  type ChatFontSize,
+  useChatFontSize,
 } from "../lib/chat-font";
 import { AccentPicker } from "../components/ThemeToggle";
 import { NumberInput } from "../components/NumberInput";
@@ -152,7 +151,7 @@ function DeltaBadge({ cur, prev }: { cur: number; prev: number | undefined }) {
  */
 function PerfPanel() {
   const [comparison, setComparison] = useState<BuildComparison | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied] = useCopied();
 
   // localStorageはSSRで読めないので描画後に読む。集計は画面表示を
   // 待たせないよう低優先度で行う
@@ -164,8 +163,7 @@ function PerfPanel() {
     if (!comparison) return;
     try {
       await navigator.clipboard.writeText(formatComparison(comparison));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      flashCopied();
     } catch {
       // 権限がない環境では黙って何もしない
     }
@@ -278,15 +276,10 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 端末ごとの設定はlocalStorage。描画後に読む（SSRでは参照できない）
-  const [theme, setTheme] = useState<Theme>("system");
-  const [chatFont, setChatFont] = useState<ChatFontSize>(
-    DEFAULT_CHAT_FONT_SIZE,
-  );
-  useEffect(() => {
-    setTheme(getTheme());
-    setChatFont(getChatFontSize());
-  }, []);
+  // 端末ごとの設定は localStorage。保存値を購読するので、
+  // サイドバーのトグルで変えた分もここに出る（SSRでは既定値）
+  const theme = useTheme();
+  const chatFont = useChatFontSize();
 
   async function save(patch: Partial<AppSettings>) {
     const next = { ...settings, ...patch };
@@ -338,7 +331,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl p-4">
+        <div className="mx-auto max-w-2xl p-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
           <Section
             title="生成"
             note="上流のAPIに繰り返し要求を出す機能の歯止め。会話ごとの設定はこの値を超えられません。"
@@ -439,11 +432,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             <Row label="テーマ" description="ライト / ダーク / 端末設定に追従">
               <select
                 value={theme}
-                onChange={(e) => {
-                  const next = e.target.value as Theme;
-                  setTheme(next);
-                  saveTheme(next);
-                }}
+                onChange={(e) => saveTheme(e.target.value as Theme)}
                 aria-label="テーマ"
                 className="rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
               >
@@ -467,10 +456,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                     key={f.value}
                     type="button"
                     aria-pressed={chatFont === f.value}
-                    onClick={() => {
-                      setChatFont(f.value);
-                      saveChatFontSize(f.value);
-                    }}
+                    onClick={() => saveChatFontSize(f.value)}
                     className={`px-3 py-1.5 text-sm transition-colors ${
                       chatFont === f.value
                         ? "bg-accent text-accent-fg"
@@ -503,3 +489,8 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
     </div>
   );
 }
+
+
+// 例外の受け皿はこのルートに置く。root に任せると文書ごと
+// 差し替わり、サイドバーまで消えて戻る導線が無くなる
+export { RouteError as ErrorBoundary } from "../components/RouteError";

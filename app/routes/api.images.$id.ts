@@ -15,6 +15,11 @@ export async function action({ request, params }: Route.ActionArgs) {
   if (typeof body.favorite !== "boolean") {
     return Response.json({ error: "favorite は必須です" }, { status: 400 });
   }
-  await setImageFavorite(params.id, body.favorite);
+  const updated = await setImageFavorite(params.id, body.favorite);
+  // 無いものを更新して成功を返すと、印を付けたつもりが付いていない、
+  // という結果だけが残る
+  if (!updated) {
+    return Response.json({ error: "画像が見つかりません" }, { status: 404 });
+  }
   return Response.json({ ok: true });
 }

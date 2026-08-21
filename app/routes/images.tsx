@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PULL_IGNORE_SELECTOR,
   PULL_MAX_PX,
@@ -14,6 +14,7 @@ import { Lightbox } from "../components/Lightbox";
 import type { ImagesResponse } from "../lib/api-types";
 import { IconEllipsis, IconMenu, IconSearch, IconX } from "../components/icons";
 import { GLASS_PANEL } from "../lib/ui";
+import { useEscapeToClose } from "../lib/dismiss";
 
 export function meta() {
   return [{ title: "画像 - Chat WebUI" }];
@@ -57,6 +58,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   /** 「…」を開いている画像ID。 */
   const [menu, setMenu] = useState<string | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 一覧の末尾。ここが見えたら続きを読む。 */
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -272,6 +274,8 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     }
   }
 
+  useEscapeToClose(menu != null, closeMenu);
+
   return (
     <div
       className="flex h-full flex-col"
@@ -387,7 +391,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                       setMenu(menu === img.id ? null : img.id);
                     }}
                     aria-label="この画像の操作"
-                    className="absolute right-1.5 top-1.5 rounded-lg bg-black/45 p-1 text-white opacity-0 group-hover/img:opacity-100 focus:opacity-100 [@media(hover:none)]:opacity-100"
+                    className="absolute right-1.5 top-1.5 rounded-lg bg-black/45 p-1 text-white opacity-0 group-hover/img:opacity-100 focus:opacity-100 touch:opacity-100"
                   >
                     <IconEllipsis className="h-4 w-4" />
                   </button>
@@ -474,3 +478,8 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     </div>
   );
 }
+
+
+// 例外の受け皿はこのルートに置く。root に任せると文書ごと
+// 差し替わり、サイドバーまで消えて戻る導線が無くなる
+export { RouteError as ErrorBoundary } from "../components/RouteError";

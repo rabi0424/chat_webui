@@ -11,6 +11,11 @@ import { IconPencil, IconTrash } from "../icons";
 import { BranchPager, CopyButton, MessageImages } from "./message-parts";
 import { MessageEditor, type EditingState } from "./MessageEditor";
 import { selectionClassOf, useMessageActions } from "./message-context";
+import {
+  MSG_DELETE_ACTION,
+  MSG_ICON_ACTION,
+  MSG_TEXT_ACTION,
+} from "../../lib/ui";
 
 export function UserMessage({
   m,
@@ -38,10 +43,9 @@ export function UserMessage({
     switchBranch,
     fork,
     openImage,
+    followBottom,
   } = useMessageActions();
   const selectable = selecting != null && m.id != null;
-  const iconButton =
-    "rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500";
 
   return (
     <div
@@ -59,7 +63,11 @@ export function UserMessage({
       ) : (
         <>
           {m.attachments && m.attachments.length > 0 && (
-            <MessageImages attachments={m.attachments} onOpen={openImage} />
+            <MessageImages
+              attachments={m.attachments}
+              onOpen={openImage}
+              onLoad={followBottom}
+            />
           )}
           {m.content && (
             <div className="flex justify-end">
@@ -98,7 +106,7 @@ export function UserMessage({
                     }
                     aria-label="編集して再送信"
                     title="編集して再送信（分岐を作成）"
-                    className={iconButton}
+                    className={MSG_ICON_ACTION}
                   >
                     <IconPencil className="h-3.5 w-3.5" />
                   </button>
@@ -106,7 +114,7 @@ export function UserMessage({
                     type="button"
                     onClick={() => fork(m.id!)}
                     title="ここから分岐（独立した新しい会話を作成）"
-                    className="rounded px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
+                    className={MSG_TEXT_ACTION}
                   >
                     ⑂ ここから分岐
                   </button>
@@ -115,7 +123,7 @@ export function UserMessage({
                     onClick={() => startSelect(m.id!)}
                     aria-label="削除"
                     title="メッセージを削除（選択モードへ）"
-                    className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-red-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-red-400 dark:group-hover/msg:text-neutral-500"
+                    className={MSG_DELETE_ACTION}
                   >
                     <IconTrash className="h-3.5 w-3.5" />
                   </button>

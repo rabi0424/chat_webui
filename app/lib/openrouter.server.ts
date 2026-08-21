@@ -569,7 +569,6 @@ const UPSTREAM_CONNECT_TIMEOUT_MS = 60_000;
 
 export async function poeChatRequest(
   body: Record<string, unknown>,
-  signal?: AbortSignal,
 ): Promise<Response> {
   return await fetch(`${POE_BASE}/chat/completions`, {
     method: "POST",
@@ -578,13 +577,12 @@ export async function poeChatRequest(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-    signal: signal ?? AbortSignal.timeout(UPSTREAM_CONNECT_TIMEOUT_MS),
+    signal: AbortSignal.timeout(UPSTREAM_CONNECT_TIMEOUT_MS),
   });
 }
 
 export async function openRouterChatRequest(
   body: Record<string, unknown>,
-  signal?: AbortSignal,
 ): Promise<Response> {
   return await fetch(`${OPENROUTER_BASE}/chat/completions`, {
     method: "POST",
@@ -596,6 +594,6 @@ export async function openRouterChatRequest(
       "X-Title": "chat_webui",
     },
     body: JSON.stringify(body),
-    signal: signal ?? AbortSignal.timeout(UPSTREAM_CONNECT_TIMEOUT_MS),
+    signal: AbortSignal.timeout(UPSTREAM_CONNECT_TIMEOUT_MS),
   });
 }

@@ -1,3 +1,5 @@
+import { notifyChanged, readRaw, usePersisted, writeRaw } from "./persisted";
+
 /**
  * チャット本文の文字サイズ。
  *
@@ -47,14 +49,19 @@ export const CHAT_FONT_INIT_SCRIPT = `
 `;
 
 export function getChatFontSize(): ChatFontSize {
-  try {
-    const v = localStorage.getItem(CHAT_FONT_STORAGE_KEY);
-    return CHAT_FONT_SIZES.some((s) => s.value === v)
-      ? (v as ChatFontSize)
-      : DEFAULT_CHAT_FONT_SIZE;
-  } catch {
-    return DEFAULT_CHAT_FONT_SIZE;
-  }
+  const v = readRaw(CHAT_FONT_STORAGE_KEY);
+  return CHAT_FONT_SIZES.some((s) => s.value === v)
+    ? (v as ChatFontSize)
+    : DEFAULT_CHAT_FONT_SIZE;
+}
+
+/** いまの文字サイズを購読する（理由は lib/theme.ts と同じ）。 */
+export function useChatFontSize(): ChatFontSize {
+  return usePersisted(
+    CHAT_FONT_STORAGE_KEY,
+    getChatFontSize,
+    DEFAULT_CHAT_FONT_SIZE,
+  );
 }
 
 /** DOMへ反映するだけ（保存はしない）。理由は lib/theme.ts と同じ。 */
@@ -67,12 +74,9 @@ export function applyChatFontSize(size: ChatFontSize): void {
 
 /** 選択を保存して反映する。 */
 export function saveChatFontSize(size: ChatFontSize): void {
-  try {
-    localStorage.setItem(CHAT_FONT_STORAGE_KEY, size);
-  } catch {
-    // 保存できなくても、この画面のあいだは反映しておく
-  }
+  writeRaw(CHAT_FONT_STORAGE_KEY, size);
   applyChatFontSize(size);
+  notifyChanged(CHAT_FONT_STORAGE_KEY);
 }
 
 /** 保存値を読み直してDOMへ貼り直す。 */

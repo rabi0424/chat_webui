@@ -1,3 +1,5 @@
+import { notifyChanged, readRaw, usePersisted, writeRaw } from "./persisted";
+
 /**
  * アクセント（ハイライト）カラー。
  *
@@ -46,12 +48,13 @@ export const ACCENT_INIT_SCRIPT = `
 `;
 
 export function getAccent(): string {
-  try {
-    const a = localStorage.getItem(ACCENT_STORAGE_KEY);
-    return a && ACCENTS.some((x) => x.id === a) ? a : DEFAULT_ACCENT;
-  } catch {
-    return DEFAULT_ACCENT;
-  }
+  const a = readRaw(ACCENT_STORAGE_KEY);
+  return a && ACCENTS.some((x) => x.id === a) ? a : DEFAULT_ACCENT;
+}
+
+/** いま選ばれているアクセント色を購読する（理由は lib/theme.ts と同じ）。 */
+export function useAccent(): string {
+  return usePersisted(ACCENT_STORAGE_KEY, getAccent, DEFAULT_ACCENT);
 }
 
 /** DOMへ反映するだけ（保存はしない）。理由は lib/theme.ts と同じ。 */
@@ -61,12 +64,9 @@ export function applyAccent(id: string): void {
 
 /** 選択を保存して反映する。 */
 export function saveAccent(id: string): void {
-  try {
-    localStorage.setItem(ACCENT_STORAGE_KEY, id);
-  } catch {
-    // 保存できなくても、この画面のあいだは反映しておく
-  }
+  writeRaw(ACCENT_STORAGE_KEY, id);
   applyAccent(id);
+  notifyChanged(ACCENT_STORAGE_KEY);
 }
 
 /** 保存値を読み直してDOMへ貼り直す。 */
