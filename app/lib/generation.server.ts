@@ -13,6 +13,7 @@ import {
   type RetryConfig,
 } from "./retry";
 import { checkMonthlyLimit } from "./limit.server";
+import { looksLikeImageUrl } from "./image-url";
 import {
   appendAssistantMessage,
   createGeneratedAttachment,
@@ -365,7 +366,7 @@ function extractImageUrls(content: string): string[] {
   }
   // 画像記法を使わず、URLだけを返すボットもある
   for (const m of content.matchAll(/https?:\/\/[^\s<>()[\]"']+/g)) {
-    if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(m[0])) add(m[0]);
+    if (looksLikeImageUrl(m[0])) add(m[0]);
   }
   return urls.slice(0, MAX_CAPTURED_IMAGES);
 }
