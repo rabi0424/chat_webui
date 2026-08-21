@@ -9,7 +9,12 @@ import {
   type AppSettings,
 } from "./settings";
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
-import { MIGRATIONS, generatedImagesSql, statementsOf } from "./schema";
+import {
+  MIGRATIONS,
+  generatedImagesSql,
+  statementsOf,
+  undoGenerationStatements,
+} from "./schema";
 import { EMPTY_TOTALS, type UsageTotals } from "./usage";
 
 /**
@@ -1364,6 +1369,34 @@ export async function beginGeneration(params: {
 
   await d.batch(statements);
   return { userMessageId, assistantMessageId };
+}
+
+/**
+ * 生成の開始を取り消す。
+ *
+ * beginGeneration は行を保存してから返る。そのあとで生成の実行を
+ * 登録できなかった場合（Durable Object の起動に失敗した等）、保存だけが
+ * 残る——ユーザーの発言と、永久に「生成中」のままの応答が木に積まれる。
+ * 利用者から見ると失敗したので送り直すが、そのたびに**同じ発言が
+ * 増えていく**。
+ *
+ * 始める前の状態へ戻す。添付は消さずに紐づけだけ外す（アップロード
+ * 済みのものを捨てる理由は無い。使われないまま残ったものは、既存の
+ * 掃除が拾う）。
+ */
+export async function undoGeneration(params: {
+  conversationId: string;
+  userMessageId: string | null;
+  assistantMessageId: string;
+  /** 開始前の葉。生成前に見ていた位置へ戻す。 */
+  previousLeafId: string | null;
+}): Promise<void> {
+  const d = await db();
+  await d.batch(
+    undoGenerationStatements(params).map((st) =>
+      d.prepare(st.sql).bind(...st.binds),
+    ),
+  );
 }
 
 /**

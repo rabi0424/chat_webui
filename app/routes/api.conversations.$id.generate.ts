@@ -4,6 +4,7 @@ import {
   beginGeneration,
   getAppSettings,
   getConversation,
+  undoGeneration,
 } from "../lib/db.server";
 import { readRetryConfig } from "../lib/retry";
 import { checkMonthlyLimit, limitMessage } from "../lib/limit.server";
@@ -116,8 +117,23 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   });
 
   if (!doResponse.ok) {
+    // 保存だけが残ると、送り直すたびに同じ発言が木へ積まれる。
+    // 始める前の状態へ戻してから返す
+    await undoGeneration({
+      conversationId: params.id,
+      userMessageId,
+      assistantMessageId,
+      previousLeafId: conversation.current_leaf_message_id,
+    }).catch(() => {
+      // 取り消しにも失敗したら、残ってしまうことは避けられない。
+      // 少なくともログには残す
+      console.error("[gen] 生成の開始を取り消せませんでした", {
+        conversationId: params.id,
+        assistantMessageId,
+      });
+    });
     return Response.json(
-      { error: "生成の開始に失敗しました", userMessageId, assistantMessageId },
+      { error: "生成の開始に失敗しました" },
       { status: 502 },
     );
   }

@@ -204,3 +204,48 @@ export function generatedImagesSql(conditions: string[]): string {
         ORDER BY created_at DESC
         LIMIT ?`;
 }
+
+/** 実行する1文。バインドする値と組で返す。 */
+export interface Statement {
+  sql: string;
+  binds: (string | number | null)[];
+}
+
+/**
+ * 生成の開始を取り消す文。
+ *
+ * 本体（db.server.ts）と、SQLite に流して確かめるテストの両方がこれを
+ * 使う。手で書き写すと、片方だけ直したときに気づけない。
+ *
+ * 順序に意味がある。添付の紐づけを外すのは、行を消すより**先**——
+ * メッセージの行が消えたあとでは、どの添付だったのか辿れない。
+ */
+export function undoGenerationStatements(params: {
+  conversationId: string;
+  userMessageId: string | null;
+  assistantMessageId: string;
+  previousLeafId: string | null;
+}): Statement[] {
+  const out: Statement[] = [];
+  if (params.userMessageId) {
+    out.push({
+      sql: "UPDATE attachments SET message_id = NULL, conversation_id = NULL WHERE message_id = ?",
+      binds: [params.userMessageId],
+    });
+  }
+  out.push({
+    sql: "DELETE FROM messages WHERE id = ?",
+    binds: [params.assistantMessageId],
+  });
+  if (params.userMessageId) {
+    out.push({
+      sql: "DELETE FROM messages WHERE id = ?",
+      binds: [params.userMessageId],
+    });
+  }
+  out.push({
+    sql: "UPDATE conversations SET current_leaf_message_id = ? WHERE id = ?",
+    binds: [params.previousLeafId, params.conversationId],
+  });
+  return out;
+}
