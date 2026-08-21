@@ -12,6 +12,7 @@ import {
   RETRY_RATE_LIMIT_ROUNDS,
   type RetryConfig,
 } from "./retry";
+import { checkMonthlyLimit } from "./limit.server";
 import {
   appendAssistantMessage,
   createGeneratedAttachment,
@@ -1282,6 +1283,19 @@ async function runRetryGenerationJob(
   /** 自分で決めた待ちと、上流が申告した待ちの遅いほう。 */
   const waitUntil = () => Math.max(pauseUntil, gate.until());
 
+  /** 上限に達して打ち切ったか（要約の文言を変えるため）。 */
+  let budgetStopped = false;
+
+  /** 今月の使用額が上限に達しているか。 */
+  const overBudget = async (): Promise<boolean> => {
+    try {
+      return (await checkMonthlyLimit()).blocked;
+    } catch {
+      // 判定できないことを理由に、走っている生成を止めはしない
+      return false;
+    }
+  };
+
   /** 進捗の保存を兼ねた停止確認。 */
   const touch = async (): Promise<boolean> => {
     budget.spendTouch();
@@ -1425,6 +1439,17 @@ async function runRetryGenerationJob(
       await sleep(waitUntil() - Date.now());
       continue;
     }
+    // 月間の上限。入口で1回見るだけでは足りない——この生成は1回の依頼で
+    // 何度も投げるので、上限ぎりぎりで始めた実行が大きく踏み越える。
+    //
+    // 見るのは burst の手前。発射のたびに見ても精度は上がらない
+    // （走っている分の額は終わるまで台帳に載らないので、どのみち
+    // 実行中の本数ぶんは遅れる）。踏み越える量は1 burst に収まる。
+    if (await overBudget()) {
+      state.lastError = "今月の使用額が上限に達したため打ち切りました";
+      budgetStopped = true;
+      break;
+    }
     // 目標に届くまで、上限と並列数の範囲で発射し続ける
     let burst = 0;
     while (
@@ -1490,16 +1515,23 @@ async function runRetryGenerationJob(
 
   const lines: string[] = [];
   lines.push(
-    stopped
-      ? `**停止しました** — 成功 ${state.successes}件・試行 ${state.attempts}回`
-      : `**完了** — 成功 ${state.successes}件（目標 ${retry.target}件）・試行 ${state.attempts}回（上限 ${retry.maxAttempts}回）`,
+    budgetStopped
+      ? `**上限に達したため打ち切りました** — 成功 ${state.successes}件・試行 ${state.attempts}回`
+      : stopped
+        ? `**停止しました** — 成功 ${state.successes}件・試行 ${state.attempts}回`
+        : `**完了** — 成功 ${state.successes}件（目標 ${retry.target}件）・試行 ${state.attempts}回（上限 ${retry.maxAttempts}回）`,
   );
+  if (budgetStopped) {
+    lines.push(
+      "今月の使用額が上限に達しました。設定画面から上限を変えるか、今月だけ一時解除できます。",
+    );
+  }
   if (state.successes > retry.target) {
     lines.push(
       `目標より ${state.successes - retry.target}件多く受け取りました（並列で走っていた分です）。`,
     );
   }
-  if (!stopped && state.successes < retry.target) {
+  if (!stopped && !budgetStopped && state.successes < retry.target) {
     lines.push(
       `目標に届きませんでした（上限${state.attempts >= retry.maxAttempts ? "の試行回数" : ""}に達しました）。`,
     );

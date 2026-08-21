@@ -6,6 +6,7 @@ import {
   getConversation,
 } from "../lib/db.server";
 import { readRetryConfig } from "../lib/retry";
+import { checkMonthlyLimit, limitMessage } from "../lib/limit.server";
 import type { ChatMessage } from "../lib/openrouter.server";
 import type { ParamsState } from "../lib/params";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "../lib/r2.server";
@@ -59,6 +60,15 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   const conversation = await getConversation(params.id);
   if (!conversation) {
     return Response.json({ error: "会話が見つかりません" }, { status: 404 });
+  }
+
+  // 月間の上限。ここは生成が始まる唯一の入口なので、門はここに置く
+  // （クライアント側の無効化は見た目だけで、信用しない）。
+  // 「成功するまで生成」は1回の依頼で何度も投げるため、走り出したあとの
+  // 歯止めは発射ループの側にも要る（generation.server.ts）
+  const limit = await checkMonthlyLimit();
+  if (limit.blocked) {
+    return Response.json({ error: limitMessage(limit) }, { status: 402 });
   }
 
   // 「成功するまで生成」の設定。天井はアプリ設定側で決まるので、

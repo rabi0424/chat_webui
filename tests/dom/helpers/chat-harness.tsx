@@ -45,9 +45,15 @@ export interface ServerStub {
   /** パスの一部にあたる応答を差し替える。 */
   /**
    * パスの一部にあたる応答を差し替える。
+   *
    * Promise を返せば、その解決まで応答を保留できる（通信中の再現）。
+   * Response をそのまま返せば、状態コードと本文を自分で決められる
+   * （402 と理由、のように本文まで見せたい失敗の再現に使う）。
    */
-  on(match: string, handler: (body: unknown) => unknown | Promise<unknown>): void;
+  on(
+    match: string,
+    handler: (body: unknown) => unknown | Promise<unknown>,
+  ): void;
   /** そのパスを失敗させる（HTTPの状態コードを返す）。 */
   fail(match: string, status: number): void;
   /** そのパスが呼ばれた回数。 */
@@ -162,6 +168,8 @@ export function installServer(initial: UiMessage[] = []): ServerStub {
     const payload = hit
       ? await hit.handler(body)
       : fallback(method, path, body);
+    // 自前で組み立てた応答はそのまま返す
+    if (payload instanceof Response) return payload;
     return new Response(JSON.stringify(payload ?? {}), {
       status: 200,
       headers: { "Content-Type": "application/json" },

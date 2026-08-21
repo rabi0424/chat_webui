@@ -2,7 +2,9 @@ import { env } from "cloudflare:workers";
 import { deleteFiles } from "./r2.server";
 import {
   DEFAULT_APP_SETTINGS,
+  MONTHLY_LIMIT_RANGE,
   NEW_MODEL_DAYS_RANGE,
+  POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
   type AppSettings,
 } from "./settings";
@@ -341,6 +343,30 @@ export async function updateAppSettings(
       Math.max(Math.round(days), NEW_MODEL_DAYS_RANGE.min),
       NEW_MODEL_DAYS_RANGE.max,
     );
+  }
+
+  const limit = Number(patch.monthlyLimitJpy);
+  if (Number.isFinite(limit)) {
+    next.monthlyLimitJpy = Math.min(
+      Math.max(Math.round(limit), MONTHLY_LIMIT_RANGE.min),
+      MONTHLY_LIMIT_RANGE.max,
+    );
+  }
+
+  const rate = Number(patch.poePointsUsdRate);
+  if (Number.isFinite(rate)) {
+    next.poePointsUsdRate = Math.min(
+      Math.max(rate, POE_RATE_RANGE.min),
+      POE_RATE_RANGE.max,
+    );
+  }
+
+  // 一時解除は「どの月か」で持つ。true/false のトグルにすると、
+  // 解除したまま忘れて翌月も素通りする
+  if ("monthlyLimitOverride" in patch) {
+    const v = patch.monthlyLimitOverride;
+    next.monthlyLimitOverride =
+      typeof v === "string" && /^\d{4}-\d{2}$/.test(v) ? v : null;
   }
 
   const d = await db();
@@ -1541,6 +1567,37 @@ export async function flushGeneration(
  * メッセージが done に戻り、停止ボタンも効かないまま二重に走ってしまう。
  * 確定できたときだけ true を返す。
  */
+/**
+ * 最後に取れた USD/JPY。
+ *
+ * 上限の判定は円で行うが、台帳はドル建て。判定のたびに外部の為替APIを
+ * 叩くと、Durable Object の外部リクエスト枠を食うし、APIが落ちている
+ * あいだ判定そのものができなくなる。取れたときに書いておき、判定は
+ * こちらを読む。
+ */
+const USD_JPY_KEY = "usd_jpy";
+
+export async function storeUsdJpy(rate: number): Promise<void> {
+  if (!Number.isFinite(rate) || rate <= 0) return;
+  const d = await db();
+  await d
+    .prepare(
+      "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+    )
+    .bind(USD_JPY_KEY, String(rate))
+    .run();
+}
+
+export async function readStoredUsdJpy(): Promise<number | null> {
+  const d = await db();
+  const row = await d
+    .prepare("SELECT value FROM meta WHERE key = ?")
+    .bind(USD_JPY_KEY)
+    .first<{ value: string }>();
+  const n = Number(row?.value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /** 台帳に載せる種別。何にいくら使ったかを後から分けて見るため。 */
 export type UsageKind = "chat" | "retry" | "title";
 
