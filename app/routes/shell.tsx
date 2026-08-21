@@ -14,6 +14,7 @@ import {
 } from "../lib/db.server";
 import type { AppSettings } from "../lib/settings";
 import { noteConversations } from "../lib/chat-cache";
+import { readCachedModels, writeCachedModels } from "../lib/model-cache";
 import { useEscapeToClose } from "../lib/dismiss";
 import type { ModelInfo } from "../lib/openrouter.server";
 import type {
@@ -71,7 +72,6 @@ export function shouldRevalidate({
 }
 
 /** モデル一覧のローカルキャッシュ。起動直後はこれを即表示し、裏で更新する。 */
-const MODELS_CACHE_KEY = "chat-webui:models";
 
 /** 起動時間はドキュメント読み込みごとに1回だけ記録する。 */
 let startupRecorded = false;
@@ -91,22 +91,16 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [usdJpy, setUsdJpy] = useState<number | null>(null);
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(MODELS_CACHE_KEY);
-      if (raw) setModels(JSON.parse(raw) as ModelInfo[]);
-    } catch {
-      // 壊れたキャッシュは無視（下のfetchで直る）
-    }
+    // 形が違うものは捨てて読む。使う側は outputModalities.includes(...)
+    // のように中の配列を前提にしているので、そのまま渡すと画面が落ちる
+    const cached = readCachedModels();
+    if (cached.length > 0) setModels(cached);
     void fetch("/api/models")
       .then(async (res) => {
         if (!res.ok) return;
         const { models: fresh } = (await res.json()) as ModelsResponse;
         setModels(fresh);
-        try {
-          localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(fresh));
-        } catch {
-          // 容量超過などで保存できなくても、次回起動が少し遅いだけ
-        }
+        writeCachedModels(fresh);
       })
       .catch(() => {});
     void fetch("/api/fx")
