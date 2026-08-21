@@ -1,5 +1,6 @@
 import type { Route } from "./+types/api.folders.$id";
 import { deleteFolder, updateFolder } from "../lib/db.server";
+import { MAX_TITLE_LENGTH } from "../lib/constants";
 
 export async function action({ request, params }: Route.ActionArgs) {
   if (request.method === "DELETE") {
@@ -14,7 +15,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       return Response.json({ error: "不正なリクエストです" }, { status: 400 });
     }
     await updateFolder(params.id, {
-      name: body.name?.trim().slice(0, 60),
+      name: body.name?.trim().slice(0, MAX_TITLE_LENGTH),
       pinned: body.pinned,
     });
     return Response.json({ ok: true });

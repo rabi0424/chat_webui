@@ -81,7 +81,7 @@ function ModelRow({
               </span>
             )}
             {m.inputModalities.includes("image") && (
-              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-ink">
                 画像
               </span>
             )}
@@ -180,6 +180,9 @@ export function ModelPicker({
    * （サーバー側では models が空なので、印は付かない = 不一致も出ない）。
    */
   const newModelIds = useMemo(() => {
+    // 描画のたびに現在時刻を読むが、サーバー側では models が空で印が
+    // 付かないため、ハイドレーションの不一致にはならない（上の説明のとおり）
+    // eslint-disable-next-line react-hooks/purity
     const now = Date.now();
     return new Set(
       models.filter((m) => isNewModel(m, now, newModelDays)).map((m) => m.id),

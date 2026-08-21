@@ -1,12 +1,14 @@
 import type { Route } from "./+types/api.bots.$id";
 import { deleteBot, getBot, updateBot } from "../lib/db.server";
+import { MAX_TITLE_LENGTH } from "../lib/constants";
+import type { ParamsState } from "../lib/params";
 
 interface BotBody {
   name?: string;
   icon?: string;
   modelId?: string;
   systemPrompt?: string;
-  params?: Record<string, number> | null;
+  params?: ParamsState | null;
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -31,7 +33,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       return Response.json({ error: "name と modelId は必須です" }, { status: 400 });
     }
     await updateBot(params.id, {
-      name: body.name.trim().slice(0, 60),
+      name: body.name.trim().slice(0, MAX_TITLE_LENGTH),
       icon: (body.icon ?? "🤖").slice(0, 8),
       modelId: body.modelId,
       systemPrompt: body.systemPrompt ?? "",

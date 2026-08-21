@@ -6,6 +6,7 @@ import {
   RETRY_CEILING_RANGE,
   type AppSettings,
 } from "./settings";
+import { MAX_TITLE_LENGTH } from "./constants";
 
 /**
  * Data access layer for D1.
@@ -145,6 +146,29 @@ ALTER TABLE messages ADD COLUMN citations_json TEXT;
 
 let schemaReady: Promise<void> | null = null;
 
+/**
+ * 既に適用済みの列を足そうとしたときのエラーか。
+ *
+ * ALTER TABLE ADD COLUMN だけは何度でも実行できる形（IF NOT EXISTS）が
+ * SQLite に無いため、二重適用のエラーだけを成功とみなして読み飛ばす。
+ * これでマイグレーション全体が「途中まで適用された状態から流し直せる」
+ * ものになり、次の2つがどちらも安全になる:
+ *
+ * - 複数の isolate が同時に初回アクセスして同じ版を適用してしまう場合
+ * - 1つの版の途中で失敗し、版番号を記録できないまま再実行される場合
+ */
+function isDuplicateColumn(e: unknown): boolean {
+  return /duplicate column name/i.test((e as Error)?.message ?? "");
+}
+
+/** 版のSQLを文単位に割る。1文ずつ流すことで、どこまで進んだかを揃える。 */
+function statementsOf(sql: string): string[] {
+  return sql
+    .split(";")
+    .map((t) => t.trim())
+    .filter((t) => t !== "");
+}
+
 async function runMigrations(): Promise<void> {
   await env.DB.exec(
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -152,10 +176,22 @@ async function runMigrations(): Promise<void> {
   const row = await env.DB.prepare(
     "SELECT value FROM meta WHERE key = 'schema_version'",
   ).first<{ value: string }>();
-  let version = row ? Number(row.value) : 0;
+  const recorded = row ? Number(row.value) : 0;
+  if (!Number.isInteger(recorded) || recorded < 0) {
+    // 版番号が読めないまま先へ進むと、適用漏れに気づけないまま
+    // 後続のクエリが不可解に失敗する。ここで止めた方が原因が分かる
+    throw new Error(`schema_version が壊れています: ${row?.value}`);
+  }
+  let version = recorded;
 
   while (version < MIGRATIONS.length) {
-    await env.DB.exec(MIGRATIONS[version].replace(/\n/g, " "));
+    for (const statement of statementsOf(MIGRATIONS[version])) {
+      try {
+        await env.DB.exec(statement.replace(/\n/g, " "));
+      } catch (e) {
+        if (!isDuplicateColumn(e)) throw e;
+      }
+    }
     version++;
     await env.DB.prepare(
       "INSERT INTO meta (key, value) VALUES ('schema_version', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1",
@@ -167,7 +203,12 @@ async function runMigrations(): Promise<void> {
 
 async function db(): Promise<D1Database> {
   if (!schemaReady) {
-    schemaReady = runMigrations();
+    // 失敗した Promise を握ったままにすると、D1の一時障害のあと
+    // その isolate だけが延々と同じ失敗を返し続ける。捨てて次で引き直す
+    schemaReady = runMigrations().catch((e) => {
+      schemaReady = null;
+      throw e;
+    });
   }
   await schemaReady;
   return env.DB;
@@ -449,6 +490,12 @@ export interface SearchResult {
   snippet: string | null;
 }
 
+/**
+ * 一度の検索で見る語の数。1語あたりバインドを2つ使うので、
+ * D1の上限（1文あたり100個）に十分収まる数にする。
+ */
+const MAX_SEARCH_TERMS = 10;
+
 /** LIKE用エスケープ（% _ \ を無効化）。 */
 function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -462,7 +509,15 @@ function escapeLike(term: string): string {
 export async function searchConversations(
   query: string,
 ): Promise<SearchResult[]> {
-  const terms = query.split(/[\s　]+/).filter(Boolean);
+  /*
+   * 語数に上限を設ける。1語につきバインドを2つ（タイトル・本文）使うので、
+   * 語が増えるとD1の上限（1文あたり100個）に当たって検索が500になる。
+   * 1文字の語ばかりを並べれば現実に届く数なので、ここで切っておく。
+   */
+  const terms = query
+    .split(/[\s　]+/)
+    .filter(Boolean)
+    .slice(0, MAX_SEARCH_TERMS);
   const positives = terms.filter((t) => !t.startsWith("-"));
   const negatives = terms
     .filter((t) => t.startsWith("-"))
@@ -740,17 +795,26 @@ export async function deleteBot(id: string): Promise<void> {
   await d.prepare("DELETE FROM bots WHERE id = ?").bind(id).run();
 }
 
+/**
+ * 会話を、ぶら下がるメッセージ・添付ごと削除する。
+ *
+ * 行はまとめて1回の batch で消す。添付だけ先に消していると、後続の
+ * 削除が失敗したときに「会話は残っているのに画像だけ全滅」した状態が
+ * 残り、やり直す手立ても無かった。R2の実体は行が消えたあとに片づける
+ * （消し損ねても孤児として後から掃除できるが、逆は取り返しがつかない）。
+ */
 export async function deleteConversation(id: string): Promise<void> {
   const d = await db();
   const { results } = await d
-    .prepare("SELECT id FROM attachments WHERE conversation_id = ?")
+    .prepare("SELECT r2_key FROM attachments WHERE conversation_id = ?")
     .bind(id)
-    .all<{ id: string }>();
-  await deleteAttachmentRows(results.map((r) => r.id));
+    .all<{ r2_key: string }>();
   await d.batch([
+    d.prepare("DELETE FROM attachments WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM conversations WHERE id = ?").bind(id),
   ]);
+  await deleteUnreferencedFiles([...new Set(results.map((r) => r.r2_key))]);
 }
 
 export interface PathMessage extends MessageRow {
@@ -829,7 +893,7 @@ export async function getConversationPath(
   const all = await loadMessages(conversation.id);
   await sweepStaleStreaming(all);
   const rows = pathRows(conversation, all);
-  const attachments = await attachmentsByMessage(rows.map((m) => m.id));
+  const attachments = await attachmentsOfConversation(conversation.id);
   return decoratePath(rows, all, attachments);
 }
 
@@ -920,17 +984,30 @@ export async function forkConversation(
   const d = await db();
   const now = Date.now();
   const newConvId = crypto.randomUUID();
-  const title = `${conversation.title}（分岐）`.slice(0, 60);
+  const title = `${conversation.title}（分岐）`.slice(0, MAX_TITLE_LENGTH);
 
   const statements: D1PreparedStatement[] = [
+    // ボット・システムプロンプト・生成パラメータも引き継ぐ。落とすと、
+    // ボットの会話を分岐した先だけ性格と設定が消えて応答が変わる
     d
       .prepare(
-        "INSERT INTO conversations (id, title, model_id, pinned, current_leaf_message_id, created_at, updated_at) VALUES (?, ?, ?, 0, NULL, ?, ?)",
+        "INSERT INTO conversations (id, title, model_id, pinned, current_leaf_message_id, bot_id, bot_name, bot_icon, system_prompt, params_json, created_at, updated_at) VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .bind(newConvId, title, conversation.model_id, now, now),
+      .bind(
+        newConvId,
+        title,
+        conversation.model_id,
+        conversation.bot_id,
+        conversation.bot_name,
+        conversation.bot_icon,
+        conversation.system_prompt,
+        conversation.params_json,
+        now,
+        now,
+      ),
   ];
 
-  const attachments = await attachmentsByMessage(path.map((m) => m.id));
+  const attachments = await attachmentsOfConversation(conversation.id);
 
   let parent: string | null = null;
   let lastId: string | null = null;
@@ -939,7 +1016,7 @@ export async function forkConversation(
     statements.push(
       d
         .prepare(
-          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, context_boundary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, reasoning, citations_json, status, error, context_boundary, created_at, flushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(
           id,
@@ -949,9 +1026,19 @@ export async function forkConversation(
           m.content,
           m.model_id,
           m.usage_json,
+          // 思考・参照元も引き継ぐ（分岐先で折りたたみや出典が消えないように）
+          m.reasoning,
+          m.citations_json,
+          // 生成中の行は分岐先では追えないので、確定した形で持っていく。
+          // 既定の 'done' で写すと、失敗した応答が成功として複製される
+          m.status === "streaming" ? "error" : (m.status ?? "done"),
+          m.status === "streaming"
+            ? "分岐元で生成中だった応答です。再試行してください。"
+            : m.error,
           // コンテキストの境界線も引き継ぐ（分岐先だけ文脈が伸びるのを防ぐ）
           m.context_boundary ?? 0,
           now + i,
+          m.flushed_at,
         ),
     );
     // 添付はR2の実体を共有したまま行だけ複製する（元の会話を消しても残る）
@@ -1014,17 +1101,37 @@ export async function getAttachment(id: string): Promise<AttachmentRow | null> {
     .first<AttachmentRow>();
 }
 
+/**
+ * IN句に並べるIDの上限。D1は1文あたりのバインドを100個までしか受けない。
+ * 超えると文が丸ごと失敗するので、この単位に切って複数回に分けて引く。
+ */
+const BIND_CHUNK = 90;
+
+function chunked<T>(items: T[], size = BIND_CHUNK): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
+
 /** 指定IDの添付を、渡されたID順（= 表示順）で返す。 */
 export async function getAttachments(ids: string[]): Promise<AttachmentRow[]> {
   if (ids.length === 0) return [];
   const d = await db();
-  const { results } = await d
-    .prepare(
-      `SELECT * FROM attachments WHERE id IN (${ids.map(() => "?").join(",")})`,
-    )
-    .bind(...ids)
-    .all<AttachmentRow>();
-  const byId = new Map(results.map((a) => [a.id, a]));
+  const rows: AttachmentRow[] = [];
+  for (const part of chunked(ids)) {
+    const { results } = await d
+      .prepare(
+        `SELECT * FROM attachments WHERE id IN (${part
+          .map(() => "?")
+          .join(",")})`,
+      )
+      .bind(...part)
+      .all<AttachmentRow>();
+    rows.push(...results);
+  }
+  const byId = new Map(rows.map((a) => [a.id, a]));
   return ids
     .map((id) => byId.get(id))
     .filter((a): a is AttachmentRow => a != null);
@@ -1042,18 +1149,22 @@ function groupByMessage(rows: AttachmentRow[]): Map<string, AttachmentRow[]> {
   return map;
 }
 
-async function attachmentsByMessage(
-  messageIds: string[],
+/**
+ * 会話に属する添付を、メッセージIDごとにまとめて返す。
+ *
+ * メッセージIDのIN句では引かない。表示パスが100件を超えるとD1のバインド
+ * 上限に当たって会話そのものが開けなくなるため、getConversationWithPath と
+ * 同じくJOINで会話ぶんをまとめて引き、呼び出し側が必要な行だけ取り出す。
+ */
+async function attachmentsOfConversation(
+  conversationId: string,
 ): Promise<Map<string, AttachmentRow[]>> {
-  if (messageIds.length === 0) return new Map();
   const d = await db();
   const { results } = await d
     .prepare(
-      `SELECT * FROM attachments WHERE message_id IN (${messageIds
-        .map(() => "?")
-        .join(",")}) ORDER BY created_at`,
+      "SELECT a.* FROM attachments a JOIN messages m ON a.message_id = m.id WHERE m.conversation_id = ? ORDER BY a.created_at",
     )
-    .bind(...messageIds)
+    .bind(conversationId)
     .all<AttachmentRow>();
   return groupByMessage(results);
 }
@@ -1081,7 +1192,10 @@ function linkAttachmentStatements(
           .bind(target.messageId, target.conversationId, now + i, a.id)
       : d
           .prepare(
-            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            // prompt と favorite も複製する。落とすと、画像一覧は同じ実体の
+            // うち最も新しい行（＝この複製）を代表として出すため、
+            // 一覧から依頼文が消え、お気に入りも外れて見える
+            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind, prompt, favorite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .bind(
             crypto.randomUUID(),
@@ -1093,6 +1207,8 @@ function linkAttachmentStatements(
             a.size,
             now + i,
             a.kind ?? "upload",
+            a.prompt ?? null,
+            a.favorite ?? 0,
           ),
   );
 }
@@ -1190,11 +1306,13 @@ export async function listGeneratedImages(params: {
   if (params.favoritesOnly) conditions.push("a.favorite = 1");
   for (const term of terms) {
     conditions.push(
-      `(LOWER(COALESCE(a.prompt, '')) LIKE ?
-        OR LOWER(COALESCE(m.model_id, '')) LIKE ?
-        OR LOWER(COALESCE(c.title, '')) LIKE ?)`,
+      // エスケープの仕方は会話検索と揃える。% と _ を落としてしまうと
+      // 「50%」のような語が「50」として検索されて結果が変わる
+      `(LOWER(COALESCE(a.prompt, '')) LIKE ? ESCAPE '\\'
+        OR LOWER(COALESCE(m.model_id, '')) LIKE ? ESCAPE '\\'
+        OR LOWER(COALESCE(c.title, '')) LIKE ? ESCAPE '\\')`,
     );
-    const like = `%${term.replace(/[%_]/g, "")}%`;
+    const like = `%${escapeLike(term)}%`;
     binds.push(like, like, like);
   }
   binds.push(params.limit);
@@ -1221,50 +1339,72 @@ export async function listGeneratedImages(params: {
 }
 
 /**
+ * 渡したキーのうち、もうどの添付行からも参照されていないものを
+ * R2から消す。分岐・フォークで実体を共有するため、行を消したあとに
+ * 生き残りを数え直してから落とす。
+ */
+async function deleteUnreferencedFiles(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  const d = await db();
+  const stillUsed = new Set<string>();
+  for (const part of chunked(keys)) {
+    const { results } = await d
+      .prepare(
+        `SELECT DISTINCT r2_key FROM attachments WHERE r2_key IN (${part
+          .map(() => "?")
+          .join(",")})`,
+      )
+      .bind(...part)
+      .all<{ r2_key: string }>();
+    for (const r of results) stillUsed.add(r.r2_key);
+  }
+  await deleteFiles(keys.filter((k) => !stillUsed.has(k)));
+}
+
+/**
  * 添付行を削除し、どのメッセージからも参照されなくなったR2オブジェクトを消す。
- * 分岐・フォークで実体を共有するため、キー単位の参照数を数えてから削除する。
  */
 async function deleteAttachmentRows(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   const d = await db();
-  const placeholders = ids.map(() => "?").join(",");
-  const { results: doomed } = await d
-    .prepare(`SELECT r2_key FROM attachments WHERE id IN (${placeholders})`)
-    .bind(...ids)
-    .all<{ r2_key: string }>();
-  if (doomed.length === 0) return;
-
-  await d
-    .prepare(`DELETE FROM attachments WHERE id IN (${placeholders})`)
-    .bind(...ids)
-    .run();
-
-  const keys = [...new Set(doomed.map((r) => r.r2_key))];
-  const { results: survivors } = await d
-    .prepare(
-      `SELECT DISTINCT r2_key FROM attachments WHERE r2_key IN (${keys
-        .map(() => "?")
-        .join(",")})`,
-    )
-    .bind(...keys)
-    .all<{ r2_key: string }>();
-  const stillUsed = new Set(survivors.map((r) => r.r2_key));
-  await deleteFiles(keys.filter((k) => !stillUsed.has(k)));
+  const keys = new Set<string>();
+  // 添付が100件を超える会話でも消せるように、IN句はバインド上限で切る
+  for (const part of chunked(ids)) {
+    const placeholders = part.map(() => "?").join(",");
+    const { results: doomed } = await d
+      .prepare(`SELECT r2_key FROM attachments WHERE id IN (${placeholders})`)
+      .bind(...part)
+      .all<{ r2_key: string }>();
+    if (doomed.length === 0) continue;
+    await d
+      .prepare(`DELETE FROM attachments WHERE id IN (${placeholders})`)
+      .bind(...part)
+      .run();
+    for (const r of doomed) keys.add(r.r2_key);
+  }
+  await deleteUnreferencedFiles([...keys]);
 }
 
-/** 指定メッセージ群に属する添付をすべて削除する。 */
-async function deleteAttachmentsOfMessages(messageIds: string[]): Promise<void> {
-  if (messageIds.length === 0) return;
+/** 指定メッセージ群に属する添付行を引く。 */
+async function attachmentsOfMessages(
+  messageIds: string[],
+): Promise<{ id: string; r2_key: string }[]> {
+  if (messageIds.length === 0) return [];
   const d = await db();
-  const { results } = await d
-    .prepare(
-      `SELECT id FROM attachments WHERE message_id IN (${messageIds
-        .map(() => "?")
-        .join(",")})`,
-    )
-    .bind(...messageIds)
-    .all<{ id: string }>();
-  await deleteAttachmentRows(results.map((r) => r.id));
+  const rows: { id: string; r2_key: string }[] = [];
+  // 101件以上のメッセージをまとめて消してもバインド上限で落ちないように切る
+  for (const part of chunked(messageIds)) {
+    const { results } = await d
+      .prepare(
+        `SELECT id, r2_key FROM attachments WHERE message_id IN (${part
+          .map(() => "?")
+          .join(",")})`,
+      )
+      .bind(...part)
+      .all<{ id: string; r2_key: string }>();
+    rows.push(...results);
+  }
+  return rows;
 }
 
 /**
@@ -1368,7 +1508,14 @@ export async function flushGeneration(
   return { stopRequested: (check.results[0]?.stop_requested ?? 0) === 1 };
 }
 
-/** 生成の完了・エラー・停止を確定させる。 */
+/**
+ * 生成の完了・エラー・停止を確定させる。
+ *
+ * 対象が「生成中」の行であることを条件にする。中断とみなされて確定済みの
+ * 行（sweepStaleStreaming が倒したもの）を後から書き戻すと、死んだはずの
+ * メッセージが done に戻り、停止ボタンも効かないまま二重に走ってしまう。
+ * 確定できたときだけ true を返す。
+ */
 export async function finalizeGeneration(
   messageId: string,
   result: {
@@ -1380,12 +1527,12 @@ export async function finalizeGeneration(
     /** 参照元のJSON。Webツールを使わなかった応答では null。 */
     citationsJson?: string | null;
   },
-): Promise<void> {
+): Promise<boolean> {
   const d = await db();
-  await d.batch([
+  const [applied] = await d.batch([
     d
       .prepare(
-        "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, citations_json = ?, flushed_at = ? WHERE id = ?",
+        "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, citations_json = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'",
       )
       .bind(
         result.content,
@@ -1404,6 +1551,25 @@ export async function finalizeGeneration(
       )
       .bind(messageId),
   ]);
+  return (applied.meta.changes ?? 0) > 0;
+}
+
+/**
+ * 確定済みメッセージの本文を差し替える。
+ *
+ * 生成の確定ではなく、あとから画像を自前のストレージへ取り込んで本文の
+ * URLを書き換えるための入口。対象は appendAssistantMessage で既に done に
+ * なっている行なので、finalizeGeneration の「生成中のみ」条件は使えない。
+ */
+export async function rewriteMessageContent(
+  messageId: string,
+  content: string,
+): Promise<void> {
+  const d = await db();
+  await d
+    .prepare("UPDATE messages SET content = ? WHERE id = ?")
+    .bind(content, messageId)
+    .run();
 }
 
 /** 未読の会話ID。サイドバーの印を再読み込みなしで更新するために引く。 */
@@ -1511,8 +1677,24 @@ export async function deleteMessages(
     statements.push(d.prepare("DELETE FROM messages WHERE id = ?").bind(id));
   }
 
-  await deleteAttachmentsOfMessages([...deleteSet]);
+  // 添付は行の削除を同じ batch に入れる。先に消してしまうと、後続の
+  // 削除が失敗したときにメッセージだけ残って画像が消えた形になる
+  const doomed = await attachmentsOfMessages([...deleteSet]);
+  for (const part of chunked(doomed.map((a) => a.id))) {
+    statements.push(
+      d
+        .prepare(
+          `DELETE FROM attachments WHERE id IN (${part
+            .map(() => "?")
+            .join(",")})`,
+        )
+        .bind(...part),
+    );
+  }
   await d.batch(statements);
+  // R2の実体は行が消えたあとに片づける（消し損ねは孤児として拾えるが、
+  // 逆に実体だけ先に消すと取り返しがつかない）
+  await deleteUnreferencedFiles([...new Set(doomed.map((a) => a.r2_key))]);
 }
 
 /**

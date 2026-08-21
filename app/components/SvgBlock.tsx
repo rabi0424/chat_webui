@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useIsDark } from "../lib/appearance";
 import { IconCheck, IconCopy, IconDownload, IconSwatch } from "./icons";
 
@@ -75,8 +81,25 @@ export function SvgBlock({
   const [asAuthored, setAsAuthored] = useState(false);
   const [copied, setCopied] = useState(false);
   const isDark = useIsDark();
-  const host = useRef<HTMLDivElement>(null);
+  const host = useRef<HTMLDivElement | null>(null);
   const shadow = useRef<ShadowRoot | null>(null);
+
+  /**
+   * 図の入れ物が張り替わったら、shadow も作り直す。
+   *
+   * ソース表示との切り替えでは <div> と <pre> を行き来するので、React は
+   * この要素を使い回さず作り直す。にもかかわらず shadow を一度しか作らな
+   * いと、切り離された古い ShadowRoot に書き続けることになり、図に戻した
+   * ときに何も出なくなる。要素の差し替わりを ref のコールバックで捉える。
+   */
+  const attachHost = useCallback((el: HTMLDivElement | null) => {
+    if (el === host.current) return;
+    host.current = el;
+    // 同じ要素に二度 attachShadow はできないので、既にあればそれを使う
+    shadow.current = el
+      ? (el.shadowRoot ?? el.attachShadow({ mode: "open" }))
+      : null;
+  }, []);
 
   // 暗いときだけ配色を置き換える。切替を待たせないよう両方を先に作っておく
   const darkened = isDark && !asAuthored;
@@ -118,9 +141,9 @@ export function SvgBlock({
 
   // 消毒済みの中身を shadow へ入れる。React には触らせない（中は素のDOM）。
   useEffect(() => {
-    if (!svg || showSource || !host.current) return;
-    shadow.current ??= host.current.attachShadow({ mode: "open" });
-    shadow.current.innerHTML = `<style>${SHADOW_STYLE}</style>${svg}`;
+    const root = shadow.current;
+    if (!svg || showSource || !root) return;
+    root.innerHTML = `<style>${SHADOW_STYLE}</style>${svg}`;
   }, [svg, showSource]);
 
   const copySource = async () => {
@@ -194,7 +217,11 @@ export function SvgBlock({
             darkened ? "bg-neutral-900" : "bg-white dark:bg-neutral-200"
           }`}
         >
-          <div ref={host} data-svg-figure data-palette={darkened ? "dark" : "authored"} />
+          <div
+            ref={attachHost}
+            data-svg-figure
+            data-palette={darkened ? "dark" : "authored"}
+          />
         </div>
       )}
     </div>

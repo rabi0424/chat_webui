@@ -1,5 +1,6 @@
 import type { Route } from "./+types/api.folders";
 import { createFolder } from "../lib/db.server";
+import { MAX_TITLE_LENGTH } from "../lib/constants";
 
 export async function action({ request }: Route.ActionArgs) {
   if (request.method !== "POST") {
@@ -14,6 +15,6 @@ export async function action({ request }: Route.ActionArgs) {
   if (!body.name?.trim()) {
     return Response.json({ error: "name は必須です" }, { status: 400 });
   }
-  const folder = await createFolder(body.name.trim().slice(0, 60));
+  const folder = await createFolder(body.name.trim().slice(0, MAX_TITLE_LENGTH));
   return Response.json({ folder });
 }

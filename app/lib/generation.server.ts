@@ -19,6 +19,7 @@ import {
   flushGeneration,
   getAttachments,
   getMessage,
+  rewriteMessageContent,
 } from "./db.server";
 import {
   ALLOWED_IMAGE_TYPES,
@@ -191,6 +192,13 @@ function promptOf(job: GenerationJob): string | null {
 }
 
 /** 1応答あたりに取り込む生成画像の枚数と、1枚あたりの上限。 */
+/**
+ * ストリームが無音のまま経過してよい時間。
+ * 上流が接続だけ維持して何も送らないと read() は永久に返らないため、
+ * ここで打ち切ってその時点の内容で確定させる。
+ */
+const UPSTREAM_IDLE_TIMEOUT_MS = 120_000;
+
 const MAX_CAPTURED_IMAGES = 8;
 const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
 
@@ -631,6 +639,14 @@ interface StreamResult {
   finishReason?: string;
   /** 停止要求で打ち切ったか。 */
   stopped: boolean;
+  /**
+   * 上流が最後まで送らずに終わったか（切断・読み取りエラー）。
+   *
+   * 握りつぶすと、途中で切れた応答が完結したものと見分けられないまま
+   * 確定してしまう。リトライ生成では「拒否」や「成功」として誤って
+   * 数えられるので、呼び出し側が区別できるように持ち帰る。
+   */
+  interrupted?: string;
 }
 
 /**
@@ -648,11 +664,33 @@ async function readUpstreamStream(
 ): Promise<StreamResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
+  /**
+   * 上流が1バイトも送ってこないまま経過してよい時間。
+   *
+   * 応答が始まったあとに黙り込む上流もあり、その場合 read() は永久に
+   * 返らない。読むたびに時計を張り直し、超えたら打ち切って
+   * ここまでの内容で確定させる（実行が固まったままにならないように）。
+   */
+  const readOnce = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("上流からの応答が途絶えました")),
+        UPSTREAM_IDLE_TIMEOUT_MS,
+      );
+    });
+    try {
+      return await Promise.race([reader.read(), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   let buffer = "";
   let content = "";
   let reasoning = "";
   let usageJson: string | null = null;
   let finishReason: string | undefined;
+  let interrupted: string | undefined;
   const imageUrls: string[] = [];
   const citations: UiCitation[] = [];
   let stopped = false;
@@ -661,7 +699,7 @@ async function readUpstreamStream(
 
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readOnce();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -740,8 +778,41 @@ async function readUpstreamStream(
         }
       }
     }
-  } catch {
-    // 上流の切断・エラー: ここまでの内容で確定する
+  } catch (e) {
+    // 上流の切断・エラー: ここまでの内容で確定するが、途中で切れたことは
+    // 呼び出し側へ伝える（停止操作による打ち切りは正常な終わり方なので除く）
+    if (!stopped) interrupted = (e as Error).message || "接続が途中で切れました";
+    // 無音で打ち切った場合、読み手はまだ待っている。掴んだままにしない
+    try {
+      await reader.cancel();
+    } catch {
+      // 既に閉じていれば何もしない
+    }
+  }
+
+  // 終端後に残ったぶんを取りこぼさない。改行で終わらないストリームでは
+  // 最後の1行が buffer に、マルチバイト文字の断片が decoder に残る
+  buffer += decoder.decode();
+  const tail = buffer.trim();
+  if (tail.startsWith("data:")) {
+    const payload = tail.slice(5).trim();
+    if (payload && payload !== "[DONE]") {
+      try {
+        const chunk = JSON.parse(payload) as {
+          choices?: {
+            delta?: { content?: string | null };
+            finish_reason?: string | null;
+          }[];
+        };
+        const choice = chunk.choices?.[0];
+        if (typeof choice?.delta?.content === "string") {
+          content += choice.delta.content;
+        }
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+      } catch {
+        // 途中で切れた不完全なJSONは捨てる
+      }
+    }
   }
 
   return {
@@ -752,6 +823,7 @@ async function readUpstreamStream(
     citations,
     finishReason,
     stopped,
+    interrupted,
   };
 }
 
@@ -807,13 +879,51 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
     return;
   }
 
-  const result = await readUpstreamStream(upstream.body, async (partial) => {
+  /**
+   * 上流が無言のあいだも「生きている」印を打ち直す。
+   *
+   * 部分保存は上流からチャンクが届いたときにしか走らないため、最初の
+   * トークンまで時間のかかるモデル（長考・画像生成）では flushed_at が
+   * 更新されないまま sweepStaleStreaming の中断判定（60秒）に掛かる。
+   * そうなると生成はまだ走っているのに行だけ確定してしまい、停止も効かず、
+   * 完了時の確定（status='streaming' 条件）も空振りして結果が失われる。
+   */
+  let latest = { content: "", reasoning: null as string | null };
+  let lastWrite = Date.now();
+  let streamDone = false;
+  let wakeHeartbeat = () => {};
+
+  const write = async (): Promise<boolean> => {
+    lastWrite = Date.now();
     const { stopRequested } = await flushGeneration(job.assistantMessageId, {
-      content: partial.content,
-      reasoning: partial.reasoning || null,
+      content: latest.content,
+      reasoning: latest.reasoning,
     });
     return stopRequested;
+  };
+
+  const heartbeat = (async () => {
+    while (!streamDone && Date.now() - startedAt < MAX_HEARTBEAT_MS) {
+      const nap = cancellableSleep(IDLE_HEARTBEAT_MS);
+      wakeHeartbeat = nap.cancel;
+      await nap.promise;
+      // 直前にチャンクが届いて保存済みなら、打ち直す必要はない
+      if (streamDone || Date.now() - lastWrite < IDLE_HEARTBEAT_MS) continue;
+      try {
+        await write();
+      } catch {
+        // 打ち直しの失敗そのものは致命的ではない。次の周期で拾う
+      }
+    }
+  })();
+
+  const result = await readUpstreamStream(upstream.body, async (partial) => {
+    latest = { content: partial.content, reasoning: partial.reasoning || null };
+    return await write();
   });
+  streamDone = true;
+  wakeHeartbeat();
+  await heartbeat;
   let usageJson = result.usageJson;
 
   // Poe: ポイント消費はレスポンスに載らないため、Usage APIの履歴を
@@ -857,7 +967,12 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
   const empty = finalContent === "";
 
   await finalizeGeneration(job.assistantMessageId, {
-    content: finalContent,
+    // 途中で切れた応答は、完結したものと見分けが付かないまま残すと
+    // 利用者がそのまま次の話へ進んでしまう。本文に注記を足しておく
+    content:
+      !empty && result.interrupted
+        ? `${finalContent}\n\n---\n\n※ 応答が途中で終わりました（${result.interrupted}）。もう一度生成すると続きが得られることがあります。`
+        : finalContent,
     reasoning: result.reasoning || null,
     usageJson,
     citationsJson:
@@ -866,9 +981,11 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
     error: empty
       ? result.stopped
         ? "生成開始直後に停止されました"
-        : `モデルから本文のない応答が返りました${
-            result.finishReason ? `（finish_reason: ${result.finishReason}）` : ""
-          }`
+        : result.interrupted
+          ? `応答を受け取る前に接続が切れました（${result.interrupted}）`
+          : `モデルから本文のない応答が返りました${
+              result.finishReason ? `（finish_reason: ${result.finishReason}）` : ""
+            }`
       : null,
   });
 }
@@ -884,6 +1001,23 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
  * 打ち直しの総回数は CHUNK_TOUCH_LIMIT で頭打ちにしてある。
  */
 const HEARTBEAT_MS = 1_000;
+
+/**
+ * 単発生成で「まだ生きている」印を打ち直す間隔。
+ * 中断とみなされるまでの猶予（db.server.ts の STALE_STREAMING_MS = 60秒）に
+ * 対して十分に短く、かつD1への書き込みが増えすぎない程度に空ける。
+ */
+const IDLE_HEARTBEAT_MS = 15_000;
+
+/**
+ * 打ち直しを続ける上限。
+ *
+ * 印を打ち続けている限り中断とみなされないので、上流が永久に沈黙した
+ * 場合に「生成中」の表示が二度と解けなくなる。ここで打ち直しをやめれば
+ * 60秒後には中断として確定し、UIが固まったままにならずに済む。
+ */
+const MAX_HEARTBEAT_MS = 30 * 60 * 1000;
+
 /**
  * 続けて発射するときに挟む間隔。
  *
@@ -965,6 +1099,15 @@ async function runAttempt(
   const result = await readUpstreamStream(upstream.body);
   const hasImage =
     result.imageUrls.length > 0 || extractImageUrls(result.content).length > 0;
+  // 画像が揃っているなら、途中で切れていても成果は成果なので受け取る。
+  // 揃っていないのに切れた場合は「拒否」ではなく通信の失敗として数える
+  // （拒否として数えると、モデルが断ったのか回線が切れたのか分からなくなる）
+  if (!hasImage && result.interrupted) {
+    return {
+      kind: "error",
+      error: `応答が途中で切れました: ${result.interrupted}`,
+    };
+  }
   return hasImage
     ? {
         kind: "success",
@@ -991,8 +1134,18 @@ export interface RetryRunState {
   rateLimitRounds: number;
   /** 次の成功を繋ぐ先。 */
   parentId: string;
-  /** 画像が返らなかった応答の数と、要約に出す最初の1件。 */
+  /**
+   * 試行の内訳。successes と合わせた合計が attempts に一致する
+   * （どの試行がどう終わったのか、要約から追えるようにするため）。
+   *
+   * - refusals: 画像は無いが本文は返ってきた応答（拒否文など）
+   * - emptyResponses: 画像も本文も無い空の応答
+   * - errors: 接続失敗・上流のエラー・結果の取り込み失敗
+   */
   refusals: number;
+  emptyResponses: number;
+  errors: number;
+  /** 要約に出す拒否文の最初の1件。 */
   firstRefusal: string | null;
   lastError: string | null;
   /** 画像の取り込みが途中で終わった成功メッセージのID。 */
@@ -1012,9 +1165,32 @@ function initialRetryState(statusId: string): RetryRunState {
     rateLimitRounds: 0,
     parentId: statusId,
     refusals: 0,
+    emptyResponses: 0,
+    errors: 0,
     firstRefusal: null,
     lastError: null,
     pendingCapture: [],
+  };
+}
+
+/**
+ * 持ち越された途中経過を、いまの形へ揃える。
+ *
+ * 前の版が保存した state には後から足した数え上げが無い。欠けたまま
+ * 加算すると NaN になり、以後の進捗も要約も丸ごと壊れるため補う。
+ */
+function restoreRetryState(
+  previous: RetryRunState | null,
+  statusId: string,
+): RetryRunState {
+  const base = initialRetryState(statusId);
+  if (!previous) return base;
+  return {
+    ...base,
+    ...previous,
+    refusals: previous.refusals ?? 0,
+    emptyResponses: previous.emptyResponses ?? 0,
+    errors: previous.errors ?? 0,
   };
 }
 
@@ -1049,12 +1225,7 @@ async function drainPendingCaptures(
       budget,
     );
     if (captured.content !== row.content) {
-      await finalizeGeneration(messageId, {
-        content: captured.content,
-        reasoning: null,
-        usageJson: row.usage_json,
-        status: "done",
-      });
+      await rewriteMessageContent(messageId, captured.content);
     }
     if (captured.deferred) remaining.push(messageId);
   }
@@ -1083,7 +1254,7 @@ async function runRetryGenerationJob(
   const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
   const statusId = job.assistantMessageId;
   const budget = createBudget();
-  const state = previous ?? initialRetryState(statusId);
+  const state = restoreRetryState(previous, statusId);
 
   let finished = false;
   let wakeHeartbeat = () => {};
@@ -1136,7 +1307,16 @@ async function runRetryGenerationJob(
    */
   let queue: Promise<void> = Promise.resolve();
   const accept = (r: AttemptOutcome): Promise<void> => {
-    queue = queue.then(async () => {
+    // 1件の取り込みが失敗しても、キュー自体は必ず成功で繋ぐ。
+    // ここで握らないとキューが reject のまま固まり、以降に届いた
+    // 成功応答の取り込みが丸ごと飛ばされる（課金済みの結果が消える）
+    queue = queue.then(() => acceptOne(r)).catch(() => {});
+    return queue;
+  };
+
+  const acceptOne = async (r: AttemptOutcome): Promise<void> => {
+    let counted = false;
+    try {
       if (r.kind === "rate_limited") {
         // レート制限は上流の都合なので試行回数は消費しない。
         // ただし待ち直しの回数には上限を設ける
@@ -1157,14 +1337,24 @@ async function runRetryGenerationJob(
         return;
       }
 
+      // 試行に数えた以上、必ずどれか1つの内訳にも数える
+      // （数え漏れると要約の内訳が試行回数と合わなくなる）。
+      // 取り込みの途中で失敗した分は catch 側で拾う
       state.attempts++;
       if (r.kind === "error") {
+        state.errors++;
+        counted = true;
         state.lastError = r.error;
       } else if (r.kind === "refused") {
+        // 画像が無い応答。本文があるかで分ける（空の応答は上流の
+        // 揺らぎで、拒否文が返るのとは原因も対処も違う）
         if (r.text.trim()) {
           state.refusals++;
           state.firstRefusal ??= r.text.trim().slice(0, 301);
+        } else {
+          state.emptyResponses++;
         }
+        counted = true;
       } else {
         // 成功: 応答を1件足し、画像を自前のストレージへ移す。
         // 待たずにここで保存するので、実行中でも順に見えるようになる
@@ -1186,21 +1376,22 @@ async function runRetryGenerationJob(
           budget,
         );
         if (captured.content !== r.content) {
-          await finalizeGeneration(id, {
-            content: captured.content,
-            reasoning: null,
-            usageJson: r.usageJson,
-            status: "done",
-          });
+          await rewriteMessageContent(id, captured.content);
         }
         // 枠が尽きて取り込めなかったぶんは次の実行で拾う
         if (captured.deferred) state.pendingCapture.push(id);
         state.parentId = id;
         state.successes++;
+        counted = true;
       }
       await touch();
-    });
-    return queue;
+    } catch (e) {
+      // D1の一時障害などで1件取り込めなかった場合。実行は続け、
+      // 見出しの要約に理由を残す。まだどの内訳にも数えていなければ
+      // ここでエラーとして数える（合計が試行回数からずれないように）
+      if (!counted) state.errors++;
+      state.lastError = `結果の取り込みに失敗しました: ${(e as Error).message}`;
+    }
   };
 
   const launch = () => {
@@ -1313,20 +1504,35 @@ async function runRetryGenerationJob(
       `目標に届きませんでした（上限${state.attempts >= retry.maxAttempts ? "の試行回数" : ""}に達しました）。`,
     );
   }
+  // 試行の内訳。成功と合わせた合計が試行回数に一致する
+  const breakdown: string[] = [];
   if (state.refusals > 0) {
-    lines.push(`\n画像が返らなかった応答: ${state.refusals}回`);
-    if (state.firstRefusal) {
-      lines.push(
-        `\n> ${state.firstRefusal.slice(0, 300).replace(/\n+/g, " ")}${
-          state.firstRefusal.length > 300 ? "…" : ""
-        }`,
-      );
-    }
+    breakdown.push(`画像が返らなかった応答 ${state.refusals}回`);
   }
-  if (state.lastError) lines.push(`\nエラー: ${state.lastError}`);
+  if (state.emptyResponses > 0) {
+    breakdown.push(`空の応答 ${state.emptyResponses}回`);
+  }
+  if (state.errors > 0) breakdown.push(`エラー ${state.errors}回`);
+  if (breakdown.length > 0) lines.push(`\n内訳: ${breakdown.join("・")}`);
+
+  if (state.firstRefusal) {
+    lines.push(
+      `\n> ${state.firstRefusal.slice(0, 300).replace(/\n+/g, " ")}${
+        state.firstRefusal.length > 300 ? "…" : ""
+      }`,
+    );
+  }
+  // 待ち直しは試行を消費しないので、内訳とは別に出す。
+  // 出しておかないと「時間だけ経って試行が進まない」ように見える
+  if (state.rateLimitRounds > 0) {
+    lines.push(
+      `\nレート制限による待ち直し: ${state.rateLimitRounds}回（試行には数えません）`,
+    );
+  }
+  if (state.lastError) lines.push(`\n最後のエラー: ${state.lastError}`);
 
   console.log(
-    `[gen] retry run finished: external=${budget.spent()}/${CHUNK_EXTERNAL_LIMIT} touch=${budget.touched()}/${CHUNK_TOUCH_LIMIT} attempts=${state.attempts} successes=${state.successes}`,
+    `[gen] retry run finished: external=${budget.spent()}/${CHUNK_EXTERNAL_LIMIT} touch=${budget.touched()}/${CHUNK_TOUCH_LIMIT} attempts=${state.attempts} successes=${state.successes} refusals=${state.refusals} empty=${state.emptyResponses} errors=${state.errors} rateLimited=${state.rateLimitRounds}`,
   );
 
   const summary = lines.join("\n");

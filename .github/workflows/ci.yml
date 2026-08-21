@@ -1,0 +1,25 @@
+name: CI
+
+# main への push と、main 宛のプルリクエストで走らせる。
+# 型チェックとテストが通らないものは取り込まない。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # postinstall の wrangler types は Cloudflare の設定を読むだけで
+      # 認証は要らない。Env 型がここで生成される
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test

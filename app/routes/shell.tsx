@@ -11,10 +11,14 @@ import {
   listConversations,
   listFolders,
   type BotRow,
-  type FolderRow,
 } from "../lib/db.server";
 import type { AppSettings } from "../lib/settings";
 import type { ModelInfo } from "../lib/openrouter.server";
+import type {
+  FxResponse,
+  ModelsResponse,
+  UnreadResponse,
+} from "../lib/api-types";
 import { Sidebar } from "../components/Sidebar";
 import { recordNavigation } from "../lib/perf";
 
@@ -91,7 +95,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     void fetch("/api/models")
       .then(async (res) => {
         if (!res.ok) return;
-        const { models: fresh } = (await res.json()) as { models: ModelInfo[] };
+        const { models: fresh } = (await res.json()) as ModelsResponse;
         setModels(fresh);
         try {
           localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(fresh));
@@ -103,7 +107,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     void fetch("/api/fx")
       .then(async (res) => {
         if (!res.ok) return;
-        setUsdJpy(((await res.json()) as { usdJpy: number | null }).usdJpy);
+        setUsdJpy(((await res.json()) as FxResponse).usdJpy);
       })
       .catch(() => {});
   }, []);
@@ -128,7 +132,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       try {
         const res = await fetch("/api/conversations/unread");
         if (!res.ok) return;
-        const { ids } = (await res.json()) as { ids: string[] };
+        const { ids } = (await res.json()) as UnreadResponse;
         if (alive) setUnreadIds(new Set(ids));
       } catch {
         // 印の更新が遅れても実害はない

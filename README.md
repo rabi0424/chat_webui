@@ -6,7 +6,7 @@
 
 ## 技術スタック
 
-- React Router v7+ (Framework Mode) + React 19 + TypeScript
+- React Router v8 (Framework Mode) + React 19 + TypeScript
 - Tailwind CSS v4
 - Cloudflare Workers（ホスティング / API プロキシ）
 - Cloudflare D1（会話・メッセージの永続化）/ R2（添付画像）
@@ -56,7 +56,31 @@ iPhone の Safari で共有メニュー →「ホーム画面に追加」する�
 | `npm run dev` | 開発サーバー起動 |
 | `npm run build` | 本番ビルド |
 | `npm run typecheck` | 型チェック |
+| `npm run lint` | ESLint（主にフックの依存配列の検査） |
+| `npm test` | テスト（vitest） |
 | `npm run deploy` | ビルド + Cloudflare Workers へデプロイ |
+
+`typecheck` は `wrangler types` を先に走らせて `Env` 型を作る。
+新しくクローンしたときは `.dev.vars` を用意してからでないと、
+シークレット名が `Env` に載らず型チェックが落ちることがある。
+
+## テスト
+
+`npm test` で走る。対象は Workers のバインディング（D1・R2）に触らない層
+——生成パラメータの組み立て、リトライ設定の読み取り、Markdownの分割、
+SVGの消毒など、実際にバグの出た場所。DOMが要るものは `tests/dom/` に置き、
+jsdom の上で動かす。
+
+型チェック・ESLint・テストは GitHub Actions でも回る
+（`.github/workflows/ci.yml`）。
+
+## データの書き出し（バックアップ）
+
+D1 の中身は手動で書き出す。
+
+```bash
+npx wrangler d1 export chat-webui --remote --output backup.sql
+```
 
 ## Poeボットのパラメータを調べる
 
