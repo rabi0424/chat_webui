@@ -35,6 +35,7 @@ import {
   uploadImage,
   type PendingAttachment,
 } from "./chat/use-attachments";
+import { MessageEditor, type EditingState } from "./chat/MessageEditor";
 import {
   BranchPager,
   CitationList,
@@ -161,12 +162,7 @@ export function Chat({
    * （既存分 + 追加分。削除も可能）。uploads は追加分のアップロード
    * 進行中件数で、0になるまで送信できない。
    */
-  const [editing, setEditing] = useState<{
-    index: number;
-    text: string;
-    attachments: UiAttachment[];
-    uploads: number;
-  } | null>(null);
+  const [editing, setEditing] = useState<EditingState | null>(null);
   /** 削除選択モード。null = 通常表示。 */
   const [selecting, setSelecting] = useState<Set<string> | null>(null);
   /**
@@ -1463,123 +1459,13 @@ export function Chat({
                   onClick={selectable ? () => toggleSelect(m.id) : undefined}
                 >
                   {editing?.index === i ? (
-                    <div className="rounded-2xl border border-accent/50 bg-neutral-50 p-3 dark:bg-neutral-900">
-                      {(editing.attachments.length > 0 || editing.uploads > 0) && (
-                        <div className="mb-2 flex flex-wrap gap-2">
-                          {editing.attachments.map((a) => (
-                            <div
-                              key={a.id}
-                              className="group/att relative h-16 w-16 overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700"
-                              title={a.name ?? "画像"}
-                            >
-                              <img
-                                src={`/api/files/${a.id}`}
-                                alt={a.name ?? "添付画像"}
-                                className="h-full w-full object-cover"
-                              />
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setEditing((prev) =>
-                                    prev
-                                      ? {
-                                          ...prev,
-                                          attachments: prev.attachments.filter(
-                                            (x) => x.id !== a.id,
-                                          ),
-                                        }
-                                      : prev,
-                                  )
-                                }
-                                aria-label="添付を削除"
-                                className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-xs text-white opacity-0 transition group-hover/att:opacity-100 focus:opacity-100 max-sm:opacity-100"
-                              >
-                                ×
-                              </button>
-                            </div>
-                          ))}
-                          {Array.from({ length: editing.uploads }).map((_, n) => (
-                            <div
-                              key={`up${n}`}
-                              className="grid h-16 w-16 place-items-center rounded-xl border border-neutral-200 dark:border-neutral-700"
-                            >
-                              <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <textarea
-                        value={editing.text}
-                        onChange={(e) =>
-                          setEditing((prev) =>
-                            prev ? { ...prev, text: e.target.value } : prev,
-                          )
-                        }
-                        onPaste={(e) => {
-                          const files = [...e.clipboardData.files];
-                          if (files.some(isAcceptedImage)) {
-                            e.preventDefault();
-                            void addEditFiles(files);
-                          }
-                        }}
-                        rows={3}
-                        autoFocus
-                        translate="no"
-                        className="w-full resize-y bg-transparent outline-none"
-                      />
-                      <div className="mt-2 flex items-center gap-2 text-sm">
-                        <input
-                          ref={editFileInputRef}
-                          type="file"
-                          accept={ALLOWED_IMAGE_TYPES.join(",")}
-                          multiple
-                          hidden
-                          onChange={(e) => {
-                            void addEditFiles([...(e.target.files ?? [])]);
-                            e.target.value = "";
-                          }}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => editFileInputRef.current?.click()}
-                          disabled={
-                            editing.attachments.length + editing.uploads >=
-                            MAX_ATTACHMENTS
-                          }
-                          aria-label="画像を追加"
-                          title="画像を追加"
-                          className="grid h-8 w-8 place-items-center rounded-full text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 dark:text-neutral-400 dark:hover:bg-neutral-800"
-                        >
-                          <IconPlus className="h-4.5 w-4.5" />
-                        </button>
-                        <div className="ml-auto flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setEditing(null)}
-                            className="rounded-lg px-3 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-                          >
-                            キャンセル
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => submitEdit()}
-                            disabled={
-                              (!editing.text.trim() &&
-                                editing.attachments.length === 0) ||
-                              editing.uploads > 0
-                            }
-                            title={
-                              editing.uploads > 0
-                                ? "画像をアップロード中…"
-                                : "送信"
-                            }
-                            className="rounded-lg bg-accent px-3 py-1.5 text-accent-fg hover:bg-accent/85 disabled:opacity-30"
-                          >
-                            送信
-                          </button>
-                        </div>
-                      </div>
-                    </div>
+                    <MessageEditor
+                      editing={editing}
+                      setEditing={setEditing}
+                      onSubmit={() => submitEdit()}
+                      onAddFiles={(files) => void addEditFiles(files)}
+                      fileInputRef={editFileInputRef}
+                    />
                   ) : (
                     <>
                       {m.attachments && m.attachments.length > 0 && (
