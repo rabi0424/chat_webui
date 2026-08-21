@@ -13,6 +13,7 @@ import {
   type BotRow,
 } from "../lib/db.server";
 import type { AppSettings } from "../lib/settings";
+import { noteConversations } from "../lib/chat-cache";
 import { useEscapeToClose } from "../lib/dismiss";
 import type { ModelInfo } from "../lib/openrouter.server";
 import type {
@@ -77,6 +78,9 @@ let startupRecorded = false;
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
   const { conversations, bots, folders, settings } = loaderData;
+  // 一覧が持っている更新時刻を先読みキャッシュへ伝える。別の端末で
+  // 進んだ会話の、古いスナップショットを見せないため
+  noteConversations(conversations);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   /**
