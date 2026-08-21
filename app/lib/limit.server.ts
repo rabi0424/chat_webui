@@ -5,7 +5,12 @@
  * 設定・台帳・為替を集めて渡す係。呼ぶのは生成の入口と、リトライ生成の
  * 発射ループの2箇所。
  */
-import { getAppSettings, readStoredUsdJpy, usageTotalsSince } from "./db.server";
+import {
+  getAppSettings,
+  readStoredUsdJpy,
+  storeUsdJpy,
+  usageTotalsSince,
+} from "./db.server";
 import { fetchUsdJpy } from "./fx.server";
 import { checkLimit, monthStartJst, type LimitVerdict } from "./usage";
 
@@ -19,7 +24,12 @@ import { checkLimit, monthStartJst, type LimitVerdict } from "./usage";
 async function rateForLimit(): Promise<number | null> {
   const stored = await readStoredUsdJpy();
   if (stored != null) return stored;
-  return await fetchUsdJpy();
+  // 取れたら書いておく。書かないと、保存が一度も無いあいだ判定のたびに
+  // 外へ出ることになる——リトライ生成は判定を何度も呼ぶので、
+  // 外部リクエストの枠をそれだけで使い切りかねない
+  const live = await fetchUsdJpy();
+  if (live != null) await storeUsdJpy(live);
+  return live;
 }
 
 /** 今月の使用量が上限に達しているか。 */

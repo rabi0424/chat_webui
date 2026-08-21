@@ -11,7 +11,7 @@ import { EMPTY_TOTALS, type UsageTotals } from "../app/lib/usage";
  */
 const settings = vi.hoisted(() => ({ value: {} as AppSettings }));
 const totals = vi.hoisted(() => ({ value: {} as UsageTotals, calls: 0 }));
-const stored = vi.hoisted(() => ({ value: null as number | null }));
+const stored = vi.hoisted(() => ({ value: null as number | null, saved: 0 }));
 const live = vi.hoisted(() => ({ value: null as number | null, calls: 0 }));
 
 vi.mock("../app/lib/db.server", () => ({
@@ -21,6 +21,10 @@ vi.mock("../app/lib/db.server", () => ({
     return totals.value;
   },
   readStoredUsdJpy: async () => stored.value,
+  storeUsdJpy: async (rate: number) => {
+    stored.saved++;
+    stored.value = rate;
+  },
 }));
 vi.mock("../app/lib/fx.server", () => ({
   fetchUsdJpy: async () => {
@@ -40,6 +44,7 @@ beforeEach(() => {
   totals.value = { ...EMPTY_TOTALS };
   totals.calls = 0;
   stored.value = 150;
+  stored.saved = 0;
   live.value = 150;
   live.calls = 0;
 });
@@ -82,6 +87,16 @@ describe("上限判定の組み立て", () => {
     const v = await checkMonthlyLimit(NOW);
     expect(live.calls).toBe(1);
     expect(v.blocked).toBe(true);
+  });
+
+  it("外から取れたレートは保存する（毎回外へ出ないため）", async () => {
+    settings.value.monthlyLimitJpy = 500;
+    stored.value = null;
+    await checkMonthlyLimit(NOW);
+    expect(stored.saved).toBe(1);
+    // 2度目は保存したものを読む
+    await checkMonthlyLimit(NOW);
+    expect(live.calls).toBe(1);
   });
 
   it("為替がどこからも取れなければ通す", async () => {

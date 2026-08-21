@@ -1804,7 +1804,18 @@ export async function finalizeGeneration(
   // 更新が当たらなかったときは、別の経路が既に確定させている
   // （＝そちらで載っている）ので二重に数えない。
   if (changed) {
-    await recordMessageUsage(messageId, result.usageJson, result.kind ?? "chat");
+    // 台帳に載せ損ねても確定は失敗させない。ここで投げると、応答が
+    // 「生成中」のまま止まる——課金は既に済んでいるのだから、記録の
+    // 失敗より画面が固まるほうが害が大きい。黙って飲み込みはしない
+    try {
+      await recordMessageUsage(
+        messageId,
+        result.usageJson,
+        result.kind ?? "chat",
+      );
+    } catch (e) {
+      console.error("[usage] 台帳への記録に失敗しました", messageId, e);
+    }
   }
   return changed;
 }
