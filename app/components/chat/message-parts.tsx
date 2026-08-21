@@ -6,6 +6,7 @@
  * 見た目の都合だけで育つ部分を外に出しておく。
  */
 import { useEffect, useRef, useState } from "react";
+import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
 import { GLASS_PANEL } from "../../lib/ui";
 import { IconCheck, IconCopy, IconInfo } from "../icons";
@@ -188,7 +189,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
         <ol className="mt-1 space-y-1 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:border-neutral-800 dark:bg-neutral-900">
           {citations.map((c, n) => (
             <li key={c.url} className="flex gap-2">
-              <span className="shrink-0 text-neutral-400 dark:text-neutral-600">
+              <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
                 {n + 1}.
               </span>
               <a
@@ -202,7 +203,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
                   {c.title || hostOf(c.url)}
                 </span>
                 {c.title && (
-                  <span className="block text-neutral-400 dark:text-neutral-600">
+                  <span className="block text-neutral-500 dark:text-neutral-400">
                     {hostOf(c.url)}
                   </span>
                 )}
@@ -217,7 +218,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
 
 /** ワンタップコピー（1.5秒だけ✓を表示）。 */
 export function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied] = useCopied();
   return (
     <button
       type="button"
@@ -226,8 +227,7 @@ export function CopyButton({ text }: { text: string }) {
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
+          flashCopied();
         } catch {
           // クリップボード不許可時は何もしない
         }

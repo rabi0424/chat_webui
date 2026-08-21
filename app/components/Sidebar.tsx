@@ -487,7 +487,7 @@ export function Sidebar({
           {searchQuery.trim() ? (
             /* --- 検索結果 --- */
             <>
-              <p className="px-3 pb-1 pt-1 text-xs font-medium text-neutral-400 dark:text-neutral-600">
+              <p className="px-3 pb-1 pt-1 text-xs font-medium text-neutral-500 dark:text-neutral-400">
                 {searching
                   ? "検索中…"
                   : `検索結果 ${searchResults?.length ?? 0}件`}
@@ -502,7 +502,7 @@ export function Sidebar({
                   />
                 ))}
                 {!searching && searchResults?.length === 0 && (
-                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
                     見つかりませんでした
                   </li>
                 )}
@@ -527,7 +527,7 @@ export function Sidebar({
               </div>
               <ul className="space-y-0.5">
                 {favoriteConversations.length === 0 && (
-                  <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-neutral-400 dark:text-neutral-600">
+                  <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-neutral-500 dark:text-neutral-400">
                     まだありません。
                     <br />
                     会話の「…」から
@@ -558,7 +558,7 @@ export function Sidebar({
               </div>
               <ul className="space-y-0.5">
                 {folderConversations(viewFolder.id).length === 0 && (
-                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
                     このフォルダは空です
                   </li>
                 )}
@@ -572,7 +572,7 @@ export function Sidebar({
             <>
               {pinnedItems.length > 0 && (
                 <>
-                  <p className="px-3 pb-1 pt-2 text-xs font-medium text-neutral-400 dark:text-neutral-600">
+                  <p className="px-3 pb-1 pt-2 text-xs font-medium text-neutral-500 dark:text-neutral-400">
                     ピン留め
                   </p>
                   <ul className="space-y-0.5">
@@ -591,7 +591,7 @@ export function Sidebar({
               )}
 
               <div className="flex items-center justify-between px-3 pb-1 pt-3">
-                <p className="text-xs font-medium text-neutral-400 dark:text-neutral-600">
+                <p className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
                   フォルダ
                 </p>
                 <button
@@ -612,11 +612,11 @@ export function Sidebar({
                 ))}
               </ul>
 
-              <p className="px-3 pb-1 pt-3 text-xs font-medium text-neutral-400 dark:text-neutral-600">
+              <p className="px-3 pb-1 pt-3 text-xs font-medium text-neutral-500 dark:text-neutral-400">
                 会話
               </p>
               {rootConversations.length === 0 && pinnedItems.length === 0 && (
-                <p className="px-3 py-4 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+                <p className="px-3 py-4 text-center text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
                   まだ会話はありません
                 </p>
               )}

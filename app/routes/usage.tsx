@@ -111,7 +111,7 @@ function Totals({
 }) {
   return (
     <div>
-      <p className="text-xs font-medium text-neutral-400 dark:text-neutral-600">
+      <p className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
         {title}
       </p>
       <p className="mt-0.5 text-2xl font-semibold tabular-nums">
@@ -145,7 +145,7 @@ function ByModel({
             <div className="flex items-baseline justify-between gap-3">
               <span className="min-w-0 truncate">
                 {modelName(r.modelId)}
-                <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
+                <span className="ml-1.5 text-xs text-neutral-500 dark:text-neutral-400">
                   {r.events}件
                 </span>
               </span>
@@ -189,7 +189,7 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
             <IconMenu className="h-5 w-5" />
           </button>
           <h1 className="text-xl font-semibold tracking-tight">使用量</h1>
-          <span className="ml-auto text-xs text-neutral-400 dark:text-neutral-600">
+          <span className="ml-auto text-xs text-neutral-500 dark:text-neutral-400">
             {monthLabelJst(now)}（JST）
           </span>
         </header>
@@ -239,12 +239,12 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
         <ByModel rows={byModel} usdJpy={usdJpy} />
 
         {month.events === 0 && (
-          <p className="mt-10 text-center text-sm text-neutral-400 dark:text-neutral-600">
+          <p className="mt-10 text-center text-sm text-neutral-500 dark:text-neutral-400">
             今月の記録はまだありません
           </p>
         )}
 
-        <p className="mt-10 text-xs leading-relaxed text-neutral-400 dark:text-neutral-600">
+        <p className="mt-10 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
           会話やメッセージを削除しても、ここの記録は残ります。使った額は
           戻らないので、消すことで上限が緩まないようにしてあります。
         </p>

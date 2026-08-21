@@ -1,12 +1,6 @@
-import {
-  createContext,
-  memo,
-  useContext,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { createContext, memo, useContext, useMemo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import { useCopied } from "../lib/use-copied";
 import type { PluggableList } from "unified";
 import type { Element, ElementContent, Root, RootContent } from "hast";
 import remarkGfm from "remark-gfm";
@@ -99,7 +93,7 @@ function externalHost(href: string | undefined): string | null {
 }
 
 function CopyCodeButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied] = useCopied();
   return (
     <button
       type="button"
@@ -108,8 +102,7 @@ function CopyCodeButton({ text }: { text: string }) {
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
+          flashCopied();
         } catch {
           // クリップボード不許可時は何もしない
         }

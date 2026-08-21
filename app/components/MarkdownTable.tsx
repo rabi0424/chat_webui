@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Element, ElementContent } from "hast";
+import { useCopied } from "../lib/use-copied";
 import {
   IconCheck,
   IconChevronDown,
@@ -163,7 +164,7 @@ export function tsvCell(text: string): string {
 type Sort = { column: number; desc: boolean } | null;
 
 function CopyTableButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied] = useCopied();
   return (
     <button
       type="button"
@@ -172,8 +173,7 @@ function CopyTableButton({ text }: { text: string }) {
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
+          flashCopied();
         } catch {
           // クリップボード不許可時は何もしない
         }

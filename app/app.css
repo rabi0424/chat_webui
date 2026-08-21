@@ -520,6 +520,18 @@ body {
 .prose .md-table table {
   margin: 0;
 }
+/*
+ * 選択したところの色。
+ *
+ * 既定のままだと、アクセント色の吹き出しの上では選択の反転が地の色と
+ * ほとんど同じになり、**どこを選んだのか分からない**。文字と背景を
+ * こちらで決めて、どの面の上でも同じ見え方にする。
+ */
+::selection {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
 /* キーボードで辿り着いたとき、どの列に居るのかを見せる */
 .prose th.md-table-sortable:focus-visible {
   outline: 2px solid var(--accent);

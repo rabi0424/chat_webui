@@ -1,4 +1,5 @@
 import { startTransition, useEffect, useState } from "react";
+import { useCopied } from "../lib/use-copied";
 import { useOutletContext, useRevalidator } from "react-router";
 import type { Route } from "./+types/settings";
 import type { ShellContext } from "./shell";
@@ -150,7 +151,7 @@ function DeltaBadge({ cur, prev }: { cur: number; prev: number | undefined }) {
  */
 function PerfPanel() {
   const [comparison, setComparison] = useState<BuildComparison | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied] = useCopied();
 
   // localStorageはSSRで読めないので描画後に読む。集計は画面表示を
   // 待たせないよう低優先度で行う
@@ -162,8 +163,7 @@ function PerfPanel() {
     if (!comparison) return;
     try {
       await navigator.clipboard.writeText(formatComparison(comparison));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      flashCopied();
     } catch {
       // 権限がない環境では黙って何もしない
     }

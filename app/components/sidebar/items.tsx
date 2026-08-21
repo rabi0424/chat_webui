@@ -215,7 +215,7 @@ export function FavoritesFolderItem() {
               items-center で箱の中央が揃い、小さい字だけ上にずれて見える */}
           <span className="min-w-0 flex-1 truncate">
             お気に入り
-            <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
+            <span className="ml-1.5 text-xs text-neutral-500 dark:text-neutral-400">
               {children.length}
             </span>
           </span>
@@ -224,7 +224,7 @@ export function FavoritesFolderItem() {
       {isExpanded && (
         <ul className="mt-0.5 space-y-0.5">
           {children.length === 0 && (
-            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
               （まだありません）
             </li>
           )}
@@ -269,7 +269,7 @@ export function FolderItem({ f }: { f: FolderRow }) {
         >
           <span aria-hidden className="mr-1.5">📁</span>
           {f.name}
-          <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
+          <span className="ml-1.5 text-xs text-neutral-500 dark:text-neutral-400">
             {children.length}
           </span>
         </button>
@@ -279,7 +279,7 @@ export function FolderItem({ f }: { f: FolderRow }) {
       {isExpanded && (
         <ul className="mt-0.5 space-y-0.5">
           {children.length === 0 && (
-            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
               （空のフォルダ）
             </li>
           )}
