@@ -7,8 +7,10 @@ const POE_BASE = "https://api.poe.com/v1";
 /** Poe Usage API（残高・ポイント履歴）。/v1 の外に生えている。 */
 const POE_USAGE_BASE = POE_BASE.replace(/\/v1$/, "") + "/usage";
 
-/** Poeモデルは "poe:" プレフィックス付きのIDで扱う。 */
-export const POE_PREFIX = "poe:";
+// Poeの接頭辞は共有の置き場に移した。ここからの再輸出は、既に
+// このモジュール経由で読んでいる箇所を壊さないため
+import { POE_PREFIX } from "./constants";
+export { POE_PREFIX };
 
 /**
  * Poeがモデルごとに公開する、そのボット固有のパラメータ。
@@ -384,10 +386,26 @@ export interface ChatMessage {
  * Generates a short conversation title from the first exchange.
  * Returns null on any failure — a title is nice-to-have, never worth an error.
  */
+export interface TitleResult {
+  title: string | null;
+  /** 上流が申告したコスト（USD）。載らなければ null。 */
+  costUsd: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  modelId: string;
+}
+
 export async function generateTitle(params: {
   userText: string;
   assistantText: string;
-}): Promise<string | null> {
+}): Promise<TitleResult> {
+  const empty: TitleResult = {
+    title: null,
+    costUsd: null,
+    promptTokens: null,
+    completionTokens: null,
+    modelId: TITLE_MODEL,
+  };
   try {
     const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
       method: "POST",
@@ -404,17 +422,36 @@ export async function generateTitle(params: {
           },
         ],
         max_tokens: 50,
+        // タイトルも課金される。額を申告させて台帳に載せる
+        // （小さいが、会話を作るたびに出ていく分なので見えないと困る）
+        usage: { include: true },
       }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) return empty;
     const body = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
+      usage?: {
+        cost?: number;
+        prompt_tokens?: number;
+        completion_tokens?: number;
+      };
     };
-    const title = body.choices?.[0]?.message?.content?.trim();
-    if (!title) return null;
-    return title.replace(/^["「『]|["」』]$/g, "").slice(0, MAX_TITLE_LENGTH);
+    const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : null);
+    const used = {
+      costUsd: num(body.usage?.cost),
+      promptTokens: num(body.usage?.prompt_tokens),
+      completionTokens: num(body.usage?.completion_tokens),
+      modelId: TITLE_MODEL,
+    };
+    const raw = body.choices?.[0]?.message?.content?.trim();
+    // 本文が取れなくても課金は起きているので、使用量は返す
+    if (!raw) return { ...used, title: null };
+    return {
+      ...used,
+      title: raw.replace(/^["「『]|["」』]$/g, "").slice(0, MAX_TITLE_LENGTH),
+    };
   } catch {
-    return null;
+    return empty;
   }
 }
 

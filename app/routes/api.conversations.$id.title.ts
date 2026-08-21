@@ -1,5 +1,9 @@
 import type { Route } from "./+types/api.conversations.$id.title";
-import { getConversation, updateConversationTitle } from "../lib/db.server";
+import {
+  getConversation,
+  recordStandaloneUsage,
+  updateConversationTitle,
+} from "../lib/db.server";
 import { generateTitle } from "../lib/openrouter.server";
 
 interface Body {
@@ -24,12 +28,20 @@ export async function action({ request, params }: Route.ActionArgs) {
     return Response.json({ error: "会話が見つかりません" }, { status: 404 });
   }
 
-  const title = await generateTitle({
+  const result = await generateTitle({
     userText: body.userText ?? "",
     assistantText: body.assistantText ?? "",
   });
-  if (title) {
-    await updateConversationTitle(params.id, title);
+  // タイトルが取れなくても投げた分は課金される。先に台帳へ載せる
+  await recordStandaloneUsage({
+    kind: "title",
+    modelId: result.modelId,
+    costUsd: result.costUsd,
+    promptTokens: result.promptTokens,
+    completionTokens: result.completionTokens,
+  });
+  if (result.title) {
+    await updateConversationTitle(params.id, result.title);
   }
-  return Response.json({ title });
+  return Response.json({ title: result.title });
 }

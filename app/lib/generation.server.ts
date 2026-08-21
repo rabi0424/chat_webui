@@ -1540,6 +1540,7 @@ async function runRetryGenerationJob(
     content: state.successes > 0 ? summary : "",
     reasoning: null,
     usageJson,
+    kind: "retry",
     // 1件も取れなかったときは、そのまま再試行できるようエラー扱いにする
     status: state.successes > 0 ? "done" : "error",
     error: state.successes > 0 ? null : summary.replace(/\*\*/g, ""),

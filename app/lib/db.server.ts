@@ -6,7 +6,8 @@ import {
   RETRY_CEILING_RANGE,
   type AppSettings,
 } from "./settings";
-import { MAX_TITLE_LENGTH } from "./constants";
+import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
+import { EMPTY_TOTALS, type UsageTotals } from "./usage";
 
 /**
  * Data access layer for D1.
@@ -141,6 +142,30 @@ ALTER TABLE messages ADD COLUMN context_boundary INTEGER NOT NULL DEFAULT 0;
   // 次のターンでモデルへ送り返す履歴が変わってしまうため。
   `
 ALTER TABLE messages ADD COLUMN citations_json TEXT;
+`,
+  // v14: 使用量の台帳。
+  //
+  // messages.usage_json とは別に持つ。あちらは応答の詳細表示のためのもので、
+  // 会話やメッセージを消せば一緒に消える。月間の上限は「使った額」で判定
+  // するのだから、消しても減ってはいけない——会話を消すと上限が緩む、
+  // という穴になる。会話IDは参照のために持つだけで、外部キーも
+  // ON DELETE も張らない。
+  `
+CREATE TABLE IF NOT EXISTS usage_events (
+  id TEXT PRIMARY KEY,
+  at INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model_id TEXT,
+  cost_usd REAL,
+  points REAL,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  conversation_id TEXT,
+  message_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_usage_at ON usage_events(at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_message ON usage_events(message_id) WHERE message_id IS NOT NULL;
 `,
 ];
 
@@ -1516,6 +1541,168 @@ export async function flushGeneration(
  * メッセージが done に戻り、停止ボタンも効かないまま二重に走ってしまう。
  * 確定できたときだけ true を返す。
  */
+/** 台帳に載せる種別。何にいくら使ったかを後から分けて見るため。 */
+export type UsageKind = "chat" | "retry" | "title";
+
+/** usage_json から数値を1つ取り出す（壊れていたら無いものとして扱う）。 */
+function usageNumber(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 確定した応答の使用量を台帳へ載せる。
+ *
+ * モデルIDと会話IDは messages から引く（呼ぶ側が持ち回らなくて済むよう、
+ * INSERT ... SELECT で1回の往復にする）。message_id には一意制約が
+ * あるので、同じ応答を二度確定しようとしても二重には計上されない。
+ */
+export async function recordMessageUsage(
+  messageId: string,
+  usageJson: string | null,
+  kind: UsageKind,
+): Promise<void> {
+  if (!usageJson) return;
+  let u: Record<string, unknown>;
+  try {
+    u = JSON.parse(usageJson) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const cost = usageNumber(u.cost);
+  const points = usageNumber(u.points);
+  // 額もポイントも無いなら、支出としては記録するものが無い
+  if (cost == null && points == null) return;
+
+  const d = await db();
+  await d
+    .prepare(
+      `INSERT OR IGNORE INTO usage_events
+         (id, at, kind, provider, model_id, cost_usd, points,
+          prompt_tokens, completion_tokens, conversation_id, message_id)
+       SELECT ?, ?, ?,
+              CASE WHEN model_id LIKE ? THEN 'poe' ELSE 'openrouter' END,
+              model_id, ?, ?, ?, ?, conversation_id, id
+         FROM messages WHERE id = ?`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      Date.now(),
+      kind,
+      `${POE_PREFIX}%`,
+      cost,
+      points,
+      usageNumber(u.promptTokens),
+      usageNumber(u.completionTokens),
+      messageId,
+    )
+    .run();
+}
+
+/**
+ * メッセージに紐づかない支出を台帳へ載せる（タイトル生成など）。
+ */
+export async function recordStandaloneUsage(entry: {
+  kind: UsageKind;
+  modelId: string;
+  costUsd: number | null;
+  points?: number | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+}): Promise<void> {
+  if (entry.costUsd == null && entry.points == null) return;
+  const d = await db();
+  await d
+    .prepare(
+      `INSERT INTO usage_events
+         (id, at, kind, provider, model_id, cost_usd, points,
+          prompt_tokens, completion_tokens, conversation_id, message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      Date.now(),
+      entry.kind,
+      entry.modelId.startsWith(POE_PREFIX) ? "poe" : "openrouter",
+      entry.modelId,
+      entry.costUsd,
+      entry.points ?? null,
+      entry.promptTokens ?? null,
+      entry.completionTokens ?? null,
+    )
+    .run();
+}
+
+/** 期間の合計。上限の判定と使用量の画面が使う。 */
+export async function usageTotalsSince(since: number): Promise<UsageTotals> {
+  const d = await db();
+  const row = await d
+    .prepare(
+      `SELECT
+         COALESCE(SUM(cost_usd), 0) AS cost_usd,
+         COALESCE(SUM(points), 0) AS points,
+         COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN points ELSE 0 END), 0)
+           AS points_without_cost,
+         COUNT(*) AS events
+       FROM usage_events WHERE at >= ?`,
+    )
+    .bind(since)
+    .first<{
+      cost_usd: number;
+      points: number;
+      points_without_cost: number;
+      events: number;
+    }>();
+  if (!row) return { ...EMPTY_TOTALS };
+  return {
+    costUsd: row.cost_usd ?? 0,
+    points: row.points ?? 0,
+    pointsWithoutCost: row.points_without_cost ?? 0,
+    events: row.events ?? 0,
+  };
+}
+
+/** モデル別の内訳。使用量の画面で「何が高いか」を見るため。 */
+export interface UsageByModel {
+  modelId: string | null;
+  provider: string;
+  costUsd: number;
+  points: number;
+  events: number;
+}
+
+export async function usageByModelSince(
+  since: number,
+): Promise<UsageByModel[]> {
+  const d = await db();
+  const { results } = await d
+    .prepare(
+      `SELECT model_id,
+              provider,
+              COALESCE(SUM(cost_usd), 0) AS cost_usd,
+              COALESCE(SUM(points), 0) AS points,
+              COUNT(*) AS events
+         FROM usage_events WHERE at >= ?
+        GROUP BY model_id, provider
+        ORDER BY cost_usd DESC, points DESC`,
+    )
+    .bind(since)
+    .all<{
+      model_id: string | null;
+      provider: string;
+      cost_usd: number;
+      points: number;
+      events: number;
+    }>();
+  return (results ?? []).map((r) => ({
+    modelId: r.model_id,
+    provider: r.provider,
+    costUsd: r.cost_usd ?? 0,
+    points: r.points ?? 0,
+    events: r.events ?? 0,
+  }));
+}
+
 export async function finalizeGeneration(
   messageId: string,
   result: {
@@ -1526,6 +1713,8 @@ export async function finalizeGeneration(
     error?: string | null;
     /** 参照元のJSON。Webツールを使わなかった応答では null。 */
     citationsJson?: string | null;
+    /** 台帳へ載せる種別。既定は通常のチャット。 */
+    kind?: UsageKind;
   },
 ): Promise<boolean> {
   const d = await db();
@@ -1551,7 +1740,16 @@ export async function finalizeGeneration(
       )
       .bind(messageId),
   ]);
-  return (applied.meta.changes ?? 0) > 0;
+  const changed = (applied.meta.changes ?? 0) > 0;
+
+  // 台帳はここで載せる。呼ぶ側が5箇所あり、1つ忘れるだけで
+  // 支出が見えなくなるため、確定の中に閉じ込める。
+  // 更新が当たらなかったときは、別の経路が既に確定させている
+  // （＝そちらで載っている）ので二重に数えない。
+  if (changed) {
+    await recordMessageUsage(messageId, result.usageJson, result.kind ?? "chat");
+  }
+  return changed;
 }
 
 /**
