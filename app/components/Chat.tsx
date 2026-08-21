@@ -660,6 +660,11 @@ export function Chat({
   refreshingRef.current = refreshing;
   /** 送信前の添付画像。 */
   const [pending, setPending] = useState<PendingAttachment[]>([]);
+  /**
+   * いま押さえている添付の枚数。上限の判定に使う。
+   * 反映待ちのぶんも数に入れたいので、state とは別に持つ。
+   */
+  const pendingCountRef = useRef(0);
   /** ドラッグ&ドロップのハイライト。 */
   const [dragOver, setDragOver] = useState(false);
   /** 原寸表示中の添付ID。 */
@@ -920,6 +925,11 @@ export function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 上限の判定に使う枚数を、実際の並びに合わせ直す（削除・送信のあと）
+  useEffect(() => {
+    pendingCountRef.current = pending.length;
+  }, [pending]);
+
   // アップロードが終わった添付だけを控える（送信すると破棄する）
   useEffect(() => {
     const ready = pending
@@ -1024,10 +1034,26 @@ export function Chat({
       const res = await fetch(`/api/conversations/${convId}/path`);
       if (res.ok) {
         const { messages: fresh } = (await res.json()) as PathResponse;
-        setMessages(fresh);
-        setError(null);
-        // 別の画面で走っている生成があれば、ここから追いかける
-        if (!isStreaming) trackRunning(convId, fresh);
+        /*
+         * まだサーバーに無いメッセージが画面にある間は差し替えない。
+         *
+         * 送信した直後は、保存が終わるまで楽観表示のユーザー発言と
+         * プレースホルダがIDを持たずに並んでいる。ここでサーバーの
+         * パスに置き換えるとそれらが消え、あとから届いたIDが別の
+         * メッセージに付いて、前の応答の本文が新しい応答で上書き
+         * されて見える。取り直しは次の機会に回せばよい。
+         */
+        let replaced = false;
+        setMessages((prev) => {
+          if (prev.some((m) => !m.id)) return prev;
+          replaced = true;
+          return fresh;
+        });
+        if (replaced) {
+          setError(null);
+          // 別の画面で走っている生成があれば、ここから追いかける
+          if (!isStreaming) trackRunning(convId, fresh);
+        }
       }
     } catch {
       // 取り直せなくても、いま出ている内容はそのまま残す
@@ -1187,14 +1213,23 @@ export function Chat({
       if (files.length > 0) setError("画像ファイルのみ添付できます。");
       return;
     }
-    const room = MAX_ATTACHMENTS - pending.length;
+    /*
+     * 空き枚数は ref から数える。
+     *
+     * 描画のたびに作られる pending を見ていると、1回目の反映を待たずに
+     * 2回目を落としたときに空きを多く見積もり、上限を超えて添付できて
+     * しまう。受け付けたぶんはその場で押さえておく。
+     */
+    const room = MAX_ATTACHMENTS - pendingCountRef.current;
     if (room <= 0) {
       setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
       return;
     }
     setError(null);
+    const accepted = images.slice(0, room);
+    pendingCountRef.current += accepted.length;
 
-    for (const file of images.slice(0, room)) {
+    for (const file of accepted) {
       const localId = crypto.randomUUID();
       const entry: PendingAttachment = {
         localId,
@@ -1612,11 +1647,14 @@ export function Chat({
       const { userMessageId, assistantMessageId } =
         (await res.json()) as GenerateResponse;
 
-      // サーバーが採番したIDをローカル状態へ反映
+      // サーバーが採番したIDをローカル状態へ反映。
+      // 貼る相手は「いま置いた生成中のプレースホルダ」に限る。末尾が
+      // 別のものに入れ替わっていた場合（引っぱって更新などが挟まった
+      // 場合）に、無関係な応答へIDを付けてしまわないようにする
       setMessages((prev) => {
         const next = [...prev];
         const asst = next[next.length - 1];
-        if (asst?.role === "assistant") {
+        if (asst?.role === "assistant" && asst.status === "streaming" && !asst.id) {
           next[next.length - 1] = { ...asst, id: assistantMessageId };
         }
         if (userMessageId) {

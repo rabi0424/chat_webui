@@ -1,6 +1,23 @@
 import type { PathMessage } from "./db.server";
 import type { UiCitation, UiMessage } from "./types";
 
+/**
+ * usage_json を読む。壊れていても表示を止めない。
+ *
+ * ここで素の JSON.parse を使っていたため、1行でも壊れた行があると
+ * その会話のパス取得が丸ごと 500 になり、会話を開けなくなっていた。
+ * 使用量は表示の飾りなので、読めなければ無いものとして進める。
+ */
+export function parseUsage(json: string | null): UiMessage["usage"] {
+  if (!json) return undefined;
+  try {
+    const parsed = JSON.parse(json) as UiMessage["usage"];
+    return parsed && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** citations_json を読む。壊れていても表示を止めない。 */
 export function parseCitations(json: string | null): UiCitation[] | undefined {
   if (!json) return undefined;
@@ -21,7 +38,7 @@ export function toUiMessage(m: PathMessage): UiMessage {
     citations: parseCitations(m.citations_json),
     status: m.status === "done" ? undefined : m.status,
     error: m.error ?? undefined,
-    usage: m.usage_json ? JSON.parse(m.usage_json) : undefined,
+    usage: parseUsage(m.usage_json),
     modelId: m.model_id ?? undefined,
     createdAt: m.created_at,
     finishedAt: m.flushed_at ?? undefined,

@@ -490,6 +490,12 @@ export interface SearchResult {
   snippet: string | null;
 }
 
+/**
+ * 一度の検索で見る語の数。1語あたりバインドを2つ使うので、
+ * D1の上限（1文あたり100個）に十分収まる数にする。
+ */
+const MAX_SEARCH_TERMS = 10;
+
 /** LIKE用エスケープ（% _ \ を無効化）。 */
 function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -503,7 +509,15 @@ function escapeLike(term: string): string {
 export async function searchConversations(
   query: string,
 ): Promise<SearchResult[]> {
-  const terms = query.split(/[\s　]+/).filter(Boolean);
+  /*
+   * 語数に上限を設ける。1語につきバインドを2つ（タイトル・本文）使うので、
+   * 語が増えるとD1の上限（1文あたり100個）に当たって検索が500になる。
+   * 1文字の語ばかりを並べれば現実に届く数なので、ここで切っておく。
+   */
+  const terms = query
+    .split(/[\s　]+/)
+    .filter(Boolean)
+    .slice(0, MAX_SEARCH_TERMS);
   const positives = terms.filter((t) => !t.startsWith("-"));
   const negatives = terms
     .filter((t) => t.startsWith("-"))
@@ -1292,11 +1306,13 @@ export async function listGeneratedImages(params: {
   if (params.favoritesOnly) conditions.push("a.favorite = 1");
   for (const term of terms) {
     conditions.push(
-      `(LOWER(COALESCE(a.prompt, '')) LIKE ?
-        OR LOWER(COALESCE(m.model_id, '')) LIKE ?
-        OR LOWER(COALESCE(c.title, '')) LIKE ?)`,
+      // エスケープの仕方は会話検索と揃える。% と _ を落としてしまうと
+      // 「50%」のような語が「50」として検索されて結果が変わる
+      `(LOWER(COALESCE(a.prompt, '')) LIKE ? ESCAPE '\\'
+        OR LOWER(COALESCE(m.model_id, '')) LIKE ? ESCAPE '\\'
+        OR LOWER(COALESCE(c.title, '')) LIKE ? ESCAPE '\\')`,
     );
-    const like = `%${term.replace(/[%_]/g, "")}%`;
+    const like = `%${escapeLike(term)}%`;
     binds.push(like, like, like);
   }
   binds.push(params.limit);
