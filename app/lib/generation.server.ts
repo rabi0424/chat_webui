@@ -516,15 +516,25 @@ export interface GenerationJob {
 
 /** 例外を投げず、必ずメッセージ行を確定させて終了する。 */
 /** 上流へのリクエスト。プロバイダごとの差はここに閉じる。 */
-async function requestUpstream(
+export async function requestUpstream(
   job: GenerationJob,
   messages: OutgoingMessage[],
+  /**
+   * 外部へ1件投げる直前に呼ばれる。枠を数えるために使う。
+   *
+   * この関数は**1回の呼び出しで2件投げることがある**（サーバーツールが
+   * 弾かれたときのやり直し）。呼ぶ側が「1回 = 1件」で数えていたので、
+   * 実際の本数が枠の数えを追い越し、上限の手前で切り上げる仕組みが
+   * 効かなくなっていた。投げる場所を1つにまとめて、そこで数える。
+   */
+  onRequest: () => void = () => {},
 ): Promise<Response> {
   const isPoe = job.model.startsWith(POE_PREFIX);
   const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
 
   // Webの扱いはOpenRouter専用。Poeは素のモデル名で投げる
   if (isPoe) {
+    onRequest();
     return await poeChatRequest({
       model: modelName,
       messages,
@@ -534,8 +544,9 @@ async function requestUpstream(
     });
   }
 
-  const send = (tools: boolean) =>
-    openRouterChatRequest({
+  const send = (tools: boolean) => {
+    onRequest();
+    return openRouterChatRequest({
       // 検索プラグインはモデル名の接尾辞で指定する。サーバーツールを
       // 渡すときは付けない（同じ検索を二重に走らせないため）
       model: !tools && job.web ? `${modelName}:online` : modelName,
@@ -547,6 +558,7 @@ async function requestUpstream(
       ...(tools ? { tools: WEB_SERVER_TOOLS } : {}),
       ...buildGenerationPayload(job.paramsState, "openrouter"),
     });
+  };
 
   if (!job.web || !job.webTools) return await send(false);
 
@@ -554,8 +566,8 @@ async function requestUpstream(
   // サーバーツールはbetaで、指定の形は変わりうる。弾かれたときに応答ごと
   // 失わせず、検索プラグインの側へ下がってもう一度だけ投げる。
   // 400の原因が⚙のパラメータ側なら、ツール抜きでも同じエラーが返るので
-  // 利用者に見せる文言は変わらない（外部リクエストを1件余計に使うのは、
-  // このやり直しの経路だけ）。
+  // 利用者に見せる文言は変わらない。ここで1件余計に使うぶんは
+  // onRequest で数えられる。
   if (res.status !== 400) return res;
   try {
     await res.body?.cancel();
@@ -844,10 +856,13 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
 
   let upstream: Response;
   try {
-    budget.spend();
     // 添付画像はここでR2から読み出して data: URL に展開する
     // （DOのストレージに実体を持ち込まないため、ジョブにはIDだけを載せている）
-    upstream = await requestUpstream(job, await expandAttachments(job.messages));
+    upstream = await requestUpstream(
+      job,
+      await expandAttachments(job.messages),
+      budget.spend,
+    );
   } catch (e) {
     await finalizeGeneration(job.assistantMessageId, {
       content: "",
@@ -1062,8 +1077,9 @@ async function runAttempt(
   const isPoe = job.model.startsWith(POE_PREFIX);
   let upstream: Response;
   try {
-    budget.spend();
-    upstream = await requestUpstream(job, messages);
+    // 枠は requestUpstream の中で、投げるたびに数える
+    // （サーバーツールが弾かれると2件投げるため）
+    upstream = await requestUpstream(job, messages, budget.spend);
   } catch (e) {
     return {
       kind: "error",

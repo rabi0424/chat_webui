@@ -27,6 +27,23 @@ export default defineConfig({
         },
       },
       {
+        // サーバー側のモジュール（cloudflare:workers を読むもの）のうち、
+        // バインディングに触らない部分を試す
+        resolve: {
+          alias: {
+            "cloudflare:workers": new URL(
+              "./tests/stubs/cloudflare-workers.ts",
+              import.meta.url,
+            ).pathname,
+          },
+        },
+        test: {
+          name: "server",
+          include: ["tests/server/*.test.ts"],
+          environment: "node",
+        },
+      },
+      {
         test: {
           name: "schema",
           include: ["tests/schema.test.ts"],
