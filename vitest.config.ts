@@ -13,7 +13,7 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.{ts,tsx}"],
     projects: [
       {
         test: {
@@ -26,8 +26,9 @@ export default defineConfig({
       {
         test: {
           name: "dom",
-          include: ["tests/dom/*.test.ts"],
+          include: ["tests/dom/*.test.{ts,tsx}"],
           environment: "jsdom",
+          setupFiles: ["tests/dom/setup.ts"],
         },
       },
     ],

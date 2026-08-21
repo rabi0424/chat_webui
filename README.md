@@ -66,10 +66,22 @@ iPhone の Safari で共有メニュー →「ホーム画面に追加」する�
 
 ## テスト
 
-`npm test` で走る。対象は Workers のバインディング（D1・R2）に触らない層
-——生成パラメータの組み立て、リトライ設定の読み取り、Markdownの分割、
-SVGの消毒など、実際にバグの出た場所。DOMが要るものは `tests/dom/` に置き、
-jsdom の上で動かす。
+`npm test` で走る。3層に分かれている。
+
+- **純粋なロジック**（`tests/*.test.ts`）: 生成パラメータの組み立て、
+  リトライ設定の読み取り、Markdownの分割など。Workers のバインディング
+  （D1・R2）には触らない
+- **DOMが要るもの**（`tests/dom/*.test.ts`）: SVGの消毒、ShadowRoot の
+  貼り替えなど
+- **画面の操作**（`tests/dom/chat-*.test.tsx`, `tests/dom/sidebar.test.tsx`）:
+  送信・編集・分岐・削除と、会話一覧の名前の変更・お気に入り・ピン留め・
+  フォルダを、Testing Library で実際に操作する。通信だけを差し替え
+  （`helpers/` の下）、画面側のロジック——楽観表示、IDの貼り付け、追跡、
+  分岐の組み立て——は本物を動かす
+
+テストが本当に回帰を捕まえるかは、わざとコードを壊して確かめるのが早い。
+たとえば編集時の親を「ひとつ手前」から「編集対象自身」に変えると、
+`chat-edit` が落ちる。落ちなければ、そのテストは素通りしている。
 
 型チェック・ESLint・テストは GitHub Actions でも回る
 （`.github/workflows/ci.yml`）。

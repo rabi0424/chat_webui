@@ -1,7 +1,7 @@
 import { Fragment, startTransition, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
-import type { UiAttachment, UiCitation, UiMessage } from "../lib/types";
+import type { UiAttachment, UiMessage } from "../lib/types";
 import {
   ALLOWED_IMAGE_TYPES,
   DEFAULT_MODEL,
@@ -22,7 +22,6 @@ import { isRetryProgress, readRetryConfig } from "../lib/retry";
 import {
   formatBytes,
   isAcceptedImage,
-  prepareImage,
 } from "../lib/image";
 import { Markdown } from "./Markdown";
 import { StreamingMessage } from "./StreamingMessage";
@@ -30,21 +29,34 @@ import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
 import { Lightbox } from "./Lightbox";
+import { useGenerationTracking } from "./chat/use-generation-tracking";
+import {
+  useAttachments,
+  uploadImage,
+  type PendingAttachment,
+} from "./chat/use-attachments";
+import {
+  BranchPager,
+  CitationList,
+  ContextBoundaryLine,
+  CopyButton,
+  GenerationProgress,
+  MessageDetails,
+  MessageImages,
+  ReasoningBlock,
+  formatJpy,
+} from "./chat/message-parts";
 import type {
   CreateConversationResponse,
   ErrorResponse,
   GenerateResponse,
-  MessageStateResponse,
   PathResponse,
 } from "../lib/api-types";
 import {
   IconArrowDown,
   IconArrowUp,
-  IconCheck,
   IconBroom,
-  IconCopy,
   IconGlobe,
-  IconInfo,
   IconMenu,
   IconPencil,
   IconPlus,
@@ -63,53 +75,9 @@ export interface BotContext {
 }
 
 const MODEL_STORAGE_KEY = "chat-webui:model";
-const POLL_INTERVAL_MS = 400;
-/**
- * ポーリングを諦めるまでの連続失敗回数。
- *
- * 一過性の失敗（5xx・通信断）で追跡をやめると、生成は続いているのに
- * 表示が生成中のまま誰も追わない状態になる。かといって永久に叩き続ける
- * わけにもいかないので、続けて失敗した回数で打ち切る。
- */
-const POLL_MAX_FAILURES = 10;
 
-/**
- * 追いかけている生成ひとつぶんの合図。
- *
- * epoch は「この追跡がまだ最新か」の判定に使い、signal は既に飛んで
- * いる通信を打ち切るために使う。番号だけでは、画面を離れたあとも
- * 応答待ちの fetch が残ってしまう。
- */
-interface Tracking {
-  epoch: number;
-  signal: AbortSignal;
-}
-
-/** 待っても直らない失敗か（会話が消えた・URLが違う等）。 */
-function terminalStatus(status: number): boolean {
-  // 408（タイムアウト）と429（混雑）は待てば直るので除く
-  if (status === 408 || status === 429) return false;
-  return status >= 400 && status < 500;
-}
-
-/** 中断されたらすぐ起きる待ち。画面を離れた直後に空回りしない。 */
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const done = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    signal.addEventListener("abort", done, { once: true });
-  });
-}
 /* 引っぱって更新の寸法は lib/pull-to-refresh.ts に集約（画像一覧と共通） */
-/**
- * リトライ生成の追跡間隔。成功した応答が増えたかを見るだけなので
- * 本文のポーリングより軽いが、出来上がりは1秒以内に出したい。
- */
-const RUN_POLL_INTERVAL_MS = 1000;
+
 /**
  * Web検索（OpenRouterの :online プラグイン）の設定キー。
  * 他の生成パラメータと同じく会話の params に保存するが、APIへは送らず
@@ -118,7 +86,6 @@ const RUN_POLL_INTERVAL_MS = 1000;
  * キーが無い = 既定でオン。"off" のときだけ無効。
  */
 const WEB_PARAM_KEY = "web";
-/** 1メッセージに添付できる画像の枚数（サーバー側の上限と揃える）。 */
 /**
  * 削除選択モードでコンテキストクリアを指す印。
  *
@@ -127,13 +94,6 @@ const WEB_PARAM_KEY = "web";
  * 同じように選んで削除ボタンで消せるようにするための仕掛け。
  */
 const BOUNDARY_SELECT_PREFIX = "boundary:";
-
-/** 円建てコストの表示。額の大きさに応じて桁数を変える。 */
-function formatJpy(jpy: number): string {
-  if (jpy >= 100) return `¥${Math.round(jpy).toLocaleString()}`;
-  if (jpy >= 1) return `¥${jpy.toFixed(2)}`;
-  return `¥${jpy.toFixed(4)}`;
-}
 
 /**
  * モデルへ送る履歴を、コンテキストの境界線で切り落とす。
@@ -149,443 +109,6 @@ function contextWindow(history: UiMessage[]): UiMessage[] {
   return start === 0 ? history : history.slice(start);
 }
 
-/** 送信前の添付。アップロード完了で id（添付ID）が入る。 */
-interface PendingAttachment {
-  localId: string;
-  previewUrl: string;
-  name: string;
-  size: number;
-  status: "uploading" | "ready" | "error";
-  id?: string;
-  error?: string;
-}
-
-/** メッセージに添付された画像の表示（タップで原寸表示）。 */
-function MessageImages({
-  attachments,
-  onOpen,
-}: {
-  attachments: UiAttachment[];
-  onOpen: (id: string) => void;
-}) {
-  return (
-    <div className="mb-1.5 flex flex-wrap items-end justify-end gap-1.5">
-      {attachments.map((a) => (
-        <button
-          key={a.id}
-          type="button"
-          onClick={() => onOpen(a.id)}
-          title={a.name ?? "画像"}
-          className="overflow-hidden rounded-xl border border-neutral-200 transition hover:opacity-90 active:scale-[0.98] dark:border-neutral-700"
-        >
-          <img
-            src={`/api/files/${a.id}`}
-            alt={a.name ?? "添付画像"}
-            loading="lazy"
-            className="max-h-56 max-w-[min(16rem,60vw)] object-contain"
-          />
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/**
- * 生成中の見出し（本文 + 経過秒）。
- *
- * 経過秒はここで刻む。サーバーに秒を書かせると、毎秒表示するのに
- * 毎秒のD1書き込みと取得が要るうえ、ポーリングの間隔しだいで数字が
- * 飛ぶ。開始時刻から引けば、通信を増やさずにちょうど毎秒進む。
- *
- * 「成功するまで生成」の進捗（成功数・試行数）も、1枚だけの画像生成も
- * これで出す。画像生成は本文が流れてこないぶん、待っているあいだ
- * 手がかりが秒数しかない。
- */
-function GenerationProgress({
-  text,
-  startedAt,
-}: {
-  text: string;
-  /** 生成開始時刻。未保存の場合は表示した時刻から数える。 */
-  startedAt: number | undefined;
-}) {
-  /**
-   * null = まだ数え始めていない（サーバー描画と最初の描画）。
-   *
-   * 秒をいきなり描くと、サーバーが書いた数字とブラウザが数えた数字が
-   * 食い違ってハイドレーションが失敗する。失敗すると React は文書ごと
-   * 描き直し、<html> に載せたテーマ・アクセント・文字サイズまで消える
-   * （lib/appearance.ts 参照）。最初は秒を出さず、マウント後に足す。
-   */
-  const [elapsed, setElapsed] = useState<number | null>(null);
-
-  useEffect(() => {
-    const start = startedAt ?? Date.now();
-    const tick = () =>
-      setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
-    tick();
-    // 秒の変わり目とずれても取りこぼさないよう、短めに見て値が
-    // 変わったときだけ描き直す（同じ値のsetStateはReactが捨てる）
-    const timer = setInterval(tick, 250);
-    return () => clearInterval(timer);
-  }, [startedAt]);
-
-  return (
-    <p className="flex items-center gap-2 text-sm text-neutral-500 dark:text-neutral-400">
-      <span
-        aria-hidden
-        className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-700 dark:border-t-accent"
-      />
-      <span>
-        {text}
-        {elapsed != null && `（${elapsed}秒）`}
-      </span>
-    </p>
-  );
-}
-
-/** thinking対応モデルの思考内容の折りたたみ表示。 */
-function ReasoningBlock({
-  reasoning,
-  streaming,
-}: {
-  reasoning: string;
-  streaming: boolean;
-}) {
-  const [open, setOpen] = useState(streaming);
-  const show = open || streaming;
-  return (
-    <div className="mb-2">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-      >
-        <span aria-hidden>💭</span>
-        {streaming ? "思考中…" : show ? "思考プロセスを隠す" : "思考プロセスを表示"}
-      </button>
-      {show && (
-        // 思考プロセスにも数式やコードが混ざるので、本文と同じ描き方をする。
-        // 図まで描くと本文より目立ってしまうので、ここはソースのまま。
-        <div className="mt-1 max-h-64 overflow-y-auto rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
-          <Markdown
-            streaming={streaming}
-            diagrams={false}
-            className="chat-bubble"
-          >
-            {reasoning}
-          </Markdown>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** URLの見出しに使うホスト名。 */
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return url;
-  }
-}
-
-/**
- * 参照元の一覧。
- *
- * 本文とは別に返ってきたデータをそのまま並べるだけで、本文には一切
- * 手を入れない（コピーしても、次のターンでモデルへ送り返す履歴にも
- * 出典は混ざらない）。使わなかった応答には何も出ない。
- */
-function CitationList({ citations }: { citations: UiCitation[] }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="mt-2">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-      >
-        <span aria-hidden>🔗</span>
-        {open ? "参照元を隠す" : `参照元 ${citations.length}件`}
-      </button>
-      {open && (
-        <ol className="mt-1 space-y-1 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:border-neutral-800 dark:bg-neutral-900">
-          {citations.map((c, n) => (
-            <li key={c.url} className="flex gap-2">
-              <span className="shrink-0 text-neutral-400 dark:text-neutral-600">
-                {n + 1}.
-              </span>
-              <a
-                href={c.url}
-                target="_blank"
-                rel="noreferrer"
-                title={c.url}
-                className="min-w-0 text-accent-ink hover:underline"
-              >
-                <span className="line-clamp-2 break-all">
-                  {c.title || hostOf(c.url)}
-                </span>
-                {c.title && (
-                  <span className="block text-neutral-400 dark:text-neutral-600">
-                    {hostOf(c.url)}
-                  </span>
-                )}
-              </a>
-            </li>
-          ))}
-        </ol>
-      )}
-    </div>
-  );
-}
-
-/** ワンタップコピー（1.5秒だけ✓を表示）。 */
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      aria-label="コピー"
-      title="コピー"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        } catch {
-          // クリップボード不許可時は何もしない
-        }
-      }}
-      className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
-    >
-      {copied ? (
-        <IconCheck className="h-3.5 w-3.5 text-green-500" />
-      ) : (
-        <IconCopy className="h-3.5 w-3.5" />
-      )}
-    </button>
-  );
-}
-
-/** 応答の詳細情報（トークン・金額・時刻・所要時間・速度）のポップオーバー。 */
-function MessageDetails({
-  message,
-  usdJpy,
-}: {
-  message: UiMessage;
-  usdJpy: number | null;
-}) {
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const u = message.usage;
-  const durationMs =
-    message.finishedAt && message.createdAt
-      ? message.finishedAt - message.createdAt
-      : null;
-  const tokensPerSec =
-    durationMs && durationMs > 0 && u && u.completionTokens != null
-      ? (u.completionTokens / (durationMs / 1000)).toFixed(1)
-      : null;
-
-  const rows: [string, string][] = [];
-  if (message.modelId) rows.push(["モデル", message.modelId]);
-  if (u) {
-    if (u.promptTokens != null) {
-      rows.push(["入力トークン", u.promptTokens.toLocaleString()]);
-    }
-    if (u.cachedTokens != null && u.cachedTokens > 0) {
-      rows.push([
-        "うちキャッシュ読取",
-        `${u.cachedTokens.toLocaleString()}（割引適用）`,
-      ]);
-    }
-    if (u.completionTokens != null) {
-      rows.push(["出力トークン", u.completionTokens.toLocaleString()]);
-    }
-    if (u.reasoningTokens != null && u.reasoningTokens > 0) {
-      rows.push(["うち思考トークン", u.reasoningTokens.toLocaleString()]);
-    }
-    if (u.points != null) {
-      rows.push(["消費ポイント", `${u.points.toLocaleString()} pt`]);
-    }
-    if (u.cost != null) {
-      // 一覧は円建てのみ、詳細では円とドルを併記する
-      rows.push([
-        "コスト",
-        usdJpy != null
-          ? `${formatJpy(u.cost * usdJpy)}（$${u.cost.toFixed(6)}）`
-          : `$${u.cost.toFixed(6)}`,
-      ]);
-    }
-  }
-  if (message.createdAt) {
-    rows.push(["時刻", new Date(message.createdAt).toLocaleString("ja-JP")]);
-  }
-  if (durationMs != null) {
-    rows.push(["所要時間", `${(durationMs / 1000).toFixed(1)}秒`]);
-  }
-  if (tokensPerSec) rows.push(["速度", `${tokensPerSec} tok/秒`]);
-  if (rows.length === 0) return null;
-
-  /**
-   * パネルはボタン上に fixed 配置し、左端を画面内へクランプする。
-   * メッセージ列内の absolute 配置だと、スマホでボタンが右寄りのとき
-   * パネルが画面外へはみ出し、ページ全体が横スクロール可能になっていた。
-   */
-  const PANEL_WIDTH = 256; // w-64
-  const openPanel = () => {
-    const rect = buttonRef.current?.getBoundingClientRect();
-    if (rect) {
-      const margin = 8;
-      setPos({
-        left: Math.max(
-          margin,
-          Math.min(rect.left, window.innerWidth - PANEL_WIDTH - margin),
-        ),
-        bottom: window.innerHeight - rect.top + 6,
-      });
-    }
-    setOpen(true);
-  };
-
-  return (
-    <span className="relative">
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={() => (open ? setOpen(false) : openPanel())}
-        aria-label="詳細"
-        title="この応答の詳細"
-        className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
-      >
-        <IconInfo className="h-3.5 w-3.5" />
-      </button>
-      {open && pos && (
-        <>
-          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <span
-            style={{ left: pos.left, bottom: pos.bottom }}
-            className={`fixed z-40 block w-64 origin-bottom rounded-xl p-3 text-xs animate-pop ${GLASS_PANEL}`}
-          >
-            {rows.map(([k, v]) => (
-              <span key={k} className="flex justify-between gap-3 py-0.5">
-                <span className="shrink-0 text-neutral-400 dark:text-neutral-500">{k}</span>
-                <span className="break-all text-right text-neutral-700 dark:text-neutral-200">{v}</span>
-              </span>
-            ))}
-          </span>
-        </>
-      )}
-    </span>
-  );
-}
-
-/**
- * コンテキストクリアの区切り線。
- *
- * ここまでの発言は以後モデルへ送らない、という目印。履歴そのものには
- * 手を触れていないので、消せば元どおり全部が文脈に戻る。
- * 消し方はメッセージと同じで、削除選択モードで選んで削除ボタンを押す。
- */
-function ContextBoundaryLine({
-  selecting,
-  selected,
-  onToggle,
-}: {
-  /** 削除選択モードか。 */
-  selecting: boolean;
-  selected: boolean;
-  onToggle: () => void;
-}) {
-  const line = <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />;
-  const body = (
-    <>
-      {line}
-      <span className="whitespace-nowrap rounded-full border border-dashed border-neutral-300 px-2.5 py-1 dark:border-neutral-700">
-        コンテキストクリア
-      </span>
-      {line}
-    </>
-  );
-  if (!selecting) {
-    return (
-      <div className="flex items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
-        {body}
-      </div>
-    );
-  }
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      title="選択して削除するとコンテキストクリアが外れ、すべてが文脈に戻ります"
-      className={`-mx-2 flex w-[calc(100%+1rem)] touch-manipulation items-center gap-2 rounded-xl px-2 py-1 text-xs text-neutral-400 dark:text-neutral-500 ${
-        selected
-          ? "bg-accent/10 ring-1 ring-accent/50"
-          : "hover:bg-neutral-50 dark:hover:bg-neutral-900"
-      }`}
-    >
-      {body}
-    </button>
-  );
-}
-
-/**
- * 分岐点に表示する ‹ 2/3 › 型の控えめなページャ。
- *
- * 見た目は控えめでも、当たり判定は指で押せる大きさを確保する
- * （文字ぶんの幅しかないと、狙ったつもりで隣を叩くか外れる）。
- * touch-manipulation はダブルタップ拡大の待ち時間を外し、
- * タップしてから切り替わるまでの間を詰めるため。
- */
-function BranchPager({
-  message,
-  disabled,
-  onSwitch,
-}: {
-  message: UiMessage;
-  disabled: boolean;
-  onSwitch: (targetId: string) => void;
-}) {
-  const { siblingIds, siblingIndex } = message;
-  if (!siblingIds || siblingIds.length < 2 || siblingIndex == null) return null;
-  const arrowClass =
-    "grid h-8 w-8 touch-manipulation place-items-center rounded-md text-base leading-none " +
-    "hover:bg-neutral-100 hover:text-neutral-600 active:scale-90 disabled:opacity-30 " +
-    "dark:hover:bg-neutral-800 dark:hover:text-neutral-300";
-  return (
-    // -my-1: 当たり判定を広げても、操作の行そのものは高くしない
-    <span className="-my-1 inline-flex items-center text-xs text-neutral-400 dark:text-neutral-500">
-      <button
-        type="button"
-        disabled={disabled || siblingIndex === 0}
-        onClick={() => onSwitch(siblingIds[siblingIndex - 1])}
-        className={arrowClass}
-        aria-label="前のブランチ"
-        title="前のブランチ"
-      >
-        ‹
-      </button>
-      <span className="tabular-nums" title="この位置の分岐">
-        {siblingIndex + 1}/{siblingIds.length}
-      </span>
-      <button
-        type="button"
-        disabled={disabled || siblingIndex === siblingIds.length - 1}
-        onClick={() => onSwitch(siblingIds[siblingIndex + 1])}
-        className={arrowClass}
-        aria-label="次のブランチ"
-        title="次のブランチ"
-      >
-        ›
-      </button>
-    </span>
-  );
-}
-
-/** 遷移直後にまず描画する末尾のメッセージ数。残りは直後に低優先度で描く。 */
 const DEFERRED_TAIL = 24;
 
 export function Chat({
@@ -659,12 +182,16 @@ export function Chat({
   const refreshingRef = useRef(false);
   refreshingRef.current = refreshing;
   /** 送信前の添付画像。 */
-  const [pending, setPending] = useState<PendingAttachment[]>([]);
-  /**
-   * いま押さえている添付の枚数。上限の判定に使う。
-   * 反映待ちのぶんも数に入れたいので、state とは別に持つ。
-   */
-  const pendingCountRef = useRef(0);
+  const {
+    pending,
+    setPending,
+    addFiles,
+    attachGeneratedImages,
+    removePending,
+  } = useAttachments({
+    setError,
+    onAttached: () => textareaRef.current?.focus(),
+  });
   /** ドラッグ&ドロップのハイライト。 */
   const [dragOver, setDragOver] = useState(false);
   /** 原寸表示中の添付ID。 */
@@ -741,13 +268,14 @@ export function Chat({
   // アンマウント時にプレビュー用のオブジェクトURLを解放するための最新値
   const pendingRef = useRef<PendingAttachment[]>([]);
   // 古い非同期処理が新しいストリームの表示を上書きしないための世代カウンタ
-  const epochRef = useRef(0);
-  /**
-   * 進行中の追跡を中断するための制御。世代が変わるたび、また画面を
-   * 離れるときに差し替える。世代の番号だけでは既に飛んでいる fetch を
-   * 止められず、会話を渡り歩くほど通信が積み重なっていた。
-   */
-  const abortRef = useRef<AbortController | null>(null);
+  const {
+    startTracking,
+    alive,
+    pollUntilDone,
+    pollRunUntilDone,
+    refreshPath,
+    trackRunning,
+  } = useGenerationTracking({ setMessages, setIsStreaming, markRead });
 
   /**
    * 会話IDが決まったので、下書きの置き場をその会話へ移す。
@@ -772,30 +300,6 @@ export function Chat({
     move("chat-webui:draft-files");
     setDraftScope(convId);
   }
-
-  /** 新しい世代を始める。前の世代の追跡は中断する。 */
-  function startTracking(): Tracking {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    return { epoch: ++epochRef.current, signal: controller.signal };
-  }
-
-  /** この世代がまだ有効か（別の生成が始まった・画面を離れたら無効）。 */
-  function alive(track: Tracking): boolean {
-    return epochRef.current === track.epoch;
-  }
-
-  /*
-   * 画面を離れたら追跡をやめる。世代を進めないままだと、ポーリングの
-   * ループが生成の完了まで回り続け、別の会話へ移るたびに多重化していた。
-   */
-  useEffect(() => {
-    return () => {
-      epochRef.current++;
-      abortRef.current?.abort();
-    };
-  }, []);
 
   useEffect(() => {
     if (!initialModel) {
@@ -924,11 +428,6 @@ export function Chat({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // 上限の判定に使う枚数を、実際の並びに合わせ直す（削除・送信のあと）
-  useEffect(() => {
-    pendingCountRef.current = pending.length;
-  }, [pending]);
 
   // アップロードが終わった添付だけを控える（送信すると破棄する）
   useEffect(() => {
@@ -1206,117 +705,6 @@ export function Chat({
   const supportsImages =
     !selectedModel || selectedModel.inputModalities.includes("image");
 
-  /** 選択・貼り付け・ドロップされた画像を縮小してアップロードする。 */
-  async function addFiles(files: File[]) {
-    const images = files.filter(isAcceptedImage);
-    if (images.length === 0) {
-      if (files.length > 0) setError("画像ファイルのみ添付できます。");
-      return;
-    }
-    /*
-     * 空き枚数は ref から数える。
-     *
-     * 描画のたびに作られる pending を見ていると、1回目の反映を待たずに
-     * 2回目を落としたときに空きを多く見積もり、上限を超えて添付できて
-     * しまう。受け付けたぶんはその場で押さえておく。
-     */
-    const room = MAX_ATTACHMENTS - pendingCountRef.current;
-    if (room <= 0) {
-      setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
-      return;
-    }
-    setError(null);
-    const accepted = images.slice(0, room);
-    pendingCountRef.current += accepted.length;
-
-    for (const file of accepted) {
-      const localId = crypto.randomUUID();
-      const entry: PendingAttachment = {
-        localId,
-        previewUrl: URL.createObjectURL(file),
-        name: file.name,
-        size: file.size,
-        status: "uploading",
-      };
-      setPending((prev) => [...prev, entry]);
-
-      void (async () => {
-        try {
-          const prepared = await prepareImage(file);
-          const form = new FormData();
-          form.append("file", prepared);
-          const res = await fetch("/api/uploads", {
-            method: "POST",
-            body: form,
-          });
-          const body = (await res.json().catch(() => null)) as
-            | { id?: string; size?: number; error?: string }
-            | null;
-          if (!res.ok || !body?.id) {
-            throw new Error(body?.error ?? `アップロードに失敗しました (${res.status})`);
-          }
-          setPending((prev) =>
-            prev.map((p) =>
-              p.localId === localId
-                ? { ...p, status: "ready", id: body.id, size: body.size ?? p.size }
-                : p,
-            ),
-          );
-        } catch (e) {
-          setPending((prev) =>
-            prev.map((p) =>
-              p.localId === localId
-                ? { ...p, status: "error", error: (e as Error).message }
-                : p,
-            ),
-          );
-        }
-      })();
-    }
-  }
-
-  /**
-   * 生成画像を入力欄の添付に載せる（編集・リスタイル・合成の起点）。
-   *
-   * 生成画像はモデルへ送り返せない（アシスタントの発言に画像を付ける形式が
-   * OpenAI互換APIに無い）。編集対象は「最新のユーザーメッセージの添付」
-   * として渡す決まりなので、次の発言へ引き継げるようにする。
-   * 実体はR2にあるためアップロードは不要で、添付IDをそのまま使う。
-   */
-  function attachGeneratedImages(attachments: UiAttachment[]) {
-    setPending((prev) => {
-      const room = MAX_ATTACHMENTS - prev.length;
-      if (room <= 0) {
-        setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
-        return prev;
-      }
-      const added = attachments
-        .filter((a) => !prev.some((p) => p.id === a.id))
-        .slice(0, room)
-        .map(
-          (a): PendingAttachment => ({
-            localId: crypto.randomUUID(),
-            previewUrl: `/api/files/${a.id}`,
-            name: a.name ?? "生成画像",
-            size: a.size,
-            status: "ready",
-            id: a.id,
-          }),
-        );
-      return added.length > 0 ? [...prev, ...added] : prev;
-    });
-    setError(null);
-    textareaRef.current?.focus();
-  }
-
-  function removePending(localId: string) {
-    setPending((prev) => {
-      const target = prev.find((p) => p.localId === localId);
-      if (target) URL.revokeObjectURL(target.previewUrl);
-      return prev.filter((p) => p.localId !== localId);
-    });
-  }
-
   /**
    * 編集中メッセージへの画像追加。縮小 → アップロードし、完了したものから
    * editing.attachments に加える（表示は /api/files/:id 経由）。
@@ -1338,30 +726,14 @@ export function Chat({
     );
     for (const file of images) {
       try {
-        const prepared = await prepareImage(file);
-        const form = new FormData();
-        form.append("file", prepared);
-        const res = await fetch("/api/uploads", { method: "POST", body: form });
-        const body = (await res.json().catch(() => null)) as
-          | { id?: string; mimeType?: string; name?: string | null; size?: number; error?: string }
-          | null;
-        if (!res.ok || !body?.id) {
-          throw new Error(body?.error ?? `アップロードに失敗しました (${res.status})`);
-        }
+        // 入力欄からの追加と同じ手順（縮小 → アップロード）を使う
+        const uploaded = await uploadImage(file);
         setEditing((prev) =>
           prev
             ? {
                 ...prev,
                 uploads: prev.uploads - 1,
-                attachments: [
-                  ...prev.attachments,
-                  {
-                    id: body.id!,
-                    mimeType: body.mimeType ?? "image/*",
-                    name: body.name ?? file.name,
-                    size: body.size ?? file.size,
-                  },
-                ],
+                attachments: [...prev.attachments, uploaded],
               }
             : prev,
         );
@@ -1400,150 +772,6 @@ export function Chat({
   }
 
   /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */
-  /**
-   * リトライ生成の追跡。成功するたびに応答が増えるので、
-   * 1件を見張るのではなくパスごと取り直す。
-   */
-  async function pollRunUntilDone(convId: string, track: Tracking) {
-    let failures = 0;
-    for (;;) {
-      if (!alive(track)) return;
-      try {
-        const res = await fetch(`/api/conversations/${convId}/path`, {
-          signal: track.signal,
-        });
-        if (res.ok) {
-          failures = 0;
-          const { messages: fresh } = (await res.json()) as PathResponse;
-          if (!alive(track)) return;
-          setMessages(fresh);
-          if (!fresh.some((m) => m.status === "streaming")) return;
-        } else {
-          // 会話が消えた等の確定的な失敗は、待っても直らない
-          if (terminalStatus(res.status)) return;
-          if (++failures >= POLL_MAX_FAILURES) return;
-        }
-      } catch (e) {
-        if ((e as Error).name === "AbortError") return;
-        if (++failures >= POLL_MAX_FAILURES) return;
-      }
-      await sleep(RUN_POLL_INTERVAL_MS, track.signal);
-    }
-  }
-
-  async function refreshPath(convId: string, track: Tracking) {
-    try {
-      const res = await fetch(`/api/conversations/${convId}/path`, {
-        signal: track.signal,
-      });
-      if (!res.ok) return;
-      const { messages: fresh } = (await res.json()) as PathResponse;
-      if (alive(track)) setMessages(fresh);
-    } catch {
-      // 表示更新に失敗しても実害はない（中断も同じ扱いでよい）
-    }
-  }
-
-  /** 最後のアシスタントメッセージをサーバーの状態で置き換える。 */
-  function applyRemoteState(remote: {
-    content: string;
-    reasoning: string | null;
-    status: string;
-    error: string | null;
-    usage: UiMessage["usage"] | null;
-    citations?: UiCitation[] | null;
-  }) {
-    setMessages((prev) => {
-      const next = [...prev];
-      const last = next[next.length - 1];
-      if (last?.role !== "assistant") return prev;
-      next[next.length - 1] = {
-        ...last,
-        content: remote.content,
-        reasoning: remote.reasoning ?? undefined,
-        status: remote.status === "done" ? undefined : (remote.status as UiMessage["status"]),
-        error: remote.error ?? undefined,
-        usage: remote.usage ?? last.usage,
-        citations: remote.citations ?? last.citations,
-      };
-      return next;
-    });
-  }
-
-  /**
-   * 表示中のパスに生成中の応答があれば、そこから追跡を再開する。
-   * リロード・別端末・別タブ・引っぱって更新のいずれからも同じ入口を使う。
-   *
-   * 「成功するまで生成」では、生成中なのは**見出し**のほうで、その下に
-   * 成功した応答が積まれていく。末尾だけを見ていると生成中に気づけず、
-   * 見出しだけを見張っても後から増えた応答を拾えない。生成中の行が
-   * どこにあるかで、1件追い（安くて滑らか）とパス追いを選び分ける。
-   */
-  function trackRunning(convId: string, list: UiMessage[]): void {
-    const index = list.findIndex((m) => m.status === "streaming");
-    const running = index >= 0 ? list[index] : null;
-    if (!running?.id) return;
-
-    const track = startTracking();
-    setIsStreaming(true);
-    // 生成中の行の下にすでに応答が積まれている＝リトライ生成の見出し。
-    // 始まったばかりで見出しがまだ末尾のときは本文の見た目で判断する
-    const wholePath =
-      index < list.length - 1 || isRetryProgress(running.content);
-    const done = wholePath
-      ? pollRunUntilDone(convId, track)
-      : pollUntilDone(convId, running.id, track);
-    void done.then(() => {
-      if (!alive(track)) return;
-      setIsStreaming(false);
-      markRead(convId);
-      // パス追いは最後の取得が確定後の状態なので、取り直す必要はない
-      if (!wholePath) void refreshPath(convId, track);
-    });
-  }
-
-  /** 生成中メッセージをポーリングで追いかける（生成完了で返る）。 */
-  async function pollUntilDone(
-    convId: string,
-    messageId: string,
-    track: Tracking,
-  ) {
-    let failures = 0;
-    for (;;) {
-      if (!alive(track)) return;
-      try {
-        const res = await fetch(
-          `/api/conversations/${convId}/messages/${messageId}`,
-          { signal: track.signal },
-        );
-        if (!res.ok) {
-          // 一過性の失敗で追跡をやめると、生成は続いているのに
-          // 表示が生成中のまま誰も追わない状態になる
-          if (terminalStatus(res.status)) return;
-          if (++failures >= POLL_MAX_FAILURES) return;
-          await sleep(POLL_INTERVAL_MS, track.signal);
-          continue;
-        }
-        failures = 0;
-        const remote = (await res.json()) as MessageStateResponse;
-        if (!alive(track)) return;
-        applyRemoteState(remote);
-        if (remote.status !== "streaming") return;
-        // リトライ生成だと分かったら、パスごと追う方へ移る。見出しの下に
-        // 成功が積まれていくので、1件だけ見張っていても増えた応答に
-        // 気づけない（開始直後は見出しの本文がまだ空で判別できない）
-        if (isRetryProgress(remote.content)) {
-          await pollRunUntilDone(convId, track);
-          return;
-        }
-      } catch (e) {
-        if ((e as Error).name === "AbortError") return;
-        if (++failures >= POLL_MAX_FAILURES) return;
-      }
-      await sleep(POLL_INTERVAL_MS, track.signal);
-    }
-  }
-
   /**
    * 生成を開始する。生成はサーバー（Durable Object）側で進行・保存され、
    * このクライアントはポーリングで表示を追いかけるだけ。
@@ -1649,8 +877,9 @@ export function Chat({
 
       // サーバーが採番したIDをローカル状態へ反映。
       // 貼る相手は「いま置いた生成中のプレースホルダ」に限る。末尾が
-      // 別のものに入れ替わっていた場合（引っぱって更新などが挟まった
-      // 場合）に、無関係な応答へIDを付けてしまわないようにする
+      // 別のものに入れ替わっていた場合に、無関係な応答へIDを付けて
+      // しまわないための保険（取り直し側でも未保存があれば差し替えない
+      // ので、通常の操作でここに掛かることはない）
       setMessages((prev) => {
         const next = [...prev];
         const asst = next[next.length - 1];
