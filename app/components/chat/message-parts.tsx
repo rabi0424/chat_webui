@@ -23,9 +23,19 @@ export function formatJpy(jpy: number): string {
 export function MessageImages({
   attachments,
   onOpen,
+  onLoad,
 }: {
   attachments: UiAttachment[];
   onOpen: (id: string) => void;
+  /**
+   * 画像が1枚表示し終わったとき。
+   *
+   * 大きさが分かるのは読み込みが終わってからで、それまでこの枠は
+   * ほぼ高さを持たない。あとから高さが増えるぶん下の内容が押し下がり、
+   * 最下部に居たはずが少し上に取り残される（読んでいる途中なら
+   * 読み位置が跳ぶ）。追従していたなら、ここで貼り直す。
+   */
+  onLoad?: () => void;
 }) {
   return (
     <div className="mb-1.5 flex flex-wrap items-end justify-end gap-1.5">
@@ -35,12 +45,18 @@ export function MessageImages({
           type="button"
           onClick={() => onOpen(a.id)}
           title={a.name ?? "画像"}
-          className="overflow-hidden rounded-xl border border-neutral-200 transition hover:opacity-90 active:scale-[0.98] dark:border-neutral-700"
+          /*
+            読み込みが終わるまでの下敷き。高さゼロから一気に伸びるのを
+            防ぐぶん、跳ぶ量が小さくなる（縦横は分からないので、
+            正方形に近い最小の箱だけ置く）
+          */
+          className="grid min-h-24 min-w-24 place-items-center overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 transition hover:opacity-90 active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-900"
         >
           <img
             src={`/api/files/${a.id}`}
             alt={a.name ?? "添付画像"}
             loading="lazy"
+            onLoad={onLoad}
             className="max-h-56 max-w-[min(16rem,60vw)] object-contain"
           />
         </button>

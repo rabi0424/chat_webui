@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { installServer, msg, renderChat, type ServerStub } from "./helpers/chat-harness";
 
 /**
@@ -132,3 +132,53 @@ describe("Escape で閉じる", () => {
     expect(screen.getByLabelText("送信")).toBeTruthy();
   });
 })
+
+/**
+ * 添付画像。
+ *
+ * 大きさが分かるのは読み込みが終わってからで、それまで枠はほぼ高さを
+ * 持たない。あとから高さが増えるぶん下の内容が押し下がり、最下部に
+ * 居たはずが少し上に取り残される。
+ */
+describe("添付画像", () => {
+  const withImage = () =>
+    renderChat({
+      initialMessages: [
+        msg("user", "この画像です", {
+          id: "u1",
+          attachments: [
+            { id: "att-1", mimeType: "image/png", name: "ねこ.png", size: 100 },
+          ],
+        }),
+      ],
+    });
+
+  it("読み込み前から場所を取っておく", () => {
+    const { container } = withImage();
+    const box = container.querySelector('button[title="ねこ.png"]');
+    expect(box).toBeTruthy();
+    // 高さゼロから一気に伸びると、下の内容が押し下がって読み位置が跳ぶ
+    expect(box?.className).toMatch(/min-h-/);
+    expect(box?.className).toMatch(/min-w-/);
+  });
+
+  it("読み込みが終わったら、最下部への追従をやり直す", async () => {
+    const { container } = withImage();
+    const img = container.querySelector(
+      'img[alt="ねこ.png"]',
+    ) as HTMLImageElement;
+    expect(img).toBeTruthy();
+
+    // 追従は scrollTop を最下部へ動かす形で行う。jsdom では
+    // 高さが常に0なので、伸びた状態を用意してから確かめる
+    const scroller = container.querySelector(".overflow-y-auto") as HTMLElement;
+    Object.defineProperty(scroller, "scrollHeight", {
+      value: 5000,
+      configurable: true,
+    });
+    scroller.scrollTop = 0;
+
+    fireEvent.load(img);
+    expect(scroller.scrollTop).toBe(5000);
+  });
+});

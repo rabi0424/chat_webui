@@ -43,6 +43,7 @@ export function UserMessage({
     switchBranch,
     fork,
     openImage,
+    followBottom,
   } = useMessageActions();
   const selectable = selecting != null && m.id != null;
 
@@ -62,7 +63,11 @@ export function UserMessage({
       ) : (
         <>
           {m.attachments && m.attachments.length > 0 && (
-            <MessageImages attachments={m.attachments} onOpen={openImage} />
+            <MessageImages
+              attachments={m.attachments}
+              onOpen={openImage}
+              onLoad={followBottom}
+            />
           )}
           {m.content && (
             <div className="flex justify-end">
