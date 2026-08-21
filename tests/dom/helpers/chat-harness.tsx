@@ -107,6 +107,10 @@ export function installServer(initial: UiMessage[] = []): ServerStub {
       }
       return { messages: [...messages] };
     }
+    if (path.includes("/uploads")) {
+      const id = nextId("att");
+      return { id, mimeType: "image/png", name: `${id}.png`, size: 100 };
+    }
     if (path.includes("/fork")) return { id: "forked-conv" };
     if (path.includes("/context")) return { messages: [...messages] };
     if (path.includes("/messages/")) {
