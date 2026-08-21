@@ -3,7 +3,6 @@ import { useLocation, useNavigate, useOutletContext, useRevalidator } from "reac
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import {
-  ALLOWED_IMAGE_TYPES,
   DEFAULT_MODEL,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
   MAX_TITLE_LENGTH,
@@ -19,10 +18,7 @@ import { type ParamsState } from "../lib/params";
 import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
 import { readRetryConfig } from "../lib/retry";
-import {
-  formatBytes,
-  isAcceptedImage,
-} from "../lib/image";
+import { isAcceptedImage } from "../lib/image";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
@@ -38,6 +34,8 @@ import {
   MessageList,
   BOUNDARY_SELECT_PREFIX,
 } from "./chat/MessageList";
+import { Composer } from "./chat/Composer";
+import { SelectionBar } from "./chat/SelectionBar";
 import { type MessageActions } from "./chat/message-context";
 import type {
   CreateConversationResponse,
@@ -47,11 +45,8 @@ import type {
 } from "../lib/api-types";
 import {
   IconArrowDown,
-  IconArrowUp,
-  IconBroom,
   IconGlobe,
   IconMenu,
-  IconPlus,
   IconSliders,
 } from "./icons";
 import { GLASS_PANEL } from "../lib/ui";
@@ -1474,187 +1469,42 @@ export function Chat({
         className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/80 to-transparent px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-6 dark:from-neutral-950 dark:via-neutral-950/80"
       >
         {selecting ? (
-          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 rounded-3xl border border-neutral-200/80 bg-white/85 px-4 py-2.5 shadow-lg shadow-black/5 backdrop-blur-xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-900/80">
-            <span className="min-w-0 flex-1 text-sm text-neutral-500 dark:text-neutral-400">
-              {selecting.size}件選択中（タップで選択/解除）
-              {hasContextBoundary && (
-                <span className="block text-xs text-neutral-400 dark:text-neutral-500">
-                  コンテキストクリアも選んで消せます
-                </span>
-              )}
-            </span>
-            <div className="flex shrink-0 gap-2">
-              <button
-                type="button"
-                onClick={() => setSelecting(null)}
-                className="rounded-xl px-4 py-2 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-              >
-                キャンセル
-              </button>
-              <button
-                type="button"
-                onClick={() => void deleteSelected()}
-                disabled={selecting.size === 0}
-                className="rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-30"
-              >
-                削除
-              </button>
-            </div>
-          </div>
+          <SelectionBar
+            count={selecting.size}
+            hasContextBoundary={hasContextBoundary}
+            onCancel={() => setSelecting(null)}
+            onDelete={() => void deleteSelected()}
+          />
         ) : (
-          <div className="mx-auto max-w-3xl">
-            <div className="rounded-[1.625rem] border border-neutral-200/80 bg-white/85 shadow-lg shadow-black/5 backdrop-blur-xl backdrop-saturate-150 transition-colors focus-within:border-neutral-300 dark:border-white/10 dark:bg-neutral-900/80 dark:focus-within:border-white/20">
-              {pending.length > 0 && (
-                <div className="flex flex-wrap gap-2 px-3 pt-3">
-                  {pending.map((p) => (
-                    <div
-                      key={p.localId}
-                      className={`group/att relative h-16 w-16 overflow-hidden rounded-xl border ${
-                        p.status === "error"
-                          ? "border-red-300 dark:border-red-800"
-                          : "border-neutral-200 dark:border-neutral-700"
-                      }`}
-                      title={
-                        p.status === "error"
-                          ? p.error
-                          : `${p.name}（${formatBytes(p.size)}）`
-                      }
-                    >
-                      <img
-                        src={p.previewUrl}
-                        alt={p.name}
-                        className={`h-full w-full object-cover ${
-                          p.status === "ready" ? "" : "opacity-40"
-                        }`}
-                      />
-                      {p.status === "uploading" && (
-                        <span className="absolute inset-0 grid place-items-center">
-                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
-                        </span>
-                      )}
-                      {p.status === "error" && (
-                        <span className="absolute inset-0 grid place-items-center text-lg text-red-500">
-                          !
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => removePending(p.localId)}
-                        aria-label="添付を削除"
-                        className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-xs text-white opacity-0 transition group-hover/att:opacity-100 focus:opacity-100 max-sm:opacity-100"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {pending.length > 0 && !supportsImages && (
-                <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">
-                  このモデルは画像入力に対応していません。画像は無視されるか、エラーになる場合があります。
-                </p>
-              )}
-              <div className="flex items-end gap-1 p-1.5">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept={ALLOWED_IMAGE_TYPES.join(",")}
-                  multiple
-                  hidden
-                  onChange={(e) => {
-                    void addFiles([...(e.target.files ?? [])]);
-                    e.target.value = ""; // 同じファイルの再選択を許す
-                  }}
-                />
-                {/*
-                  コンテキストクリア。履歴は消さず、ここから前を
-                  モデルへ渡さなくするだけ（消すときは削除選択モードで選ぶ）。
-                */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const last = messages[messages.length - 1];
-                    if (last?.id) void toggleBoundary(last.id, true);
-                  }}
-                  disabled={
-                    !convIdRef.current ||
-                    isStreaming ||
-                    !lastMessage?.id ||
-                    lastMessage.contextBoundary === true
-                  }
-                  aria-label="コンテキストをクリア"
-                  title={
-                    lastMessage?.contextBoundary
-                      ? "ここでコンテキストをクリア済み（削除モードで選んで消せます）"
-                      : "コンテキストをクリア（履歴は残したまま、ここから前をモデルへ渡さない）"
-                  }
-                  className={`grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-neutral-100 active:scale-90 disabled:opacity-30 dark:hover:bg-white/10 ${
-                    hasContextBoundary
-                      ? "text-accent-ink"
-                      : "text-neutral-500 dark:text-neutral-400"
-                  }`}
-                >
-                  <IconBroom className="h-5 w-5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={openFilePicker}
-                  disabled={pending.length >= MAX_ATTACHMENTS}
-                  title={
-                    supportsImages
-                      ? "画像を添付（貼り付け・ドラッグ&ドロップも可）"
-                      : "このモデルは画像入力に対応していません（添付は可能ですが無視されます）"
-                  }
-                  aria-label="画像を添付"
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-neutral-500 transition hover:bg-neutral-100 active:scale-90 disabled:opacity-30 dark:text-neutral-400 dark:hover:bg-white/10"
-                >
-                  <IconPlus className="h-5 w-5" />
-                </button>
-                <textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={(e) => changeInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      send();
-                    }
-                  }}
-                  onPaste={onPaste}
-                  rows={1}
-                  translate="no"
-                  placeholder={
-                    isNarrow ? "メッセージ" : "メッセージを入力…（Shift+Enterで改行）"
-                  }
-                  className="chat-text max-h-[200px] min-h-[36px] flex-1 resize-none bg-transparent px-1.5 py-1.5 leading-6 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
-                />
-                {isStreaming ? (
-                  <button
-                    type="button"
-                    onClick={stop}
-                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition hover:bg-accent/85 active:scale-90"
-                    aria-label="停止"
-                  >
-                    <span className="block h-3 w-3 rounded-[3px] bg-current" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => send()}
-                    disabled={
-                      (!input.trim() && readyAttachmentIds.length === 0) ||
-                      uploading
-                    }
-                    title={uploading ? "画像をアップロード中…" : "送信"}
-                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition hover:bg-accent/85 active:scale-90 disabled:opacity-30"
-                    aria-label="送信"
-                  >
-                    <IconArrowUp className="h-4.5 w-4.5" />
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
+          <Composer
+            pending={pending}
+            onRemovePending={removePending}
+            supportsImages={supportsImages}
+            fileInputRef={fileInputRef}
+            onPickFiles={(files) => void addFiles(files)}
+            onOpenFilePicker={openFilePicker}
+            input={input}
+            onChangeInput={changeInput}
+            onSend={() => send()}
+            onPaste={onPaste}
+            textareaRef={textareaRef}
+            narrow={isNarrow}
+            isStreaming={isStreaming}
+            onStop={stop}
+            canSend={!!input.trim() || readyAttachmentIds.length > 0}
+            uploading={uploading}
+            canClearContext={
+              !!convIdRef.current &&
+              !isStreaming &&
+              !!lastMessage?.id &&
+              lastMessage.contextBoundary !== true
+            }
+            contextCleared={lastMessage?.contextBoundary === true}
+            hasContextBoundary={hasContextBoundary}
+            onClearContext={() => {
+              if (lastMessage?.id) void toggleBoundary(lastMessage.id, true);
+            }}
+          />
         )}
       </footer>
 
