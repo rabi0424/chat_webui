@@ -5,7 +5,7 @@
  * URL から読み、リンクで移動する）。通信は差し替え可能な fetch で受ける。
  */
 import { vi } from "vitest";
-import { createRoutesStub } from "react-router";
+import { createRoutesStub, useLocation } from "react-router";
 import { render, type RenderResult } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Sidebar } from "../../../app/components/Sidebar";
@@ -15,10 +15,18 @@ export interface SidebarServer {
   calls: { method: string; path: string; body: unknown }[];
   lastBody(match: string): unknown;
   countOf(match: string): number;
+  /** 以後のすべての要求を失敗させる（操作の失敗の見え方を見るため）。 */
+  failAll(status: number): void;
+  /** 以後のすべての要求で通信そのものを失敗させる（圏外・切断）。 */
+  throwAll(): void;
+  /** 失敗させるのをやめる。 */
+  succeed(): void;
 }
 
 export function installSidebarServer(): SidebarServer {
   const calls: SidebarServer["calls"] = [];
+  let failStatus: number | null = null;
+  let throwing = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof input === "string" ? input : String(input);
     let body: unknown = null;
@@ -30,6 +38,13 @@ export function installSidebarServer(): SidebarServer {
       }
     }
     calls.push({ method: init?.method ?? "GET", path, body });
+    if (throwing) throw new TypeError("Failed to fetch");
+    if (failStatus != null) {
+      return new Response(JSON.stringify({ error: "失敗" }), {
+        status: failStatus,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -40,6 +55,16 @@ export function installSidebarServer(): SidebarServer {
     lastBody: (m) =>
       [...calls].reverse().find((c) => c.path.includes(m))?.body ?? null,
     countOf: (m) => calls.filter((c) => c.path.includes(m)).length,
+    failAll: (status) => {
+      failStatus = status;
+    },
+    throwAll: () => {
+      throwing = true;
+    },
+    succeed: () => {
+      failStatus = null;
+      throwing = false;
+    },
   };
 }
 
@@ -90,6 +115,12 @@ export function folder(
   } as FolderRow;
 }
 
+/** いまの場所を読めるようにしておく（移動したかの確認に使う）。 */
+function Location() {
+  const { pathname } = useLocation();
+  return <span data-testid="here">{pathname}</span>;
+}
+
 export function renderSidebar(props: {
   conversations?: ConversationRow[];
   folders?: FolderRow[];
@@ -101,13 +132,18 @@ export function renderSidebar(props: {
     {
       path: "/chat/:id",
       Component: () => (
-        <Sidebar
-          conversations={props.conversations ?? []}
-          folders={props.folders ?? []}
-          unreadIds={props.unreadIds ?? null}
-        />
+        <>
+          {/* 移動したかどうかを見るための現在地 */}
+          <Location />
+          <Sidebar
+            conversations={props.conversations ?? []}
+            folders={props.folders ?? []}
+            unreadIds={props.unreadIds ?? null}
+          />
+        </>
       ),
     },
+    { path: "/", Component: () => <Location /> },
   ]);
   const result = render(
     <Stub initialEntries={[`/chat/${props.current ?? "none"}`]} />,

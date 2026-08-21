@@ -208,15 +208,58 @@ export function Sidebar({
 
   const refresh = () => revalidator.revalidate();
 
+  /**
+   * 操作の失敗を伝える。
+   *
+   * これまでは fetch を .catch(() => {}) で握りつぶしていた。名前を変えた
+   * つもりが変わっていない・消したつもりが残っている、という結果だけが
+   * 残り、しかも一覧は取り直されるので**元に戻ったように見える**。
+   * 何が起きたか分からないまま同じ操作を繰り返すことになる。
+   */
+  const [error, setError] = useState<string | null>(null);
+  const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (errorTimer.current) clearTimeout(errorTimer.current);
+    },
+    [],
+  );
+  const fail = (what: string) => {
+    setError(`${what}に失敗しました`);
+    if (errorTimer.current) clearTimeout(errorTimer.current);
+    errorTimer.current = setTimeout(() => setError(null), 5000);
+  };
+
+  /** 送って、失敗したら伝える。成功・失敗どちらでも一覧は取り直す。 */
+  const send = async (
+    what: string,
+    input: string,
+    init: RequestInit,
+  ): Promise<Response | null> => {
+    try {
+      const res = await fetch(input, init);
+      if (!res.ok) {
+        fail(what);
+        return null;
+      }
+      setError(null);
+      return res;
+    } catch {
+      fail(what);
+      return null;
+    } finally {
+      refresh();
+    }
+  };
+
   // --- 会話操作 -----------------------------------------------------------
 
   async function patchConversation(id: string, body: Record<string, unknown>) {
-    await fetch(`/api/conversations/${id}`, {
+    await send("会話の更新", `/api/conversations/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }).catch(() => {});
-    refresh();
+    });
   }
 
   function renameConversation(c: ConversationRow) {
@@ -228,20 +271,21 @@ export function Sidebar({
     if (!confirm(`「${c.title}」を削除しますか？この操作は取り消せません。`)) {
       return;
     }
-    await fetch(`/api/conversations/${c.id}`, { method: "DELETE" });
-    if (params.id === c.id) navigate("/");
-    refresh();
+    const res = await send("会話の削除", `/api/conversations/${c.id}`, {
+      method: "DELETE",
+    });
+    // 消せていないのに画面だけ移ると、消えたように見えてしまう
+    if (res && params.id === c.id) navigate("/");
   }
 
   // --- フォルダ操作 -------------------------------------------------------
 
   async function patchFolder(id: string, body: Record<string, unknown>) {
-    await fetch(`/api/folders/${id}`, {
+    await send("フォルダの更新", `/api/folders/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }).catch(() => {});
-    refresh();
+    });
   }
 
   function renameFolder(f: FolderRow) {
@@ -257,29 +301,28 @@ export function Sidebar({
     ) {
       return;
     }
-    await fetch(`/api/folders/${f.id}`, { method: "DELETE" });
-    if (view === f.id) setView(null);
-    refresh();
+    const res = await send("フォルダの削除", `/api/folders/${f.id}`, {
+      method: "DELETE",
+    });
+    if (res && view === f.id) setView(null);
   }
 
   async function createFolderPrompt() {
     const name = prompt("新しいフォルダの名前を入力してください");
     if (!name?.trim()) return;
-    await fetch("/api/folders", {
+    await send("フォルダの作成", "/api/folders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: name.trim() }),
-    }).catch(() => {});
-    refresh();
+    });
   }
 
   async function movePinned(type: "conversation" | "folder", id: string, direction: "up" | "down") {
-    await fetch("/api/sidebar/move", {
+    await send("並べ替え", "/api/sidebar/move", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type, id, direction }),
-    }).catch(() => {});
-    refresh();
+    });
   }
 
   const moveConv = moveTarget
@@ -410,7 +453,28 @@ export function Sidebar({
           </NavLink>
         </div>
 
-        {/* 下部の浮いたボタンに隠れないよう、一覧は余分に下を空ける */}
+        {/*
+        操作の失敗。一覧の上に短いあいだ出す（黙って元に戻ると、
+        何が起きたのか分からないまま同じ操作を繰り返すことになる）
+      */}
+      {error && (
+        <div
+          role="status"
+          className="mx-3 mb-1 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 animate-pop dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+        >
+          <span className="min-w-0 flex-1">{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            aria-label="閉じる"
+            className="shrink-0 rounded p-0.5 hover:bg-red-100 dark:hover:bg-red-900"
+          >
+            <IconX className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* 下部の浮いたボタンに隠れないよう、一覧は余分に下を空ける */}
         <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-24">
           {searchQuery.trim() ? (
             /* --- 検索結果 --- */

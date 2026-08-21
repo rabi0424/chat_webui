@@ -305,3 +305,141 @@ describe("Escape で閉じる", () => {
     expect(screen.queryByText(/をフォルダへ移動/)).toBeNull();
   });
 });
+
+/**
+ * 操作が失敗したとき。
+ *
+ * これまでは fetch を .catch(() => {}) で握りつぶしていた。名前を変えた
+ * つもりが変わっていない・消したつもりが残っている、という結果だけが
+ * 残り、しかも一覧は取り直されるので**元に戻ったように見える**。
+ */
+describe("操作の失敗", () => {
+  it("名前の変更が失敗したら、そう出る", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.failAll(500);
+    answerPrompt("新しい名前");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/失敗/);
+  });
+
+  it("削除が失敗したら、そう出る", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.failAll(500);
+    answerConfirm(true);
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("削除"));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/失敗/);
+  });
+
+  it("成功したときは何も出さない", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    answerPrompt("新しい名前");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+
+    await waitFor(() => expect(server.countOf("/conversations/c1")).toBe(1));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("閉じられる", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.failAll(500);
+    answerPrompt("新しい名前");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+
+    await screen.findByRole("status");
+    await user.click(screen.getByLabelText("閉じる"));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+describe("操作の失敗（続き）", () => {
+  it("通信そのものが切れた場合も伝える", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.throwAll();
+    answerPrompt("新しい名前");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/失敗/);
+  });
+
+  it("次に成功したら消える", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    server.failAll(500);
+    answerPrompt("一度目");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+    await screen.findByRole("status");
+
+    server.succeed();
+    answerPrompt("二度目");
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("名前を変更"));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
+  /** 消せていないのに画面だけ移ると、消えたように見えてしまう。 */
+  it("削除に失敗したら、その会話から移動しない", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+      current: "c1",
+    });
+    expect(screen.getByTestId("here").textContent).toBe("/chat/c1");
+
+    server.failAll(500);
+    answerConfirm(true);
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("削除"));
+
+    await screen.findByRole("status");
+    expect(screen.getByTestId("here").textContent).toBe("/chat/c1");
+  });
+
+  it("削除に成功したら、その会話から移動する", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+      current: "c1",
+    });
+    answerConfirm(true);
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("削除"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("here").textContent).toBe("/"),
+    );
+  });
+  it("フォルダの削除に失敗したら、フォルダは残る", () => {
+    // 消えたように見せない。一覧は取り直されるので、失敗していれば行は戻る
+    return (async () => {
+      const { user } = renderSidebar({
+        conversations: [],
+        folders: [folder("f1", "仕事")],
+      });
+      server.failAll(500);
+      answerConfirm(true);
+      await openMenu(user, "仕事");
+      await user.click(screen.getByText("削除"));
+
+      await screen.findByRole("status");
+      expect(screen.getByText("仕事")).toBeTruthy();
+    })();
+  });
+});
+
