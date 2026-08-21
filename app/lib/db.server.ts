@@ -9,7 +9,7 @@ import {
   type AppSettings,
 } from "./settings";
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
-import { MIGRATIONS, statementsOf } from "./schema";
+import { MIGRATIONS, generatedImagesSql, statementsOf } from "./schema";
 import { EMPTY_TOTALS, type UsageTotals } from "./usage";
 
 /**
@@ -1197,10 +1197,8 @@ export async function listGeneratedImages(params: {
     .filter(Boolean)
     .slice(0, 5);
 
-  const conditions: string[] = ["a.kind = 'generated'", "a.created_at < ?"];
-  const binds: (string | number)[] = [
-    params.before ?? Number.MAX_SAFE_INTEGER,
-  ];
+  const conditions: string[] = [];
+  const binds: (string | number)[] = [];
   if (params.favoritesOnly) conditions.push("a.favorite = 1");
   for (const term of terms) {
     conditions.push(
@@ -1213,24 +1211,11 @@ export async function listGeneratedImages(params: {
     const like = `%${escapeLike(term)}%`;
     binds.push(like, like, like);
   }
+  binds.push(params.before ?? Number.MAX_SAFE_INTEGER);
   binds.push(params.limit);
 
   const { results } = await d
-    .prepare(
-      // フォークで実体を共有する行は重複させない。MAX() と併記した列は
-      // その最大行の値になる（SQLiteの規定の挙動）ので、最新の1行が残る。
-      `SELECT a.id, a.conversation_id, a.message_id,
-              MAX(a.created_at) AS created_at,
-              a.favorite, a.prompt,
-              c.title AS title, m.model_id AS model_id
-         FROM attachments a
-         LEFT JOIN conversations c ON c.id = a.conversation_id
-         LEFT JOIN messages m ON m.id = a.message_id
-        WHERE ${conditions.join(" AND ")}
-        GROUP BY a.r2_key
-        ORDER BY created_at DESC
-        LIMIT ?`,
-    )
+    .prepare(generatedImagesSql(conditions))
     .bind(...binds)
     .all<GeneratedImageRow>();
   return results;

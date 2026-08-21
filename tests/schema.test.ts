@@ -1,6 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
-import { MIGRATIONS, statementsOf } from "../app/lib/schema";
+import {
+  MIGRATIONS,
+  generatedImagesSql,
+  statementsOf,
+} from "../app/lib/schema";
 
 /**
  * スキーマを本物の SQLite に流す。
@@ -193,5 +197,97 @@ describe("使用量の台帳", () => {
     expect(since(0)).toBeCloseTo(3);
     expect(since(200)).toBeCloseTo(2);
     expect(since(400)).toBeCloseTo(0);
+  });
+});
+
+/**
+ * 画像一覧の「続きを読む」位置。
+ *
+ * フォークで実体（R2のキー）を共有する画像は、添付の行が複数ある。
+ * 一覧はキーでまとめて1件として出すが、続きを読む位置を**まとめる前**の
+ * 1行ずつに効かせていたため、1ページ目に新しいほうの行で出た画像が、
+ * 2ページ目では古いほうの行で**もう一度出て**いた。
+ */
+describe("画像一覧のページ送り", () => {
+  beforeEach(() => migrate(db));
+
+  /** 同じ実体を指す添付行。フォークすると増える。 */
+  const addImage = (id: string, key: string, at: number) =>
+    db
+      .prepare(
+        `INSERT INTO attachments (id, message_id, conversation_id, r2_key,
+           mime_type, name, size, kind, favorite, prompt, created_at)
+         VALUES (?, NULL, NULL, ?, 'image/png', NULL, 1, 'generated', 0, NULL, ?)`,
+      )
+      .run(id, key, at);
+
+  /** 本番と同じSQL（書き写さない。片方だけ直したときに気づけなくなる）。 */
+  const page = (before: number, limit = 2) =>
+    db.prepare(generatedImagesSql([])).all(before, limit) as {
+      id: string;
+      created_at: number;
+    }[];
+
+  it("同じ実体の画像は1件にまとまる", () => {
+    addImage("x1", "shared", 100);
+    addImage("x2", "shared", 200);
+    expect(page(Number.MAX_SAFE_INTEGER, 10)).toHaveLength(1);
+  });
+
+  /** これが直したかったところ。 */
+  it("2ページ目に同じ画像が再登場しない", () => {
+    // 共有された画像（行が2つ）と、ふつうの画像2つ
+    addImage("s1", "shared", 100);
+    addImage("s2", "shared", 300);
+    addImage("a1", "alone-a", 200);
+    addImage("b1", "alone-b", 50);
+
+    const first = page(Number.MAX_SAFE_INTEGER, 2);
+    expect(first.map((r) => r.created_at)).toEqual([300, 200]);
+
+    const second = page(first[first.length - 1].created_at, 2);
+    // 共有画像が 100 の行で戻ってきてはいけない
+    expect(second.map((r) => r.created_at)).toEqual([50]);
+  });
+
+  it("全ページを繋げると、実体の数と一致する", () => {
+    addImage("s1", "shared", 100);
+    addImage("s2", "shared", 300);
+    addImage("a1", "alone-a", 200);
+    addImage("b1", "alone-b", 50);
+
+    const seen: number[] = [];
+    let cursor = Number.MAX_SAFE_INTEGER;
+    for (let guard = 0; guard < 10; guard++) {
+      const rows = page(cursor, 2);
+      if (rows.length === 0) break;
+      seen.push(...rows.map((r) => r.created_at));
+      cursor = rows[rows.length - 1].created_at;
+    }
+    expect(seen).toEqual([300, 200, 50]);
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it("まとめる前で切ると、重複する（以前の作り）", () => {
+    addImage("s1", "shared", 100);
+    addImage("s2", "shared", 300);
+    addImage("a1", "alone-a", 200);
+
+    const oldPage = (before: number, limit = 2) =>
+      db
+        .prepare(
+          `SELECT MAX(a.created_at) AS created_at
+             FROM attachments a
+            WHERE a.kind = 'generated' AND a.created_at < ?
+            GROUP BY a.r2_key
+            ORDER BY created_at DESC
+            LIMIT ?`,
+        )
+        .all(before, limit) as { created_at: number }[];
+
+    const first = oldPage(Number.MAX_SAFE_INTEGER, 2);
+    const second = oldPage(first[first.length - 1].created_at, 2);
+    // 共有画像が古いほうの行で戻ってくる
+    expect(second.map((r) => r.created_at)).toContain(100);
   });
 });
