@@ -68,21 +68,80 @@ function elements(
 }
 
 /**
- * 数として比べられる値。桁区切りや単位が付いていても、含まれる数で比べる
- * （「1,234円」「約 5 件」など、モデルの表はきれいな数値とは限らない）。
+ * 表記の揺れをそろえる。
+ *
+ * モデルが書く表は、全角の数字も、引き算の記号（U+2212）も、
+ * 全角のハイフンも混ざる。見た目は同じでも符号や桁が読めなくなるので、
+ * 数として見る前に半角へ寄せる。
  */
-function numeric(text: string): number | null {
-  const body = text.replace(/[\s,，]/g, "");
-  if (!/\d/.test(body)) return null;
-  const m = /-?\d+(?:\.\d+)?/.exec(body);
-  return m ? Number(m[0]) : null;
+function normalizeDigits(text: string): string {
+  return text
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[\u2212\uFF0D\u2010-\u2015]/g, "-")
+    .replace(/[．]/g, ".")
+    .replace(/[\s,，]/g, "");
 }
 
-function compare(a: string, b: string): number {
-  const na = numeric(a);
-  const nb = numeric(b);
-  if (na !== null && nb !== null && na !== nb) return na - nb;
-  return a.localeCompare(b, "ja");
+/**
+ * そのセルが「数そのもの」か。数なら値、そうでなければ null。
+ *
+ * 以前は文字列のどこかにある数を拾っていた（「約 5 件」→ 5）。便利に
+ * 見えて、実際には次のように壊れる：
+ *
+ * - 「v2.0」→ 2、「2024-01-15」→ 2024（日付が年だけで並ぶ）
+ * - 「商品-5」→ -5（語中のハイフンを符号として読む）
+ *
+ * 単位や前置きが付いた数（「1,234円」「約5件」）は拾いたいので、
+ * **数の前後にあるものが記号・単位だけ**であることを確かめる。数が
+ * 2つ以上あるものは数として扱わない（日付や版番号がこれに当たる）。
+ */
+export function numeric(text: string): number | null {
+  const body = normalizeDigits(text);
+  if (body === "") return null;
+  const matches = body.match(/-?\d+(?:\.\d+)?/g);
+  // 数が複数あるなら、どれを代表にしても恣意的になる（日付・版番号）
+  if (!matches || matches.length !== 1) return null;
+  const n = Number(matches[0]);
+  if (!Number.isFinite(n)) return null;
+  // 数の前に文字が付く場合、そのハイフンは符号ではない（「商品-5」）
+  const at = body.indexOf(matches[0]);
+  if (matches[0].startsWith("-") && at > 0) return Math.abs(n);
+  return n;
+}
+
+/**
+ * 列ごとに比べ方を先に決める。
+ *
+ * セルごとに「数なら数として、そうでなければ文字として」比べていたため、
+ * 数と文字が混ざる列では比べ方が組み合わせによって変わり、**並びが
+ * 一意に決まらなかった**（同じ列でも、どの2つを比べるかで大小が入れ替わる）。
+ *
+ * 列の値がすべて数のときだけ数として比べ、ひとつでも数でないものが
+ * あれば列ぜんぶを文字として比べる。文字の比較は numeric: true を付けて
+ * おくと「項目2」と「項目10」も期待どおりに並ぶ。
+ */
+export function comparatorFor(
+  values: string[],
+): (a: string, b: string) => number {
+  const nonEmpty = values.filter((v) => v.trim() !== "");
+  const allNumeric =
+    nonEmpty.length > 0 && nonEmpty.every((v) => numeric(v) !== null);
+
+  if (allNumeric) {
+    return (a, b) => {
+      // 空欄は値が無いので、昇順でも降順でも末尾に置く
+      const na = numeric(a);
+      const nb = numeric(b);
+      if (na === null) return nb === null ? 0 : 1;
+      if (nb === null) return -1;
+      return na - nb;
+    };
+  }
+  return (a, b) => {
+    if (a.trim() === "") return b.trim() === "" ? 0 : 1;
+    if (b.trim() === "") return -1;
+    return a.localeCompare(b, "ja", { numeric: true });
+  };
 }
 
 type Sort = { column: number; desc: boolean } | null;
@@ -143,8 +202,10 @@ export function MarkdownTable({
   const order = useMemo(() => {
     const base = bodyText.map((_, i) => i);
     if (!sort) return base;
+    const column = bodyText.map((r) => r[sort.column] ?? "");
+    const compare = comparatorFor(column);
     return [...base].sort((a, b) => {
-      const d = compare(bodyText[a][sort.column] ?? "", bodyText[b][sort.column] ?? "");
+      const d = compare(column[a], column[b]);
       // 同じ値のときは元の並びを保つ
       return d !== 0 ? (sort.desc ? -d : d) : a - b;
     });
