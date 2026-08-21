@@ -5,6 +5,7 @@ export default [
     index("routes/home.tsx"),
     route("chat/:id", "routes/chat.$id.tsx"),
     route("images", "routes/images.tsx"),
+    route("usage", "routes/usage.tsx"),
     route("settings", "routes/settings.tsx"),
     route("bots", "routes/bots.tsx"),
     route("bots/new", "routes/bots.new.tsx"),

@@ -16,6 +16,7 @@ import { FAVORITES_ID, usePrefetchOnVisible } from "./sidebar/shared";
 import {
   IconArrowLeft,
   IconBot,
+  IconChartBar,
   IconCog,
   IconPencilSquare,
   IconPhoto,
@@ -394,6 +395,10 @@ export function Sidebar({
           <NavLink to="/images" prefetch="intent" onClick={onNavigate} className={shortcutClass}>
             <IconPhoto className="h-4 w-4" />
             画像
+          </NavLink>
+          <NavLink to="/usage" prefetch="intent" onClick={onNavigate} className={shortcutClass}>
+            <IconChartBar className="h-4 w-4" />
+            使用量
           </NavLink>
         </div>
 

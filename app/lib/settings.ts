@@ -17,11 +17,35 @@ export interface AppSettings {
    * 0 にすると新着の強調をしない。
    */
   newModelDays: number;
+  /**
+   * 月間の上限額（円、JSTの暦月）。0 なら上限なし。
+   * 超えると生成を止める（一時解除は monthlyLimitOverride）。
+   */
+  monthlyLimitJpy: number;
+  /**
+   * 上限を一時解除する月（"2026-08"）。null なら解除していない。
+   *
+   * 恒久のトグルにしないのは、解除したまま忘れるのが一番危ないため。
+   * 月が変われば自動で効かなくなる。
+   */
+  monthlyLimitOverride: string | null;
+  /**
+   * Poe のポイント1点あたりのドル。0 なら見積もらない。
+   *
+   * Poe は応答に額を載せないので Usage API を照会するが、履歴への反映が
+   * 間に合わないと取りこぼす。その分を上限の計算に混ぜるためのレート。
+   */
+  poePointsUsdRate: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   retryAttemptCeiling: 100,
   newModelDays: 3,
+  // 既定は上限なし。実際に使う額を見てから決められるよう、
+  // こちらで勝手な数字を入れて生成を止めることはしない
+  monthlyLimitJpy: 0,
+  monthlyLimitOverride: null,
+  poePointsUsdRate: 0,
 };
 
 /** 天井として受け付ける範囲。 */
@@ -29,3 +53,9 @@ export const RETRY_CEILING_RANGE = { min: 1, max: 1000 };
 
 /** 新着表示の日数として受け付ける範囲（0 = 表示しない）。 */
 export const NEW_MODEL_DAYS_RANGE = { min: 0, max: 90 };
+
+/** 月間上限として受け付ける範囲（0 = 上限なし）。 */
+export const MONTHLY_LIMIT_RANGE = { min: 0, max: 1_000_000 };
+
+/** ポイント換算レートとして受け付ける範囲（0 = 見積もらない）。 */
+export const POE_RATE_RANGE = { min: 0, max: 1 };

@@ -4,10 +4,13 @@ import type { Route } from "./+types/settings";
 import type { ShellContext } from "./shell";
 import { getAppSettings } from "../lib/db.server";
 import {
+  MONTHLY_LIMIT_RANGE,
   NEW_MODEL_DAYS_RANGE,
+  POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
   type AppSettings,
 } from "../lib/settings";
+import { monthLabelJst } from "../lib/usage";
 import { getTheme, saveTheme, type Theme } from "../lib/theme";
 import {
   CHAT_FONT_SIZES,
@@ -34,7 +37,8 @@ export function meta() {
 }
 
 export async function loader() {
-  return { settings: await getAppSettings() };
+  // 「今月」の判定に使う。描画のたびに時計を読むと結果が揺れるため
+  return { settings: await getAppSettings(), now: Date.now() };
 }
 
 /**
@@ -48,11 +52,13 @@ const SETTINGS_TTL_MS = 5 * 60 * 1000;
 export async function clientLoader({
   serverLoader,
 }: Route.ClientLoaderArgs) {
+  // 使い回すのは設定だけ。「今月」は読み込みのたびに作り直す
+  // （5分のキャッシュが月をまたぐと、一時解除の対象月がずれる）
   if (settingsCache && Date.now() - settingsCache.at < SETTINGS_TTL_MS) {
-    return settingsCache.data;
+    return { ...settingsCache.data, now: Date.now() };
   }
   const data = await serverLoader();
-  settingsCache = { at: Date.now(), data };
+  settingsCache = { at: Date.now(), data: { settings: data.settings } };
   return data;
 }
 
@@ -267,6 +273,8 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const { openSidebar } = useOutletContext<ShellContext>();
   const revalidator = useRevalidator();
   const [settings, setSettings] = useState<AppSettings>(loaderData.settings);
+  /** 一時解除の対象月。ローダーの時刻から作る（描画のたびに変わらない）。 */
+  const thisMonth = monthLabelJst(loaderData.now);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -347,6 +355,62 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 step={1}
                 onChange={(v) => void save({ retryAttemptCeiling: v })}
                 className="w-24 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+              />
+            </Row>
+          </Section>
+
+          <Section
+            title="コスト"
+            note="使った額は「使用量」で見られます。会話を消しても記録は残るので、消すことで上限が緩むことはありません。"
+          >
+            <Row
+              label="月間の上限"
+              description={`超えると生成を止めます（0 で上限なし・JSTの暦月・最大${MONTHLY_LIMIT_RANGE.max.toLocaleString()}円）`}
+            >
+              <NumberInput
+                label="月間の上限"
+                value={settings.monthlyLimitJpy}
+                min={MONTHLY_LIMIT_RANGE.min}
+                max={MONTHLY_LIMIT_RANGE.max}
+                step={100}
+                onChange={(v) => void save({ monthlyLimitJpy: v })}
+                className="w-28 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+              />
+            </Row>
+            {settings.monthlyLimitJpy > 0 && (
+              <Row
+                label="今月だけ上限を解除"
+                description="翌月には自動で戻ります（解除したまま忘れないため、恒久の設定にはしていません）"
+              >
+                <input
+                  type="checkbox"
+                  aria-label="今月だけ上限を解除"
+                  checked={
+                    settings.monthlyLimitOverride === thisMonth
+                  }
+                  onChange={(e) =>
+                    void save({
+                      monthlyLimitOverride: e.target.checked
+                        ? thisMonth
+                        : null,
+                    })
+                  }
+                  className="h-5 w-5 accent-[var(--accent)]"
+                />
+              </Row>
+            )}
+            <Row
+              label="Poe のポイント換算"
+              description="1ポイントあたりのドル。Poe が額を返さなかった分を上限の計算に入れます（0 で入れない）"
+            >
+              <NumberInput
+                label="Poe のポイント換算"
+                value={settings.poePointsUsdRate}
+                min={POE_RATE_RANGE.min}
+                max={POE_RATE_RANGE.max}
+                step={0.0001}
+                onChange={(v) => void save({ poePointsUsdRate: v })}
+                className="w-28 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
               />
             </Row>
           </Section>

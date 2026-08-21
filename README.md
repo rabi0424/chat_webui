@@ -69,10 +69,14 @@ iPhone の Safari で共有メニュー →「ホーム画面に追加」する�
 `npm test` で走る。3層に分かれている。
 
 - **純粋なロジック**（`tests/*.test.ts`）: 生成パラメータの組み立て、
-  リトライ設定の読み取り、Markdownの分割など。Workers のバインディング
-  （D1・R2）には触らない
+  リトライ設定の読み取り、Markdownの分割、月間上限の判定など。Workers の
+  バインディング（D1・R2）には触らない
 - **DOMが要るもの**（`tests/dom/*.test.ts`）: SVGの消毒、ShadowRoot の
   貼り替えなど
+- **スキーマ**（`tests/schema.test.ts`）: マイグレーションを本物の SQLite
+  （`node:sqlite`）へ流し、構文・索引・流し直しの安全性を確かめる。
+  壊れたマイグレーションはアプリ全体を起動不能にするため（読み書きの
+  すべてが初期化を通る）
 - **画面の操作**（`tests/dom/chat-*.test.tsx`, `tests/dom/sidebar.test.tsx`）:
   送信・編集・分岐・削除と、会話一覧の名前の変更・お気に入り・ピン留め・
   フォルダを、Testing Library で実際に操作する。通信だけを差し替え

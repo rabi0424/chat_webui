@@ -36,3 +36,17 @@ export const DEFAULT_MODEL = "openai/gpt-4o-mini";
  * 本文の生成には使わないので、安く速いものを選ぶ。
  */
 export const TITLE_MODEL = "openai/gpt-4o-mini";
+
+/**
+ * Poe のモデルは "poe:" を付けたIDで扱う。
+ *
+ * 判定はサーバー（生成・使用量の記録）とクライアント（画面の出し分け）の
+ * 両方で要る。openrouter.server.ts に置いていたころは、クライアント側が
+ * 文字列を書き写していた。
+ */
+export const POE_PREFIX = "poe:";
+
+/** そのモデルIDが Poe のものか。 */
+export function isPoeModel(modelId: string | null | undefined): boolean {
+  return typeof modelId === "string" && modelId.startsWith(POE_PREFIX);
+}

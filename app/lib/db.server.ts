@@ -2,11 +2,15 @@ import { env } from "cloudflare:workers";
 import { deleteFiles } from "./r2.server";
 import {
   DEFAULT_APP_SETTINGS,
+  MONTHLY_LIMIT_RANGE,
   NEW_MODEL_DAYS_RANGE,
+  POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
   type AppSettings,
 } from "./settings";
-import { MAX_TITLE_LENGTH } from "./constants";
+import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
+import { MIGRATIONS, statementsOf } from "./schema";
+import { EMPTY_TOTALS, type UsageTotals } from "./usage";
 
 /**
  * Data access layer for D1.
@@ -17,132 +21,6 @@ import { MAX_TITLE_LENGTH } from "./constants";
  *
  * The schema is applied lazily at runtime so no CLI migration step is needed.
  */
-
-/**
- * バージョン管理付きのランタイムマイグレーション。配列に追記していく。
- * 適用済みバージョンは meta テーブルに記録される。
- */
-const MIGRATIONS: string[] = [
-  // v1: 初期スキーマ
-  `
-CREATE TABLE IF NOT EXISTS conversations (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  model_id TEXT,
-  pinned INTEGER NOT NULL DEFAULT 0,
-  current_leaf_message_id TEXT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS messages (
-  id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL,
-  parent_id TEXT,
-  role TEXT NOT NULL,
-  content TEXT NOT NULL,
-  model_id TEXT,
-  usage_json TEXT,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
-CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
-`,
-  // v2: ボット + 会話へのボットスナップショット
-  `
-CREATE TABLE IF NOT EXISTS bots (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  icon TEXT NOT NULL DEFAULT '🤖',
-  model_id TEXT NOT NULL,
-  system_prompt TEXT NOT NULL DEFAULT '',
-  params_json TEXT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-ALTER TABLE conversations ADD COLUMN bot_id TEXT;
-ALTER TABLE conversations ADD COLUMN bot_name TEXT;
-ALTER TABLE conversations ADD COLUMN bot_icon TEXT;
-ALTER TABLE conversations ADD COLUMN system_prompt TEXT;
-ALTER TABLE conversations ADD COLUMN params_json TEXT;
-`,
-  // v3: 思考（reasoning）内容の保存
-  `
-ALTER TABLE messages ADD COLUMN reasoning TEXT;
-`,
-  // v4: サーバー側生成（生成中ステータス・エラー・停止フラグ）
-  `
-ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'done';
-ALTER TABLE messages ADD COLUMN error TEXT;
-ALTER TABLE messages ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0;
-`,
-  // v5: 生成中の最終更新時刻（中断検知・自動復旧用）
-  `
-ALTER TABLE messages ADD COLUMN flushed_at INTEGER;
-`,
-  // v6: フォルダ + ピン留めの並べ替え
-  `
-CREATE TABLE IF NOT EXISTS folders (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  pinned INTEGER NOT NULL DEFAULT 0,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-ALTER TABLE conversations ADD COLUMN folder_id TEXT;
-ALTER TABLE conversations ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
-`,
-  // v7: 添付ファイル（画像）。実体はR2、ここにはメタデータのみ。
-  // message_id はアップロード直後は NULL（送信時にメッセージへ紐づける）。
-  `
-CREATE TABLE IF NOT EXISTS attachments (
-  id TEXT PRIMARY KEY,
-  message_id TEXT,
-  conversation_id TEXT,
-  r2_key TEXT NOT NULL,
-  mime_type TEXT NOT NULL,
-  name TEXT,
-  size INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
-CREATE INDEX IF NOT EXISTS idx_attachments_key ON attachments(r2_key);
-`,
-  // v8: 生成画像。モデルが返した画像もR2へ取り込み、上流CDNの期限切れで
-  // 過去の会話から消えないようにする。kind で用途を分ける。
-  `
-ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'upload';
-CREATE INDEX IF NOT EXISTS idx_attachments_kind ON attachments(kind, created_at);
-`,
-  // v9: 未読。応答の完成を会話一覧で知らせるため、生成の確定時に立てて
-  // その会話を開いたときに落とす。
-  `
-ALTER TABLE conversations ADD COLUMN unread INTEGER NOT NULL DEFAULT 0;
-`,
-  // v10: 画像一覧のお気に入りと検索。prompt は生成時の依頼文の写しで、
-  // 会話ツリーを遡らずに検索できるようにするために持つ。
-  `
-ALTER TABLE attachments ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE attachments ADD COLUMN prompt TEXT;
-CREATE INDEX IF NOT EXISTS idx_attachments_favorite ON attachments(favorite, created_at);
-`,
-  // v11: 会話のお気に入り。ピン留め（サイドバー最上部への固定）とは別で、
-  // 常設の「お気に入り」フォルダに集める印。両方付けられる。
-  `
-ALTER TABLE conversations ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
-CREATE INDEX IF NOT EXISTS idx_conversations_favorite ON conversations(favorite, updated_at);
-`,
-  // v12: コンテキストの境界線。1 が立ったメッセージまでを以後モデルへ
-  // 送らない（履歴自体は残る）。解除すれば元どおり全部が文脈に戻る。
-  `
-ALTER TABLE messages ADD COLUMN context_boundary INTEGER NOT NULL DEFAULT 0;
-`,
-  // v13: 応答の参照元。本文（content）とは別に持つ。ここへ混ぜると
-  // 次のターンでモデルへ送り返す履歴が変わってしまうため。
-  `
-ALTER TABLE messages ADD COLUMN citations_json TEXT;
-`,
-];
 
 let schemaReady: Promise<void> | null = null;
 
@@ -159,14 +37,6 @@ let schemaReady: Promise<void> | null = null;
  */
 function isDuplicateColumn(e: unknown): boolean {
   return /duplicate column name/i.test((e as Error)?.message ?? "");
-}
-
-/** 版のSQLを文単位に割る。1文ずつ流すことで、どこまで進んだかを揃える。 */
-function statementsOf(sql: string): string[] {
-  return sql
-    .split(";")
-    .map((t) => t.trim())
-    .filter((t) => t !== "");
 }
 
 async function runMigrations(): Promise<void> {
@@ -316,6 +186,30 @@ export async function updateAppSettings(
       Math.max(Math.round(days), NEW_MODEL_DAYS_RANGE.min),
       NEW_MODEL_DAYS_RANGE.max,
     );
+  }
+
+  const limit = Number(patch.monthlyLimitJpy);
+  if (Number.isFinite(limit)) {
+    next.monthlyLimitJpy = Math.min(
+      Math.max(Math.round(limit), MONTHLY_LIMIT_RANGE.min),
+      MONTHLY_LIMIT_RANGE.max,
+    );
+  }
+
+  const rate = Number(patch.poePointsUsdRate);
+  if (Number.isFinite(rate)) {
+    next.poePointsUsdRate = Math.min(
+      Math.max(rate, POE_RATE_RANGE.min),
+      POE_RATE_RANGE.max,
+    );
+  }
+
+  // 一時解除は「どの月か」で持つ。true/false のトグルにすると、
+  // 解除したまま忘れて翌月も素通りする
+  if ("monthlyLimitOverride" in patch) {
+    const v = patch.monthlyLimitOverride;
+    next.monthlyLimitOverride =
+      typeof v === "string" && /^\d{4}-\d{2}$/.test(v) ? v : null;
   }
 
   const d = await db();
@@ -1516,6 +1410,199 @@ export async function flushGeneration(
  * メッセージが done に戻り、停止ボタンも効かないまま二重に走ってしまう。
  * 確定できたときだけ true を返す。
  */
+/**
+ * 最後に取れた USD/JPY。
+ *
+ * 上限の判定は円で行うが、台帳はドル建て。判定のたびに外部の為替APIを
+ * 叩くと、Durable Object の外部リクエスト枠を食うし、APIが落ちている
+ * あいだ判定そのものができなくなる。取れたときに書いておき、判定は
+ * こちらを読む。
+ */
+const USD_JPY_KEY = "usd_jpy";
+
+export async function storeUsdJpy(rate: number): Promise<void> {
+  if (!Number.isFinite(rate) || rate <= 0) return;
+  const d = await db();
+  await d
+    .prepare(
+      "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+    )
+    .bind(USD_JPY_KEY, String(rate))
+    .run();
+}
+
+export async function readStoredUsdJpy(): Promise<number | null> {
+  const d = await db();
+  const row = await d
+    .prepare("SELECT value FROM meta WHERE key = ?")
+    .bind(USD_JPY_KEY)
+    .first<{ value: string }>();
+  const n = Number(row?.value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** 台帳に載せる種別。何にいくら使ったかを後から分けて見るため。 */
+export type UsageKind = "chat" | "retry" | "title";
+
+/** usage_json から数値を1つ取り出す（壊れていたら無いものとして扱う）。 */
+function usageNumber(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 確定した応答の使用量を台帳へ載せる。
+ *
+ * モデルIDと会話IDは messages から引く（呼ぶ側が持ち回らなくて済むよう、
+ * INSERT ... SELECT で1回の往復にする）。message_id には一意制約が
+ * あるので、同じ応答を二度確定しようとしても二重には計上されない。
+ */
+export async function recordMessageUsage(
+  messageId: string,
+  usageJson: string | null,
+  kind: UsageKind,
+): Promise<void> {
+  if (!usageJson) return;
+  let u: Record<string, unknown>;
+  try {
+    u = JSON.parse(usageJson) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const cost = usageNumber(u.cost);
+  const points = usageNumber(u.points);
+  // 額もポイントも無いなら、支出としては記録するものが無い
+  if (cost == null && points == null) return;
+
+  const d = await db();
+  await d
+    .prepare(
+      `INSERT OR IGNORE INTO usage_events
+         (id, at, kind, provider, model_id, cost_usd, points,
+          prompt_tokens, completion_tokens, conversation_id, message_id)
+       SELECT ?, ?, ?,
+              CASE WHEN model_id LIKE ? THEN 'poe' ELSE 'openrouter' END,
+              model_id, ?, ?, ?, ?, conversation_id, id
+         FROM messages WHERE id = ?`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      Date.now(),
+      kind,
+      `${POE_PREFIX}%`,
+      cost,
+      points,
+      usageNumber(u.promptTokens),
+      usageNumber(u.completionTokens),
+      messageId,
+    )
+    .run();
+}
+
+/**
+ * メッセージに紐づかない支出を台帳へ載せる（タイトル生成など）。
+ */
+export async function recordStandaloneUsage(entry: {
+  kind: UsageKind;
+  modelId: string;
+  costUsd: number | null;
+  points?: number | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+}): Promise<void> {
+  if (entry.costUsd == null && entry.points == null) return;
+  const d = await db();
+  await d
+    .prepare(
+      `INSERT INTO usage_events
+         (id, at, kind, provider, model_id, cost_usd, points,
+          prompt_tokens, completion_tokens, conversation_id, message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      Date.now(),
+      entry.kind,
+      entry.modelId.startsWith(POE_PREFIX) ? "poe" : "openrouter",
+      entry.modelId,
+      entry.costUsd,
+      entry.points ?? null,
+      entry.promptTokens ?? null,
+      entry.completionTokens ?? null,
+    )
+    .run();
+}
+
+/** 期間の合計。上限の判定と使用量の画面が使う。 */
+export async function usageTotalsSince(since: number): Promise<UsageTotals> {
+  const d = await db();
+  const row = await d
+    .prepare(
+      `SELECT
+         COALESCE(SUM(cost_usd), 0) AS cost_usd,
+         COALESCE(SUM(points), 0) AS points,
+         COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN points ELSE 0 END), 0)
+           AS points_without_cost,
+         COUNT(*) AS events
+       FROM usage_events WHERE at >= ?`,
+    )
+    .bind(since)
+    .first<{
+      cost_usd: number;
+      points: number;
+      points_without_cost: number;
+      events: number;
+    }>();
+  if (!row) return { ...EMPTY_TOTALS };
+  return {
+    costUsd: row.cost_usd ?? 0,
+    points: row.points ?? 0,
+    pointsWithoutCost: row.points_without_cost ?? 0,
+    events: row.events ?? 0,
+  };
+}
+
+/** モデル別の内訳。使用量の画面で「何が高いか」を見るため。 */
+export interface UsageByModel {
+  modelId: string | null;
+  provider: string;
+  costUsd: number;
+  points: number;
+  events: number;
+}
+
+export async function usageByModelSince(
+  since: number,
+): Promise<UsageByModel[]> {
+  const d = await db();
+  const { results } = await d
+    .prepare(
+      `SELECT model_id,
+              provider,
+              COALESCE(SUM(cost_usd), 0) AS cost_usd,
+              COALESCE(SUM(points), 0) AS points,
+              COUNT(*) AS events
+         FROM usage_events WHERE at >= ?
+        GROUP BY model_id, provider
+        ORDER BY cost_usd DESC, points DESC`,
+    )
+    .bind(since)
+    .all<{
+      model_id: string | null;
+      provider: string;
+      cost_usd: number;
+      points: number;
+      events: number;
+    }>();
+  return (results ?? []).map((r) => ({
+    modelId: r.model_id,
+    provider: r.provider,
+    costUsd: r.cost_usd ?? 0,
+    points: r.points ?? 0,
+    events: r.events ?? 0,
+  }));
+}
+
 export async function finalizeGeneration(
   messageId: string,
   result: {
@@ -1526,6 +1613,8 @@ export async function finalizeGeneration(
     error?: string | null;
     /** 参照元のJSON。Webツールを使わなかった応答では null。 */
     citationsJson?: string | null;
+    /** 台帳へ載せる種別。既定は通常のチャット。 */
+    kind?: UsageKind;
   },
 ): Promise<boolean> {
   const d = await db();
@@ -1551,7 +1640,27 @@ export async function finalizeGeneration(
       )
       .bind(messageId),
   ]);
-  return (applied.meta.changes ?? 0) > 0;
+  const changed = (applied.meta.changes ?? 0) > 0;
+
+  // 台帳はここで載せる。呼ぶ側が5箇所あり、1つ忘れるだけで
+  // 支出が見えなくなるため、確定の中に閉じ込める。
+  // 更新が当たらなかったときは、別の経路が既に確定させている
+  // （＝そちらで載っている）ので二重に数えない。
+  if (changed) {
+    // 台帳に載せ損ねても確定は失敗させない。ここで投げると、応答が
+    // 「生成中」のまま止まる——課金は既に済んでいるのだから、記録の
+    // 失敗より画面が固まるほうが害が大きい。黙って飲み込みはしない
+    try {
+      await recordMessageUsage(
+        messageId,
+        result.usageJson,
+        result.kind ?? "chat",
+      );
+    } catch (e) {
+      console.error("[usage] 台帳への記録に失敗しました", messageId, e);
+    }
+  }
+  return changed;
 }
 
 /**
