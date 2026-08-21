@@ -1,7 +1,7 @@
 import { Fragment, startTransition, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
-import type { UiAttachment, UiCitation, UiMessage } from "../lib/types";
+import type { UiAttachment, UiMessage } from "../lib/types";
 import {
   ALLOWED_IMAGE_TYPES,
   DEFAULT_MODEL,

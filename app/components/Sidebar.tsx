@@ -2,14 +2,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
 import type { ConversationRow, FolderRow, SearchResult } from "../lib/db.server";
 import { ThemeToggle } from "./ThemeToggle";
-import { prefetchChat } from "../lib/chat-cache";
+import {
+  SidebarProvider,
+  type MenuTarget,
+  type SidebarActions,
+} from "./sidebar/context";
+import {
+  ConversationItem,
+  FavoritesFolderItem,
+  FolderItem,
+} from "./sidebar/items";
+import { FAVORITES_ID, usePrefetchOnVisible } from "./sidebar/shared";
 import {
   IconArrowLeft,
   IconBot,
-  IconChatBubble,
-  IconChevronRight,
   IconCog,
-  IconEllipsis,
   IconPencilSquare,
   IconPhoto,
   IconPlus,
@@ -23,42 +30,6 @@ import {
   GLASS_ICON_BUTTON,
   GLASS_PANEL,
 } from "../lib/ui";
-
-type MenuTarget =
-  | { type: "conversation"; id: string }
-  | { type: "folder"; id: string };
-
-/**
- * 常設の「お気に入り」フォルダ。
- *
- * D1に行は持たない。conversations.favorite が立った会話を集めて見せる
- * だけの入れ物なので、名前の変更も削除もできない（消える心配なく、
- * 「あとで見返す会話はここ」と決め打ちで使える）。実フォルダへの
- * 所属とは独立していて、フォルダに入れた会話もお気に入りにできる。
- */
-const FAVORITES_ID = "__favorites__";
-
-/**
- * 会話リンクが画面に入ったら一度だけデータを先読みする。
- * iOS Safari は <link rel="prefetch"> を無視するため、prefetch属性では
- * データが先読みされない。自前で取ってメモリに置く（lib/chat-cache.ts）。
- */
-function usePrefetchOnVisible(id: string) {
-  const ref = useRef<HTMLLIElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) {
-        prefetchChat(id);
-        io.disconnect();
-      }
-    });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [id]);
-  return ref;
-}
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -309,262 +280,6 @@ export function Sidebar({
     refresh();
   }
 
-  // --- メニュー -----------------------------------------------------------
-
-  function MenuButton({ target }: { target: MenuTarget }) {
-    const open = menu?.type === target.type && menu.id === target.id;
-    return (
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          setMenu(open ? null : target);
-        }}
-        aria-label="メニュー"
-        className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block [@media(hover:none)]:block"
-      >
-        <IconEllipsis className="h-4 w-4" />
-      </button>
-    );
-  }
-
-  function MenuItems({ target }: { target: MenuTarget }) {
-    if (!(menu?.type === target.type && menu.id === target.id)) return null;
-    const itemClass =
-      "block w-full rounded-lg px-3 py-2 text-left text-[0.9375rem] text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10";
-    const close = () => setMenu(null);
-
-    if (target.type === "conversation") {
-      const c = conversations.find((x) => x.id === target.id);
-      if (!c) return null;
-      return (
-        <div className={`absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl p-1 animate-pop ${GLASS_PANEL}`}>
-          <button type="button" className={itemClass} onClick={() => { close(); renameConversation(c); }}>
-            名前を変更
-          </button>
-          <button type="button" className={itemClass} onClick={() => { close(); void patchConversation(c.id, { favorite: c.favorite !== 1 }); }}>
-            {c.favorite === 1 ? "お気に入りから外す" : "お気に入りに追加"}
-          </button>
-          <button type="button" className={itemClass} onClick={() => { close(); void patchConversation(c.id, { pinned: !c.pinned }); }}>
-            {c.pinned ? "ピン留めを解除" : "ピン留め"}
-          </button>
-          {c.pinned === 1 && (
-            <>
-              <button type="button" className={itemClass} onClick={() => { close(); void movePinned("conversation", c.id, "up"); }}>
-                ↑ 上へ移動
-              </button>
-              <button type="button" className={itemClass} onClick={() => { close(); void movePinned("conversation", c.id, "down"); }}>
-                ↓ 下へ移動
-              </button>
-            </>
-          )}
-          <button type="button" className={itemClass} onClick={() => { close(); setNewFolderName(""); setMoveTarget(c.id); }}>
-            フォルダへ移動…
-          </button>
-          <button
-            type="button"
-            className="block w-full rounded-lg px-3 py-2 text-left text-[0.9375rem] text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/15"
-            onClick={() => { close(); void removeConversation(c); }}
-          >
-            削除
-          </button>
-        </div>
-      );
-    }
-
-    const f = folders.find((x) => x.id === target.id);
-    if (!f) return null;
-    return (
-      <div className={`absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl p-1 animate-pop ${GLASS_PANEL}`}>
-        <button type="button" className={itemClass} onClick={() => { close(); renameFolder(f); }}>
-          名前を変更
-        </button>
-        <button type="button" className={itemClass} onClick={() => { close(); void patchFolder(f.id, { pinned: !f.pinned }); }}>
-          {f.pinned ? "ピン留めを解除" : "ピン留め"}
-        </button>
-        {f.pinned === 1 && (
-          <>
-            <button type="button" className={itemClass} onClick={() => { close(); void movePinned("folder", f.id, "up"); }}>
-              ↑ 上へ移動
-            </button>
-            <button type="button" className={itemClass} onClick={() => { close(); void movePinned("folder", f.id, "down"); }}>
-              ↓ 下へ移動
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          className="block w-full rounded-lg px-3 py-2 text-left text-[0.9375rem] text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/15"
-          onClick={() => { close(); void removeFolder(f); }}
-        >
-          削除
-        </button>
-      </div>
-    );
-  }
-
-  // --- 行レンダリング -----------------------------------------------------
-
-  function ConversationItem({ c, indent = false }: { c: ConversationRow; indent?: boolean }) {
-    const open = menu?.type === "conversation" && menu.id === c.id;
-    const prefetchRef = usePrefetchOnVisible(c.id);
-    return (
-      <li ref={prefetchRef} className={`group relative ${open ? "menu-open" : ""} ${indent ? "ml-5" : ""}`}>
-        {/* prefetch="intent": ホバー/タッチ開始でデータとJSを先読みし、遷移の待ちを隠す */}
-        <NavLink
-          to={`/chat/${c.id}`}
-          prefetch="intent"
-          onClick={onNavigate}
-          className={({ isActive }) =>
-            `flex items-center gap-1.5 rounded-lg py-2 pl-3 pr-8 text-[0.9375rem] ${
-              isActive
-                ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
-                : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
-            }`
-          }
-        >
-          {/* 開いていないうちに応答が完成した会話の印。右端は「…」が使う */}
-          {isUnread(c) && (
-            <span
-              aria-label="新しい応答があります"
-              title="新しい応答があります"
-              className="h-2 w-2 shrink-0 rounded-full bg-accent"
-            />
-          )}
-          {/* ピン留めは見出しで分かるので、印ではなく会話のアイコンを添える */}
-          {c.pinned === 1 && (
-            <IconChatBubble className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
-          )}
-          {c.favorite === 1 && (
-            <IconStarSolid
-              className="h-3.5 w-3.5 shrink-0 text-neutral-500 dark:text-white"
-            />
-          )}
-          <span className="min-w-0 truncate">{c.title}</span>
-        </NavLink>
-        <MenuButton target={{ type: "conversation", id: c.id }} />
-        <MenuItems target={{ type: "conversation", id: c.id }} />
-      </li>
-    );
-  }
-
-  /**
-   * 常設の「お気に入り」フォルダの行。
-   *
-   * 見た目は他のフォルダと揃えるが、「…」メニューは出さない
-   * （名前の変更も削除もできないため、出すものが無い）。
-   */
-  function FavoritesFolderItem() {
-    const isExpanded = expanded.has(FAVORITES_ID);
-    const children = favoriteConversations;
-    return (
-      <li className="relative">
-        <div className="flex items-center">
-          <button
-            type="button"
-            onClick={() =>
-              setExpanded((prev) => {
-                const next = new Set(prev);
-                if (next.has(FAVORITES_ID)) next.delete(FAVORITES_ID);
-                else next.add(FAVORITES_ID);
-                return next;
-              })
-            }
-            aria-label={isExpanded ? "折りたたむ" : "展開"}
-            className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-          >
-            <IconChevronRight
-              className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-            />
-          </button>
-          <button
-            type="button"
-            onClick={() => setView(FAVORITES_ID)}
-            title="お気に入り（削除できない常設フォルダ）"
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg py-2 pl-1 pr-3 text-left text-[0.9375rem] text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
-          >
-            <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
-            {/* 件数は名前と同じ行に置く。別のflex項目にすると
-                items-center で箱の中央が揃い、小さい字だけ上にずれて見える */}
-            <span className="min-w-0 flex-1 truncate">
-              お気に入り
-              <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
-                {children.length}
-              </span>
-            </span>
-          </button>
-        </div>
-        {isExpanded && (
-          <ul className="mt-0.5 space-y-0.5">
-            {children.length === 0 && (
-              <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
-                （まだありません）
-              </li>
-            )}
-            {children.map((c) => (
-              <ConversationItem key={c.id} c={c} indent />
-            ))}
-          </ul>
-        )}
-      </li>
-    );
-  }
-
-  function FolderItem({ f }: { f: FolderRow }) {
-    const open = menu?.type === "folder" && menu.id === f.id;
-    const isExpanded = expanded.has(f.id);
-    const children = folderConversations(f.id);
-    return (
-      <li className={`group relative ${open ? "menu-open" : ""}`}>
-        <div className="flex items-center">
-          <button
-            type="button"
-            onClick={() =>
-              setExpanded((prev) => {
-                const next = new Set(prev);
-                if (next.has(f.id)) next.delete(f.id);
-                else next.add(f.id);
-                return next;
-              })
-            }
-            aria-label={isExpanded ? "折りたたむ" : "展開"}
-            className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-          >
-            <IconChevronRight
-              className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-            />
-          </button>
-          <button
-            type="button"
-            onClick={() => setView(f.id)}
-            className="min-w-0 flex-1 truncate rounded-lg py-2 pl-1 pr-8 text-left text-[0.9375rem] text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
-          >
-            <span aria-hidden className="mr-1.5">📁</span>
-            {f.name}
-            <span className="ml-1.5 text-xs text-neutral-400 dark:text-neutral-600">
-              {children.length}
-            </span>
-          </button>
-        </div>
-        <MenuButton target={{ type: "folder", id: f.id }} />
-        <MenuItems target={{ type: "folder", id: f.id }} />
-        {isExpanded && (
-          <ul className="mt-0.5 space-y-0.5">
-            {children.length === 0 && (
-              <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
-                （空のフォルダ）
-              </li>
-            )}
-            {children.map((c) => (
-              <ConversationItem key={c.id} c={c} indent />
-            ))}
-          </ul>
-        )}
-      </li>
-    );
-  }
-
   const moveConv = moveTarget
     ? conversations.find((c) => c.id === moveTarget)
     : null;
@@ -576,376 +291,411 @@ export function Sidebar({
         : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
     }`;
 
+
+  /**
+   * 行に配る操作一式。
+   *
+   * ここは毎回作り直す。中身の関数はどれも描画のたびに新しくなるので
+   * memo しても同一にはならず、行は親と一緒に再描画される側だから、
+   * 覚えておく利点が無い。
+   */
+  const actions: SidebarActions = {
+    conversations,
+    folders,
+    menu,
+    setMenu,
+    isUnread,
+    onNavigate,
+    expanded,
+    setExpanded,
+    setView,
+    conversationsIn: folderConversations,
+    favorites: favoriteConversations,
+    renameConversation,
+    removeConversation,
+    patchConversation,
+    renameFolder,
+    removeFolder,
+    patchFolder,
+    movePinned,
+    openMoveDialog: (id) => {
+      setNewFolderName("");
+      setMoveTarget(id);
+    },
+  };
+
   return (
-    <div
-      className="relative flex h-full flex-col pt-[env(safe-area-inset-top)]"
-      onClick={() => menu && setMenu(null)}
-    >
-      {/* ヘッダー: アプリ名と検索。検索は押したときだけ入力欄に変わる */}
-      <div className="flex h-14 items-center gap-1 px-3">
-        {searchOpen ? (
-          <div className="relative flex-1 animate-pop">
-            <input
-              ref={searchInput}
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") closeSearch();
-              }}
-              placeholder="検索（-語 で除外）"
-              aria-label="会話を検索"
-              className="w-full rounded-full border border-neutral-200 bg-neutral-50 py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-[0.9375rem] dark:border-neutral-700 dark:bg-neutral-900"
-            />
-            <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
-            <button
-              type="button"
-              onClick={closeSearch}
-              aria-label="検索を閉じる"
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-            >
-              <IconX className="h-4 w-4" />
-            </button>
-          </div>
-        ) : (
-          <>
-            {/* アプリ名は「新規チャット」の入口も兼ねる（下の丸ボタンと同じ行き先） */}
+    <SidebarProvider value={actions}>
+      <div
+        className="relative flex h-full flex-col pt-[env(safe-area-inset-top)]"
+        onClick={() => menu && setMenu(null)}
+      >
+        {/* ヘッダー: アプリ名と検索。検索は押したときだけ入力欄に変わる */}
+        <div className="flex h-14 items-center gap-1 px-3">
+          {searchOpen ? (
+            <div className="relative flex-1 animate-pop">
+              <input
+                ref={searchInput}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") closeSearch();
+                }}
+                placeholder="検索（-語 で除外）"
+                aria-label="会話を検索"
+                className="w-full rounded-full border border-neutral-200 bg-neutral-50 py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-[0.9375rem] dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
+              <button
+                type="button"
+                onClick={closeSearch}
+                aria-label="検索を閉じる"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+              >
+                <IconX className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* アプリ名は「新規チャット」の入口も兼ねる（下の丸ボタンと同じ行き先） */}
+              <NavLink
+                to="/"
+                prefetch="intent"
+                onClick={onNavigate}
+                title="新規チャット"
+                className="min-w-0 flex-1 truncate rounded-lg px-2 py-1 text-xl font-semibold tracking-tight transition-colors hover:bg-neutral-100 active:scale-[0.98] dark:hover:bg-neutral-800"
+              >
+                Chat
+              </NavLink>
+              <button
+                type="button"
+                onClick={openSearch}
+                aria-label="会話を検索"
+                title="会話を検索"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-neutral-500 transition hover:bg-neutral-100 active:scale-95 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              >
+                <IconSearch className="h-5 w-5" />
+              </button>
+            </>
+          )}
+        </div>
+
+        <div className="space-y-0.5 px-3 pb-1">
+          <NavLink
+            to="/bots"
+            prefetch="intent"
+            onClick={onNavigate}
+            className={shortcutClass}
+          >
+            <IconBot className="h-4 w-4" />
+            ボット管理
+          </NavLink>
+          <NavLink to="/images" prefetch="intent" onClick={onNavigate} className={shortcutClass}>
+            <IconPhoto className="h-4 w-4" />
+            画像
+          </NavLink>
+        </div>
+
+        {/* 下部の浮いたボタンに隠れないよう、一覧は余分に下を空ける */}
+        <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-24">
+          {searchQuery.trim() ? (
+            /* --- 検索結果 --- */
+            <>
+              <p className="px-3 pb-1 pt-1 text-xs font-medium text-neutral-400 dark:text-neutral-600">
+                {searching
+                  ? "検索中…"
+                  : `検索結果 ${searchResults?.length ?? 0}件`}
+              </p>
+              <ul className="space-y-0.5">
+                {(searchResults ?? []).map((r) => (
+                  <SearchResultItem
+                    key={r.id}
+                    r={r}
+                    terms={highlightTerms}
+                    onNavigate={onNavigate}
+                  />
+                ))}
+                {!searching && searchResults?.length === 0 && (
+                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+                    見つかりませんでした
+                  </li>
+                )}
+              </ul>
+            </>
+          ) : view === FAVORITES_ID ? (
+            /* --- お気に入りフォルダの階層表示 --- */
+            <>
+              <div className="mb-1 flex items-center gap-1 px-1">
+                <button
+                  type="button"
+                  onClick={() => setView(null)}
+                  aria-label="戻る"
+                  className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                >
+                  <IconArrowLeft className="h-4 w-4" />
+                </button>
+                <span className="flex items-center gap-1.5 truncate text-[0.9375rem] font-medium">
+                  <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
+                  お気に入り
+                </span>
+              </div>
+              <ul className="space-y-0.5">
+                {favoriteConversations.length === 0 && (
+                  <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-neutral-400 dark:text-neutral-600">
+                    まだありません。
+                    <br />
+                    会話の「…」から
+                    <br />
+                    「お気に入りに追加」で入ります。
+                  </li>
+                )}
+                {favoriteConversations.map((c) => (
+                  <ConversationItem key={c.id} c={c} />
+                ))}
+              </ul>
+            </>
+          ) : viewFolder ? (
+            /* --- フォルダ階層表示 --- */
+            <>
+              <div className="mb-1 flex items-center gap-1 px-1">
+                <button
+                  type="button"
+                  onClick={() => setView(null)}
+                  aria-label="戻る"
+                  className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                >
+                  <IconArrowLeft className="h-4 w-4" />
+                </button>
+                <span className="truncate text-[0.9375rem] font-medium">
+                  📁 {viewFolder.name}
+                </span>
+              </div>
+              <ul className="space-y-0.5">
+                {folderConversations(viewFolder.id).length === 0 && (
+                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+                    このフォルダは空です
+                  </li>
+                )}
+                {folderConversations(viewFolder.id).map((c) => (
+                  <ConversationItem key={c.id} c={c} />
+                ))}
+              </ul>
+            </>
+          ) : (
+            /* --- ルート表示 --- */
+            <>
+              {pinnedItems.length > 0 && (
+                <>
+                  <p className="px-3 pb-1 pt-2 text-xs font-medium text-neutral-400 dark:text-neutral-600">
+                    ピン留め
+                  </p>
+                  <ul className="space-y-0.5">
+                    {pinnedItems.map((it) =>
+                      it.type === "folder" ? (
+                        <FolderItem key={`f${it.folder.id}`} f={it.folder} />
+                      ) : (
+                        <ConversationItem
+                          key={`c${it.conversation.id}`}
+                          c={it.conversation}
+                        />
+                      ),
+                    )}
+                  </ul>
+                </>
+              )}
+
+              <div className="flex items-center justify-between px-3 pb-1 pt-3">
+                <p className="text-xs font-medium text-neutral-400 dark:text-neutral-600">
+                  フォルダ
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void createFolderPrompt()}
+                  aria-label="フォルダを作成"
+                  title="フォルダを作成"
+                  className="rounded p-0.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800"
+                >
+                  <IconPlus className="h-4 w-4" />
+                </button>
+              </div>
+              <ul className="space-y-0.5">
+                {/* 常設。削除も名前の変更もできないので、常に先頭に置く */}
+                <FavoritesFolderItem />
+                {unpinnedFolders.map((f) => (
+                  <FolderItem key={f.id} f={f} />
+                ))}
+              </ul>
+
+              <p className="px-3 pb-1 pt-3 text-xs font-medium text-neutral-400 dark:text-neutral-600">
+                会話
+              </p>
+              {rootConversations.length === 0 && pinnedItems.length === 0 && (
+                <p className="px-3 py-4 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
+                  まだ会話はありません
+                </p>
+              )}
+              <ul className="space-y-0.5">
+                {rootConversations.map((c) => (
+                  <ConversationItem key={c.id} c={c} />
+                ))}
+              </ul>
+            </>
+          )}
+        </nav>
+
+        {/*
+          下部に浮かべるバー。一覧の上に重ね、背景をぼかしたガラスの
+          ボタンで「新規チャット・テーマ・設定」を常に手の届く位置に置く。
+          バー自体はタップを通し（pointer-events-none）、ボタンだけが拾う。
+        */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/60 to-transparent pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-16 dark:from-neutral-950 dark:via-neutral-950/60">
+          <div className="pointer-events-auto flex items-center gap-2 px-3">
             <NavLink
               to="/"
               prefetch="intent"
               onClick={onNavigate}
               title="新規チャット"
-              className="min-w-0 flex-1 truncate rounded-lg px-2 py-1 text-xl font-semibold tracking-tight transition-colors hover:bg-neutral-100 active:scale-[0.98] dark:hover:bg-neutral-800"
+              className={`flex min-w-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-3 text-[0.9375rem] font-semibold transition active:scale-95 ${GLASS_ACCENT_BUTTON}`}
             >
-              Chat
+              <IconPencilSquare className="h-4.5 w-4.5 shrink-0" />
+              新規チャット
             </NavLink>
-            <button
-              type="button"
-              onClick={openSearch}
-              aria-label="会話を検索"
-              title="会話を検索"
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-neutral-500 transition hover:bg-neutral-100 active:scale-95 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            <ThemeToggle />
+            <NavLink
+              to="/settings"
+              prefetch="intent"
+              onClick={onNavigate}
+              aria-label="設定"
+              title="設定"
+              className={({ isActive }) =>
+                `${GLASS_ICON_BUTTON} ${isActive ? "text-accent-ink" : ""}`
+              }
             >
-              <IconSearch className="h-5 w-5" />
-            </button>
-          </>
-        )}
-      </div>
-
-      <div className="space-y-0.5 px-3 pb-1">
-        <NavLink
-          to="/bots"
-          prefetch="intent"
-          onClick={onNavigate}
-          className={shortcutClass}
-        >
-          <IconBot className="h-4 w-4" />
-          ボット管理
-        </NavLink>
-        <NavLink to="/images" prefetch="intent" onClick={onNavigate} className={shortcutClass}>
-          <IconPhoto className="h-4 w-4" />
-          画像
-        </NavLink>
-      </div>
-
-      {/* 下部の浮いたボタンに隠れないよう、一覧は余分に下を空ける */}
-      <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-24">
-        {searchQuery.trim() ? (
-          /* --- 検索結果 --- */
-          <>
-            <p className="px-3 pb-1 pt-1 text-xs font-medium text-neutral-400 dark:text-neutral-600">
-              {searching
-                ? "検索中…"
-                : `検索結果 ${searchResults?.length ?? 0}件`}
-            </p>
-            <ul className="space-y-0.5">
-              {(searchResults ?? []).map((r) => (
-                <SearchResultItem
-                  key={r.id}
-                  r={r}
-                  terms={highlightTerms}
-                  onNavigate={onNavigate}
-                />
-              ))}
-              {!searching && searchResults?.length === 0 && (
-                <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
-                  見つかりませんでした
-                </li>
-              )}
-            </ul>
-          </>
-        ) : view === FAVORITES_ID ? (
-          /* --- お気に入りフォルダの階層表示 --- */
-          <>
-            <div className="mb-1 flex items-center gap-1 px-1">
-              <button
-                type="button"
-                onClick={() => setView(null)}
-                aria-label="戻る"
-                className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-              >
-                <IconArrowLeft className="h-4 w-4" />
-              </button>
-              <span className="flex items-center gap-1.5 truncate text-[0.9375rem] font-medium">
-                <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
-                お気に入り
-              </span>
-            </div>
-            <ul className="space-y-0.5">
-              {favoriteConversations.length === 0 && (
-                <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-neutral-400 dark:text-neutral-600">
-                  まだありません。
-                  <br />
-                  会話の「…」から
-                  <br />
-                  「お気に入りに追加」で入ります。
-                </li>
-              )}
-              {favoriteConversations.map((c) => (
-                <ConversationItem key={c.id} c={c} />
-              ))}
-            </ul>
-          </>
-        ) : viewFolder ? (
-          /* --- フォルダ階層表示 --- */
-          <>
-            <div className="mb-1 flex items-center gap-1 px-1">
-              <button
-                type="button"
-                onClick={() => setView(null)}
-                aria-label="戻る"
-                className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-              >
-                <IconArrowLeft className="h-4 w-4" />
-              </button>
-              <span className="truncate text-[0.9375rem] font-medium">
-                📁 {viewFolder.name}
-              </span>
-            </div>
-            <ul className="space-y-0.5">
-              {folderConversations(viewFolder.id).length === 0 && (
-                <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
-                  このフォルダは空です
-                </li>
-              )}
-              {folderConversations(viewFolder.id).map((c) => (
-                <ConversationItem key={c.id} c={c} />
-              ))}
-            </ul>
-          </>
-        ) : (
-          /* --- ルート表示 --- */
-          <>
-            {pinnedItems.length > 0 && (
-              <>
-                <p className="px-3 pb-1 pt-2 text-xs font-medium text-neutral-400 dark:text-neutral-600">
-                  ピン留め
-                </p>
-                <ul className="space-y-0.5">
-                  {pinnedItems.map((it) =>
-                    it.type === "folder" ? (
-                      <FolderItem key={`f${it.folder.id}`} f={it.folder} />
-                    ) : (
-                      <ConversationItem
-                        key={`c${it.conversation.id}`}
-                        c={it.conversation}
-                      />
-                    ),
-                  )}
-                </ul>
-              </>
-            )}
-
-            <div className="flex items-center justify-between px-3 pb-1 pt-3">
-              <p className="text-xs font-medium text-neutral-400 dark:text-neutral-600">
-                フォルダ
-              </p>
-              <button
-                type="button"
-                onClick={() => void createFolderPrompt()}
-                aria-label="フォルダを作成"
-                title="フォルダを作成"
-                className="rounded p-0.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800"
-              >
-                <IconPlus className="h-4 w-4" />
-              </button>
-            </div>
-            <ul className="space-y-0.5">
-              {/* 常設。削除も名前の変更もできないので、常に先頭に置く */}
-              <FavoritesFolderItem />
-              {unpinnedFolders.map((f) => (
-                <FolderItem key={f.id} f={f} />
-              ))}
-            </ul>
-
-            <p className="px-3 pb-1 pt-3 text-xs font-medium text-neutral-400 dark:text-neutral-600">
-              会話
-            </p>
-            {rootConversations.length === 0 && pinnedItems.length === 0 && (
-              <p className="px-3 py-4 text-center text-[0.8125rem] text-neutral-400 dark:text-neutral-600">
-                まだ会話はありません
-              </p>
-            )}
-            <ul className="space-y-0.5">
-              {rootConversations.map((c) => (
-                <ConversationItem key={c.id} c={c} />
-              ))}
-            </ul>
-          </>
-        )}
-      </nav>
-
-      {/*
-        下部に浮かべるバー。一覧の上に重ね、背景をぼかしたガラスの
-        ボタンで「新規チャット・テーマ・設定」を常に手の届く位置に置く。
-        バー自体はタップを通し（pointer-events-none）、ボタンだけが拾う。
-      */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/60 to-transparent pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-16 dark:from-neutral-950 dark:via-neutral-950/60">
-        <div className="pointer-events-auto flex items-center gap-2 px-3">
-          <NavLink
-            to="/"
-            prefetch="intent"
-            onClick={onNavigate}
-            title="新規チャット"
-            className={`flex min-w-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-3 text-[0.9375rem] font-semibold transition active:scale-95 ${GLASS_ACCENT_BUTTON}`}
-          >
-            <IconPencilSquare className="h-4.5 w-4.5 shrink-0" />
-            新規チャット
-          </NavLink>
-          <ThemeToggle />
-          <NavLink
-            to="/settings"
-            prefetch="intent"
-            onClick={onNavigate}
-            aria-label="設定"
-            title="設定"
-            className={({ isActive }) =>
-              `${GLASS_ICON_BUTTON} ${isActive ? "text-accent-ink" : ""}`
-            }
-          >
-            <IconCog className="h-5 w-5" />
-          </NavLink>
-        </div>
-      </div>
-
-      {/*
-        フォルダ移動モーダル。Sidebarのルートが relative なので、ここは
-        fixed ではなく absolute inset-0 でサイドバーの領域だけに重ねる
-        （fixed だと画面全体を基準に中央寄せされ、幅の狭いサイドバーから
-        見て右に偏った位置に出てしまう）。他のガラス面と揃え GLASS_PANEL。
-      */}
-      {moveConv && (
-        <div
-          className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm animate-fade"
-          onClick={() => setMoveTarget(null)}
-        >
-          <div
-            className={`w-full max-w-sm rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <p className="mb-3 text-sm font-semibold">
-              「{moveConv.title}」をフォルダへ移動
-            </p>
-            <div className="max-h-60 space-y-1 overflow-y-auto">
-              {/*
-                お気に入りは実フォルダではないので「移動」ではなく印の
-                付け外し。フォルダに入れたままお気に入りにもできる。
-              */}
-              <button
-                type="button"
-                onClick={() => {
-                  void patchConversation(moveConv.id, {
-                    favorite: moveConv.favorite !== 1,
-                  });
-                  setMoveTarget(null);
-                }}
-                className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
-              >
-                {moveConv.favorite === 1 ? (
-                  <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
-                ) : (
-                  <IconStar className="h-4 w-4 shrink-0 text-neutral-400" />
-                )}
-                {moveConv.favorite === 1
-                  ? "お気に入りから外す"
-                  : "お気に入りに追加"}
-              </button>
-              <div
-                role="separator"
-                className="my-1 border-t border-neutral-200/70 dark:border-white/10"
-              />
-              {moveConv.folder_id != null && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    void patchConversation(moveConv.id, { folderId: null });
-                    setMoveTarget(null);
-                  }}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
-                >
-                  フォルダから出す
-                </button>
-              )}
-              {folders.map((f) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  disabled={moveConv.folder_id === f.id}
-                  onClick={() => {
-                    void patchConversation(moveConv.id, { folderId: f.id });
-                    setMoveTarget(null);
-                  }}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-white/10"
-                >
-                  📁 {f.name}
-                </button>
-              ))}
-              {folders.length === 0 && (
-                <p className="px-3 py-2 text-xs text-neutral-400">
-                  フォルダはまだありません。下で作成できます。
-                </p>
-              )}
-            </div>
-            <div className="mt-3 flex gap-2">
-              <input
-                type="text"
-                value={newFolderName}
-                onChange={(e) => setNewFolderName(e.target.value)}
-                placeholder="新しいフォルダ名"
-                className="min-w-0 flex-1 rounded-lg border border-neutral-200/80 bg-white/60 px-3 py-2 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
-              />
-              <button
-                type="button"
-                disabled={!newFolderName.trim()}
-                onClick={async () => {
-                  const res = await fetch("/api/folders", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ name: newFolderName.trim() }),
-                  });
-                  if (res.ok) {
-                    const { folder } = (await res.json()) as { folder: FolderRow };
-                    await patchConversation(moveConv.id, { folderId: folder.id });
-                  }
-                  setMoveTarget(null);
-                }}
-                className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-fg hover:bg-accent/85 disabled:opacity-30"
-              >
-                作成して移動
-              </button>
-            </div>
-            <div className="mt-2 text-right">
-              <button
-                type="button"
-                onClick={() => setMoveTarget(null)}
-                className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-white/10"
-              >
-                キャンセル
-              </button>
-            </div>
+              <IconCog className="h-5 w-5" />
+            </NavLink>
           </div>
         </div>
-      )}
-    </div>
+
+        {/*
+          フォルダ移動モーダル。Sidebarのルートが relative なので、ここは
+          fixed ではなく absolute inset-0 でサイドバーの領域だけに重ねる
+          （fixed だと画面全体を基準に中央寄せされ、幅の狭いサイドバーから
+          見て右に偏った位置に出てしまう）。他のガラス面と揃え GLASS_PANEL。
+        */}
+        {moveConv && (
+          <div
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm animate-fade"
+            onClick={() => setMoveTarget(null)}
+          >
+            <div
+              className={`w-full max-w-sm rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <p className="mb-3 text-sm font-semibold">
+                「{moveConv.title}」をフォルダへ移動
+              </p>
+              <div className="max-h-60 space-y-1 overflow-y-auto">
+                {/*
+                  お気に入りは実フォルダではないので「移動」ではなく印の
+                  付け外し。フォルダに入れたままお気に入りにもできる。
+                */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void patchConversation(moveConv.id, {
+                      favorite: moveConv.favorite !== 1,
+                    });
+                    setMoveTarget(null);
+                  }}
+                  className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
+                >
+                  {moveConv.favorite === 1 ? (
+                    <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
+                  ) : (
+                    <IconStar className="h-4 w-4 shrink-0 text-neutral-400" />
+                  )}
+                  {moveConv.favorite === 1
+                    ? "お気に入りから外す"
+                    : "お気に入りに追加"}
+                </button>
+                <div
+                  role="separator"
+                  className="my-1 border-t border-neutral-200/70 dark:border-white/10"
+                />
+                {moveConv.folder_id != null && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void patchConversation(moveConv.id, { folderId: null });
+                      setMoveTarget(null);
+                    }}
+                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
+                  >
+                    フォルダから出す
+                  </button>
+                )}
+                {folders.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    disabled={moveConv.folder_id === f.id}
+                    onClick={() => {
+                      void patchConversation(moveConv.id, { folderId: f.id });
+                      setMoveTarget(null);
+                    }}
+                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-white/10"
+                  >
+                    📁 {f.name}
+                  </button>
+                ))}
+                {folders.length === 0 && (
+                  <p className="px-3 py-2 text-xs text-neutral-400">
+                    フォルダはまだありません。下で作成できます。
+                  </p>
+                )}
+              </div>
+              <div className="mt-3 flex gap-2">
+                <input
+                  type="text"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  placeholder="新しいフォルダ名"
+                  className="min-w-0 flex-1 rounded-lg border border-neutral-200/80 bg-white/60 px-3 py-2 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+                />
+                <button
+                  type="button"
+                  disabled={!newFolderName.trim()}
+                  onClick={async () => {
+                    const res = await fetch("/api/folders", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ name: newFolderName.trim() }),
+                    });
+                    if (res.ok) {
+                      const { folder } = (await res.json()) as { folder: FolderRow };
+                      await patchConversation(moveConv.id, { folderId: folder.id });
+                    }
+                    setMoveTarget(null);
+                  }}
+                  className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-fg hover:bg-accent/85 disabled:opacity-30"
+                >
+                  作成して移動
+                </button>
+              </div>
+              <div className="mt-2 text-right">
+                <button
+                  type="button"
+                  onClick={() => setMoveTarget(null)}
+                  className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-white/10"
+                >
+                  キャンセル
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </SidebarProvider>
   );
 }

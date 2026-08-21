@@ -159,3 +159,117 @@ describe("フォルダの操作", () => {
     );
   });
 });
+
+/**
+ * フォルダとお気に入りは、行の中に別の行（会話）を入れ子にする。
+ * 中身は Sidebar 本体から文脈で配られるので、配線が外れると
+ * 「開いても空」「件数が0のまま」という形で静かに壊れる。
+ */
+describe("フォルダの中身", () => {
+  it("展開すると、そのフォルダの会話だけが出る", async () => {
+    const { user } = renderSidebar({
+      conversations: [
+        conv("c1", "中の会話", { folder_id: "f1" }),
+        conv("c2", "外の会話"),
+      ],
+      folders: [folder("f1", "仕事")],
+    });
+    const row = screen.getByText("仕事").closest("li") as HTMLElement;
+    expect(within(row).queryByText("中の会話")).toBeNull();
+
+    await user.click(within(row).getByLabelText("展開"));
+    expect(within(row).getByText("中の会話")).toBeTruthy();
+    expect(within(row).queryByText("外の会話")).toBeNull();
+  });
+
+  it("行に中の件数が出る", () => {
+    renderSidebar({
+      conversations: [
+        conv("c1", "1つめ", { folder_id: "f1" }),
+        conv("c2", "2つめ", { folder_id: "f1" }),
+        conv("c3", "よその会話"),
+      ],
+      folders: [folder("f1", "仕事")],
+    });
+    const row = screen.getByText("仕事").closest("li") as HTMLElement;
+    expect(within(row).getByText("2")).toBeTruthy();
+  });
+
+  it("空のフォルダを展開すると、空だと分かる", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "よその会話")],
+      folders: [folder("f1", "仕事")],
+    });
+    const row = screen.getByText("仕事").closest("li") as HTMLElement;
+    await user.click(within(row).getByLabelText("展開"));
+    expect(within(row).getByText("（空のフォルダ）")).toBeTruthy();
+  });
+
+  it("名前を押すと、そのフォルダの階層に入る", async () => {
+    const { user } = renderSidebar({
+      conversations: [
+        conv("c1", "中の会話", { folder_id: "f1" }),
+        conv("c2", "外の会話"),
+      ],
+      folders: [folder("f1", "仕事")],
+    });
+    await user.click(screen.getByText("仕事"));
+    expect(screen.getByLabelText("戻る")).toBeTruthy();
+    expect(screen.getByText("中の会話")).toBeTruthy();
+    expect(screen.queryByText("外の会話")).toBeNull();
+  });
+});
+
+describe("お気に入りフォルダ", () => {
+  /** 常設の「お気に入り」の行。他のフォルダと違い消せないので目印で引く。 */
+  const favoritesRow = () =>
+    screen
+      .getByTitle("お気に入り（削除できない常設フォルダ）")
+      .closest("li") as HTMLElement;
+
+  it("展開すると、お気に入りの会話だけが出る", async () => {
+    const { user } = renderSidebar({
+      conversations: [
+        conv("c1", "お気に入りの会話", { favorite: 1 }),
+        conv("c2", "ふつうの会話"),
+      ],
+    });
+    const row = favoritesRow();
+    await user.click(within(row).getByLabelText("展開"));
+    expect(within(row).getByText("お気に入りの会話")).toBeTruthy();
+    expect(within(row).queryByText("ふつうの会話")).toBeNull();
+  });
+
+  it("行に件数が出る", () => {
+    renderSidebar({
+      conversations: [
+        conv("c1", "1つめ", { favorite: 1 }),
+        conv("c2", "2つめ", { favorite: 1 }),
+        conv("c3", "ふつうの会話"),
+      ],
+    });
+    expect(within(favoritesRow()).getByText("2")).toBeTruthy();
+  });
+
+  it("1つも無ければ、空だと分かる", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "ふつうの会話")],
+    });
+    const row = favoritesRow();
+    await user.click(within(row).getByLabelText("展開"));
+    expect(within(row).getByText("（まだありません）")).toBeTruthy();
+  });
+
+  it("名前を押すと、お気に入りの階層に入る", async () => {
+    const { user } = renderSidebar({
+      conversations: [
+        conv("c1", "お気に入りの会話", { favorite: 1 }),
+        conv("c2", "ふつうの会話"),
+      ],
+    });
+    await user.click(screen.getByTitle("お気に入り（削除できない常設フォルダ）"));
+    expect(screen.getByLabelText("戻る")).toBeTruthy();
+    expect(screen.getByText("お気に入りの会話")).toBeTruthy();
+    expect(screen.queryByText("ふつうの会話")).toBeNull();
+  });
+});
