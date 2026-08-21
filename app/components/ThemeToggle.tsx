@@ -70,7 +70,12 @@ export function AccentPicker() {
           title={a.label}
           onClick={() => select(a.id)}
           style={{ backgroundColor: a.swatch }}
-          className={`h-4 w-4 rounded-full transition active:scale-90 ${
+          /*
+            指の端末では縦だけ当たり判定を伸ばす（bg-clip-content と
+            合わせて、見た目の丸は16pxのまま）。横に広げると隣の色と
+            重なって、押したつもりと違う色が選ばれる。
+          */
+          className={`h-4 w-4 rounded-full bg-clip-content transition active:scale-90 touch:h-11 touch:border-y-[0.875rem] touch:border-y-transparent ${
             accent === a.id
               ? "ring-2 ring-neutral-400 ring-offset-2 ring-offset-white dark:ring-neutral-500 dark:ring-offset-neutral-950"
               : "hover:scale-110"

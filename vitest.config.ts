@@ -21,7 +21,7 @@ export default defineConfig({
         test: {
           name: "node",
           include: ["tests/*.test.ts"],
-          exclude: ["tests/schema.test.ts"],
+          exclude: ["tests/schema.test.ts", "tests/touch-variant.test.ts"],
           // localStorage を触るものがあるので DOM を用意する
           environment: "jsdom",
         },
@@ -31,6 +31,14 @@ export default defineConfig({
           name: "schema",
           include: ["tests/schema.test.ts"],
           // node:sqlite を読むので、DOM を被せない
+          environment: "node",
+        },
+      },
+      {
+        test: {
+          name: "css",
+          // ビルド結果の CSS を読むので、素の Node で
+          include: ["tests/touch-variant.test.ts"],
           environment: "node",
         },
       },

@@ -5,6 +5,18 @@
 /* テーマは .dark クラスで制御（ライト/ダーク/システムのトグル対応） */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/*
+ * 指で使う端末（ポインタを載せられない環境）。
+ *
+ * hover でだけ濃くする・出す、という作りは、hover が無い端末では
+ * 「淡いまま」「出ないまま」になる。そこを補うための変種。
+ *
+ * 素の [@media(hover:none)]: でも1つなら効くが、dark: と重ねると
+ * メディアクエリが外れた規則が出てしまい、デスクトップのダークにも
+ * 当たってしまった。名前を付けた変種なら重ねられる。
+ */
+@custom-variant touch (@media (hover: none));
+
 @theme {
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Hiragino Sans",
     "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif,

@@ -32,7 +32,7 @@ export function MenuButton({ target }: { target: MenuTarget }) {
         setMenu(open ? null : target);
       }}
       aria-label="メニュー"
-      className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block [@media(hover:none)]:block"
+      className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-200 group-hover:block dark:hover:bg-neutral-700 [.menu-open&]:block touch:block touch:p-2.5"
     >
       <IconEllipsis className="h-4 w-4" />
     </button>
@@ -198,7 +198,7 @@ export function FavoritesFolderItem() {
             })
           }
           aria-label={isExpanded ? "折りたたむ" : "展開"}
-          className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 touch:p-2.5 dark:hover:bg-neutral-800"
         >
           <IconChevronRight
             className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`}
@@ -256,7 +256,7 @@ export function FolderItem({ f }: { f: FolderRow }) {
             })
           }
           aria-label={isExpanded ? "折りたたむ" : "展開"}
-          className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 touch:p-2.5 dark:hover:bg-neutral-800"
         >
           <IconChevronRight
             className={`h-3.5 w-3.5 transition-transform ${isExpanded ? "rotate-90" : ""}`}

@@ -391,7 +391,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                       setMenu(menu === img.id ? null : img.id);
                     }}
                     aria-label="この画像の操作"
-                    className="absolute right-1.5 top-1.5 rounded-lg bg-black/45 p-1 text-white opacity-0 group-hover/img:opacity-100 focus:opacity-100 [@media(hover:none)]:opacity-100"
+                    className="absolute right-1.5 top-1.5 rounded-lg bg-black/45 p-1 text-white opacity-0 group-hover/img:opacity-100 focus:opacity-100 touch:opacity-100"
                   >
                     <IconEllipsis className="h-4 w-4" />
                   </button>
