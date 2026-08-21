@@ -18,13 +18,11 @@ import {
 import { type ParamsState } from "../lib/params";
 import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
-import { isRetryProgress, readRetryConfig } from "../lib/retry";
+import { readRetryConfig } from "../lib/retry";
 import {
   formatBytes,
   isAcceptedImage,
 } from "../lib/image";
-import { Markdown } from "./Markdown";
-import { StreamingMessage } from "./StreamingMessage";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
@@ -35,18 +33,14 @@ import {
   uploadImage,
   type PendingAttachment,
 } from "./chat/use-attachments";
-import { MessageEditor, type EditingState } from "./chat/MessageEditor";
+import { type EditingState } from "./chat/MessageEditor";
+import { UserMessage } from "./chat/UserMessage";
+import { AssistantMessage } from "./chat/AssistantMessage";
 import {
-  BranchPager,
-  CitationList,
-  ContextBoundaryLine,
-  CopyButton,
-  GenerationProgress,
-  MessageDetails,
-  MessageImages,
-  ReasoningBlock,
-  formatJpy,
-} from "./chat/message-parts";
+  MessageProvider,
+  type MessageActions,
+} from "./chat/message-context";
+import { ContextBoundaryLine } from "./chat/message-parts";
 import type {
   CreateConversationResponse,
   ErrorResponse,
@@ -59,10 +53,8 @@ import {
   IconBroom,
   IconGlobe,
   IconMenu,
-  IconPencil,
   IconPlus,
   IconSliders,
-  IconTrash,
 } from "./icons";
 import { GLASS_PANEL } from "../lib/ui";
 
@@ -1257,6 +1249,28 @@ export function Chat({
     }
   }
 
+  /**
+   * 吹き出しに配る操作一式。
+   *
+   * Sidebar と同じく毎回作り直す。中の関数は描画のたびに新しくなるので
+   * 覚えても同一にはならず、吹き出しは親と一緒に描き直される側だから。
+   */
+  const messageActions: MessageActions = {
+    isStreaming,
+    selecting,
+    toggleSelect,
+    startSelect: (id) => setSelecting(new Set([id])),
+    lastIndex: messages.length - 1,
+    isImageGeneration,
+    usdJpy,
+    switchBranch: (id) => void switchBranch(id),
+    fork: (id) => void fork(id),
+    regenerate: () => regenerate(),
+    openImage: setLightbox,
+    attachGeneratedImages,
+    followBottom,
+  };
+
   const lastMessage = messages[messages.length - 1];
   /** 表示中の枝にコンテキストの区切りがあるか（入力欄のアイコンの色）。 */
   const hasContextBoundary = messages.some((m) => m.contextBoundary);
@@ -1441,239 +1455,43 @@ export function Chat({
               )}
             </div>
           )}
-          <div className="space-y-6">
-            {visibleMessages.map((m, vi) => {
-              const i = vi + hiddenCount;
-              const selectable = selecting != null && m.id != null;
-              const selectionClass = selecting
-                ? `cursor-pointer rounded-xl px-2 py-1 -mx-2 ${
-                    m.id && selecting.has(m.id)
-                      ? "bg-accent/10 ring-1 ring-accent/50"
-                      : "hover:bg-neutral-50 dark:hover:bg-neutral-900"
-                  }`
-                : "";
-              const body = m.role === "user" ? (
-                <div
-                  key={m.id ?? `u${i}`}
-                  className={`group/msg ${selectionClass}`}
-                  onClick={selectable ? () => toggleSelect(m.id) : undefined}
-                >
-                  {editing?.index === i ? (
-                    <MessageEditor
-                      editing={editing}
+          <MessageProvider value={messageActions}>
+            <div className="space-y-6">
+              {visibleMessages.map((m, vi) => {
+                const i = vi + hiddenCount;
+                const body =
+                  m.role === "user" ? (
+                    <UserMessage
+                      key={m.id ?? `u${i}`}
+                      m={m}
+                      index={i}
+                      editing={editing?.index === i ? editing : null}
                       setEditing={setEditing}
-                      onSubmit={() => submitEdit()}
-                      onAddFiles={(files) => void addEditFiles(files)}
-                      fileInputRef={editFileInputRef}
+                      onSubmitEdit={() => submitEdit()}
+                      onAddEditFiles={(files) => void addEditFiles(files)}
+                      editFileInputRef={editFileInputRef}
                     />
                   ) : (
-                    <>
-                      {m.attachments && m.attachments.length > 0 && (
-                        <MessageImages
-                          attachments={m.attachments}
-                          onOpen={setLightbox}
-                        />
-                      )}
-                      {m.content && (
-                        <div className="flex justify-end">
-                          <div className="max-w-[85%] min-w-0 [overflow-wrap:anywhere] rounded-3xl rounded-br-lg bg-accent px-4 py-2.5 text-accent-fg">
-                            {/*
-                              貼り付けた表やコードがそのまま読める形で残るよう、
-                              入力もマークダウンとして描く。吹き出しの中は
-                              アクセント色に載るので、prose の配色は使わず
-                              文字色を継いで見出しや線だけを整える（.chat-bubble）。
-                            */}
-                            <Markdown diagrams={false} className="chat-bubble">
-                              {m.content}
-                            </Markdown>
-                          </div>
-                        </div>
-                      )}
-                      {!selecting && (
-                        <div className="mt-1 flex items-center justify-end gap-1.5">
-                          <BranchPager
-                            message={m}
-                            disabled={isStreaming}
-                            onSwitch={switchBranch}
-                          />
-                          {m.content && <CopyButton text={m.content} />}
-                          {m.id && !isStreaming && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setEditing({
-                                    index: i,
-                                    text: m.content,
-                                    attachments: m.attachments ?? [],
-                                    uploads: 0,
-                                  })
-                                }
-                                aria-label="編集して再送信"
-                                title="編集して再送信（分岐を作成）"
-                                className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
-                              >
-                                <IconPencil className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void fork(m.id!)}
-                                title="ここから分岐（独立した新しい会話を作成）"
-                                className="rounded px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
-                              >
-                                ⑂ ここから分岐
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setSelecting(new Set([m.id!]))}
-                                aria-label="削除"
-                                title="メッセージを削除（選択モードへ）"
-                                className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-red-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-red-400 dark:group-hover/msg:text-neutral-500"
-                              >
-                                <IconTrash className="h-3.5 w-3.5" />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              ) : (
-                <div
-                  key={m.id ?? `a${i}`}
-                  className={`group/msg ${selectionClass}`}
-                  onClick={selectable ? () => toggleSelect(m.id) : undefined}
-                >
-                  {m.reasoning && (
-                    <ReasoningBlock
-                      key={`r${m.id ?? i}`}
-                      reasoning={m.reasoning}
-                      streaming={
-                        isStreaming && i === messages.length - 1 && !m.content
-                      }
+                    <AssistantMessage key={m.id ?? `a${i}`} m={m} index={i} />
+                  );
+                // 境界線はメッセージの「後ろ」に置く。Fragment なので
+                // 一覧の space-y はメッセージと同じ間隔のまま効く
+                const boundaryKey = BOUNDARY_SELECT_PREFIX + m.id;
+                return m.contextBoundary ? (
+                  <Fragment key={`w${m.id ?? i}`}>
+                    {body}
+                    <ContextBoundaryLine
+                      selecting={selecting != null && m.id != null}
+                      selected={selecting?.has(boundaryKey) ?? false}
+                      onToggle={() => toggleSelect(boundaryKey)}
                     />
-                  )}
-                  {m.status === "streaming" && isRetryProgress(m.content) ? (
-                    // 「成功するまで生成」の見出し。経過秒はここで毎秒進める
-                    <GenerationProgress text={m.content} startedAt={m.createdAt} />
-                  ) : m.status === "streaming" &&
-                    isImageGeneration(m.modelId) ? (
-                    // 1枚だけの画像生成。本文が流れてこないので秒だけ進める
-                    <GenerationProgress
-                      text="画像を生成中…"
-                      startedAt={m.createdAt}
-                    />
-                  ) : m.status === "error" ? (
-                    <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-                      <span className="break-all">
-                        {m.error ?? "生成に失敗しました"}
-                      </span>
-                      {i === messages.length - 1 && !isStreaming && (
-                        <button
-                          type="button"
-                          onClick={() => regenerate()}
-                          className="shrink-0 rounded-lg border border-red-300 px-3 py-1 hover:bg-red-100 dark:border-red-800 dark:hover:bg-red-900"
-                        >
-                          再試行
-                        </button>
-                      )}
-                    </div>
-                  ) : i === messages.length - 1 ? (
-                    // 末尾だけは、届いた本文を少しずつ滑らかに出す
-                    <StreamingMessage
-                      text={m.content}
-                      streaming={m.status === "streaming"}
-                      onReveal={followBottom}
-                    />
-                  ) : (
-                    <Markdown>{m.content}</Markdown>
-                  )}
-                  {/* 進捗の見出しは秒が動いているのでカーソルは出さない */}
-                  {isStreaming &&
-                    i === messages.length - 1 &&
-                    !isRetryProgress(m.content) &&
-                    !(m.status === "streaming" && isImageGeneration(m.modelId)) && (
-                      <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-neutral-400 align-text-bottom dark:bg-neutral-500" />
-                    )}
-                  {m.citations && m.citations.length > 0 && (
-                    <CitationList citations={m.citations} />
-                  )}
-                  {!selecting && (
-                    <div className="mt-1 flex items-center gap-2">
-                      <BranchPager
-                        message={m}
-                        disabled={isStreaming}
-                        onSwitch={switchBranch}
-                      />
-                      {m.usage && (
-                        <span className="text-xs text-neutral-400 dark:text-neutral-500">
-                          {m.usage.promptTokens != null &&
-                            `${m.usage.promptTokens} in / ${m.usage.completionTokens ?? 0} out`}
-                          {m.usage.points != null &&
-                            `${m.usage.promptTokens != null ? " · " : ""}${m.usage.points.toLocaleString()} pt`}
-                          {m.usage.cost != null &&
-                            ` · ${
-                              usdJpy != null
-                                ? formatJpy(m.usage.cost * usdJpy)
-                                : `$${m.usage.cost.toFixed(6)}`
-                            }`}
-                        </span>
-                      )}
-                      <CopyButton text={m.content} />
-                      <MessageDetails message={m} usdJpy={usdJpy} />
-                      {m.attachments && m.attachments.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => attachGeneratedImages(m.attachments!)}
-                          title="この画像を入力欄に添付して、編集や続きを頼む"
-                          className="rounded px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
-                        >
-                          この画像を使う
-                        </button>
-                      )}
-                      {m.id && !isStreaming && m.status !== "error" && (
-                        <button
-                          type="button"
-                          onClick={() => void fork(m.id!)}
-                          title="ここから分岐（独立した新しい会話を作成）"
-                          className="rounded px-1.5 py-0.5 text-xs text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
-                        >
-                          ⑂ ここから分岐
-                        </button>
-                      )}
-                      {m.id && !isStreaming && (
-                        <button
-                          type="button"
-                          onClick={() => setSelecting(new Set([m.id!]))}
-                          aria-label="削除"
-                          title="メッセージを削除（選択モードへ）"
-                          className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-red-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-red-400 dark:group-hover/msg:text-neutral-500"
-                        >
-                          <IconTrash className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-              // 境界線はメッセージの「後ろ」に置く。Fragment なので
-              // 一覧の space-y はメッセージと同じ間隔のまま効く
-              const boundaryKey = BOUNDARY_SELECT_PREFIX + m.id;
-              return m.contextBoundary ? (
-                <Fragment key={`w${m.id ?? i}`}>
-                  {body}
-                  <ContextBoundaryLine
-                    selecting={selecting != null && m.id != null}
-                    selected={selecting?.has(boundaryKey) ?? false}
-                    onToggle={() => toggleSelect(boundaryKey)}
-                  />
-                </Fragment>
-              ) : (
-                body
-              );
-            })}
-          </div>
+                  </Fragment>
+                ) : (
+                  body
+                );
+              })}
+            </div>
+          </MessageProvider>
 
           {error && (
             <div className="mt-6 flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
