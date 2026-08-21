@@ -69,3 +69,46 @@ describe("生成中の吹き出し", () => {
     expect(screen.queryByTitle(/ここから分岐/)).toBeNull();
   });
 });
+
+describe("一覧の末尾に出る誘い", () => {
+  it("最後がユーザーの発言なら、応答を生成できる", async () => {
+    const { user } = renderChat({
+      initialMessages: [msg("user", "分岐した先の質問", { id: "u1" })],
+    });
+    await user.click(screen.getByRole("button", { name: "↵ 応答を生成" }));
+    await waitFor(() => expect(server.countOf("/generate")).toBe(1));
+  });
+
+  it("生成そのものが失敗したら、帯を出してやり直せる", async () => {
+    const { user } = renderChat({
+      initialMessages: [
+        msg("user", "前の質問", { id: "u1" }),
+        msg("assistant", "前の答え", { id: "a1" }),
+      ],
+    });
+    server.fail("/generate", 500);
+    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+
+    const retry = await screen.findByRole("button", { name: "再試行" });
+    expect(server.countOf("/generate")).toBe(1);
+
+    // 帯の「再試行」からもう一度投げられる
+    await user.click(retry);
+    await waitFor(() => expect(server.countOf("/generate")).toBe(2));
+  });
+});
+
+describe("長い会話", () => {
+  /**
+   * 初回描画は末尾だけにして、出てから全件に広げる（DEFERRED_TAIL）。
+   * 広げ損ねると、古い発言が二度と出てこない。
+   */
+  it("先頭の発言も、広がったあとには出ている", async () => {
+    const many = Array.from({ length: 60 }, (_, n) =>
+      msg(n % 2 === 0 ? "user" : "assistant", `${n}番目の発言`, { id: `m${n}` }),
+    );
+    renderChat({ initialMessages: many });
+    expect(await screen.findByText("0番目の発言")).toBeTruthy();
+    expect(screen.getByText("59番目の発言")).toBeTruthy();
+  });
+});
