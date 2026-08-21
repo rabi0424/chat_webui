@@ -48,6 +48,10 @@ export interface ServerStub {
    * Promise を返せば、その解決まで応答を保留できる（通信中の再現）。
    */
   on(match: string, handler: (body: unknown) => unknown | Promise<unknown>): void;
+  /** そのパスを失敗させる（HTTPの状態コードを返す）。 */
+  fail(match: string, status: number): void;
+  /** そのパスが呼ばれた回数。 */
+  countOf(match: string): number;
   /** 直近のリクエスト本文を取り出す。 */
   lastBody(match: string): unknown;
 }
@@ -61,6 +65,7 @@ export function installServer(initial: UiMessage[] = []): ServerStub {
     match: string;
     handler: (body: unknown) => unknown | Promise<unknown>;
   }[] = [];
+  const failures: { match: string; status: number }[] = [];
   const messages: UiMessage[] = [...initial];
 
   const stub: ServerStub = {
@@ -72,6 +77,12 @@ export function installServer(initial: UiMessage[] = []): ServerStub {
     },
     lastBody(match) {
       return [...calls].reverse().find((c) => c.path.includes(match))?.body ?? null;
+    },
+    fail(match, status) {
+      failures.unshift({ match, status });
+    },
+    countOf(match) {
+      return calls.filter((c) => c.path.includes(match)).length;
     },
   };
 
@@ -134,6 +145,14 @@ export function installServer(initial: UiMessage[] = []): ServerStub {
       }
     }
     calls.push({ method, path, body });
+
+    const bad = failures.find((f) => path.includes(f.match));
+    if (bad) {
+      return new Response(JSON.stringify({ error: "失敗" }), {
+        status: bad.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     const hit = handlers.find((h) => path.includes(h.match));
     const payload = hit
