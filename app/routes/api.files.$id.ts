@@ -22,6 +22,13 @@ export async function loader({ params }: Route.LoaderArgs) {
   return new Response(object.body, {
     headers: {
       "Content-Type": attachment.mime_type,
+      /*
+        中身の推測を止める。保存時にマジックナンバーを確かめてはいるが、
+        それ以前に入った添付や、将来の抜けに備えて二枚にしておく。
+        推測を許すと、画像として保存されたものがブラウザの判断で
+        別のものとして扱われうる。
+      */
+      "X-Content-Type-Options": "nosniff",
       "Content-Length": String(attachment.size),
       // 添付は不変。個人利用なので共有キャッシュには載せない
       "Cache-Control": "private, max-age=31536000, immutable",

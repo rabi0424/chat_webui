@@ -1,5 +1,6 @@
 import type { Route } from "./+types/api.uploads";
 import { createAttachment, sweepOrphanAttachments } from "../lib/db.server";
+import { matchesDeclared } from "../lib/image-signature";
 import {
   ALLOWED_IMAGE_TYPES,
   MAX_UPLOAD_BYTES,
@@ -56,6 +57,15 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   const buffer = await file.arrayBuffer();
+  // 中身が申告どおりかを見る。ここまでの検査はブラウザの申告
+  // （File.type）だけで、詐称すれば中身が画像でないものを画像として
+  // 保存し、画像として配信できた
+  if (!matchesDeclared(buffer, mimeType)) {
+    return Response.json(
+      { error: "画像として読めないファイルです" },
+      { status: 415 },
+    );
+  }
   // 実サイズも検証する（Content-Length は信用しない）
   if (buffer.byteLength > MAX_UPLOAD_BYTES) {
     return Response.json({ error: "ファイルが大きすぎます" }, { status: 413 });
