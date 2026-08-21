@@ -22,7 +22,6 @@ import { isRetryProgress, readRetryConfig } from "../lib/retry";
 import {
   formatBytes,
   isAcceptedImage,
-  prepareImage,
 } from "../lib/image";
 import { Markdown } from "./Markdown";
 import { StreamingMessage } from "./StreamingMessage";
@@ -31,6 +30,11 @@ import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
 import { Lightbox } from "./Lightbox";
 import { useGenerationTracking } from "./chat/use-generation-tracking";
+import {
+  useAttachments,
+  uploadImage,
+  type PendingAttachment,
+} from "./chat/use-attachments";
 import {
   BranchPager,
   CitationList,
@@ -46,17 +50,13 @@ import type {
   CreateConversationResponse,
   ErrorResponse,
   GenerateResponse,
-  MessageStateResponse,
   PathResponse,
 } from "../lib/api-types";
 import {
   IconArrowDown,
   IconArrowUp,
-  IconCheck,
   IconBroom,
-  IconCopy,
   IconGlobe,
-  IconInfo,
   IconMenu,
   IconPencil,
   IconPlus,
@@ -107,17 +107,6 @@ function contextWindow(history: UiMessage[]): UiMessage[] {
     if (history[i].contextBoundary) start = i + 1;
   }
   return start === 0 ? history : history.slice(start);
-}
-
-/** 送信前の添付。アップロード完了で id（添付ID）が入る。 */
-interface PendingAttachment {
-  localId: string;
-  previewUrl: string;
-  name: string;
-  size: number;
-  status: "uploading" | "ready" | "error";
-  id?: string;
-  error?: string;
 }
 
 const DEFERRED_TAIL = 24;
@@ -193,12 +182,16 @@ export function Chat({
   const refreshingRef = useRef(false);
   refreshingRef.current = refreshing;
   /** 送信前の添付画像。 */
-  const [pending, setPending] = useState<PendingAttachment[]>([]);
-  /**
-   * いま押さえている添付の枚数。上限の判定に使う。
-   * 反映待ちのぶんも数に入れたいので、state とは別に持つ。
-   */
-  const pendingCountRef = useRef(0);
+  const {
+    pending,
+    setPending,
+    addFiles,
+    attachGeneratedImages,
+    removePending,
+  } = useAttachments({
+    setError,
+    onAttached: () => textareaRef.current?.focus(),
+  });
   /** ドラッグ&ドロップのハイライト。 */
   const [dragOver, setDragOver] = useState(false);
   /** 原寸表示中の添付ID。 */
@@ -435,11 +428,6 @@ export function Chat({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // 上限の判定に使う枚数を、実際の並びに合わせ直す（削除・送信のあと）
-  useEffect(() => {
-    pendingCountRef.current = pending.length;
-  }, [pending]);
 
   // アップロードが終わった添付だけを控える（送信すると破棄する）
   useEffect(() => {
@@ -717,117 +705,6 @@ export function Chat({
   const supportsImages =
     !selectedModel || selectedModel.inputModalities.includes("image");
 
-  /** 選択・貼り付け・ドロップされた画像を縮小してアップロードする。 */
-  async function addFiles(files: File[]) {
-    const images = files.filter(isAcceptedImage);
-    if (images.length === 0) {
-      if (files.length > 0) setError("画像ファイルのみ添付できます。");
-      return;
-    }
-    /*
-     * 空き枚数は ref から数える。
-     *
-     * 描画のたびに作られる pending を見ていると、1回目の反映を待たずに
-     * 2回目を落としたときに空きを多く見積もり、上限を超えて添付できて
-     * しまう。受け付けたぶんはその場で押さえておく。
-     */
-    const room = MAX_ATTACHMENTS - pendingCountRef.current;
-    if (room <= 0) {
-      setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
-      return;
-    }
-    setError(null);
-    const accepted = images.slice(0, room);
-    pendingCountRef.current += accepted.length;
-
-    for (const file of accepted) {
-      const localId = crypto.randomUUID();
-      const entry: PendingAttachment = {
-        localId,
-        previewUrl: URL.createObjectURL(file),
-        name: file.name,
-        size: file.size,
-        status: "uploading",
-      };
-      setPending((prev) => [...prev, entry]);
-
-      void (async () => {
-        try {
-          const prepared = await prepareImage(file);
-          const form = new FormData();
-          form.append("file", prepared);
-          const res = await fetch("/api/uploads", {
-            method: "POST",
-            body: form,
-          });
-          const body = (await res.json().catch(() => null)) as
-            | { id?: string; size?: number; error?: string }
-            | null;
-          if (!res.ok || !body?.id) {
-            throw new Error(body?.error ?? `アップロードに失敗しました (${res.status})`);
-          }
-          setPending((prev) =>
-            prev.map((p) =>
-              p.localId === localId
-                ? { ...p, status: "ready", id: body.id, size: body.size ?? p.size }
-                : p,
-            ),
-          );
-        } catch (e) {
-          setPending((prev) =>
-            prev.map((p) =>
-              p.localId === localId
-                ? { ...p, status: "error", error: (e as Error).message }
-                : p,
-            ),
-          );
-        }
-      })();
-    }
-  }
-
-  /**
-   * 生成画像を入力欄の添付に載せる（編集・リスタイル・合成の起点）。
-   *
-   * 生成画像はモデルへ送り返せない（アシスタントの発言に画像を付ける形式が
-   * OpenAI互換APIに無い）。編集対象は「最新のユーザーメッセージの添付」
-   * として渡す決まりなので、次の発言へ引き継げるようにする。
-   * 実体はR2にあるためアップロードは不要で、添付IDをそのまま使う。
-   */
-  function attachGeneratedImages(attachments: UiAttachment[]) {
-    setPending((prev) => {
-      const room = MAX_ATTACHMENTS - prev.length;
-      if (room <= 0) {
-        setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
-        return prev;
-      }
-      const added = attachments
-        .filter((a) => !prev.some((p) => p.id === a.id))
-        .slice(0, room)
-        .map(
-          (a): PendingAttachment => ({
-            localId: crypto.randomUUID(),
-            previewUrl: `/api/files/${a.id}`,
-            name: a.name ?? "生成画像",
-            size: a.size,
-            status: "ready",
-            id: a.id,
-          }),
-        );
-      return added.length > 0 ? [...prev, ...added] : prev;
-    });
-    setError(null);
-    textareaRef.current?.focus();
-  }
-
-  function removePending(localId: string) {
-    setPending((prev) => {
-      const target = prev.find((p) => p.localId === localId);
-      if (target) URL.revokeObjectURL(target.previewUrl);
-      return prev.filter((p) => p.localId !== localId);
-    });
-  }
-
   /**
    * 編集中メッセージへの画像追加。縮小 → アップロードし、完了したものから
    * editing.attachments に加える（表示は /api/files/:id 経由）。
@@ -849,30 +726,14 @@ export function Chat({
     );
     for (const file of images) {
       try {
-        const prepared = await prepareImage(file);
-        const form = new FormData();
-        form.append("file", prepared);
-        const res = await fetch("/api/uploads", { method: "POST", body: form });
-        const body = (await res.json().catch(() => null)) as
-          | { id?: string; mimeType?: string; name?: string | null; size?: number; error?: string }
-          | null;
-        if (!res.ok || !body?.id) {
-          throw new Error(body?.error ?? `アップロードに失敗しました (${res.status})`);
-        }
+        // 入力欄からの追加と同じ手順（縮小 → アップロード）を使う
+        const uploaded = await uploadImage(file);
         setEditing((prev) =>
           prev
             ? {
                 ...prev,
                 uploads: prev.uploads - 1,
-                attachments: [
-                  ...prev.attachments,
-                  {
-                    id: body.id!,
-                    mimeType: body.mimeType ?? "image/*",
-                    name: body.name ?? file.name,
-                    size: body.size ?? file.size,
-                  },
-                ],
+                attachments: [...prev.attachments, uploaded],
               }
             : prev,
         );
