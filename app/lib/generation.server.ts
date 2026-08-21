@@ -15,6 +15,7 @@ import {
 import { checkMonthlyLimit } from "./limit.server";
 import { isFetchableImageUrl, looksLikeImageUrl } from "./image-url";
 import { readBounded } from "./read-bounded";
+import { flushInterval } from "./flush-cadence";
 import {
   appendAssistantMessage,
   createGeneratedAttachment,
@@ -66,27 +67,6 @@ const MAX_CITATIONS = 30;
  * 生成過程を閲覧する（イベントとして完了まで実行が保証される）。
  */
 
-/**
- * D1へ部分保存する間隔。ここがそのまま「本文が届く粒度」になる。
- * 短くすると表示は細かくなるが、そのぶんD1への書き込みと
- * クライアントのポーリング取得が増える（生成1回あたり数十回 → 百数十回）。
- * 表示の滑らかさは受け取ったあとの見せ方（StreamingMessage）で作るので、
- * ここは体感が変わる範囲で控えめに詰めている。
- */
-const FLUSH_INTERVAL_MS = 500;
-
-/**
- * 長い応答での部分保存の間隔と、そこへ切り替えるまでの回数。
- *
- * D1への保存もサブリクエストとして数えられ、1回の実行あたりの上限
- * （無料プランでは内部サービスへ1,000件）を超えると以降の保存が
- * 失敗する。長考モデルの応答は数分続くことがあるので、序盤だけ細かく
- * 保存し、あとは粗くして上限に届かないようにする。読み手にとっては
- * 序盤ほど「動いている」ことが分かればよく、粒度の粗さは
- * StreamingMessage 側の見せ方が吸収する。
- */
-const LONG_FLUSH_INTERVAL_MS = 2_000;
-const SMOOTH_FLUSHES = 300;
 
 /** OpenAI互換のマルチモーダルコンテンツ要素。 */
 type ContentPart =
@@ -775,9 +755,7 @@ async function readUpstreamStream(
         }
       }
 
-      const interval =
-        flushes < SMOOTH_FLUSHES ? FLUSH_INTERVAL_MS : LONG_FLUSH_INTERVAL_MS;
-      if (onProgress && Date.now() - lastProgress >= interval) {
+      if (onProgress && Date.now() - lastProgress >= flushInterval(flushes)) {
         lastProgress = Date.now();
         flushes++;
         if (await onProgress({ content, reasoning })) {
