@@ -102,3 +102,49 @@ export function formatRetryProgress(state: {
 export function isRetryProgress(content: string): boolean {
   return content.startsWith(RETRY_PROGRESS_PREFIX);
 }
+
+/** レート制限に当たったときの待ち時間（ミリ秒）。回を追うごとに伸ばす。 */
+export const RATE_LIMIT_BACKOFF_MS = [2_000, 4_000, 8_000];
+
+export interface RateLimitState {
+  /** この時刻まで新しい発射を控える。 */
+  pauseUntil: number;
+  /** 待ち直した回数。 */
+  rounds: number;
+  /** 上限に達したので打ち切る。 */
+  exhausted: boolean;
+}
+
+/**
+ * レート制限の応答を1つ受けたときの、待ちと回数の更新。
+ *
+ * **並列で走っている本数ぶんの応答が、ほぼ同時に 429 で返る。**
+ * 1つ受けるたびに回数を増やしていたので、並列4なら1回の制限で
+ * 待ち直しの上限（3回）を使い切り、**一度も待たずに打ち切って**いた。
+ * 課金は済んでいるのに成果は無い、という一番もったいない終わり方になる。
+ *
+ * 待っている最中に届いたものは同じ回の余波とみなし、回数は増やさない。
+ * 待ち時間だけは長いほうへ伸ばす（上流が Retry-After で長めを指示して
+ * きた場合に、短いほうで先に投げ直さないため）。
+ */
+export function onRateLimited(
+  state: RateLimitState,
+  opts: { now: number; waitMs?: number; maxRounds?: number },
+): RateLimitState {
+  const { now, waitMs } = opts;
+  const maxRounds = opts.maxRounds ?? RETRY_RATE_LIMIT_ROUNDS;
+  const backoff =
+    RATE_LIMIT_BACKOFF_MS[
+      Math.min(state.rounds, RATE_LIMIT_BACKOFF_MS.length - 1)
+    ];
+  const wait = waitMs != null && waitMs > 0 ? waitMs : backoff;
+
+  // 既に待っている最中なら、同じ回の余波
+  if (now < state.pauseUntil) {
+    return { ...state, pauseUntil: Math.max(state.pauseUntil, now + wait) };
+  }
+  if (state.rounds >= maxRounds) {
+    return { ...state, exhausted: true };
+  }
+  return { pauseUntil: now + wait, rounds: state.rounds + 1, exhausted: false };
+}

@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatRetryProgress,
-  isRetryProgress,
-  readRetryConfig,
+  RATE_LIMIT_BACKOFF_MS,
   RETRY_CONCURRENCY_KEY,
   RETRY_ENABLED_KEY,
   RETRY_MAX_KEY,
   RETRY_TARGET_KEY,
+  formatRetryProgress,
+  isRetryProgress,
+  onRateLimited,
+  readRetryConfig,
 } from "../app/lib/retry";
 
 /**
@@ -125,5 +127,85 @@ describe("進捗の見出し", () => {
   it("通常の応答は見出しと誤判定しない", () => {
     expect(isRetryProgress("画像を生成しました。")).toBe(false);
     expect(isRetryProgress("")).toBe(false);
+  });
+});
+
+/**
+ * レート制限の待ち直し。
+ *
+ * **並列で走っている本数ぶんの応答が、ほぼ同時に 429 で返る。**
+ * 1つ受けるたびに回数を増やしていたので、並列4なら1回の制限で
+ * 待ち直しの上限（3回）を使い切り、一度も待たずに打ち切っていた。
+ * 課金は済んでいるのに成果は無い、という終わり方になる。
+ */
+describe("レート制限の待ち直し", () => {
+  const fresh = () => ({ pauseUntil: 0, rounds: 0, exhausted: false });
+
+  it("最初の1件で待ちに入り、1回と数える", () => {
+    const s = onRateLimited(fresh(), { now: 1000 });
+    expect(s.rounds).toBe(1);
+    expect(s.pauseUntil).toBe(1000 + RATE_LIMIT_BACKOFF_MS[0]);
+    expect(s.exhausted).toBe(false);
+  });
+
+  /** これが直したかったところ。 */
+  it("待っている最中に来た分は、同じ回として数えない", () => {
+    let s = onRateLimited(fresh(), { now: 1000 });
+    // 並列4なら、残り3件がほぼ同時に返る
+    s = onRateLimited(s, { now: 1001 });
+    s = onRateLimited(s, { now: 1002 });
+    s = onRateLimited(s, { now: 1003 });
+    expect(s.rounds).toBe(1);
+    expect(s.exhausted).toBe(false);
+  });
+
+  it("並列4でも、待ち直しの上限まで3回ぶん粘れる", () => {
+    let s = fresh();
+    let now = 1000;
+    for (let round = 0; round < 3; round++) {
+      // 1回の制限で4件返る
+      for (let i = 0; i < 4; i++) s = onRateLimited(s, { now: now + i });
+      expect(s.exhausted).toBe(false);
+      now = s.pauseUntil + 1; // 待ち終わって投げ直す
+    }
+    expect(s.rounds).toBe(3);
+    // 4回目でようやく打ち切る
+    s = onRateLimited(s, { now });
+    expect(s.exhausted).toBe(true);
+  });
+
+  it("待ちは回を追うごとに伸びる", () => {
+    let s = onRateLimited(fresh(), { now: 0 });
+    expect(s.pauseUntil).toBe(RATE_LIMIT_BACKOFF_MS[0]);
+    s = onRateLimited(s, { now: s.pauseUntil });
+    expect(s.pauseUntil - RATE_LIMIT_BACKOFF_MS[0]).toBe(
+      RATE_LIMIT_BACKOFF_MS[1],
+    );
+  });
+
+  it("上流が待ち時間を言えばそれに従う", () => {
+    const s = onRateLimited(fresh(), { now: 1000, waitMs: 30_000 });
+    expect(s.pauseUntil).toBe(31_000);
+  });
+
+  it("余波でも、上流が長い待ちを言えば伸ばす", () => {
+    // 短いほうで先に投げ直すと、また同じ制限に当たる
+    let s = onRateLimited(fresh(), { now: 1000 });
+    const before = s.pauseUntil;
+    s = onRateLimited(s, { now: 1001, waitMs: 60_000 });
+    expect(s.pauseUntil).toBe(61_001);
+    expect(s.pauseUntil).toBeGreaterThan(before);
+    expect(s.rounds).toBe(1);
+  });
+
+  it("余波の待ちが短くても、縮めはしない", () => {
+    let s = onRateLimited(fresh(), { now: 1000, waitMs: 60_000 });
+    s = onRateLimited(s, { now: 1001, waitMs: 10 });
+    expect(s.pauseUntil).toBe(61_000);
+  });
+
+  it("待ち時間が0以下なら、既定の待ちを使う", () => {
+    const s = onRateLimited(fresh(), { now: 1000, waitMs: 0 });
+    expect(s.pauseUntil).toBe(1000 + RATE_LIMIT_BACKOFF_MS[0]);
   });
 });

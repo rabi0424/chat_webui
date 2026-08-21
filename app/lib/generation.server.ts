@@ -9,11 +9,12 @@ import {
 import { buildGenerationPayload, type ParamsState } from "./params";
 import {
   formatRetryProgress,
-  RETRY_RATE_LIMIT_ROUNDS,
+  onRateLimited,
   type RetryConfig,
 } from "./retry";
 import { checkMonthlyLimit } from "./limit.server";
-import { looksLikeImageUrl } from "./image-url";
+import { isFetchableImageUrl, looksLikeImageUrl } from "./image-url";
+import { readBounded } from "./read-bounded";
 import {
   appendAssistantMessage,
   createGeneratedAttachment,
@@ -412,6 +413,9 @@ async function storeImage(
     if (url.startsWith("data:")) {
       payload = decodeDataUrl(url);
     } else {
+      // 取りに行く宛先はモデルが本文に書いたもの。こちらが決めた値では
+      // ないので、仕組みと宛先を確かめてから出す
+      if (!isFetchableImageUrl(url)) return null;
       budget.spend();
       const res = await fetch(url);
       if (!res.ok) return null;
@@ -420,7 +424,14 @@ async function storeImage(
         .trim()
         .toLowerCase();
       if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) return null;
-      payload = { buffer: await res.arrayBuffer(), mimeType };
+      // 申告されている大きさで先に弾く（読む前に分かるなら読まない）
+      const declared = Number(res.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > MAX_CAPTURED_BYTES) {
+        return null;
+      }
+      const buffer = await readBounded(res, MAX_CAPTURED_BYTES);
+      if (!buffer) return null;
+      payload = { buffer, mimeType };
     }
     if (
       !payload ||
@@ -1028,7 +1039,6 @@ const MAX_HEARTBEAT_MS = 30 * 60 * 1000;
  */
 const LAUNCH_STAGGER_MS = 200;
 /** レート制限に当たったときの待ち時間。 */
-const RATE_LIMIT_BACKOFF_MS = [2_000, 4_000, 8_000];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -1334,21 +1344,24 @@ async function runRetryGenerationJob(
     try {
       if (r.kind === "rate_limited") {
         // レート制限は上流の都合なので試行回数は消費しない。
-        // ただし待ち直しの回数には上限を設ける
-        if (state.rateLimitRounds >= RETRY_RATE_LIMIT_ROUNDS) {
+        // 待ち直しの回数だけを数えるが、**並列で走っている本数ぶんの
+        // 応答がほぼ同時に 429 で返る**ので、1つ受けるたびに増やすと
+        // 並列4なら1回の制限で上限を使い切る（onRateLimited を参照）。
+        // 上流が待ち時間を言っていればそれに従う
+        const next = onRateLimited(
+          {
+            pauseUntil,
+            rounds: state.rateLimitRounds,
+            exhausted: rateLimitExhausted,
+          },
+          { now: Date.now(), waitMs: r.waitMs ?? undefined },
+        );
+        pauseUntil = next.pauseUntil;
+        state.rateLimitRounds = next.rounds;
+        if (next.exhausted) {
           state.lastError = "レート制限が続いたため打ち切りました";
           rateLimitExhausted = true;
-          return;
         }
-        // 上流が待ち時間を言っていればそれに従う（決め打ちより正確で、
-        // 待ちすぎも待たなすぎも避けられる）。無ければ従来のバックオフ
-        pauseUntil =
-          Date.now() +
-          (r.waitMs ??
-            RATE_LIMIT_BACKOFF_MS[
-              Math.min(state.rateLimitRounds, RATE_LIMIT_BACKOFF_MS.length - 1)
-            ]);
-        state.rateLimitRounds++;
         return;
       }
 
