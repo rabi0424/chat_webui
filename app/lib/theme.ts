@@ -1,3 +1,5 @@
+import { notifyChanged, readRaw, usePersisted, writeRaw } from "./persisted";
+
 /** テーマ設定（ライト / ダーク / 端末設定に合わせる）。 */
 export type Theme = "light" | "dark" | "system";
 
@@ -31,12 +33,19 @@ export const THEME_INIT_SCRIPT = `
 
 /** 保存されている選択。読めなければ「端末に合わせる」。 */
 export function getTheme(): Theme {
-  try {
-    const t = localStorage.getItem(THEME_STORAGE_KEY);
-    return t === "light" || t === "dark" ? t : "system";
-  } catch {
-    return "system";
-  }
+  const t = readRaw(THEME_STORAGE_KEY);
+  return t === "light" || t === "dark" ? t : "system";
+}
+
+/**
+ * いま選ばれているテーマを購読する。
+ *
+ * 設定画面とサイドバーのトグルは同じ値を別々に持っていて、片方で変えても
+ * もう片方は古い値のままだった（次に押すと一手ずれる）。読む側が
+ * 全員ここを通れば揃う。別のタブでの変更も同じ経路で届く。
+ */
+export function useTheme(): Theme {
+  return usePersisted(THEME_STORAGE_KEY, getTheme, "system");
 }
 
 /**
@@ -59,12 +68,9 @@ export function applyTheme(theme: Theme): void {
 
 /** 選択を保存して反映する（ユーザーが切り替えたとき）。 */
 export function saveTheme(theme: Theme): void {
-  try {
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
-  } catch {
-    // 保存できなくても、この画面のあいだは反映しておく
-  }
+  writeRaw(THEME_STORAGE_KEY, theme);
   applyTheme(theme);
+  notifyChanged(THEME_STORAGE_KEY);
 }
 
 /** 保存値を読み直してDOMへ貼り直す。 */
