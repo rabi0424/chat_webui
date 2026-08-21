@@ -761,6 +761,9 @@ export function Chat({
   ) {
     setError(null);
     setIsStreaming(true);
+    // 前の生成で押された停止を持ち越さない（押した直後に始まった
+    // 別の生成が、その場で止まってしまう）
+    stopWantedRef.current = false;
     // ⚙パネルを開いたまま送信できるので、生成が始まったら畳んで会話を見せる
     setParamsOpen(false);
     const track = startTracking();
@@ -870,6 +873,9 @@ export function Chat({
         return next;
       });
 
+      // 返事を待っているあいだに停止を押されていたら、ここで送る
+      if (stopWantedRef.current) sendStop(convId, assistantMessageId);
+
       // 生成過程・最終状態はサーバーを正とし、ポーリングで追いかける
       if (retryConfig) {
         await pollRunUntilDone(convId, track);
@@ -972,18 +978,44 @@ export function Chat({
     );
   }
 
+  /**
+   * 押されたのに、止める相手がまだ決まっていない停止。
+   *
+   * 送信した直後は、応答の行にサーバーのIDがまだ付いていない（保存の
+   * 返事を待っている最中）。以前はここで黙って何もしなかったので、
+   * **停止ボタンを押しても無反応**に見えた。押した意思を覚えておき、
+   * IDが付いた時点で送る。
+   */
+  const stopWantedRef = useRef(false);
+
+  function sendStop(convId: string, messageId: string) {
+    stopWantedRef.current = false;
+    void fetch(`/api/conversations/${convId}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId }),
+    })
+      // 失敗はトーストで出す。エラーの帯は取り直しで消えることがあり、
+      // 一瞬しか出ないことがある。止め損ねたことは伝わってほしい
+      .then((res) => {
+        if (!res.ok) showNotice("停止できませんでした");
+      })
+      .catch(() => showNotice("停止できませんでした"));
+  }
+
   function stop() {
     const convId = convIdRef.current;
     // リトライ生成では末尾が完了済みの応答なので、生成中の行を探す
     const target = [...messages]
       .reverse()
       .find((m) => m.role === "assistant" && m.id && m.status === "streaming");
-    if (!convId || !target?.id) return;
-    void fetch(`/api/conversations/${convId}/stop`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messageId: target.id }),
-    }).catch(() => {});
+    if (!convId || !target?.id) {
+      // 保存の返事待ち。IDが付いた時点で送る
+      stopWantedRef.current = true;
+      showNotice("停止しています…");
+      return;
+    }
+    sendStop(convId, target.id);
   }
 
   /**
