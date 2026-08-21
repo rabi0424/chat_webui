@@ -97,3 +97,8 @@ export default function Home() {
     />
   );
 }
+
+
+// 例外の受け皿はこのルートに置く。root に任せると文書ごと
+// 差し替わり、サイドバーまで消えて戻る導線が無くなる
+export { RouteError as ErrorBoundary } from "../components/RouteError";
