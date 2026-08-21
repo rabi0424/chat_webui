@@ -3,6 +3,7 @@ import { createRequestHandler, RouterContextProvider } from "react-router";
 import { cloudflareContext } from "../app/lib/cloudflare-context";
 import { finalizeGeneration, getMessage } from "../app/lib/db.server";
 import { isRetryProgress } from "../app/lib/retry";
+import { crossSiteReason } from "../app/lib/same-origin";
 import {
   runGenerationJob,
   type GenerationJob,
@@ -185,6 +186,16 @@ const requestHandler = createRequestHandler(
 
 export default {
   async fetch(request, env, ctx) {
+    // 別のサイトからの書き換えはここで断つ。ルートは17本あり、
+    // 1本ずつ足すと足し忘れがそのまま穴になるので、入口で一度だけ見る
+    const reason = crossSiteReason(request);
+    if (reason) {
+      console.warn(`[security] クロスサイトの書き換えを断りました: ${reason}`);
+      return Response.json(
+        { error: "このサイト以外からの操作は受け付けません" },
+        { status: 403 },
+      );
+    }
     const context = new RouterContextProvider();
     context.set(cloudflareContext, { env, ctx });
     return requestHandler(request, context);
