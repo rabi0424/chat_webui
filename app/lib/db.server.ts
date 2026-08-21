@@ -497,10 +497,11 @@ export async function createFolder(name: string): Promise<FolderRow> {
   return row;
 }
 
+/** 更新できたかを返す（存在しないIDへの更新を、成功として返さないため）。 */
 export async function updateFolder(
   id: string,
   fields: { name?: string; pinned?: boolean },
-): Promise<void> {
+): Promise<boolean> {
   const d = await db();
   const sets: string[] = ["updated_at = ?"];
   const binds: unknown[] = [Date.now()];
@@ -513,10 +514,11 @@ export async function updateFolder(
     binds.unshift(fields.pinned ? 1 : 0);
   }
   binds.push(id);
-  await d
+  const res = await d
     .prepare(`UPDATE folders SET ${sets.join(", ")} WHERE id = ?`)
     .bind(...binds)
     .run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
 /** フォルダ削除。中の会話はフォルダなしに戻る（会話自体は消えない）。 */
@@ -1143,17 +1145,19 @@ export async function createGeneratedAttachment(params: {
 }
 
 /** お気に入りの切り替え。実体を共有する行（フォーク先）もまとめて揃える。 */
+/** 更新できたかを返す（存在しないIDへの更新を、成功として返さないため）。 */
 export async function setImageFavorite(
   id: string,
   favorite: boolean,
-): Promise<void> {
+): Promise<boolean> {
   const d = await db();
-  await d
+  const res = await d
     .prepare(
       "UPDATE attachments SET favorite = ? WHERE r2_key = (SELECT r2_key FROM attachments WHERE id = ?)",
     )
     .bind(favorite ? 1 : 0, id)
     .run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
 export interface GeneratedImageRow {

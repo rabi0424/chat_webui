@@ -10,6 +10,13 @@ import {
 import { MAX_TITLE_LENGTH } from "../lib/constants";
 
 export async function action({ request, params }: Route.ActionArgs) {
+  // 扱えるメソッドかを先に見る。存在の確認を先にすると、知らない
+  // メソッドで存在しないIDを叩いたときに 405 ではなく 404 が返り、
+  // 「そのIDが無い」のか「その操作ができない」のか区別が付かない
+  if (request.method !== "DELETE" && request.method !== "PATCH") {
+    return Response.json({ error: "Method Not Allowed" }, { status: 405 });
+  }
+
   const conversation = await getConversation(params.id);
   if (!conversation) {
     return Response.json({ error: "会話が見つかりません" }, { status: 404 });

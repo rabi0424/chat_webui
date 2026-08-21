@@ -520,6 +520,12 @@ body {
 .prose .md-table table {
   margin: 0;
 }
+/* キーボードで辿り着いたとき、どの列に居るのかを見せる */
+.prose th.md-table-sortable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .prose th.md-table-sortable {
   cursor: pointer;
   user-select: none;

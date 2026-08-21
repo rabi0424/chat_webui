@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { comparatorFor, numeric } from "../app/components/MarkdownTable";
+import {
+  comparatorFor,
+  numeric,
+  tsvCell,
+} from "../app/components/MarkdownTable";
 
 /**
  * 表の並べ替え。
@@ -128,6 +132,49 @@ describe("列ごとに比べ方を決める", () => {
           }
         }
       }
+    }
+  });
+});
+
+/**
+ * タブ区切りでのコピー。
+ *
+ * セルの中にタブや改行が入っていると、そのまま繋げた文字列は表計算側で
+ * 別のマス・別の行として読まれ、**そこから先の列が丸ごとずれる**。
+ * モデルが書く表では、セル内改行も箇条書きも珍しくない。
+ */
+describe("表計算へ貼るときのマス", () => {
+  it("ふつうの文字はそのまま", () => {
+    expect(tsvCell("りんご")).toBe("りんご");
+    expect(tsvCell("1,234円")).toBe("1,234円");
+    expect(tsvCell("")).toBe("");
+  });
+
+  it("タブを含むマスは囲む", () => {
+    expect(tsvCell("あ\tい")).toBe('"あ\tい"');
+  });
+
+  it("改行を含むマスは囲む", () => {
+    expect(tsvCell("1行目\n2行目")).toBe('"1行目\n2行目"');
+    expect(tsvCell("1行目\r\n2行目")).toBe('"1行目\r\n2行目"');
+  });
+
+  it("引用符は2つ重ねて囲む", () => {
+    expect(tsvCell('彼は"はい"と言った')).toBe('"彼は""はい""と言った"');
+  });
+
+  it("引用符だけでも囲む", () => {
+    // 囲まずに出すと、表計算側が囲みの開始と誤読する
+    expect(tsvCell('"')).toBe('""""');
+  });
+
+  it("囲んだものを読み戻せる", () => {
+    const unquote = (s: string) =>
+      s.startsWith('"') && s.endsWith('"')
+        ? s.slice(1, -1).replace(/""/g, '"')
+        : s;
+    for (const original of ["あ\tい", "1\n2", '"x"', 'a"b\tc', "ふつう"]) {
+      expect(unquote(tsvCell(original))).toBe(original);
     }
   });
 });

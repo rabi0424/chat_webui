@@ -144,6 +144,22 @@ export function comparatorFor(
   };
 }
 
+/**
+ * タブ区切りで貼るときの1マス。
+ *
+ * セルの中にタブや改行が入っていると、そのまま繋げた文字列は表計算側で
+ * 別のマス・別の行として読まれ、**そこから先の列が丸ごとずれる**。
+ * モデルが書く表では、セル内改行（`<br>` の代わり）も箇条書きも珍しくない。
+ *
+ * 区切りを含むマスは二重引用符で囲み、中の引用符は2つ重ねる（CSV と
+ * 同じ流儀）。Excel も Google スプレッドシートも、タブ区切りの貼り付けで
+ * この囲みを解釈する。
+ */
+export function tsvCell(text: string): string {
+  if (!/[\t\r\n"]/.test(text)) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 type Sort = { column: number; desc: boolean } | null;
 
 function CopyTableButton({ text }: { text: string }) {
@@ -212,8 +228,9 @@ export function MarkdownTable({
   }, [bodyText, sort]);
 
   const tsv = useMemo(() => {
-    const lines = headText.length ? [headText.join("\t")] : [];
-    for (const i of order) lines.push(bodyText[i].join("\t"));
+    const line = (cells: string[]) => cells.map(tsvCell).join("\t");
+    const lines = headText.length ? [line(headText)] : [];
+    for (const i of order) lines.push(line(bodyText[i]));
     return lines.join("\n");
   }, [headText, bodyText, order]);
 
@@ -262,6 +279,18 @@ export function MarkdownTable({
                           : "ascending"
                         : "none",
                     onClick: () => toggle(i),
+                    /*
+                      見出しは th なので、そのままではキーボードの
+                      対象にならない（Tab で辿り着けず、Enter も効かない）。
+                      押せるものとして扱えるようにする。
+                    */
+                    tabIndex: 0,
+                    onKeyDown: (e: React.KeyboardEvent) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        toggle(i);
+                      }
+                    },
                     title: "クリックで並べ替え",
                     className: "md-table-sortable",
                   } as Record<string, unknown>,
