@@ -103,7 +103,7 @@ export function Composer({
                   type="button"
                   onClick={() => onRemovePending(p.localId)}
                   aria-label="添付を削除"
-                  className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-xs text-white opacity-0 transition group-hover/att:opacity-100 focus:opacity-100 max-sm:opacity-100"
+                  className="absolute right-0.5 top-0.5 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-xs text-white opacity-0 transition group-hover/att:opacity-100 focus:opacity-100 touch:opacity-100"
                 >
                   ×
                 </button>

@@ -16,6 +16,7 @@ import type { AppSettings } from "../lib/settings";
 import { noteConversations } from "../lib/chat-cache";
 import { readCachedModels, writeCachedModels } from "../lib/model-cache";
 import { useEscapeToClose } from "../lib/dismiss";
+import { insideScrollableX } from "../lib/swipe";
 import type { ModelInfo } from "../lib/openrouter.server";
 import type {
   FxResponse,
@@ -269,7 +270,14 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   const onTouchStart = (e: React.TouchEvent) => {
     const t = e.touches[0];
     if (!t) return;
-    swipeRef.current = { x: t.clientX, y: t.clientY, fromEdge: t.clientX <= 28 };
+    // 横に流している最中のコードブロック・表・数式の上から始まった払いは、
+    // 中身を戻すためのもの。ドロワーの開閉には使わない
+    const scrolling = insideScrollableX(e.target);
+    swipeRef.current = {
+      x: t.clientX,
+      y: t.clientY,
+      fromEdge: !scrolling && t.clientX <= 28,
+    };
   };
   const onTouchMove = (e: React.TouchEvent) => {
     const start = swipeRef.current;
