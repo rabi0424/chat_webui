@@ -70,3 +70,21 @@ export const MSG_TEXT_ACTION =
   " px-1.5 py-0.5 text-xs touch:px-2 touch:py-1.5 " +
   "hover:bg-neutral-100 hover:text-neutral-600 " +
   "dark:hover:bg-neutral-800 dark:hover:text-neutral-300";
+
+/**
+ * 動きを控える設定になっているか。
+ *
+ * CSS の scroll-behavior は JS の scrollTo({behavior}) には効かない。
+ * 指定した側が自分で見て決める必要がある。
+ */
+export function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+  );
+}
+
+/** 動きを控える設定なら即座に、そうでなければ滑らかに。 */
+export function scrollBehavior(): ScrollBehavior {
+  return prefersReducedMotion() ? "auto" : "smooth";
+}

@@ -331,7 +331,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl p-4">
+        <div className="mx-auto max-w-2xl p-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
           <Section
             title="生成"
             note="上流のAPIに繰り返し要求を出す機能の歯止め。会話ごとの設定はこの値を超えられません。"

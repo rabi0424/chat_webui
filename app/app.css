@@ -172,7 +172,32 @@
   ::before,
   ::after {
     animation-duration: 0.01ms !important;
+    /*
+     * 繰り返しも1回で止める。これが無いと、終わらないアニメーション
+     * （回転・点滅）が 0.01ms の周期で回り続ける——動きは見えないのに
+     * 毎秒10万回描き直そうとするので、電池と発熱にだけ効く。
+     */
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /*
+   * ただし「待っている最中」の合図だけは残す。止まった円は
+   * 動きを控えた結果ではなく「固まった」に見えるため。
+   * 目に障らない速さでゆっくり回す。
+   */
+  .animate-spin {
+    animation: spin 1.6s linear infinite !important;
+  }
+
+  /* 点滅は動かさず、薄いまま置いておく（位置と存在は伝わる）。 */
+  .animate-pulse {
+    animation: none !important;
+    opacity: 0.55;
+  }
+
+  html {
+    scroll-behavior: auto !important;
   }
 }
 

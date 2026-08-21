@@ -60,7 +60,7 @@ export default function Bots() {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl px-4 py-6">
+        <div className="mx-auto max-w-2xl px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-6">
           {bots.length === 0 && (
             <div className="rounded-3xl border border-dashed border-neutral-200 px-6 py-14 text-center dark:border-neutral-800">
               <p className="text-sm leading-relaxed text-neutral-400 dark:text-neutral-500">

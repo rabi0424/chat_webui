@@ -72,3 +72,44 @@ describe.skipIf(css == null)("touch 変種", () => {
     expect(leaked).toEqual([]);
   });
 });
+
+/**
+ * 動きを控える設定（prefers-reduced-motion）。
+ *
+ * 「所要時間を 0.01ms にする」だけだと、終わらないアニメーション
+ * （回転・点滅）が 0.01ms の周期で回り続ける。動きは見えないのに
+ * 毎秒10万回描き直そうとするので、電池と発熱にだけ効く。
+ */
+describe.skipIf(css == null)("動きを控える設定", () => {
+  const block = (() => {
+    const c = css ?? "";
+    const i = c.search(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+    if (i < 0) return "";
+    const rest = c.slice(i + 20);
+    const j = rest.search(/@media/);
+    return j < 0 ? rest : rest.slice(0, j);
+  })();
+
+  it("そのブロックが出ている", () => {
+    expect(block).not.toBe("");
+  });
+
+  it("繰り返しを1回で止める（0.01msで回し続けない）", () => {
+    expect(block).toMatch(/animation-iteration-count:\s*1/);
+  });
+
+  it("待っている合図（回転）は残す", () => {
+    // 止まった円は「控えた」ではなく「固まった」に見える。
+    // 最小化で shorthand の順が入れ替わるので、名前と infinite で見る
+    expect(block).toMatch(/\.animate-spin\{animation:[^}]*spin[^}]*\}/);
+    expect(block).toMatch(/\.animate-spin\{animation:[^}]*infinite[^}]*\}/);
+  });
+
+  it("点滅は動かさず、薄いまま置く", () => {
+    expect(block).toMatch(/animation:\s*none/);
+  });
+
+  it("スクロールも滑らかにしない", () => {
+    expect(block).toMatch(/scroll-behavior:\s*auto/);
+  });
+});

@@ -50,7 +50,7 @@ import {
   IconMenu,
   IconSliders,
 } from "./icons";
-import { GLASS_PANEL } from "../lib/ui";
+import { GLASS_PANEL, scrollBehavior } from "../lib/ui";
 
 /** この会話に適用されるボット設定（会話開始時のスナップショット）。 */
 export interface BotContext {
@@ -641,7 +641,7 @@ export function Chat({
     if (!el) return;
     stickToBottomRef.current = true;
     setAtBottom(true);
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    el.scrollTo({ top: el.scrollHeight, behavior: scrollBehavior() });
   };
 
   // --- 添付画像 -----------------------------------------------------------
@@ -1339,8 +1339,13 @@ export function Chat({
         </div>
       </header>
 
+      {/*
+        ⚙のパネル。フッター（コンポーザー）と同じ z-20 だったため、
+        画面が低いとパネルの下端がコンポーザーに隠れ、そこのタップも
+        奪われていた。あとから開く「上に載せるもの」なので z-30。
+      */}
       {paramsOpen && (
-        <div className="fixed inset-0 z-20" onClick={() => setParamsOpen(false)}>
+        <div className="fixed inset-0 z-30" onClick={() => setParamsOpen(false)}>
           <div
             className={`absolute right-2 top-[calc(3.5rem+env(safe-area-inset-top))] max-h-[70vh] w-[min(94vw,26rem)] origin-top-right overflow-y-auto rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
             onClick={(e) => e.stopPropagation()}
