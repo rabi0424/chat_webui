@@ -112,3 +112,23 @@ describe("長い会話", () => {
     expect(screen.getByText("59番目の発言")).toBeTruthy();
   });
 });
+
+describe("Escape で閉じる", () => {
+  it("削除の選択モードから抜けられる", async () => {
+    const { user } = renderChat({
+      initialMessages: [
+        msg("user", "前の質問", { id: "u1" }),
+        msg("assistant", "前の答え", { id: "a1" }),
+      ],
+    });
+    await user.click(screen.getAllByLabelText("削除")[0]);
+    expect(document.body.textContent).toContain("選択中");
+
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(document.body.textContent).not.toContain("選択中"),
+    );
+    // 入力欄が戻る
+    expect(screen.getByLabelText("送信")).toBeTruthy();
+  });
+})

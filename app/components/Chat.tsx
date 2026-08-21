@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
@@ -37,6 +37,7 @@ import {
 import { Composer } from "./chat/Composer";
 import { SelectionBar } from "./chat/SelectionBar";
 import { type MessageActions } from "./chat/message-context";
+import { useEscapeToClose } from "../lib/dismiss";
 import type {
   CreateConversationResponse,
   ErrorResponse,
@@ -1254,6 +1255,15 @@ export function Chat({
     attachGeneratedImages,
     followBottom,
   };
+
+  // 重ねて出しているものは Escape で閉じる。内側から順に1枚ずつ
+  const closeParams = useCallback(() => setParamsOpen(false), []);
+  const closePending = useCallback(() => setPendingRun(null), []);
+  const cancelSelecting = useCallback(() => setSelecting(null), []);
+  useEscapeToClose(selecting != null, cancelSelecting);
+  useEscapeToClose(paramsOpen, closeParams);
+  useEscapeToClose(pendingRun != null, closePending);
+  // 拡大表示（Lightbox）は自前で Escape を見ているので、ここでは足さない
 
   const lastMessage = messages[messages.length - 1];
   /** 表示中の枝にコンテキストの区切りがあるか（入力欄のアイコンの色）。 */

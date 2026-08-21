@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
 import type { ConversationRow, FolderRow, SearchResult } from "../lib/db.server";
 import { ThemeToggle } from "./ThemeToggle";
@@ -13,6 +13,7 @@ import {
   FolderItem,
 } from "./sidebar/items";
 import { FAVORITES_ID, usePrefetchOnVisible } from "./sidebar/shared";
+import { useEscapeToClose } from "../lib/dismiss";
 import {
   IconArrowLeft,
   IconBot,
@@ -284,6 +285,13 @@ export function Sidebar({
   const moveConv = moveTarget
     ? conversations.find((c) => c.id === moveTarget)
     : null;
+
+  // 重ねて出しているものは、どれも Escape で閉じられるようにする。
+  // 内側（メニュー）から順に、一度の Escape で1枚だけ閉じる
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const closeMove = useCallback(() => setMoveTarget(null), []);
+  useEscapeToClose(moveConv != null, closeMove);
+  useEscapeToClose(menu != null, closeMenu);
 
   const shortcutClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-2.5 rounded-xl px-3 py-2 text-[0.9375rem] ${

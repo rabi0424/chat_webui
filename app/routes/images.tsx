@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PULL_IGNORE_SELECTOR,
   PULL_MAX_PX,
@@ -14,6 +14,7 @@ import { Lightbox } from "../components/Lightbox";
 import type { ImagesResponse } from "../lib/api-types";
 import { IconEllipsis, IconMenu, IconSearch, IconX } from "../components/icons";
 import { GLASS_PANEL } from "../lib/ui";
+import { useEscapeToClose } from "../lib/dismiss";
 
 export function meta() {
   return [{ title: "画像 - Chat WebUI" }];
@@ -57,6 +58,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   /** 「…」を開いている画像ID。 */
   const [menu, setMenu] = useState<string | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 一覧の末尾。ここが見えたら続きを読む。 */
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -271,6 +273,8 @@ export default function Images({ loaderData }: Route.ComponentProps) {
       );
     }
   }
+
+  useEscapeToClose(menu != null, closeMenu);
 
   return (
     <div

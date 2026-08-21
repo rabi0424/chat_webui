@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Outlet,
   useNavigation,
@@ -13,6 +13,7 @@ import {
   type BotRow,
 } from "../lib/db.server";
 import type { AppSettings } from "../lib/settings";
+import { useEscapeToClose } from "../lib/dismiss";
 import type { ModelInfo } from "../lib/openrouter.server";
 import type {
   FxResponse,
@@ -213,6 +214,14 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       if (closeFallback.current) clearTimeout(closeFallback.current);
     };
   }, []);
+
+  // スマホのドロワーも Escape で閉じる（外付けキーボードやiPadで効く）
+  const dismissSidebar = useCallback(() => {
+    if (!sidebarClosing) closeSidebar();
+    // closeSidebar は毎回新しいが、見ているのは ref とフラグだけ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarClosing]);
+  useEscapeToClose(sidebarOpen && !sidebarClosing, dismissSidebar);
 
   /**
    * アプリの高さを visualViewport の実測値に同期する。

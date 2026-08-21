@@ -273,3 +273,35 @@ describe("お気に入りフォルダ", () => {
     expect(screen.queryByText("ふつうの会話")).toBeNull();
   });
 });
+
+/**
+ * 開いたものが Escape で閉じるか。
+ *
+ * フック単体の挙動は dismiss.test が見ている。ここが見るのは配線——
+ * 呼び忘れても型は通り、キーボードで閉じられないまま残る。
+ */
+describe("Escape で閉じる", () => {
+  it("「…」メニューが閉じる", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+    });
+    await openMenu(user, "対象の会話");
+    expect(screen.getByText("名前を変更")).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByText("名前を変更")).toBeNull();
+  });
+
+  it("フォルダ移動のモーダルが閉じる", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "対象の会話")],
+      folders: [folder("f1", "仕事")],
+    });
+    await openMenu(user, "対象の会話");
+    await user.click(screen.getByText("フォルダへ移動…"));
+    expect(screen.getByText(/をフォルダへ移動/)).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByText(/をフォルダへ移動/)).toBeNull();
+  });
+});
