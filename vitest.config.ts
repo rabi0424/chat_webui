@@ -8,8 +8,10 @@ import { defineConfig } from "vitest/config";
  *
  * ここで見るのは「Workers のバインディング（D1・R2）に触らない」層に
  * 限る。純粋な変換・判定・組み立てが中心で、これらは実際にバグが
- * 出た場所でもある。DOMが要るものは tests/dom/ に置き、そちらだけ
- * happy-dom の上で動かす。
+ * 出た場所でもある。DOMが要るものは tests/dom/ に置く。
+ *
+ * スキーマだけは素の Node で走らせる。node:sqlite に本物の SQL を
+ * 流したいが、jsdom 向けの束ね方では Node の組み込みを読めないため。
  */
 export default defineConfig({
   test: {
@@ -19,8 +21,17 @@ export default defineConfig({
         test: {
           name: "node",
           include: ["tests/*.test.ts"],
+          exclude: ["tests/schema.test.ts"],
           // localStorage を触るものがあるので DOM を用意する
           environment: "jsdom",
+        },
+      },
+      {
+        test: {
+          name: "schema",
+          include: ["tests/schema.test.ts"],
+          // node:sqlite を読むので、DOM を被せない
+          environment: "node",
         },
       },
       {

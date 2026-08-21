@@ -1,0 +1,171 @@
+/**
+ * スキーマの定義と、それを流すための小物。
+ *
+ * db.server.ts から切り出してある。あちらは cloudflare:workers を読むので
+ * Workers の外からは触れないが、スキーマそのものは素の SQL でしかない。
+ * 別にしておけば、本物の SQLite に流して構文と索引を確かめられる
+ * （壊れたマイグレーションはアプリ全体を起動不能にするため）。
+ */
+
+/**
+ * バージョン管理付きのランタイムマイグレーション。配列に追記していく。
+ * 適用済みバージョンは meta テーブルに記録される。
+ */
+export const MIGRATIONS: string[] = [
+  // v1: 初期スキーマ
+  `
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  model_id TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  current_leaf_message_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  parent_id TEXT,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  model_id TEXT,
+  usage_json TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
+`,
+  // v2: ボット + 会話へのボットスナップショット
+  `
+CREATE TABLE IF NOT EXISTS bots (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  icon TEXT NOT NULL DEFAULT '🤖',
+  model_id TEXT NOT NULL,
+  system_prompt TEXT NOT NULL DEFAULT '',
+  params_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+ALTER TABLE conversations ADD COLUMN bot_id TEXT;
+ALTER TABLE conversations ADD COLUMN bot_name TEXT;
+ALTER TABLE conversations ADD COLUMN bot_icon TEXT;
+ALTER TABLE conversations ADD COLUMN system_prompt TEXT;
+ALTER TABLE conversations ADD COLUMN params_json TEXT;
+`,
+  // v3: 思考（reasoning）内容の保存
+  `
+ALTER TABLE messages ADD COLUMN reasoning TEXT;
+`,
+  // v4: サーバー側生成（生成中ステータス・エラー・停止フラグ）
+  `
+ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'done';
+ALTER TABLE messages ADD COLUMN error TEXT;
+ALTER TABLE messages ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0;
+`,
+  // v5: 生成中の最終更新時刻（中断検知・自動復旧用）
+  `
+ALTER TABLE messages ADD COLUMN flushed_at INTEGER;
+`,
+  // v6: フォルダ + ピン留めの並べ替え
+  `
+CREATE TABLE IF NOT EXISTS folders (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+ALTER TABLE conversations ADD COLUMN folder_id TEXT;
+ALTER TABLE conversations ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+`,
+  // v7: 添付ファイル（画像）。実体はR2、ここにはメタデータのみ。
+  // message_id はアップロード直後は NULL（送信時にメッセージへ紐づける）。
+  `
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  message_id TEXT,
+  conversation_id TEXT,
+  r2_key TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  name TEXT,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_key ON attachments(r2_key);
+`,
+  // v8: 生成画像。モデルが返した画像もR2へ取り込み、上流CDNの期限切れで
+  // 過去の会話から消えないようにする。kind で用途を分ける。
+  `
+ALTER TABLE attachments ADD COLUMN kind TEXT NOT NULL DEFAULT 'upload';
+CREATE INDEX IF NOT EXISTS idx_attachments_kind ON attachments(kind, created_at);
+`,
+  // v9: 未読。応答の完成を会話一覧で知らせるため、生成の確定時に立てて
+  // その会話を開いたときに落とす。
+  `
+ALTER TABLE conversations ADD COLUMN unread INTEGER NOT NULL DEFAULT 0;
+`,
+  // v10: 画像一覧のお気に入りと検索。prompt は生成時の依頼文の写しで、
+  // 会話ツリーを遡らずに検索できるようにするために持つ。
+  `
+ALTER TABLE attachments ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attachments ADD COLUMN prompt TEXT;
+CREATE INDEX IF NOT EXISTS idx_attachments_favorite ON attachments(favorite, created_at);
+`,
+  // v11: 会話のお気に入り。ピン留め（サイドバー最上部への固定）とは別で、
+  // 常設の「お気に入り」フォルダに集める印。両方付けられる。
+  `
+ALTER TABLE conversations ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_conversations_favorite ON conversations(favorite, updated_at);
+`,
+  // v12: コンテキストの境界線。1 が立ったメッセージまでを以後モデルへ
+  // 送らない（履歴自体は残る）。解除すれば元どおり全部が文脈に戻る。
+  `
+ALTER TABLE messages ADD COLUMN context_boundary INTEGER NOT NULL DEFAULT 0;
+`,
+  // v13: 応答の参照元。本文（content）とは別に持つ。ここへ混ぜると
+  // 次のターンでモデルへ送り返す履歴が変わってしまうため。
+  `
+ALTER TABLE messages ADD COLUMN citations_json TEXT;
+`,
+  // v14: 使用量の台帳。
+  //
+  // messages.usage_json とは別に持つ。あちらは応答の詳細表示のためのもので、
+  // 会話やメッセージを消せば一緒に消える。月間の上限は「使った額」で判定
+  // するのだから、消しても減ってはいけない——会話を消すと上限が緩む、
+  // という穴になる。会話IDは参照のために持つだけで、外部キーも
+  // ON DELETE も張らない。
+  //
+  // message_id の一意制約は、同じ応答を二度確定しても二重に数えない
+  // ためのもの。タイトル生成のように応答へ紐づかない支出は message_id が
+  // NULL になるが、SQLite は一意索引の中で NULL どうしを別物として
+  // 扱うので、そちらはいくつでも入る。
+  `
+CREATE TABLE IF NOT EXISTS usage_events (
+  id TEXT PRIMARY KEY,
+  at INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model_id TEXT,
+  cost_usd REAL,
+  points REAL,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  conversation_id TEXT,
+  message_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_usage_at ON usage_events(at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_message ON usage_events(message_id) WHERE message_id IS NOT NULL;
+`,
+];
+
+/** 版のSQLを文単位に割る。1文ずつ流すことで、どこまで進んだかを揃える。 */
+export function statementsOf(sql: string): string[] {
+  return sql
+    .split(";")
+    .map((t) => t.trim())
+    .filter((t) => t !== "");
+}
