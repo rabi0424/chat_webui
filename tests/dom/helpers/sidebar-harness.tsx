@@ -21,12 +21,15 @@ export interface SidebarServer {
   throwAll(): void;
   /** 失敗させるのをやめる。 */
   succeed(): void;
+  /** 検索の応答を差し替える（語を受け取って本文を返す）。 */
+  onSearch(handler: (q: string) => unknown | Promise<unknown>): void;
 }
 
 export function installSidebarServer(): SidebarServer {
   const calls: SidebarServer["calls"] = [];
   let failStatus: number | null = null;
   let throwing = false;
+  let searchHandler: ((q: string) => unknown | Promise<unknown>) | null = null;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof input === "string" ? input : String(input);
     let body: unknown = null;
@@ -39,6 +42,14 @@ export function installSidebarServer(): SidebarServer {
     }
     calls.push({ method: init?.method ?? "GET", path, body });
     if (throwing) throw new TypeError("Failed to fetch");
+    if (searchHandler && path.includes("/api/search")) {
+      const q = decodeURIComponent(path.split("q=")[1] ?? "");
+      const payload = await searchHandler(q);
+      return new Response(JSON.stringify(payload ?? {}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     if (failStatus != null) {
       return new Response(JSON.stringify({ error: "失敗" }), {
         status: failStatus,
@@ -64,6 +75,9 @@ export function installSidebarServer(): SidebarServer {
     succeed: () => {
       failStatus = null;
       throwing = false;
+    },
+    onSearch: (handler) => {
+      searchHandler = handler;
     },
   };
 }

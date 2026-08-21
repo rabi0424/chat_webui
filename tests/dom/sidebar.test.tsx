@@ -443,3 +443,45 @@ describe("操作の失敗（続き）", () => {
   });
 });
 
+
+/**
+ * 検索の連打。
+ *
+ * 打つのを止めた分は待つが、それでも要求は並びうる（前の語の検索が
+ * 遅いと、後の語の結果が先に返る）。古いほうが後に返ると、いま入って
+ * いる語と合わない結果が残る。
+ */
+describe("検索の順序", () => {
+  it("古い結果が後から返っても、最新の語の結果が残る", async () => {
+    const { user } = renderSidebar({ conversations: [] });
+    await user.click(screen.getByLabelText("会話を検索"));
+    const box = screen.getByLabelText("会話を検索");
+
+    let releaseFirst: (() => void) | null = null;
+    let nth = 0;
+    server.onSearch((q) => {
+      nth++;
+      const body = { results: [{ id: `r${nth}`, title: `${q} の結果` }] };
+      if (nth === 1) {
+        return new Promise((resolve) => {
+          releaseFirst = () => resolve(body);
+        });
+      }
+      return body;
+    });
+
+    await user.type(box, "あ");
+    await new Promise((r) => setTimeout(r, 350));
+    await user.type(box, "い");
+    await new Promise((r) => setTimeout(r, 350));
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("あい の結果"),
+    );
+
+    releaseFirst?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(document.body.textContent).toContain("あい の結果");
+    expect(document.body.textContent).not.toContain("あ の結果");
+  });
+});

@@ -1157,10 +1157,20 @@ export function Chat({
     }
   }
 
+  /**
+   * ブランチ切替（ページャ）の世代。
+   *
+   * 連打すると要求が並んで飛び、返る順は投げた順とは限らない。古いほうが
+   * 後に返ると、押したのとは違う枝が最後に表示されて残る。いちばん新しい
+   * 要求の結果だけを受け取る。
+   */
+  const branchSeq = useRef(0);
+
   /** ブランチ切替（ページャ）。 */
   async function switchBranch(targetId: string) {
     const convId = convIdRef.current;
     if (isStreaming || !convId) return;
+    const seq = ++branchSeq.current;
     try {
       const res = await fetch(`/api/conversations/${convId}/path`, {
         method: "POST",
@@ -1169,9 +1179,12 @@ export function Chat({
       });
       if (!res.ok) throw new Error();
       const { messages: fresh } = (await res.json()) as PathResponse;
+      // 追い越されていたら、こちらの結果は捨てる
+      if (seq !== branchSeq.current) return;
       setMessages(fresh);
       setError(null);
     } catch {
+      if (seq !== branchSeq.current) return;
       setError("ブランチの切替に失敗しました。");
     }
   }

@@ -130,6 +130,8 @@ export function Sidebar({
   );
   const [searching, setSearching] = useState(false);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 検索の世代。返る順が投げた順とは限らないので、最新のものだけ使う。 */
+  const searchSeq = useRef(0);
   /** 検索欄は畳んでおき、虫眼鏡を押したときだけ開く（一覧を広く使う）。 */
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -153,16 +155,22 @@ export function Sidebar({
       return;
     }
     setSearching(true);
+    // 打つのを止めた分は待つが、それでも要求は並びうる（前の語の
+    // 検索が遅いと、後の語の結果が先に返る）。いちばん新しい語の
+    // 結果だけを受け取る
+    const seq = ++searchSeq.current;
     searchTimer.current = setTimeout(async () => {
       try {
         const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
         if (!res.ok) throw new Error();
         const { results } = (await res.json()) as { results: SearchResult[] };
+        if (seq !== searchSeq.current) return;
         setSearchResults(results);
       } catch {
+        if (seq !== searchSeq.current) return;
         setSearchResults([]);
       } finally {
-        setSearching(false);
+        if (seq === searchSeq.current) setSearching(false);
       }
     }, 300);
   }, [searchQuery]);

@@ -107,3 +107,55 @@ describe("ここから分岐（フォーク）", () => {
     );
   });
 });
+
+/**
+ * 連打したときの順序。
+ *
+ * ページャを続けて押すと要求が並んで飛び、返る順は投げた順とは限らない。
+ * 古いほうが後に返ると、押したのとは違う枝が最後に表示されて残る——
+ * 画面と「いまどの枝を見ているか」がずれる。
+ */
+describe("切替の連打", () => {
+  it("古い応答が後から返っても、最後に押した枝が残る", async () => {
+    server = installServer(withSiblings());
+
+    // 1回目の応答だけ遅らせる
+    let releaseFirst: (() => void) | null = null;
+    let nth = 0;
+    server.on("/path", () => {
+      nth++;
+      const which = nth;
+      const body = {
+        messages: [
+          msg("user", "質問", { id: "u1" }),
+          msg("assistant", which === 1 ? "古い応答" : "新しい応答", {
+            id: which === 1 ? "a1" : "a2",
+          }),
+        ],
+      };
+      if (which === 1) {
+        return new Promise((resolve) => {
+          releaseFirst = () => resolve(body);
+        });
+      }
+      return body;
+    });
+
+    const { user } = renderChat({ initialMessages: withSiblings() });
+    const next = await screen.findByLabelText("次のブランチ");
+
+    await user.click(next); // 1回目（遅い）
+    await user.click(next); // 2回目（速い）
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("新しい応答"),
+    );
+
+    // ここで1回目がようやく返る
+    releaseFirst?.();
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(document.body.textContent).toContain("新しい応答");
+    expect(document.body.textContent).not.toContain("古い応答");
+  });
+})
