@@ -15,6 +15,10 @@ import {
 import { FAVORITES_ID, usePrefetchOnVisible } from "./sidebar/shared";
 import { useEscapeToClose } from "../lib/dismiss";
 import {
+  useExpandedFolders,
+  writeExpandedFolders,
+} from "../lib/persisted";
+import {
   IconArrowLeft,
   IconBot,
   IconChartBar,
@@ -117,7 +121,18 @@ export function Sidebar({
 
   /** null = ルート表示、フォルダID = そのフォルダの階層を表示 */
   const [view, setView] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  /*
+    開いているフォルダは保存して持ち回る。スマホのドロワーは閉じるたびに
+    外されるので、状態を中に持つと開き直すたびに畳まれていた。画面の中に
+    一覧は2つある（デスクトップ用とドロワー用）ので、どちらで開いても揃う。
+  */
+  const expanded = useExpandedFolders();
+  const toggleExpanded = (id: string) => {
+    const next = new Set(expanded);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    writeExpandedFolders([...next]);
+  };
   const [menu, setMenu] = useState<MenuTarget | null>(null);
   /** フォルダ移動モーダルの対象会話ID */
   const [moveTarget, setMoveTarget] = useState<string | null>(null);
@@ -367,7 +382,7 @@ export function Sidebar({
     isUnread,
     onNavigate,
     expanded,
-    setExpanded,
+    toggleExpanded,
     setView,
     conversationsIn: folderConversations,
     favorites: favoriteConversations,

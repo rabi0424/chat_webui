@@ -485,3 +485,88 @@ describe("検索の順序", () => {
     expect(document.body.textContent).not.toContain("あ の結果");
   });
 });
+
+/**
+ * フォルダの開閉状態。
+ *
+ * スマホのドロワーは閉じるたびに外される。状態を中に持っていたので、
+ * 開き直すたびにフォルダが畳まれ、**中を見るには毎回開き直す**ことに
+ * なっていた。保存して持ち回る形にした。
+ */
+describe("フォルダの開閉が残る", () => {
+  it("開いた状態が保存される", async () => {
+    const { user, unmount } = renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    const row = () => screen.getByText("仕事").closest("li") as HTMLElement;
+    await user.click(within(row()).getByLabelText("展開"));
+    expect(within(row()).getByText("中の会話")).toBeTruthy();
+
+    // ドロワーが閉じて外される、に相当
+    unmount();
+
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    // 開いたまま
+    expect(screen.getByText("中の会話")).toBeTruthy();
+  });
+
+  it("畳んだ状態も残る", async () => {
+    const { user, unmount } = renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    const row = () => screen.getByText("仕事").closest("li") as HTMLElement;
+    await user.click(within(row()).getByLabelText("展開"));
+    await user.click(within(row()).getByLabelText("折りたたむ"));
+    unmount();
+
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    expect(screen.queryByText("中の会話")).toBeNull();
+  });
+
+  it("読めない保存値は、畳んだ状態として扱う", () => {
+    localStorage.setItem("chat-webui:expanded-folders", "{壊れている");
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    expect(screen.queryByText("中の会話")).toBeNull();
+    expect(screen.getByText("仕事")).toBeTruthy();
+  });
+
+  /**
+   * JSON としては読めるが形が違うもの。前のバージョンが書いた値や、
+   * 手で書き換えたものがこの形になる。読めてしまうぶん、素通りしやすい。
+   */
+  it("形の違う保存値も、畳んだ状態として扱う", () => {
+    localStorage.setItem(
+      "chat-webui:expanded-folders",
+      JSON.stringify({ f1: true }),
+    );
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    // 「畳んでいる」と「そもそも描けていない」は、queryByText では
+    // 区別が付かない。一覧が出ていることも確かめる
+    expect(screen.getByText("仕事")).toBeTruthy();
+    expect(screen.queryByText("中の会話")).toBeNull();
+  });
+
+  it("配列だが中身が文字列でないものも同じ", () => {
+    localStorage.setItem("chat-webui:expanded-folders", JSON.stringify([1, 2]));
+    renderSidebar({
+      conversations: [conv("c1", "中の会話", { folder_id: "f1" })],
+      folders: [folder("f1", "仕事")],
+    });
+    expect(screen.getByText("仕事")).toBeTruthy();
+    expect(screen.queryByText("中の会話")).toBeNull();
+  });
+});

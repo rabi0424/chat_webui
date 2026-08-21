@@ -181,7 +181,7 @@ export function ConversationItem({ c, indent = false }: { c: ConversationRow; in
  * （名前の変更も削除もできないため、出すものが無い）。
  */
 export function FavoritesFolderItem() {
-  const { expanded, setExpanded, setView, favorites } = useSidebar();
+  const { expanded, toggleExpanded, setView, favorites } = useSidebar();
   const isExpanded = expanded.has(FAVORITES_ID);
   const children = favorites;
   return (
@@ -189,14 +189,7 @@ export function FavoritesFolderItem() {
       <div className="flex items-center">
         <button
           type="button"
-          onClick={() =>
-            setExpanded((prev) => {
-              const next = new Set(prev);
-              if (next.has(FAVORITES_ID)) next.delete(FAVORITES_ID);
-              else next.add(FAVORITES_ID);
-              return next;
-            })
-          }
+          onClick={() => toggleExpanded(FAVORITES_ID)}
           aria-label={isExpanded ? "折りたたむ" : "展開"}
           className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 touch:p-2.5 dark:hover:bg-neutral-800"
         >
@@ -238,7 +231,8 @@ export function FavoritesFolderItem() {
 }
 
 export function FolderItem({ f }: { f: FolderRow }) {
-  const { menu, expanded, setExpanded, setView, conversationsIn } = useSidebar();
+  const { menu, expanded, toggleExpanded, setView, conversationsIn } =
+    useSidebar();
   const open = menu?.type === "folder" && menu.id === f.id;
   const isExpanded = expanded.has(f.id);
   const children = conversationsIn(f.id);
@@ -247,14 +241,7 @@ export function FolderItem({ f }: { f: FolderRow }) {
       <div className="flex items-center">
         <button
           type="button"
-          onClick={() =>
-            setExpanded((prev) => {
-              const next = new Set(prev);
-              if (next.has(f.id)) next.delete(f.id);
-              else next.add(f.id);
-              return next;
-            })
-          }
+          onClick={() => toggleExpanded(f.id)}
           aria-label={isExpanded ? "折りたたむ" : "展開"}
           className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 touch:p-2.5 dark:hover:bg-neutral-800"
         >

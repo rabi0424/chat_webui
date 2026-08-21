@@ -10,7 +10,7 @@
  * 読み書きに購読を足して、同じ値を見ている場所が揃って動くようにする。
  * 別のタブでの変更（storage イベント）も同じ経路で拾う。
  */
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 
 /** 読めなければ null（プライベートモードや容量超過でも投げない）。 */
 export function readRaw(key: string): string | null {
@@ -126,4 +126,36 @@ export function usePersisted<T>(
     read,
     () => serverValue,
   );
+}
+
+// --- 開いているフォルダ -------------------------------------------------
+
+const EXPANDED_KEY = "chat-webui:expanded-folders";
+
+/**
+ * サイドバーで開いているフォルダ。
+ *
+ * これを持ち回るのは、スマホのドロワーが**閉じるたびに外される**ため。
+ * 中の状態も一緒に消えるので、開き直すたびにフォルダが畳まれていた。
+ * 保存しておけば、外されても・再読み込みしても、開いたままになる。
+ * 画面の中に一覧が2つある（デスクトップ用と、ドロワー用）ので、
+ * どちらで開いても揃う。
+ */
+export function readExpandedFolders(): string[] {
+  return readJson<string[]>(EXPANDED_KEY, [], (v): v is string[] =>
+    Array.isArray(v) && v.every((x) => typeof x === "string"),
+  );
+}
+
+export function writeExpandedFolders(ids: string[]): void {
+  writeJson(EXPANDED_KEY, ids);
+  notifyChanged(EXPANDED_KEY);
+}
+
+/** 開いているフォルダを購読する。 */
+export function useExpandedFolders(): Set<string> {
+  // useSyncExternalStore は同じ値なら同じものを返す必要があるので、
+  // 素の文字列を挟んでから集合に変える
+  const raw = usePersisted(EXPANDED_KEY, () => readRaw(EXPANDED_KEY) ?? "", "");
+  return useMemo(() => new Set(readExpandedFolders()), [raw]);
 }

@@ -31,7 +31,8 @@ export interface SidebarActions {
 
   /** 開いているフォルダ。 */
   expanded: Set<string>;
-  setExpanded: React.Dispatch<React.SetStateAction<Set<string>>>;
+  /** そのフォルダの開閉を切り替える。 */
+  toggleExpanded: (id: string) => void;
   /** フォルダの階層へ入る（null でルートへ戻る）。 */
   setView: (id: string | null) => void;
 
