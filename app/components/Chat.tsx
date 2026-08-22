@@ -914,7 +914,13 @@ export function Chat({
           // URLは生成開始時に差し替え済みなので、そのままかどうかで見る。
           // ここでの navigate は、React Router 側の現在地（まだ "/"）を
           // 会話ページに合わせ直すためのもの
-          if (window.location.pathname === `/chat/${convId}`) {
+          //
+          // alive をここでもう一度見るのは、上の確認から**数秒経っている**
+          // ため。応答の取り直しとタイトル生成を待っているあいだに2通目を
+          // 送られると、その生成が最新になっている。この遷移は画面を作り
+          // 直すので、そのまま走らせると2通目の進行中表示ごと捨てられる
+          // （監査 D-7）。合わせ直しは次に落ち着いたときで間に合う。
+          if (alive(track) && window.location.pathname === `/chat/${convId}`) {
             await navigate(`/chat/${convId}`, { replace: true });
           }
         } else {

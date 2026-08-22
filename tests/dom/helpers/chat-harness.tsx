@@ -113,6 +113,12 @@ export function installServer(initial: UiMessage[] = []): ServerStub {
       }
       return { messages: [...messages] };
     }
+    // 新規チャットの会話作成。本物のルートと同じくIDを返す
+    // （返さないと URL が /chat/undefined になり、後追いの遷移を見る
+    //  テストが「たまたま一致した」状態で通ってしまう）
+    if (method === "POST" && path.endsWith("/api/conversations")) {
+      return { id: nextId("conv") };
+    }
     if (path.includes("/uploads")) {
       const id = nextId("att");
       return { id, mimeType: "image/png", name: `${id}.png`, size: 100 };
