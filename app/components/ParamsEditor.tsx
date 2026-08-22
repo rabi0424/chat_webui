@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ModelInfo } from "../lib/openrouter.server";
+import { TERSE_INPUT } from "../lib/ui";
 import {
   paramsForModel,
   POE_EXTRA_KEY_PATTERN,
@@ -108,6 +109,7 @@ function ExtraParams({
             onChange={(e) => update(i, { key: e.target.value })}
             placeholder="名前"
             aria-label="パラメータ名"
+            {...TERSE_INPUT}
             className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
           />
           <input
@@ -116,6 +118,7 @@ function ExtraParams({
             onChange={(e) => update(i, { value: e.target.value })}
             placeholder="値"
             aria-label="パラメータの値"
+            {...TERSE_INPUT}
             className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
           />
           <button
@@ -282,6 +285,7 @@ export function ParamsEditor({
                         onChange({ ...value, [def.key]: e.target.value })
                       }
                       aria-label={def.label}
+                      {...TERSE_INPUT}
                       className="w-36 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
                     />
                   )}

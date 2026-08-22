@@ -16,6 +16,7 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
 } from "../../lib/constants";
 import { isAcceptedImage } from "../../lib/image";
+import { PROSE_INPUT } from "../../lib/ui";
 import { IconPlus } from "../icons";
 
 /** 編集中のメッセージ。index は messages の位置。 */
@@ -102,6 +103,7 @@ export function MessageEditor({
         rows={3}
         autoFocus
         translate="no"
+        {...PROSE_INPUT}
         className="w-full resize-y bg-transparent outline-none"
       />
       <div className="mt-2 flex items-center gap-2 text-sm">

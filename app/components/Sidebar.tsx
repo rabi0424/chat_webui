@@ -35,6 +35,7 @@ import {
   GLASS_ACCENT_BUTTON,
   GLASS_ICON_BUTTON,
   GLASS_PANEL,
+  TERSE_INPUT,
 } from "../lib/ui";
 
 function escapeRegExp(s: string): string {
@@ -419,6 +420,7 @@ export function Sidebar({
                 }}
                 placeholder="検索（-語 で除外）"
                 aria-label="会話を検索"
+                {...TERSE_INPUT}
                 className="w-full rounded-full border border-neutral-200 bg-neutral-50 py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-[0.9375rem] dark:border-neutral-700 dark:bg-neutral-900"
               />
               <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
@@ -761,6 +763,7 @@ export function Sidebar({
                   value={newFolderName}
                   onChange={(e) => setNewFolderName(e.target.value)}
                   placeholder="新しいフォルダ名"
+                  {...TERSE_INPUT}
                   className="min-w-0 flex-1 rounded-lg border border-neutral-200/80 bg-white/60 px-3 py-2 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
                 />
                 <button

@@ -6,6 +6,7 @@ import { parseParamsJson, type ParamsState } from "../lib/params";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
+import { PROSE_INPUT, TERSE_INPUT } from "../lib/ui";
 
 export function BotForm({
   models,
@@ -101,6 +102,7 @@ export function BotForm({
             value={icon}
             onChange={(e) => setIcon(e.target.value)}
             aria-label="アイコン（絵文字）"
+            {...TERSE_INPUT}
             className="w-16 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-center text-xl outline-none focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
           />
         </div>
@@ -113,6 +115,7 @@ export function BotForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             aria-label="名前"
+            {...TERSE_INPUT}
             placeholder="例: 翻訳者、コードレビュアー"
             className="w-full rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 outline-none placeholder:text-neutral-400 focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
           />
@@ -142,6 +145,7 @@ export function BotForm({
           onChange={(e) => setSystemPrompt(e.target.value)}
           rows={8}
           aria-label="システムプロンプト"
+          {...PROSE_INPUT}
           placeholder="このボットの役割・口調・制約などを書きます"
           className="w-full resize-y rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 outline-none placeholder:text-neutral-400 focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
         />

@@ -11,6 +11,7 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
 } from "../../lib/constants";
 import { formatBytes } from "../../lib/image";
+import { PROSE_INPUT } from "../../lib/ui";
 import { IconArrowUp, IconBroom, IconPlus } from "../icons";
 import type { PendingAttachment } from "./use-attachments";
 
@@ -177,6 +178,7 @@ export function Composer({
             onPaste={onPaste}
             rows={1}
             translate="no"
+            {...PROSE_INPUT}
             placeholder={
               narrow ? "メッセージ" : "メッセージを入力…（Shift+Enterで改行）"
             }

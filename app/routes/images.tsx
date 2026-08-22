@@ -13,7 +13,7 @@ import { listGeneratedImages, type GeneratedImageRow } from "../lib/db.server";
 import { Lightbox } from "../components/Lightbox";
 import type { ImagesResponse } from "../lib/api-types";
 import { IconEllipsis, IconMenu, IconSearch, IconX } from "../components/icons";
-import { GLASS_PANEL } from "../lib/ui";
+import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
 import { useEscapeToClose } from "../lib/dismiss";
 
 export function meta() {
@@ -315,6 +315,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="依頼文・モデル名・会話名で検索"
             aria-label="画像を検索"
+            {...TERSE_INPUT}
             className="w-full rounded-xl border border-neutral-200 bg-neutral-50 py-2 pl-8 pr-8 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:border-neutral-700 dark:bg-neutral-900"
           />
           {query && (

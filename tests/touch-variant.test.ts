@@ -113,3 +113,34 @@ describe.skipIf(css == null)("動きを控える設定", () => {
     expect(block).toMatch(/scroll-behavior:\s*auto/);
   });
 });
+
+/**
+ * 読み上げ専用の領域（監査 F-20）。
+ *
+ * 生成の開始・完了・失敗は sr-only の中に書いている。ここが
+ * display:none や visibility:hidden で隠されると、**画面上の見え方は
+ * 同じまま**、支援技術からだけ消える——読み上げが止まったことに
+ * 気づく手段が無いので、出力を見て確かめる。
+ */
+describe.skipIf(css == null)("読み上げ専用の隠し方", () => {
+  const rule = /\.sr-only\{([^}]*)\}/.exec(css ?? "")?.[1] ?? "";
+
+  it("規則そのものが出ている", () => {
+    // クラス名を間違えると Tailwind は黙って何も出さない。
+    // そのときは読み上げ用の文言が画面に居座る
+    expect(rule).not.toBe("");
+  });
+
+  it("読み上げから消える隠し方をしていない", () => {
+    expect(rule).not.toMatch(/display:\s*none/);
+    expect(rule).not.toMatch(/visibility:\s*hidden/);
+    expect(rule).not.toMatch(/content-visibility:\s*hidden/);
+  });
+
+  it("画面からは見えない大きさに畳んである", () => {
+    expect(rule).toMatch(/position:\s*absolute/);
+    expect(rule).toMatch(/overflow:\s*hidden/);
+    expect(rule).toMatch(/width:\s*1px/);
+    expect(rule).toMatch(/height:\s*1px/);
+  });
+});

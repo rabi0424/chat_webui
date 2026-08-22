@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ModelInfo } from "../lib/openrouter.server";
 import { IconChevronDown } from "./icons";
-import { GLASS_PANEL } from "../lib/ui";
+import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
 import { rankedModelIds } from "../lib/recent-models";
 
 function formatPricePerMillion(perToken: string): string {
@@ -257,6 +257,8 @@ export function ModelPicker({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="モデルを検索…"
+              aria-label="モデルを検索"
+              {...TERSE_INPUT}
               className="w-full rounded-lg bg-neutral-100 px-3 py-2 text-base outline-none placeholder:text-neutral-400 sm:text-sm dark:bg-white/10 dark:text-neutral-100"
             />
           </div>
