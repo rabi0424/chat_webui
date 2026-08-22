@@ -1,9 +1,14 @@
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  DUE_PENDING_DELETIONS_SQL,
   MIGRATIONS,
+  PENDING_DELETION_GRACE_MS,
+  QUEUE_PENDING_DELETION_SQL,
+  clearPendingDeletionsSql,
   generatedImagesSql,
   statementsOf,
+  stillReferencedSql,
   undoGenerationStatements,
 } from "../app/lib/schema";
 
@@ -395,5 +400,114 @@ describe("生成の開始の取り消し", () => {
     setup();
     undo();
     expect(count("SELECT COUNT(*) AS n FROM messages WHERE status = 'streaming'")).toBe(0);
+  });
+});
+
+/**
+ * 消す候補の控え（監査 B-10）。
+ *
+ * 実体（R2）は分岐・フォークで共有される。以前は行を消したあとに
+ * 生き残りを数え、0なら落としていたが、数えてから落とすまでのあいだに
+ * フォークが走ると参照が復活したキーを消してしまう——**行だけ残って
+ * 画像が出ない**状態になり、取り返しがつかない。
+ *
+ * D1 と R2 はまたいで原子的に扱えないので、代わりに時間を空ける。
+ * ここで見るのは「落とす直前に数え直している」ことと、その数え直しが
+ * 復活した参照を拾えること。
+ */
+describe("消す候補の控え", () => {
+  const HOUR = 60 * 60 * 1000;
+  const now = 1_700_000_000_000;
+
+  /** 控える。 */
+  function queue(key: string, at: number): void {
+    db.prepare(QUEUE_PENDING_DELETION_SQL).run(key, at);
+  }
+
+  /** 猶予を過ぎた控えを引く。 */
+  function due(at = now): string[] {
+    return (
+      db
+        .prepare(DUE_PENDING_DELETIONS_SQL)
+        .all(at - PENDING_DELETION_GRACE_MS) as { r2_key: string }[]
+    ).map((r) => r.r2_key);
+  }
+
+  /** まだ参照されているキーを引く。 */
+  function referenced(keys: string[]): string[] {
+    return (
+      db.prepare(stillReferencedSql(keys.length)).all(...keys) as {
+        r2_key: string;
+      }[]
+    ).map((r) => r.r2_key);
+  }
+
+  /** 添付の行を1つ置く（フォークで増える行の代わり）。 */
+  function attach(id: string, key: string): void {
+    db.prepare(
+      "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at) VALUES (?, NULL, NULL, ?, 'image/png', ?, 1, ?)",
+    ).run(id, key, `${id}.png`, now);
+  }
+
+  beforeEach(() => {
+    migrate(db);
+  });
+
+  it("控えの表がある", () => {
+    const columns = db
+      .prepare("PRAGMA table_info(pending_file_deletions)")
+      .all() as { name: string }[];
+    expect(columns.map((c) => c.name).sort()).toEqual(["noticed_at", "r2_key"]);
+  });
+
+  it("猶予を過ぎたものだけが対象になる", () => {
+    queue("ふるい", now - HOUR);
+    queue("さっき", now);
+    expect(due()).toEqual(["ふるい"]);
+  });
+
+  /**
+   * この仕組みの要。控えた時点では誰も参照していなくても、猶予のあいだに
+   * フォークで参照が復活していることがある。落とす直前に数え直すので、
+   * 復活したぶんはここで生き残る。
+   */
+  it("控えたあとに参照が復活したキーは、落とさない", () => {
+    queue("共有されている", now - HOUR);
+    queue("もう誰も見ていない", now - HOUR);
+    // フォークが実体を共有したまま行だけ複製した
+    attach("フォーク後の行", "共有されている");
+
+    const keys = due();
+    expect(keys.sort()).toEqual(["もう誰も見ていない", "共有されている"].sort());
+
+    const alive = referenced(keys);
+    expect(alive).toEqual(["共有されている"]);
+    // 落とすのは、生き残らなかったほうだけ
+    expect(keys.filter((k) => !alive.includes(k))).toEqual([
+      "もう誰も見ていない",
+    ]);
+  });
+
+  it("同じキーを控え直しても、時計は戻らない", () => {
+    queue("キー", now - HOUR);
+    queue("キー", now);
+    expect(due()).toEqual(["キー"]);
+    const rows = db
+      .prepare("SELECT noticed_at FROM pending_file_deletions WHERE r2_key = ?")
+      .all("キー") as { noticed_at: number }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].noticed_at).toBe(now - HOUR);
+  });
+
+  it("見終わった控えは、生き残ったぶんも外す", () => {
+    queue("生き残り", now - HOUR);
+    queue("落とすほう", now - HOUR);
+    attach("行", "生き残り");
+
+    const keys = due();
+    db.prepare(clearPendingDeletionsSql(keys.length)).run(...keys);
+    expect(due()).toEqual([]);
+    // 生き残りは行が残っているので、また用済みになれば削除の側が控え直す
+    expect(referenced(["生き残り"])).toEqual(["生き残り"]);
   });
 });
