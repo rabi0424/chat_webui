@@ -1,5 +1,6 @@
 import type { Route } from "./+types/api.poe.bot-info";
 import { POE_PREFIX, probePoeBot } from "../lib/openrouter.server";
+import { apiError } from "../lib/api-types";
 
 /**
  * Poeボットの公開情報の確認（診断用）。
@@ -13,10 +14,7 @@ import { POE_PREFIX, probePoeBot } from "../lib/openrouter.server";
 export async function loader({ request }: Route.LoaderArgs) {
   const raw = new URL(request.url).searchParams.get("bot")?.trim();
   if (!raw) {
-    return Response.json(
-      { error: "?bot=<ボット名> を付けてください（例: ?bot=gpt-image-2）" },
-      { status: 400 },
-    );
+    return apiError("?bot=<ボット名> を付けてください（例: ?bot=gpt-image-2）", 400);
   }
   // モデルIDそのまま（poe:Name）でも、ボット名だけでも受け付ける
   const bot = raw.startsWith(POE_PREFIX) ? raw.slice(POE_PREFIX.length) : raw;

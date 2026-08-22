@@ -2,6 +2,7 @@ import type { Route } from "./+types/api.bots";
 import { createBot, listBots } from "../lib/db.server";
 import { MAX_TITLE_LENGTH } from "../lib/constants";
 import type { ParamsState } from "../lib/params";
+import { apiError, requireMethod } from "../lib/api-types";
 
 export async function loader() {
   const bots = await listBots();
@@ -17,17 +18,16 @@ interface BotBody {
 }
 
 export async function action({ request }: Route.ActionArgs) {
-  if (request.method !== "POST") {
-    return Response.json({ error: "Method Not Allowed" }, { status: 405 });
-  }
+  const bad = requireMethod(request, ["POST"]);
+  if (bad) return bad;
   let body: BotBody;
   try {
     body = (await request.json()) as BotBody;
   } catch {
-    return Response.json({ error: "不正なリクエストです" }, { status: 400 });
+    return apiError("不正なリクエストです", 400);
   }
   if (!body.name?.trim() || !body.modelId) {
-    return Response.json({ error: "name と modelId は必須です" }, { status: 400 });
+    return apiError("name と modelId は必須です", 400);
   }
 
   const bot = await createBot({

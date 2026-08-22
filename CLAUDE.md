@@ -92,13 +92,21 @@ playwright は `/opt/node22/lib/node_modules` にある。
 ## 変更を出す前に
 
 ```
-npx tsc --noEmit     # 型
+npm run typecheck    # 型（tsc -b。--noEmit ではない——下記）
 npx eslint .         # エラー0（警告20はフック関連で既知）
 npx vitest run       # 全通過
 npm run build        # ビルド
 ```
 
 4つ全部が通ってから push する。CI も同じものを見る。
+
+**`npx tsc --noEmit` は何も検査しない。** ルートの `tsconfig.json` は
+`"files": []` と references だけで、`tsc` は単体では references を辿らない
+（辿るのは `-b`）。そのため終了コード0で即座に返る——型エラーがあっても
+「通った」ように見える。実際、この空振りに気づかないまま作業して、
+import を書き忘れた19ファイルが素通りした。型を見るときは
+`npm run typecheck`（`wrangler types && react-router typegen && tsc -b`）を
+使う。ルートの `./+types/*` は typegen が作るので、その前段も要る。
 
 ## 書き方の癖
 

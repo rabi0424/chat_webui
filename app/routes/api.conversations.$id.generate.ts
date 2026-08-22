@@ -11,7 +11,7 @@ import { checkMonthlyLimit, limitMessage } from "../lib/limit.server";
 import type { ChatMessage } from "../lib/openrouter.server";
 import type { ParamsState } from "../lib/params";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "../lib/r2.server";
-import { apiJson, type GenerateResponse } from "../lib/api-types";
+import { apiError, apiJson, requireMethod, type GenerateResponse } from "../lib/api-types";
 
 interface GenerateBody {
   model: string;
@@ -41,26 +41,22 @@ interface GenerateBody {
  * 生成過程はすべての画面がポーリング（/messages/:mid）で閲覧する。
  */
 export async function action({ request, params, context }: Route.ActionArgs) {
-  if (request.method !== "POST") {
-    return Response.json({ error: "Method Not Allowed" }, { status: 405 });
-  }
+  const bad = requireMethod(request, ["POST"]);
+  if (bad) return bad;
 
   let body: GenerateBody;
   try {
     body = (await request.json()) as GenerateBody;
   } catch {
-    return Response.json({ error: "不正なリクエストです" }, { status: 400 });
+    return apiError("不正なリクエストです", 400);
   }
   if (!body.model || !Array.isArray(body.messages) || body.messages.length === 0) {
-    return Response.json(
-      { error: "model と messages は必須です" },
-      { status: 400 },
-    );
+    return apiError("model と messages は必須です", 400);
   }
 
   const conversation = await getConversation(params.id);
   if (!conversation) {
-    return Response.json({ error: "会話が見つかりません" }, { status: 404 });
+    return apiError("会話が見つかりません", 404);
   }
 
   // 月間の上限。ここは生成が始まる唯一の入口なので、門はここに置く
@@ -69,7 +65,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // 歯止めは発射ループの側にも要る（generation.server.ts）
   const limit = await checkMonthlyLimit();
   if (limit.blocked) {
-    return Response.json({ error: limitMessage(limit) }, { status: 402 });
+    return apiError(limitMessage(limit), 402);
   }
 
   // 「成功するまで生成」の設定。天井はアプリ設定側で決まるので、
@@ -132,10 +128,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         assistantMessageId,
       });
     });
-    return Response.json(
-      { error: "生成の開始に失敗しました" },
-      { status: 502 },
-    );
+    return apiError("生成の開始に失敗しました", 502);
   }
 
   return apiJson<GenerateResponse>({ userMessageId, assistantMessageId });

@@ -1,6 +1,7 @@
 import type { Route } from "./+types/api.files.$id";
 import { getAttachment } from "../lib/db.server";
 import { getFile, isStorageConfigured } from "../lib/r2.server";
+import { apiError } from "../lib/api-types";
 
 /**
  * 添付画像の配信。R2キーは外に出さず、添付IDで引く。
@@ -8,15 +9,15 @@ import { getFile, isStorageConfigured } from "../lib/r2.server";
  */
 export async function loader({ params }: Route.LoaderArgs) {
   if (!isStorageConfigured()) {
-    return new Response("ストレージが設定されていません", { status: 503 });
+    return apiError("ストレージが設定されていません", 503);
   }
   const attachment = await getAttachment(params.id);
   if (!attachment) {
-    return new Response("添付が見つかりません", { status: 404 });
+    return apiError("添付が見つかりません", 404);
   }
   const object = await getFile(attachment.r2_key);
   if (!object) {
-    return new Response("ファイルの実体が見つかりません", { status: 404 });
+    return apiError("ファイルの実体が見つかりません", 404);
   }
 
   return new Response(object.body, {

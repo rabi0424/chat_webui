@@ -1,13 +1,13 @@
 import type { Route } from "./+types/api.conversations.$id.messages.$mid";
 import { getMessage } from "../lib/db.server";
 import { parseCitations, parseUsage } from "../lib/serialize.server";
-import { apiJson, type MessageStateResponse } from "../lib/api-types";
+import { apiError, apiJson, type MessageStateResponse } from "../lib/api-types";
 
 /** ポーリング用: 生成中メッセージの現在状態を返す。 */
 export async function loader({ params }: Route.LoaderArgs) {
   const message = await getMessage(params.id, params.mid);
   if (!message) {
-    return Response.json({ error: "メッセージが見つかりません" }, { status: 404 });
+    return apiError("メッセージが見つかりません", 404);
   }
   return apiJson<MessageStateResponse>(
     {
