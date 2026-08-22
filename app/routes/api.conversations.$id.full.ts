@@ -1,6 +1,7 @@
 import type { Route } from "./+types/api.conversations.$id.full";
 import { getConversationWithPath } from "../lib/db.server";
 import { toUiMessage } from "../lib/serialize.server";
+import { apiError } from "../lib/api-types";
 
 /**
  * GET: chat/:id のローダーと同じ形（会話+表示パス）を返す。
@@ -11,7 +12,7 @@ import { toUiMessage } from "../lib/serialize.server";
 export async function loader({ params }: Route.LoaderArgs) {
   const found = await getConversationWithPath(params.id);
   if (!found) {
-    return Response.json({ error: "会話が見つかりません" }, { status: 404 });
+    return apiError("会話が見つかりません", 404);
   }
   return Response.json({
     conversation: found.conversation,

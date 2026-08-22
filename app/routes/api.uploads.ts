@@ -10,7 +10,7 @@ import {
   putFile,
 } from "../lib/r2.server";
 import { cloudflareContext } from "../lib/cloudflare-context";
-import { apiJson, type UploadResponse } from "../lib/api-types";
+import { apiError, apiJson, requireMethod, type UploadResponse } from "../lib/api-types";
 
 /**
  * 画像のアップロード。R2へ実体を保存し、D1にメタデータ行を作って
@@ -18,9 +18,8 @@ import { apiJson, type UploadResponse } from "../lib/api-types";
  * 送信時に `generate` がユーザーメッセージへ紐づける。
  */
 export async function action({ request, context }: Route.ActionArgs) {
-  if (request.method !== "POST") {
-    return Response.json({ error: "Method Not Allowed" }, { status: 405 });
-  }
+  const bad = requireMethod(request, ["POST"]);
+  if (bad) return bad;
   if (!isStorageConfigured()) {
     return Response.json(
       { error: new StorageUnavailableError().message },
@@ -34,10 +33,10 @@ export async function action({ request, context }: Route.ActionArgs) {
     const value = form.get("file");
     if (value instanceof File) file = value;
   } catch {
-    return Response.json({ error: "不正なリクエストです" }, { status: 400 });
+    return apiError("不正なリクエストです", 400);
   }
   if (!file) {
-    return Response.json({ error: "file は必須です" }, { status: 400 });
+    return apiError("file は必須です", 400);
   }
 
   const mimeType = file.type.split(";")[0].trim().toLowerCase();
@@ -50,10 +49,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     );
   }
   if (file.size > MAX_UPLOAD_BYTES) {
-    return Response.json(
-      { error: `ファイルが大きすぎます（上限 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB）` },
-      { status: 413 },
-    );
+    return apiError(`ファイルが大きすぎます（上限 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB）`, 413);
   }
 
   const buffer = await file.arrayBuffer();
@@ -61,24 +57,18 @@ export async function action({ request, context }: Route.ActionArgs) {
   // （File.type）だけで、詐称すれば中身が画像でないものを画像として
   // 保存し、画像として配信できた
   if (!matchesDeclared(buffer, mimeType)) {
-    return Response.json(
-      { error: "画像として読めないファイルです" },
-      { status: 415 },
-    );
+    return apiError("画像として読めないファイルです", 415);
   }
   // 実サイズも検証する（Content-Length は信用しない）
   if (buffer.byteLength > MAX_UPLOAD_BYTES) {
-    return Response.json({ error: "ファイルが大きすぎます" }, { status: 413 });
+    return apiError("ファイルが大きすぎます", 413);
   }
 
   const key = `attachments/${crypto.randomUUID()}`;
   try {
     await putFile(key, buffer, mimeType);
   } catch (e) {
-    return Response.json(
-      { error: `アップロードに失敗しました: ${(e as Error).message}` },
-      { status: 502 },
-    );
+    return apiError(`アップロードに失敗しました: ${(e as Error).message}`, 502);
   }
 
   let attachment;
@@ -93,10 +83,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     // 実体だけ置いてメタデータを書けないと、どの行からも辿れない
     // 完全な孤児になる（孤児の掃除はDBの行を起点に探すので拾えない）
     await deleteFiles([key]).catch(() => {});
-    return Response.json(
-      { error: `アップロードに失敗しました: ${(e as Error).message}` },
-      { status: 500 },
-    );
+    return apiError(`アップロードに失敗しました: ${(e as Error).message}`, 500);
   }
 
   // 送信されないまま残った古い添付をついでに掃除する。

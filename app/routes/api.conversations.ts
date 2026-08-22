@@ -5,12 +5,11 @@ import {
   updateConversationParams,
 } from "../lib/db.server";
 import { MAX_TITLE_LENGTH } from "../lib/constants";
-import { apiJson, type CreateConversationResponse } from "../lib/api-types";
+import { apiError, apiJson, requireMethod, type CreateConversationResponse } from "../lib/api-types";
 
 export async function action({ request }: Route.ActionArgs) {
-  if (request.method !== "POST") {
-    return Response.json({ error: "Method Not Allowed" }, { status: 405 });
-  }
+  const bad = requireMethod(request, ["POST"]);
+  if (bad) return bad;
 
   let body: {
     title?: string;
@@ -21,10 +20,10 @@ export async function action({ request }: Route.ActionArgs) {
   try {
     body = (await request.json()) as typeof body;
   } catch {
-    return Response.json({ error: "不正なリクエストです" }, { status: 400 });
+    return apiError("不正なリクエストです", 400);
   }
   if (!body.modelId) {
-    return Response.json({ error: "modelId は必須です" }, { status: 400 });
+    return apiError("modelId は必須です", 400);
   }
 
   // ボット開始時はサーバー側で現在のボット設定をスナップショットする

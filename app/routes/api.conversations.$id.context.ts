@@ -5,6 +5,7 @@ import {
   setContextBoundary,
 } from "../lib/db.server";
 import { toUiMessage } from "../lib/serialize.server";
+import { apiError, requireMethod } from "../lib/api-types";
 
 /**
  * POST: コンテキストの境界線を立てる / 解除する。
@@ -14,22 +15,21 @@ import { toUiMessage } from "../lib/serialize.server";
  * 更新後のパスをそのまま返し、クライアントは再取得せずに反映できる。
  */
 export async function action({ request, params }: Route.ActionArgs) {
-  if (request.method !== "POST") {
-    return Response.json({ error: "Method Not Allowed" }, { status: 405 });
-  }
+  const bad = requireMethod(request, ["POST"]);
+  if (bad) return bad;
   let body: { messageId?: string; enabled?: boolean };
   try {
     body = (await request.json()) as typeof body;
   } catch {
-    return Response.json({ error: "不正なリクエストです" }, { status: 400 });
+    return apiError("不正なリクエストです", 400);
   }
   if (!body.messageId) {
-    return Response.json({ error: "messageId は必須です" }, { status: 400 });
+    return apiError("messageId は必須です", 400);
   }
 
   const conversation = await getConversation(params.id);
   if (!conversation) {
-    return Response.json({ error: "会話が見つかりません" }, { status: 404 });
+    return apiError("会話が見つかりません", 404);
   }
 
   const ok = await setContextBoundary(
@@ -38,7 +38,7 @@ export async function action({ request, params }: Route.ActionArgs) {
     body.enabled !== false,
   );
   if (!ok) {
-    return Response.json({ error: "メッセージが見つかりません" }, { status: 404 });
+    return apiError("メッセージが見つかりません", 404);
   }
 
   const path = await getConversationPath(conversation);

@@ -109,3 +109,27 @@ export function apiJson<T>(data: T, init?: ResponseInit): Response {
 export function apiError(message: string, status: number): Response {
   return Response.json({ error: message } satisfies ErrorResponse, { status });
 }
+
+/**
+ * 受け付けるメソッドを確かめる。通れば null、通らなければ 405 を返す。
+ *
+ * 許すメソッドの一覧をここへ1度だけ書き、405 の Allow ヘッダも同じ
+ * 一覧から作る。以前は「分岐で見るメソッド」と「405 の応答」が別々に
+ * 書かれていて、**受け口を増やしても Allow は古いまま**にできた。
+ * 405 に Allow を付けるのは HTTP の決まり（RFC 9110）でもある。
+ *
+ * 更新は PATCH に揃える（監査 C-1）。同じ「一部を書き換える」操作が
+ * ルートによって PUT だったり POST も受けたりしていた。呼ぶ側は
+ * ルートごとに正解を覚えることになり、間違えても 405 が返るだけで
+ * 理由は分からない。
+ */
+export function requireMethod(
+  request: Request,
+  allowed: readonly string[],
+): Response | null {
+  if (allowed.includes(request.method)) return null;
+  return Response.json(
+    { error: "Method Not Allowed" } satisfies ErrorResponse,
+    { status: 405, headers: { Allow: allowed.join(", ") } },
+  );
+}

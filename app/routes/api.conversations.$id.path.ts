@@ -5,7 +5,7 @@ import {
   switchToBranch,
 } from "../lib/db.server";
 import { toUiMessage } from "../lib/serialize.server";
-import { apiError, apiJson, type PathResponse } from "../lib/api-types";
+import { apiError, apiJson, requireMethod, type PathResponse } from "../lib/api-types";
 
 /**
  * 表示中のパスは生成のたびに変わる。中間キャッシュに残さない。
@@ -29,9 +29,8 @@ export async function loader({ params }: Route.LoaderArgs) {
 
 /** POST: 指定メッセージのブランチへ切り替え、新しいパスを返す。 */
 export async function action({ request, params }: Route.ActionArgs) {
-  if (request.method !== "POST") {
-    return apiError("Method Not Allowed", 405);
-  }
+  const bad = requireMethod(request, ["POST"]);
+  if (bad) return bad;
   let body: { messageId?: string };
   try {
     body = (await request.json()) as typeof body;

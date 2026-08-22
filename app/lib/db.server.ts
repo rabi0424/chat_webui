@@ -10,9 +10,14 @@ import {
 } from "./settings";
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
 import {
+  DUE_PENDING_DELETIONS_SQL,
   MIGRATIONS,
+  PENDING_DELETION_GRACE_MS,
+  QUEUE_PENDING_DELETION_SQL,
+  clearPendingDeletionsSql,
   generatedImagesSql,
   statementsOf,
+  stillReferencedSql,
   undoGenerationStatements,
 } from "./schema";
 import { EMPTY_TOTALS, type UsageTotals } from "./usage";
@@ -715,7 +720,7 @@ export async function deleteConversation(id: string): Promise<void> {
     d.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM conversations WHERE id = ?").bind(id),
   ]);
-  await deleteUnreferencedFiles([...new Set(results.map((r) => r.r2_key))]);
+  await notePossiblyUnreferenced([...new Set(results.map((r) => r.r2_key))]);
 }
 
 export interface PathMessage extends MessageRow {
@@ -1227,26 +1232,67 @@ export async function listGeneratedImages(params: {
 }
 
 /**
- * 渡したキーのうち、もうどの添付行からも参照されていないものを
- * R2から消す。分岐・フォークで実体を共有するため、行を消したあとに
- * 生き残りを数え直してから落とす。
+ * 実体が用済みになったかもしれないキーを控える（監査 B-10）。
+ *
+ * ここでは数えず、落としもしない。実体は分岐・フォークで共有されるので、
+ * 以前は「行を消したあとに生き残りを数え、0なら落とす」としていたが、
+ * **数えてから落とすまでのあいだにフォークが走ると、参照が復活した
+ * キーを消してしまう**。D1 と R2 はまたいで原子的に扱えないので、
+ * 数える位置をずらしても窓は消えない。
+ *
+ * 代わりに時間を空ける。ここは控えるだけにして、猶予を過ぎてから
+ * 数え直して落とす（sweepPendingFileDeletions）。フォークは1回の要求で
+ * 読んで書くので、猶予のあいだずっと途中で止まっていることは無い。
+ *
+ * 控えるのは候補のまま——参照が残っているかどうかは、落とす直前に
+ * 一箇所だけで判断する。
  */
-async function deleteUnreferencedFiles(keys: string[]): Promise<void> {
+async function notePossiblyUnreferenced(keys: string[]): Promise<void> {
   if (keys.length === 0) return;
   const d = await db();
+  const now = Date.now();
+  // 1文あたりのバインド上限（100）に収める。2個ずつ使うので半分で切る
+  for (const part of chunked([...new Set(keys)], Math.floor(BIND_CHUNK / 2))) {
+    await d.batch(
+      part.map((key) => d.prepare(QUEUE_PENDING_DELETION_SQL).bind(key, now)),
+    );
+  }
+  // ついでに、前回までの控えを片づける（削除以外に控えが増える経路は無い）
+  await sweepPendingFileDeletions();
+}
+
+/**
+ * 猶予を過ぎた控えを数え直し、まだ誰も参照していないものだけ落とす。
+ *
+ * 落とす直前に数えるのがこの仕組みの要。控えた時点では用済みでも、
+ * 猶予のあいだにフォークで参照が復活していることがある。
+ */
+export async function sweepPendingFileDeletions(): Promise<void> {
+  const d = await db();
+  const { results: due } = await d
+    .prepare(DUE_PENDING_DELETIONS_SQL)
+    .bind(Date.now() - PENDING_DELETION_GRACE_MS)
+    .all<{ r2_key: string }>();
+  if (due.length === 0) return;
+
+  const keys = due.map((r) => r.r2_key);
   const stillUsed = new Set<string>();
   for (const part of chunked(keys)) {
     const { results } = await d
-      .prepare(
-        `SELECT DISTINCT r2_key FROM attachments WHERE r2_key IN (${part
-          .map(() => "?")
-          .join(",")})`,
-      )
+      .prepare(stillReferencedSql(part.length))
       .bind(...part)
       .all<{ r2_key: string }>();
     for (const r of results) stillUsed.add(r.r2_key);
   }
+
   await deleteFiles(keys.filter((k) => !stillUsed.has(k)));
+  // 生き残ったぶんも控えから外す。用済みになれば削除の側がまた控える
+  for (const part of chunked(keys)) {
+    await d
+      .prepare(clearPendingDeletionsSql(part.length))
+      .bind(...part)
+      .run();
+  }
 }
 
 /**
@@ -1270,7 +1316,7 @@ async function deleteAttachmentRows(ids: string[]): Promise<void> {
       .run();
     for (const r of doomed) keys.add(r.r2_key);
   }
-  await deleteUnreferencedFiles([...keys]);
+  await notePossiblyUnreferenced([...keys]);
 }
 
 /** 指定メッセージ群に属する添付行を引く。 */
@@ -1302,6 +1348,9 @@ async function attachmentsOfMessages(
 const ORPHAN_ATTACHMENT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export async function sweepOrphanAttachments(): Promise<void> {
+  // 消す候補の控えも一緒に片づける。控えが増えるのは削除のときだけだが、
+  // 削除を最後にやったきり何もしないと、猶予が過ぎた控えが残り続ける
+  await sweepPendingFileDeletions();
   const d = await db();
   const { results } = await d
     .prepare(
@@ -1825,7 +1874,7 @@ export async function deleteMessages(
   await d.batch(statements);
   // R2の実体は行が消えたあとに片づける（消し損ねは孤児として拾えるが、
   // 逆に実体だけ先に消すと取り返しがつかない）
-  await deleteUnreferencedFiles([...new Set(doomed.map((a) => a.r2_key))]);
+  await notePossiblyUnreferenced([...new Set(doomed.map((a) => a.r2_key))]);
 }
 
 /**

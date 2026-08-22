@@ -68,7 +68,7 @@ export function BotForm({
       });
       const res = initial
         ? await fetch(`/api/bots/${initial.id}`, {
-            method: "PUT",
+            method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body,
           })

@@ -160,7 +160,67 @@ CREATE TABLE IF NOT EXISTS usage_events (
 CREATE INDEX IF NOT EXISTS idx_usage_at ON usage_events(at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_message ON usage_events(message_id) WHERE message_id IS NOT NULL;
 `,
+  // v15: 消す候補になったR2のキーの控え。
+  //
+  // 実体は分岐・フォークで共有されるので、行を消したあとに「もう誰も
+  // 参照していないか」を数えてから落としている。ところが数えてから
+  // 落とすまでのあいだにフォークが走ると、参照が復活したキーを消して
+  // しまう——**行だけ残って画像が出ない**状態になり、取り返しがつかない。
+  //
+  // D1 と R2 はまたいで原子的に扱えないので、代わりに時間を空ける。
+  // 消す候補をここへ控え、しばらく経ってから数え直して落とす。フォークは
+  // 1回の要求で読んで書くので、控えてから猶予が過ぎるまでのあいだ
+  // ずっと途中で止まっていることは無い。
+  //
+  // 控えが残ったままでも害は無い（実体が消え残るだけ）。逆は取り返しが
+  // つかない、という向きは他の削除と同じ。
+  `
+CREATE TABLE IF NOT EXISTS pending_file_deletions (
+  r2_key TEXT PRIMARY KEY,
+  noticed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pending_deletion_at ON pending_file_deletions(noticed_at);
+`,
 ];
+
+/**
+ * 消す候補を控えてから、実際に落とすまでの猶予。
+ *
+ * フォークが「参照している行を読む」→「新しい行を書く」までに挟まりうる
+ * 時間より十分長く取る（実測では1回の要求で完結するので1秒に満たない）。
+ */
+export const PENDING_DELETION_GRACE_MS = 10 * 60 * 1000;
+
+/** 一度の掃除で見る件数。サブリクエストを使い切らないよう区切る。 */
+export const PENDING_DELETION_SWEEP_LIMIT = 100;
+
+/** 消す候補を控える。すでに控えてあるキーは時計を戻さない。 */
+export const QUEUE_PENDING_DELETION_SQL =
+  "INSERT INTO pending_file_deletions (r2_key, noticed_at) VALUES (?, ?) ON CONFLICT(r2_key) DO NOTHING";
+
+/** 猶予を過ぎた控え。 */
+export const DUE_PENDING_DELETIONS_SQL = `SELECT r2_key FROM pending_file_deletions WHERE noticed_at <= ? ORDER BY noticed_at LIMIT ${PENDING_DELETION_SWEEP_LIMIT}`;
+
+/**
+ * まだどれかの添付行から参照されているキー。
+ *
+ * 控えた時点ではなく**落とす直前**にこれを引くのが、この仕組みの要。
+ * 控えてから猶予のあいだに参照が復活したものは、ここで生き残る。
+ */
+export function stillReferencedSql(count: number): string {
+  return `SELECT DISTINCT r2_key FROM attachments WHERE r2_key IN (${Array.from(
+    { length: count },
+    () => "?",
+  ).join(",")})`;
+}
+
+/** 見終わった控えを外す（落としたものも、生き残ったものも）。 */
+export function clearPendingDeletionsSql(count: number): string {
+  return `DELETE FROM pending_file_deletions WHERE r2_key IN (${Array.from(
+    { length: count },
+    () => "?",
+  ).join(",")})`;
+}
 
 /** 版のSQLを文単位に割る。1文ずつ流すことで、どこまで進んだかを揃える。 */
 export function statementsOf(sql: string): string[] {
