@@ -10,7 +10,7 @@ export function meta() {
 }
 
 export default function Home() {
-  const { bots, models } = useOutletContext<ShellContext>();
+  const { bots, models, settings } = useOutletContext<ShellContext>();
   const [selected, setSelected] = useState<BotContext | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
 
@@ -93,6 +93,12 @@ export default function Home() {
       initialMessages={[]}
       bot={selected}
       initialModel={selectedModel}
+      /*
+       * まだ会話が無いので、写しではなくいまの値を渡す。ボットを
+       * 選んでいればそちらが優先で、素のチャットならアプリ既定。
+       * 会話が作られた時点で、サーバー側が同じものを写し取る。
+       */
+      systemPrompt={selected?.systemPrompt ?? (settings.defaultSystemPrompt || null)}
       emptyState={emptyState}
     />
   );

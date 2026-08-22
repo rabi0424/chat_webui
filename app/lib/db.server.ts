@@ -2,7 +2,9 @@ import { env } from "cloudflare:workers";
 import { deleteFiles } from "./r2.server";
 import {
   DEFAULT_APP_SETTINGS,
+  DEFAULT_SYSTEM_PROMPT_MAX,
   MONTHLY_LIMIT_RANGE,
+  conversationSystemPrompt,
   NEW_MODEL_DAYS_RANGE,
   POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
@@ -206,6 +208,25 @@ export async function updateAppSettings(
     );
   }
 
+  if ("defaultModelId" in patch) {
+    const id = patch.defaultModelId;
+    // 空文字は「指定なし」として扱う（入力欄を空にしたときに
+    // 存在しないIDが残らないように）
+    next.defaultModelId =
+      typeof id === "string" && id.trim() !== "" ? id.trim() : null;
+  }
+
+  if (typeof patch.defaultSystemPrompt === "string") {
+    next.defaultSystemPrompt = patch.defaultSystemPrompt.slice(
+      0,
+      DEFAULT_SYSTEM_PROMPT_MAX,
+    );
+  }
+
+  if (patch.defaultParams && typeof patch.defaultParams === "object") {
+    next.defaultParams = patch.defaultParams;
+  }
+
   const rate = Number(patch.poePointsUsdRate);
   if (Number.isFinite(rate)) {
     next.poePointsUsdRate = Math.min(
@@ -314,6 +335,12 @@ export async function createConversation(params: {
   const d = await db();
   const now = Date.now();
   const bot = params.bot ?? null;
+  /*
+   * ボットを使わない会話にも、アプリ既定のシステムプロンプトを写し取る。
+   * 参照ではなく写しにするのは、あとで既定を変えたときに既にある会話の
+   * 前提が入れ替わらないようにするため（ボットと同じ規則）。
+   */
+  const systemPrompt = conversationSystemPrompt(bot, await getAppSettings());
   const row: ConversationRow = {
     id: crypto.randomUUID(),
     title: params.title,
@@ -325,7 +352,7 @@ export async function createConversation(params: {
     bot_icon: bot?.icon ?? null,
     unread: 0,
     favorite: 0,
-    system_prompt: bot ? bot.system_prompt : null,
+    system_prompt: systemPrompt,
     params_json: bot?.params_json ?? null,
     folder_id: null,
     sort_order: 0,

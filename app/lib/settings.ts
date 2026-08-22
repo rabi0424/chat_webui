@@ -36,6 +36,33 @@ export interface AppSettings {
    * 間に合わないと取りこぼす。その分を上限の計算に混ぜるためのレート。
    */
   poePointsUsdRate: number;
+  /**
+   * 新規チャットで最初に選ぶモデル。null なら組み込みの既定。
+   *
+   * ここに置くのは、既定のモデルが課金に直結するため（高いモデルが
+   * 既定のままだと、選び直す前の1通目で事故る）。テーマのような
+   * 端末ごとの好みとは性質が違う。
+   *
+   * ただし**その端末で最後に使ったモデルのほうが優先される**。
+   * 選び直したモデルが次のチャットでも続くのは、切り替えながら使う
+   * 上で欠かせない挙動なので、そちらを崩さない。この値は「まだ何も
+   * 選んでいない端末での出発点」として効く。
+   */
+  defaultModelId: string | null;
+  /**
+   * ボットを使わない新規チャットに入れるシステムプロンプト。
+   * 空文字なら入れない。
+   *
+   * 会話を作るときに写し取る（ボットと同じ扱い）。あとで変えても
+   * 既にある会話には遡らない——遡ると、同じ会話の続きなのに前提が
+   * 入れ替わることになる。
+   */
+  defaultSystemPrompt: string;
+  /**
+   * ボットを使わない新規チャットの生成パラメータ。
+   * 空なら指定しない（モデル本来の既定に任せる）。
+   */
+  defaultParams: Record<string, unknown>;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -46,7 +73,13 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   monthlyLimitJpy: 0,
   monthlyLimitOverride: null,
   poePointsUsdRate: 0,
+  defaultModelId: null,
+  defaultSystemPrompt: "",
+  defaultParams: {},
 };
+
+/** システムプロンプトとして受け付ける長さ。 */
+export const DEFAULT_SYSTEM_PROMPT_MAX = 8_000;
 
 /** 天井として受け付ける範囲。 */
 export const RETRY_CEILING_RANGE = { min: 1, max: 1000 };
@@ -59,3 +92,22 @@ export const MONTHLY_LIMIT_RANGE = { min: 0, max: 1_000_000 };
 
 /** ポイント換算レートとして受け付ける範囲（0 = 見積もらない）。 */
 export const POE_RATE_RANGE = { min: 0, max: 1 };
+
+/**
+ * その会話に写し取るシステムプロンプト。無ければ null。
+ *
+ * ボットを選んで始めた会話はボットのものを、素の会話はアプリ既定を
+ * 写す。**参照ではなく写し**にするのは、あとで既定やボットを変えても
+ * 既にある会話の前提が入れ替わらないようにするため（同じ会話の続きな
+ * のに指示が変わると、応答が変わった理由が分からなくなる）。
+ *
+ * 空文字は「入れない」。system の中身が空のメッセージを送ると、
+ * 上流によっては 400 になる。
+ */
+export function conversationSystemPrompt(
+  bot: { system_prompt: string } | null,
+  settings: AppSettings,
+): string | null {
+  const prompt = bot ? bot.system_prompt : settings.defaultSystemPrompt;
+  return prompt.trim() === "" ? null : prompt;
+}

@@ -12,6 +12,10 @@ import {
   TITLE_MODEL,
 } from "../app/lib/constants";
 import { isAcceptedImage } from "../app/lib/image";
+import {
+  DEFAULT_APP_SETTINGS,
+  conversationSystemPrompt,
+} from "../app/lib/settings";
 
 /**
  * サーバーとクライアントで共有する決まりごと。
@@ -89,5 +93,54 @@ describe("Poe の接頭辞", () => {
       });
 
     expect(copies).toEqual([]);
+  });
+});
+
+/**
+ * 会話に写し取るシステムプロンプト（監査 G-10）。
+ *
+ * 参照ではなく写しにするので、判断はここ1か所。あとで既定やボットを
+ * 変えても、既にある会話の前提が入れ替わらないようにするための決まり。
+ */
+describe("会話のシステムプロンプト", () => {
+  const withDefault = (defaultSystemPrompt: string) => ({
+    ...DEFAULT_APP_SETTINGS,
+    defaultSystemPrompt,
+  });
+
+  it("ボットを選んでいれば、ボットのものを写す", () => {
+    expect(
+      conversationSystemPrompt(
+        { system_prompt: "ボットの指示" },
+        withDefault("アプリ既定"),
+      ),
+    ).toBe("ボットの指示");
+  });
+
+  it("素の会話には、アプリ既定を写す", () => {
+    expect(conversationSystemPrompt(null, withDefault("アプリ既定"))).toBe(
+      "アプリ既定",
+    );
+  });
+
+  /**
+   * 中身が空の system メッセージを送ると、上流によっては 400 になる。
+   * 空白だけの入力も同じ扱いにする。
+   */
+  it("空なら入れない", () => {
+    expect(conversationSystemPrompt(null, withDefault(""))).toBeNull();
+    expect(conversationSystemPrompt(null, withDefault("   \n "))).toBeNull();
+    expect(
+      conversationSystemPrompt({ system_prompt: "" }, withDefault("アプリ既定")),
+    ).toBeNull();
+  });
+
+  it("ボットが空でも、アプリ既定で埋めない（選んだのはボットなので）", () => {
+    expect(
+      conversationSystemPrompt(
+        { system_prompt: "  " },
+        withDefault("アプリ既定"),
+      ),
+    ).toBeNull();
   });
 });
