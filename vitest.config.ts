@@ -60,6 +60,20 @@ export default defineConfig({
         },
       },
       {
+        /*
+         * ルートのモジュール（shell.tsx など）は、ローダーのために
+         * db.server.ts を読む。バインディングに触らない経路だけを
+         * 動かしたいので、server project と同じスタブに差し替える。
+         * env に触ると例外を投げる Proxy なので、触ってしまえば分かる。
+         */
+        resolve: {
+          alias: {
+            "cloudflare:workers": new URL(
+              "./tests/stubs/cloudflare-workers.ts",
+              import.meta.url,
+            ).pathname,
+          },
+        },
         test: {
           name: "dom",
           include: ["tests/dom/*.test.{ts,tsx}"],
