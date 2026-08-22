@@ -88,3 +88,33 @@ export function prefersReducedMotion(): boolean {
 export function scrollBehavior(): ScrollBehavior {
   return prefersReducedMotion() ? "auto" : "smooth";
 }
+
+/**
+ * 文字入力欄の、端末任せにしたくない属性。
+ *
+ * 指定が無いと、既定値はブラウザと OS が決める。iOS の Safari は
+ * textarea を「文の始まりを大文字にする」で扱い、Android の IME は
+ * 端末ごとに違う。同じ画面が端末によって違う打ち心地になるうえ、
+ * 検索欄で勝手に大文字化されると入力した語と一致しなくなる。
+ *
+ * autocomplete を切るのは、ブラウザが覚えた過去の入力を候補として
+ * かぶせてくるため。この欄はどれもフォームの再入力ではないので、
+ * 候補は結果や本文を隠すだけになる。
+ */
+
+/** 文章を書く欄（本文・編集・システムプロンプト）。綴りは見てもらう。 */
+export const PROSE_INPUT = {
+  autoCapitalize: "sentences",
+  autoComplete: "off",
+  spellCheck: true,
+} as const;
+
+/**
+ * 短い語句の欄（検索・名前・絵文字）。
+ * 勝手な大文字化も綴りの指摘も邪魔にしかならないので、どちらも切る。
+ */
+export const TERSE_INPUT = {
+  autoCapitalize: "none",
+  autoComplete: "off",
+  spellCheck: false,
+} as const;
