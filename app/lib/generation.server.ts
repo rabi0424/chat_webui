@@ -287,15 +287,18 @@ interface RateLimitGate {
   until(): number;
 }
 
-function createRateLimitGate(): RateLimitGate {
+export function createRateLimitGate(): RateLimitGate {
   let until = 0;
   const resetMs = (res: Response) =>
     parseDurationMs(res.headers.get("x-ratelimit-reset-requests"));
   return {
     note(res) {
-      const remaining = Number(
-        res.headers.get("x-ratelimit-remaining-requests"),
-      );
+      // ヘッダが無いときの get() は null で、Number(null) は 0 になる。
+      // 「残り0」と読むと、枠の情報を出さない上流では毎回ここで待たされる。
+      // 有限かどうかの判定は 0 を通してしまうので、先に null を弾く。
+      const header = res.headers.get("x-ratelimit-remaining-requests");
+      if (header === null) return;
+      const remaining = Number(header);
       if (!Number.isFinite(remaining) || remaining > RATE_LIMIT_MIN_REMAINING) {
         return;
       }

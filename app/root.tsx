@@ -8,9 +8,8 @@ import {
 } from "react-router";
 
 import type { Route } from "./+types/root";
-import { THEME_COLOR_LIGHT, THEME_INIT_SCRIPT } from "./lib/theme";
-import { ACCENT_INIT_SCRIPT } from "./lib/accent";
-import { CHAT_FONT_INIT_SCRIPT } from "./lib/chat-font";
+import { THEME_COLOR_LIGHT } from "./lib/theme";
+import { APPEARANCE_INIT_SCRIPT } from "./lib/appearance-init";
 import { useAppearanceSync } from "./lib/appearance";
 import "./app.css";
 
@@ -41,12 +40,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Chat" />
         {/* ハイドレーション前にテーマ・アクセント・文字サイズを適用してちらつきを防ぐ */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html:
-              THEME_INIT_SCRIPT + ACCENT_INIT_SCRIPT + CHAT_FONT_INIT_SCRIPT,
-          }}
-        />
+        {/*
+          CSP では nonce ではなく sha256 で許している（この要素は React
+          Router の管理外なので nonce が撒かれない）。中身を変えるときは
+          APPEARANCE_INIT_SCRIPT のほうを直すこと——ここで連結し直すと
+          ハッシュが合わずに実行されなくなる。
+        */}
+        <script dangerouslySetInnerHTML={{ __html: APPEARANCE_INIT_SCRIPT }} />
         <Meta />
         <Links />
       </head>
