@@ -356,6 +356,7 @@ Cloudflare Access がアプリ全体を覆っているが、それだけでは�
 | セキュリティ | Cloudflare Access による本人限定アクセス。API キーはサーバー側 Secret のみ。Worker 側でも Access JWT を検証 |
 | 可用性 | Cloudflare 依存で十分（個人利用のため SLA 要件なし） |
 | 性能 | 初回表示が軽量であること。ストリーミングは体感遅延なく表示 |
+| アクセシビリティ | 生成の開始・完了・失敗を読み上げへ流す（画面外の live region に文言を書く）。画面では点滅するカーソルとエラーの帯で分かるが、どちらも見えている人にしか届かない |
 | データ保全 | `npx wrangler d1 export chat-webui --output backup.sql` で書き出す（手動。README に記載） |
 | 保守性 | プロバイダ（OpenRouter / fal / …）を抽象化した内部インターフェースを設け、追加プロバイダ対応時に UI 層の変更を最小化する |
 

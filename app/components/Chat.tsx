@@ -35,6 +35,7 @@ import {
   BOUNDARY_SELECT_PREFIX,
 } from "./chat/MessageList";
 import { Composer } from "./chat/Composer";
+import { LiveRegion } from "./chat/LiveRegion";
 import { SelectionBar } from "./chat/SelectionBar";
 import { type MessageActions } from "./chat/message-context";
 import { useEscapeToClose } from "../lib/dismiss";
@@ -1479,6 +1480,12 @@ export function Chat({
           </div>
         </div>
       )}
+
+      {/*
+        画面に出ている進行の印（点滅カーソル・エラーの帯）は見えている
+        人にしか届かない。同じことを読み上げへも流す。
+      */}
+      <LiveRegion isStreaming={isStreaming} error={error} />
 
       <MessageList
         messages={messages}
