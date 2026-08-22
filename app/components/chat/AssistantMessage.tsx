@@ -10,7 +10,6 @@
  */
 import type { UiMessage } from "../../lib/types";
 import { isRetryProgress } from "../../lib/retry";
-import { Markdown } from "../Markdown";
 import { StreamingMessage } from "../StreamingMessage";
 import { IconTrash } from "../icons";
 import {
@@ -81,15 +80,23 @@ export function AssistantMessage({
             </button>
           )}
         </div>
-      ) : isLast ? (
-        // 末尾だけは、届いた本文を少しずつ滑らかに出す
+      ) : (
+        /*
+         * 末尾かどうかで描き手を変えない。以前は末尾だけ StreamingMessage、
+         * それ以外は Markdown にしていたが、次の発言を送った瞬間に末尾で
+         * なくなり、React が要素の型の違いを見てそこを作り直していた——
+         * 出来上がっていた図が fallback に戻り、並べ替えた表が元の順に
+         * 戻るのはこれ（監査 E-7）。StreamingMessage は追いつき終われば
+         * Markdown と同じものを描くので、常にこちらに任せる。
+         *
+         * 少しずつ出す動きは streaming のときだけ働く。末尾でない発言は
+         * 最初から全文が入っているので、その場で描き切る。
+         */
         <StreamingMessage
           text={m.content}
           streaming={m.status === "streaming"}
-          onReveal={followBottom}
+          onReveal={isLast ? followBottom : undefined}
         />
-      ) : (
-        <Markdown>{m.content}</Markdown>
       )}
       {/* 進捗の見出しは秒が動いているのでカーソルは出さない */}
       {isStreaming &&
