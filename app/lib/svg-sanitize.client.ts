@@ -60,13 +60,94 @@ function safeRef(value: string): boolean {
   return /^data:image\/(png|jpeg|gif|webp);/i.test(url);
 }
 
-/** CSS から外部を取りに行く書き方を落とす。 */
-function scrubCss(css: string): string {
-  return css
+/**
+ * url() のほかに、外部を取りに行ける書き方。
+ *
+ * url( が1度も出てこないので、url() だけを見ていると素通りする。
+ * image-set は実際に Chromium が取りに行くことを確かめてある。
+ */
+const FETCHING_FUNCTIONS =
+  /(^|[^\w-])(-webkit-image-set|image-set|-webkit-cross-fade|cross-fade|image)\s*\(/gi;
+
+/** open の位置の "(" に対応する ")" を返す。見つからなければ -1。 */
+function matchParen(css: string, open: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < css.length; i++) {
+    const c = css[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "(") depth++;
+    else if (c === ")" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** image-set(...) のような呼び出しを、丸ごと none に置き換える。 */
+function dropFetchingFunctions(css: string): string {
+  let out = "";
+  let from = 0;
+  for (;;) {
+    FETCHING_FUNCTIONS.lastIndex = from;
+    const m = FETCHING_FUNCTIONS.exec(css);
+    if (!m) return out + css.slice(from);
+    const nameAt = m.index + m[1].length;
+    const close = matchParen(css, m.index + m[0].length - 1);
+    out += css.slice(from, nameAt) + "none";
+    if (close < 0) return out; // 閉じていない＝以降は捨てる
+    from = close + 1;
+  }
+}
+
+/** 外部を取りに行く書き方を落とす（1回ぶん）。 */
+function scrubOnce(css: string): string {
+  return dropFetchingFunctions(css)
     .replace(/@import[^;]*;?/gi, "")
     .replace(/url\(\s*(['"]?)([^)'"]*)\1\s*\)/gi, (whole, _q, url: string) =>
       safeRef(url) ? whole : "none",
     );
+}
+
+/**
+ * CSS のエスケープを解く。**検出のためだけ**に使い、返り値は表示に使わない。
+ *
+ * content: "\201C" のような正当な書き方も一緒にほどけてしまうため、
+ * ほどいた文字列をそのまま出すと図が壊れる。
+ */
+function decodeCssEscapes(css: string): string {
+  return css.replace(
+    /\\(?:([0-9a-fA-F]{1,6})[ \t\r\n\f]?|([^\r\n\f0-9a-fA-F]))/g,
+    (whole, hex: string | undefined, ch: string | undefined) => {
+      if (ch !== undefined) return ch;
+      const cp = Number.parseInt(hex!, 16);
+      // 0・サロゲート・範囲外は文字にならない。そのまま残す
+      if (cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return whole;
+      return String.fromCodePoint(cp);
+    },
+  );
+}
+
+/**
+ * CSS から外部を取りに行く書き方を落とす。
+ *
+ * 素直に書いた url() や image-set() は上の scrubOnce が落とす。**ただし
+ * CSS は関数名そのものをエスケープで書ける**——`\75 rl(...)` はブラウザに
+ * とって url(...) だが、文字列としては url( を含まない。正規表現をいくら
+ * 足しても、書き手はもう一段エスケープすれば抜けられる。
+ *
+ * そこで、掃除したあとの CSS のエスケープを解き、もう一度同じ掃除を
+ * かける。そこで初めて何かが落ちるなら、素の掃除は素通りされていた
+ * ということなので、その CSS は丸ごと捨てる（図の見た目より安全を採る）。
+ * 返すのは解く前のほうなので、正当なエスケープを含む図は壊れない。
+ */
+function scrubCss(css: string): string {
+  const cleaned = scrubOnce(css);
+  const decoded = decodeCssEscapes(cleaned);
+  return scrubOnce(decoded) === decoded ? cleaned : "";
 }
 
 let hooked = false;

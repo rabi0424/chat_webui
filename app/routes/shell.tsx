@@ -15,6 +15,9 @@ import {
 import type { AppSettings } from "../lib/settings";
 import { noteConversations } from "../lib/chat-cache";
 import { readCachedModels, writeCachedModels } from "../lib/model-cache";
+import { fetchJson } from "../lib/fetch-json";
+import { loadNotices, type LoadFailures } from "../lib/shell-status";
+import { GLASS_PANEL } from "../lib/ui";
 import { useEscapeToClose } from "../lib/dismiss";
 import { insideScrollableX } from "../lib/swipe";
 import type { ModelInfo } from "../lib/openrouter.server";
@@ -91,26 +94,46 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
    */
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [usdJpy, setUsdJpy] = useState<number | null>(null);
-  useEffect(() => {
+  const [failures, setFailures] = useState<LoadFailures>({
+    models: null,
+    hasCachedModels: false,
+    fx: null,
+  });
+  const [dismissed, setDismissed] = useState(false);
+
+  /**
+   * 取り直す。初回の useEffect と、失敗を出したときの「再試行」の
+   * 両方から呼ぶ（押しても何も起きない再試行にしないため、状態も戻す）。
+   */
+  const loadUpstream = useCallback(async () => {
+    setDismissed(false);
     // 形が違うものは捨てて読む。使う側は outputModalities.includes(...)
     // のように中の配列を前提にしているので、そのまま渡すと画面が落ちる
     const cached = readCachedModels();
     if (cached.length > 0) setModels(cached);
-    void fetch("/api/models")
-      .then(async (res) => {
-        if (!res.ok) return;
-        const { models: fresh } = (await res.json()) as ModelsResponse;
-        setModels(fresh);
-        writeCachedModels(fresh);
-      })
-      .catch(() => {});
-    void fetch("/api/fx")
-      .then(async (res) => {
-        if (!res.ok) return;
-        setUsdJpy(((await res.json()) as FxResponse).usdJpy);
-      })
-      .catch(() => {});
+
+    const [fresh, fx] = await Promise.all([
+      fetchJson<ModelsResponse>("/api/models"),
+      fetchJson<FxResponse>("/api/fx"),
+    ]);
+    if (fresh.ok) {
+      setModels(fresh.value.models);
+      writeCachedModels(fresh.value.models);
+    }
+    if (fx.ok) setUsdJpy(fx.value.usdJpy);
+    setFailures({
+      models: fresh.ok ? null : fresh.reason,
+      // 失敗したときに何を出すかは「手元に一覧があるか」で変わる
+      hasCachedModels: cached.length > 0,
+      fx: fx.ok ? null : fx.reason,
+    });
   }, []);
+
+  useEffect(() => {
+    void loadUpstream();
+  }, [loadUpstream]);
+
+  const notices = dismissed ? [] : loadNotices(failures);
 
   // 起動（PWAを開く/リロード）の所要時間もパフォーマンス一覧に載せる
   useEffect(() => {
@@ -350,6 +373,39 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
               onNavigate={closeSidebar}
             />
           </div>
+        </div>
+      )}
+
+      {/*
+        裏の取得が失敗したことを出す。黙って戻ると、何が起きたのか
+        分からないまま同じ操作を繰り返すことになる（監査 C-2）。
+        画面の作りに影響しないよう、重ねて浮かせる。
+      */}
+      {notices.length > 0 && (
+        <div
+          role="status"
+          className={`fixed left-1/2 top-[calc(0.75rem+env(safe-area-inset-top))] z-50 flex max-w-[min(34rem,92vw)] -translate-x-1/2 items-start gap-3 rounded-2xl px-4 py-2.5 text-sm animate-pop ${GLASS_PANEL}`}
+        >
+          <div className="min-w-0 flex-1 space-y-1">
+            {notices.map((notice) => (
+              <p key={notice}>{notice}</p>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadUpstream()}
+            className="shrink-0 rounded-lg border border-neutral-300 px-2.5 py-1 text-xs hover:bg-neutral-100 dark:border-white/20 dark:hover:bg-white/10"
+          >
+            再試行
+          </button>
+          <button
+            type="button"
+            onClick={() => setDismissed(true)}
+            aria-label="閉じる"
+            className="shrink-0 rounded p-1 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-white/10"
+          >
+            ✕
+          </button>
         </div>
       )}
 

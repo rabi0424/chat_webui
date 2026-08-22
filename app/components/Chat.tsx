@@ -4,6 +4,7 @@ import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import {
   DEFAULT_MODEL,
+  isPoeModel,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
   MAX_TITLE_LENGTH,
 } from "../lib/constants";
@@ -813,12 +814,12 @@ export function Chat({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model,
-          web: webSearch && !model.startsWith("poe:"),
+          web: webSearch && !isPoeModel(model),
           // サーバーツールは tool calling 対応モデルだけ。非対応なら
           // web だけが立ち、サーバー側で :online へ落ちる
           webTools:
             webSearch &&
-            !model.startsWith("poe:") &&
+            !isPoeModel(model) &&
             (selectedModel?.supportedParameters.includes("tools") ?? false),
           imageOutput: selectedModel?.outputModalities.includes("image") ?? false,
           params,
@@ -913,7 +914,13 @@ export function Chat({
           // URLは生成開始時に差し替え済みなので、そのままかどうかで見る。
           // ここでの navigate は、React Router 側の現在地（まだ "/"）を
           // 会話ページに合わせ直すためのもの
-          if (window.location.pathname === `/chat/${convId}`) {
+          //
+          // alive をここでもう一度見るのは、上の確認から**数秒経っている**
+          // ため。応答の取り直しとタイトル生成を待っているあいだに2通目を
+          // 送られると、その生成が最新になっている。この遷移は画面を作り
+          // 直すので、そのまま走らせると2通目の進行中表示ごと捨てられる
+          // （監査 D-7）。合わせ直しは次に落ち着いたときで間に合う。
+          if (alive(track) && window.location.pathname === `/chat/${convId}`) {
             await navigate(`/chat/${convId}`, { replace: true });
           }
         } else {
@@ -1418,7 +1425,7 @@ export function Chat({
               この会話にのみ適用されます
               {bot ? "（ボットの設定が初期状態です）" : ""}
             </p>
-            {!model.startsWith("poe:") && (
+            {!isPoeModel(model) && (
               <div className="mb-3 flex items-center gap-3 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
                 <IconGlobe className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
                 <div className="min-w-0 flex-1">

@@ -104,6 +104,71 @@ describe("外部への通信を止める", () => {
     expect(out).not.toContain("evil.example");
   });
 
+  /**
+   * url( という文字が1度も出てこない書き方（監査 E-4）。
+   * Chromium が実際に取りに行くことを確かめたうえで塞いでいる。
+   */
+  it("image-set() からも取りに行かせない", () => {
+    for (const fn of ["image-set", "-webkit-image-set", "cross-fade", "image"]) {
+      const out = clean(
+        wrap(`<style>.a{background:${fn}("http://evil.example/x.png" 1x)}</style><rect/>`),
+      );
+      expect(out, fn).not.toContain("evil.example");
+    }
+  });
+
+  /**
+   * 入れ子の括弧。中に url(#id) のような正当な参照を先に置くと、
+   * 対応を取らずに最初の ")" で切る実装では、そこから後ろ——本命の
+   * 外部URL——が消し残る。
+   */
+  it("入れ子の括弧を挟んでも取りこぼさない", () => {
+    const out = clean(
+      wrap(
+        '<style>.a{background:image-set(url(#inner) "http://evil.example/x.png" 1x)}</style><rect/>',
+      ),
+    );
+    expect(out).not.toContain("evil.example");
+  });
+
+  /**
+   * CSS は関数名そのものをエスケープで書ける。\\75 rl(...) はブラウザに
+   * とって url(...) だが、文字列としては url( を含まないので、正規表現で
+   * 探すやり方では見つからない。
+   */
+  it("エスケープで書いた url() も通さない", () => {
+    const out = clean(
+      wrap('<style>.a{background:\\75 rl("http://evil.example/x.png")}</style><rect/>'),
+    );
+    expect(out).not.toContain("evil.example");
+  });
+
+  it("エスケープで書いた @import も通さない", () => {
+    const out = clean(
+      wrap('<style>@\\69 mport "http://evil.example/x.css";</style><rect/>'),
+    );
+    expect(out).not.toContain("evil.example");
+  });
+
+  it("style 属性のエスケープも同じ", () => {
+    const out = clean(
+      wrap('<rect style=\'background:\\75 rl("http://evil.example/x.png")\' width="10" height="10"/>'),
+    );
+    expect(out).not.toContain("evil.example");
+  });
+
+  /**
+   * 安全側に倒すぶん、正当なエスケープまで巻き添えにしていないか。
+   * content: "\\201C"（“）のような書き方は図の中で普通に出てくる。
+   */
+  it("外部を取りに行かないエスケープは残す", () => {
+    const out = clean(
+      wrap('<style>.a::before{content:"\\201C"}.b{fill:#0a0}</style><rect class="b" width="10" height="10"/>'),
+    );
+    expect(out).toContain("201C");
+    expect(out).toContain("#0a0");
+  });
+
   it("<style> のクラス定義そのものは残す（消すと図が崩れる）", () => {
     const out = clean(wrap('<style>.a{fill:#f00}</style><rect class="a" width="10" height="10"/>'));
     expect(out).toContain("fill:#f00");
