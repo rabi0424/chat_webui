@@ -567,33 +567,80 @@ export async function fetchPoeRunPoints(
  */
 const UPSTREAM_CONNECT_TIMEOUT_MS = 60_000;
 
+/**
+ * ヘッダが返るまでだけを見張って投げる。
+ *
+ * 素直に `signal: AbortSignal.timeout(...)` と書きたくなるが、それだと
+ * 壊れる。fetch へ渡した signal はヘッダを受け取っても外れず、返って
+ * きた**本文のストリームにも効いたまま**になる。そのため生成がこの猶予を
+ * 超えると、トークンが順調に流れている最中でも body が TimeoutError で
+ * 切られ、利用者には「応答が途中で終わりました（The operation was
+ * aborted due to timeout）」と見えていた。長考するモデルや長い応答は
+ * 60秒を普通に超えるので、これは日常的に起きていた。
+ *
+ * 時計はヘッダが返った時点で止める。ヘッダ以降の無音は読み手側の
+ * idle timeout（generation.server.ts の UPSTREAM_IDLE_TIMEOUT_MS）が
+ * 拾うので、ここで見張り続ける必要はない。
+ */
+async function fetchAwaitingHeaders(
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string },
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error("上流が応答ヘッダを返しませんでした"));
+  }, timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    // ヘッダが返った（または投げるのに失敗した）時点で見張りを解く。
+    // 残したままだと、上の signal がそのまま本文を切りに来る
+    clearTimeout(timer);
+  }
+}
+
 export async function poeChatRequest(
   body: Record<string, unknown>,
+  /**
+   * ヘッダを待つ上限。既定のままでよく、テストから縮めるために開けて
+   * ある。ここが本文まで切っていないかは、実際に遅いストリームを流して
+   * 確かめないと分からない（60秒を実時間で待つテストは書けない）。
+   */
+  connectTimeoutMs: number = UPSTREAM_CONNECT_TIMEOUT_MS,
 ): Promise<Response> {
-  return await fetch(`${POE_BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.POE_API_KEY}`,
-      "Content-Type": "application/json",
+  return await fetchAwaitingHeaders(
+    `${POE_BASE}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.POE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(UPSTREAM_CONNECT_TIMEOUT_MS),
-  });
+    connectTimeoutMs,
+  );
 }
 
 export async function openRouterChatRequest(
   body: Record<string, unknown>,
+  /** poeChatRequest と同じ。テストから縮めるために開けてある。 */
+  connectTimeoutMs: number = UPSTREAM_CONNECT_TIMEOUT_MS,
 ): Promise<Response> {
-  return await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      // Optional attribution headers recommended by OpenRouter.
-      "HTTP-Referer": "https://github.com/rabi0424/chat_webui",
-      "X-Title": "chat_webui",
+  return await fetchAwaitingHeaders(
+    `${OPENROUTER_BASE}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        // Optional attribution headers recommended by OpenRouter.
+        "HTTP-Referer": "https://github.com/rabi0424/chat_webui",
+        "X-Title": "chat_webui",
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(UPSTREAM_CONNECT_TIMEOUT_MS),
-  });
+    connectTimeoutMs,
+  );
 }
