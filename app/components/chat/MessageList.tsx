@@ -33,6 +33,7 @@ export function MessageList({
   editing,
   setEditing,
   onSubmitEdit,
+  onSaveEdit,
   onAddEditFiles,
   editFileInputRef,
   error,
@@ -53,6 +54,7 @@ export function MessageList({
   editing: EditingState | null;
   setEditing: Dispatch<SetStateAction<EditingState | null>>;
   onSubmitEdit: () => void;
+  onSaveEdit: () => void;
   onAddEditFiles: (files: File[]) => void;
   editFileInputRef: RefObject<HTMLInputElement | null>;
   /** 生成そのものが失敗したときの帯（メッセージ単位の失敗とは別）。 */
@@ -102,6 +104,7 @@ export function MessageList({
                     editing={editing?.index === i ? editing : null}
                     setEditing={setEditing}
                     onSubmitEdit={onSubmitEdit}
+                    onSaveEdit={onSaveEdit}
                     onAddEditFiles={onAddEditFiles}
                     editFileInputRef={editFileInputRef}
                   />

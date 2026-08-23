@@ -600,6 +600,48 @@ describe("応答を積む", () => {
     expect(conversation().unread).toBe(1);
   });
 
+  it("別の枝を見ているあいだは、表示中の枝を奪わない", () => {
+    /*
+     * 実行中でも別の枝へ移れる。無条件に葉を動かしていたので、成功が
+     * 1件届くたびに表示が実行の枝へ引き戻されていた（数秒おきに勝手に
+     * 画面が変わる）。未読と更新時刻は動かす——届いたのは本当なので。
+     */
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, parent_id, role, content, created_at) VALUES ('u2', 'c1', NULL, 'user', '別の枝', 1)",
+    ).run();
+    db.prepare(
+      "UPDATE conversations SET current_leaf_message_id = 'u2', unread = 0, updated_at = 1 WHERE id = 'c1'",
+    ).run();
+
+    append("a1", "u1");
+
+    const c = conversation();
+    expect(c.current_leaf_message_id).toBe("u2");
+    expect(c.unread).toBe(1);
+    expect(c.updated_at).toBe(2000);
+    // 応答そのものは、実行の枝に積まれている
+    const row = db
+      .prepare("SELECT parent_id FROM messages WHERE id = 'a1'")
+      .get() as { parent_id: string };
+    expect(row.parent_id).toBe("u1");
+  });
+
+  it("実行の枝へ戻れば、また付いていく", () => {
+    append("a1", "u1");
+    // 別の枝へ移る
+    db.prepare(
+      "UPDATE conversations SET current_leaf_message_id = 'u1' WHERE id = 'c1'",
+    ).run();
+    append("a2", "a1");
+    expect(conversation().current_leaf_message_id).toBe("u1");
+    // 枝の切り替えは葉を実行の枝の末尾（a2）へ置き直す
+    db.prepare(
+      "UPDATE conversations SET current_leaf_message_id = 'a2' WHERE id = 'c1'",
+    ).run();
+    append("a3", "a2");
+    expect(conversation().current_leaf_message_id).toBe("a3");
+  });
+
   it("積んだ応答が表示中の枝の先になる", () => {
     append("a1", "u1");
     expect(conversation().current_leaf_message_id).toBe("a1");

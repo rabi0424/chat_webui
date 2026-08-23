@@ -75,11 +75,25 @@ export interface GenerationTracking {
     track: Tracking,
   ) => Promise<void>;
   /** リトライ生成をパスごと追う。 */
-  pollRunUntilDone: (convId: string, track: Tracking) => Promise<void>;
+  pollRunUntilDone: (
+    convId: string,
+    statusId: string,
+    track: Tracking,
+  ) => Promise<void>;
   /** 現在のパスを取り直す。 */
   refreshPath: (convId: string, track: Tracking) => Promise<void>;
   /** 表示中のパスに生成中の応答があれば、そこから追跡を再開する。 */
   trackRunning: (convId: string, list: UiMessage[]) => void;
+  /** いま追いかけている生成中メッセージのID（追跡していなければ null）。 */
+  runningId: () => string | null;
+  /**
+   * 表示が実行中の枝から離れたかどうかを知らせる。
+   *
+   * 実行中でも別の枝へ移れるので、移った先の画面を追跡が上書きしないため
+   * の切り替え。渡すのは「移った先のパス」——その中に実行中の行が居れば
+   * また付いていく。
+   */
+  notePath: (list: UiMessage[]) => void;
 }
 
 export function useGenerationTracking({
@@ -97,13 +111,38 @@ export function useGenerationTracking({
    * 離れるときに差し替える。
    */
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * いま追いかけている生成中の行と、その枝を表示しているか。
+   *
+   * 実行中でも別の枝へ移れる（過去の応答を見比べる・分岐を作る）。
+   * 移ったあとも生成そのものは続くので、**追うのはやめず、画面を
+   * 上書きするのだけをやめる**。この2つを分けていなかったので、
+   * 枝を移すと画面が数秒で引き戻されるか、追跡が終わったと誤判定して
+   * 生成中の表示だけが取り残されるかのどちらかになっていた。
+   */
+  const runRef = useRef<{ id: string | null; following: boolean }>({
+    id: null,
+    following: true,
+  });
 
   /** 新しい世代を始める。前の世代の追跡は中断する。 */
   function startTracking(): Tracking {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    runRef.current = { id: null, following: true };
     return { epoch: ++epochRef.current, signal: controller.signal };
+  }
+
+  /** その世代の追跡対象を控える（停止ボタンと、上書きの可否に使う）。 */
+  function noteRunning(id: string): void {
+    runRef.current = { id, following: true };
+  }
+
+  function notePath(list: UiMessage[]): void {
+    const id = runRef.current.id;
+    if (!id) return;
+    runRef.current.following = list.some((m) => m.id === id);
   }
 
   /** この世代がまだ有効か（別の生成が始まった・画面を離れたら無効）。 */
@@ -124,10 +163,26 @@ export function useGenerationTracking({
    * リトライ生成の追跡。成功するたびに応答が増えるので、
    * 1件を見張るのではなくパスごと取り直す。
    */
-  async function pollRunUntilDone(convId: string, track: Tracking) {
+  async function pollRunUntilDone(
+    convId: string,
+    statusId: string,
+    track: Tracking,
+  ) {
     let failures = 0;
+    noteRunning(statusId);
     for (;;) {
       if (!alive(track)) return;
+      /*
+       * 別の枝を見ているあいだは、パスではなく**見出しの行そのもの**を
+       * 見る。パスは表示中の枝を返すので、離れているあいだは実行中の行が
+       * 入っておらず、「生成中の行が無い＝終わった」と誤判定していた
+       * （サーバーでは走り続けているのに、画面は追うのをやめる）。
+       */
+      if (!runRef.current.following) {
+        if (await runFinished(convId, statusId, track)) return;
+        await sleep(RUN_POLL_INTERVAL_MS, track.signal);
+        continue;
+      }
       try {
         const res = await fetch(`/api/conversations/${convId}/path`, {
           signal: track.signal,
@@ -136,6 +191,11 @@ export function useGenerationTracking({
           failures = 0;
           const { messages: fresh } = (await res.json()) as PathResponse;
           if (!alive(track)) return;
+          // 見ているあいだに枝が変わっていたら、上書きせず見出しを見に行く
+          if (!fresh.some((m) => m.id === statusId)) {
+            runRef.current.following = false;
+            continue;
+          }
           setMessages(fresh);
           if (!fresh.some((m) => m.status === "streaming")) return;
         } else {
@@ -150,6 +210,32 @@ export function useGenerationTracking({
       await sleep(RUN_POLL_INTERVAL_MS, track.signal);
     }
   }
+  /**
+   * その行の生成が終わったか（別の枝を見ているあいだの生存確認）。
+   *
+   * 一過性の失敗では終わったことにしない。ここで終わりと判断すると、
+   * 走っている生成を誰も追わなくなる。
+   */
+  async function runFinished(
+    convId: string,
+    messageId: string,
+    track: Tracking,
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(
+        `/api/conversations/${convId}/messages/${messageId}`,
+        { signal: track.signal },
+      );
+      // 消えた・見つからないなら追う相手がいない
+      if (!res.ok) return terminalStatus(res.status);
+      const remote = (await res.json()) as MessageStateResponse;
+      return remote.status !== "streaming";
+    } catch (e) {
+      if ((e as Error).name === "AbortError") return true;
+      return false;
+    }
+  }
+
   async function refreshPath(convId: string, track: Tracking) {
     try {
       const res = await fetch(`/api/conversations/${convId}/path`, {
@@ -157,14 +243,21 @@ export function useGenerationTracking({
       });
       if (!res.ok) return;
       const { messages: fresh } = (await res.json()) as PathResponse;
-      if (alive(track)) setMessages(fresh);
+      // 別の枝を見ているなら、取り直した実行の枝で上書きしない
+      if (alive(track) && runRef.current.following) setMessages(fresh);
     } catch {
       // 表示更新に失敗しても実害はない（中断も同じ扱いでよい）
     }
   }
 
-  /** 最後のアシスタントメッセージをサーバーの状態で置き換える。 */
-  function applyRemoteState(remote: {
+  /**
+   * 生成中のメッセージをサーバーの状態で置き換える。
+   *
+   * 当てる先は**IDで探す**。以前は「末尾のアシスタント」に貼っていたが、
+   * 実行中に別の枝へ移ると末尾は無関係な応答になり、そこへ生成中の本文を
+   * 書き込んでいた（画面上、別の応答が書き換わって見える）。
+   */
+  function applyRemoteState(messageId: string, remote: {
     content: string;
     reasoning: string | null;
     status: string;
@@ -173,17 +266,19 @@ export function useGenerationTracking({
     citations?: UiCitation[] | null;
   }) {
     setMessages((prev) => {
+      const at = prev.findIndex((m) => m.id === messageId);
+      // 表示から外れている（別の枝を見ている）なら何もしない
+      if (at < 0) return prev;
       const next = [...prev];
-      const last = next[next.length - 1];
-      if (last?.role !== "assistant") return prev;
-      next[next.length - 1] = {
-        ...last,
+      const target = next[at];
+      next[at] = {
+        ...target,
         content: remote.content,
         reasoning: remote.reasoning ?? undefined,
         status: remote.status === "done" ? undefined : (remote.status as UiMessage["status"]),
         error: remote.error ?? undefined,
-        usage: remote.usage ?? last.usage,
-        citations: remote.citations ?? last.citations,
+        usage: remote.usage ?? target.usage,
+        citations: remote.citations ?? target.citations,
       };
       return next;
     });
@@ -209,7 +304,7 @@ export function useGenerationTracking({
     const wholePath =
       index < list.length - 1 || isRetryProgress(running.content);
     const done = wholePath
-      ? pollRunUntilDone(convId, track)
+      ? pollRunUntilDone(convId, running.id, track)
       : pollUntilDone(convId, running.id, track);
     void done.then(() => {
       if (!alive(track)) return;
@@ -226,6 +321,7 @@ export function useGenerationTracking({
     track: Tracking,
   ) {
     let failures = 0;
+    noteRunning(messageId);
     for (;;) {
       if (!alive(track)) return;
       try {
@@ -244,13 +340,13 @@ export function useGenerationTracking({
         failures = 0;
         const remote = (await res.json()) as MessageStateResponse;
         if (!alive(track)) return;
-        applyRemoteState(remote);
+        applyRemoteState(messageId, remote);
         if (remote.status !== "streaming") return;
         // リトライ生成だと分かったら、パスごと追う方へ移る。見出しの下に
         // 成功が積まれていくので、1件だけ見張っていても増えた応答に
         // 気づけない（開始直後は見出しの本文がまだ空で判別できない）
         if (isRetryProgress(remote.content)) {
-          await pollRunUntilDone(convId, track);
+          await pollRunUntilDone(convId, messageId, track);
           return;
         }
       } catch (e) {
@@ -268,5 +364,7 @@ export function useGenerationTracking({
     pollRunUntilDone,
     refreshPath,
     trackRunning,
+    runningId: () => runRef.current.id,
+    notePath,
   };
 }

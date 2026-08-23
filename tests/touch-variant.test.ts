@@ -186,6 +186,35 @@ describe.skipIf(css == null)("生成中のタイトル", () => {
     expect(c).toMatch(/\.dark[^{]*\{[^}]*--shimmer-glow:/);
   });
 
+  /**
+   * 帯が文字から外れる時点を作らない。
+   *
+   * 塗りは要素より広く（250%）、繰り返さない（no-repeat）。この形で
+   * 位置を 0%〜100% の外まで動かすと、塗りの外に出た部分は**透明のまま**
+   * になる——文字色は transparent なので、タイトルが一瞬まるごと消えて
+   * 点滅して見えた。3つの指定が噛み合って初めて「消えない」ので、
+   * 1つを変えたときに気づけるよう、まとめて見張る。
+   */
+  it("どの時点でも文字が塗られる（消える瞬間を作らない）", () => {
+    const frames = /@keyframes title-shimmer\{([^@]*?)\}\}/.exec(c)?.[1] ?? "";
+    expect(frames).not.toBe("");
+
+    // 最小化で 0% は 0 になるので、単位は問わずに数値だけ見る
+    const positions = [
+      ...frames.matchAll(/background-position:\s*(-?[\d.]+)/g),
+    ].map((m) => Number(m[1]));
+    expect(positions.length).toBeGreaterThan(1);
+    for (const p of positions) {
+      expect(p).toBeGreaterThanOrEqual(0);
+      expect(p).toBeLessThanOrEqual(100);
+    }
+
+    // 0%〜100% が「全体を覆う」と言えるのは、塗りが要素より広いから
+    const size = /background-size:\s*([\d.]+)%/.exec(supported)?.[1];
+    expect(Number(size)).toBeGreaterThan(100);
+    expect(supported).toMatch(/background-repeat:\s*no-repeat/);
+  });
+
   it("動きを控える設定では、帯を流さず濃い色で置く", () => {
     // 止めた帯をそのまま残すと、切り抜いた文字がグラデーションの端の色で
     // 描かれ、どこで止まるかによっては読めない濃さになる
@@ -195,5 +224,49 @@ describe.skipIf(css == null)("生成中のタイトル", () => {
     expect(rule).toMatch(/animation:\s*none/);
     expect(rule).toMatch(/background-image:\s*none/);
     expect(rule).toMatch(/color:\s*var\(--shimmer-glow\)/);
+  });
+});
+
+/**
+ * スクロールバー。
+ *
+ * 何も指定しないと、Chrome（PC）は溝と、本文との境の線まで描く——
+ * 一覧や入力欄の右端に枠が1本増えたように見える。溝を透明にして
+ * つまみだけを出しているが、**当たっているかは CSS を見ないと分から
+ * ない**（画面には何のエラーも出ず、既定の見た目に戻るだけ）。
+ */
+describe.skipIf(css == null)("スクロールバー", () => {
+  const c = css ?? "";
+
+  it("溝を塗らない（枠に見える面を作らない）", () => {
+    // 2つ目の値が溝の色。transparent 以外だと帯が出る
+    expect(c).toMatch(/scrollbar-color:\s*var\(--scrollbar-thumb\)\s+transparent/);
+  });
+
+  it("細くする指定が、内側のスクロール領域にも当たる", () => {
+    /*
+     * scrollbar-width は**継承しない**。:root にだけ置くとページ全体の
+     * スクロールバーしか細くならず、会話一覧や入力欄は既定の太さのまま
+     * になる（最初にそう書いて、実際に内側だけ太いままだった）。
+     */
+    expect(c).toMatch(/\*\{[^}]*scrollbar-width:\s*thin/);
+  });
+
+  it("古い環境向けの指定でも、溝と角を塗らずつまみに枠を付けない", () => {
+    // 最小化で `background:transparent` は `background:0 0` になる
+    const track = /::-webkit-scrollbar-track\{([^}]*)\}/.exec(c)?.[1] ?? "";
+    const corner = /::-webkit-scrollbar-corner\{([^}]*)\}/.exec(c)?.[1] ?? "";
+    expect(track).toMatch(/background:\s*(0 0|transparent|none)/);
+    expect(corner).toMatch(/background:\s*(0 0|transparent|none)/);
+
+    const thumb = /::-webkit-scrollbar-thumb\{([^}]*)\}/.exec(c)?.[1] ?? "";
+    expect(thumb).not.toBe("");
+    expect(thumb).toMatch(/border:\s*none/);
+  });
+
+  it("明るいときも暗いときも、つまみの色がある", () => {
+    // 片方だけだと、もう片方では地に溶けて掴めなくなる
+    expect(c).toMatch(/:root\{[^}]*--scrollbar-thumb:/);
+    expect(c).toMatch(/\.dark\{[^}]*--scrollbar-thumb:/);
   });
 });

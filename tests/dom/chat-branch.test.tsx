@@ -159,3 +159,93 @@ describe("切替の連打", () => {
     expect(document.body.textContent).not.toContain("古い応答");
   });
 })
+
+/**
+ * 生成中の枝の行き来。
+ *
+ * 生成はサーバーで走っていて、画面がどの枝を出しているかとは関係しない。
+ * それでも閉じていたので、走っているあいだ（「成功するまで生成」では
+ * 何分も）過去の応答を見比べることも、そこから枝を作ることもできなかった。
+ */
+describe("生成中の枝の行き来", () => {
+  /** 生成を宙吊りにして、生成中のまま止める。 */
+  function hangGeneration(stub: ServerStub) {
+    stub.on("/generate", () => new Promise<never>(() => {}));
+  }
+
+  /**
+   * 生成しても残る位置に兄弟を持たせる。再生成は末尾の応答を作り直す
+   * ので、そこに兄弟を置いてもページャごと入れ替わってしまう。
+   */
+  const running = () => [
+    msg("user", "最初の質問", {
+      id: "u1",
+      siblingIds: ["u1", "u1b"],
+      siblingIndex: 0,
+    }),
+    msg("assistant", "最初の応答", { id: "a1" }),
+    msg("user", "2つ目の質問", { id: "u2" }),
+    msg("assistant", "2つ目の応答", { id: "a2" }),
+  ];
+
+  it("生成中でもページャを押せる", async () => {
+    server = installServer(running());
+    const { user } = renderChat({ initialMessages: running() });
+    hangGeneration(server);
+    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
+
+    const next = screen.getByLabelText("次のブランチ");
+    expect(next.hasAttribute("disabled")).toBe(false);
+    await user.click(next);
+    await waitFor(() => {
+      expect(server.lastBody("/path")).toEqual({ messageId: "u1b" });
+    });
+  });
+
+  it("移った先の応答を、生成中の本文で書き換えない", async () => {
+    server = installServer(running());
+    // 生成中の行はサーバー側では進んでいる（本文が届く）
+    server.on("/messages/", () => ({
+      content: "生成中の本文です",
+      reasoning: null,
+      status: "streaming",
+      error: null,
+      usage: null,
+      citations: null,
+    }));
+    // 切り替え先の枝（生成中の行は含まれない）
+    server.on("/path", () => ({
+      messages: [
+        msg("user", "書き直した質問", {
+          id: "u1b",
+          siblingIds: ["u1", "u1b"],
+          siblingIndex: 1,
+        }),
+        msg("assistant", "別の枝の応答", { id: "b1" }),
+      ],
+    }));
+
+    const { user } = renderChat({ initialMessages: running() });
+    server.on("/generate", () => ({
+      userMessageId: null,
+      assistantMessageId: "a3",
+    }));
+    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
+
+    await user.click(screen.getByLabelText("次のブランチ"));
+    await screen.findByText("別の枝の応答");
+
+    /*
+     * 生成中の本文を「末尾のアシスタント」へ貼っていたので、枝を移ると
+     * 無関係な応答が書き換わっていた。当てる先はIDで探す。
+     * 追いかけること自体はやめない（生成はまだ走っている）。
+     */
+    await waitFor(() => {
+      expect(server.countOf("/messages/a3")).toBeGreaterThan(1);
+    });
+    expect(screen.getByText("別の枝の応答")).toBeTruthy();
+    expect(screen.queryByText("生成中の本文です")).toBeNull();
+  });
+});

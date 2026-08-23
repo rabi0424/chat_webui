@@ -23,6 +23,7 @@ export function UserMessage({
   editing,
   setEditing,
   onSubmitEdit,
+  onSaveEdit,
   onAddEditFiles,
   editFileInputRef,
 }: {
@@ -32,6 +33,8 @@ export function UserMessage({
   editing: EditingState | null;
   setEditing: Dispatch<SetStateAction<EditingState | null>>;
   onSubmitEdit: () => void;
+  /** 編集を枝として保存するだけ（生成しない）。 */
+  onSaveEdit: () => void;
   onAddEditFiles: (files: File[]) => void;
   editFileInputRef: RefObject<HTMLInputElement | null>;
 }) {
@@ -57,6 +60,9 @@ export function UserMessage({
           editing={editing}
           setEditing={setEditing}
           onSubmit={onSubmitEdit}
+          onSave={onSaveEdit}
+          // 生成中は送信だけ閉じる（2本目を同時に走らせない）
+          submitDisabled={isStreaming}
           onAddFiles={onAddEditFiles}
           fileInputRef={editFileInputRef}
         />
@@ -86,13 +92,16 @@ export function UserMessage({
           )}
           {!selecting && (
             <div className="mt-1 flex items-center justify-end gap-1.5">
-              <BranchPager
-                message={m}
-                disabled={isStreaming}
-                onSwitch={switchBranch}
-              />
+              <BranchPager message={m} onSwitch={switchBranch} />
               {m.content && <CopyButton text={m.content} />}
-              {m.id && !isStreaming && (
+              {/*
+                編集と分岐は生成中でも開ける。どちらも枝を作るだけで、
+                生成そのものには触れない（編集の「送信」だけは、
+                2本目の生成になるので生成中は閉じてある）。
+                削除だけは閉じておく——走っている応答の親を消すと、
+                書き込む先を失った生成が宙に浮く。
+              */}
+              {m.id && (
                 <>
                   <button
                     type="button"
@@ -105,7 +114,7 @@ export function UserMessage({
                       })
                     }
                     aria-label="編集して再送信"
-                    title="編集して再送信（分岐を作成）"
+                    title="編集（保存だけ / 送信して分岐）"
                     className={MSG_ICON_ACTION}
                   >
                     <IconPencil className="h-3.5 w-3.5" />
@@ -118,15 +127,17 @@ export function UserMessage({
                   >
                     ⑂ ここから分岐
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => startSelect(m.id!)}
-                    aria-label="削除"
-                    title="メッセージを削除（選択モードへ）"
-                    className={MSG_DELETE_ACTION}
-                  >
-                    <IconTrash className="h-3.5 w-3.5" />
-                  </button>
+                  {!isStreaming && (
+                    <button
+                      type="button"
+                      onClick={() => startSelect(m.id!)}
+                      aria-label="削除"
+                      title="メッセージを削除（選択モードへ）"
+                      className={MSG_DELETE_ACTION}
+                    >
+                      <IconTrash className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </>
               )}
             </div>

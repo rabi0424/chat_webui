@@ -186,12 +186,20 @@
   --shimmer-glow: #fafafa; /* neutral-50 */
 }
 
+/*
+ * 位置は 0%〜100% の内側だけを動かす。
+ *
+ * 背景は要素より広い（250%）ので、この範囲なら**どの時点でも文字の
+ * 全体が塗られる**。範囲の外（150% や -50%）まで動かすと、塗りが要素の
+ * 外へ出た部分は透明のままになり——文字色は transparent なので——
+ * タイトルが一瞬まるごと消える。脈打つのではなく、点滅して見えていた。
+ */
 @keyframes title-shimmer {
   from {
-    background-position: 150% 0;
+    background-position: 100% 0;
   }
   to {
-    background-position: -50% 0;
+    background-position: 0% 0;
   }
 }
 
@@ -312,6 +320,62 @@ body {
 
 .dark {
   color-scheme: dark;
+}
+
+/*
+ * スクロールバー。
+ *
+ * 何も指定しないと、Chrome（PC）は溝（トラック）と、本文との境の線まで
+ * 描く——一覧や入力欄の右端に**枠が1本増えたように見える**。中身が
+ * 主役の画面なので、動かせる部分（つまみ）だけを出し、溝は透明にする。
+ *
+ * 効かせる先は「内側のスクロール領域すべて」（会話一覧・本文・コード
+ * ブロック・表・入力欄）。個々の要素に貼って回ると、貼り忘れたところ
+ * だけ既定の見た目に戻る。ただし2つのプロパティで置き場所が違う——
+ * `scrollbar-color` は**継承する**ので :root で足りるが、
+ * `scrollbar-width` は**継承しない**。:root にだけ置いてもページ全体の
+ * スクロールバーしか細くならず、中の一覧は既定の太さのままになる
+ * （実際、最初はそう書いていて、内側だけ太いままだった）。
+ *
+ * 色は地に対する濃さで決める。つまみは地に溶けない程度に留め、
+ * 触れているあいだだけ濃くする（webkit 側のみ。標準のプロパティに
+ * つまみのホバーを分けて書く手立てが無いため）。
+ */
+:root {
+  --scrollbar-thumb: rgb(0 0 0 / 0.25);
+  --scrollbar-thumb-hover: rgb(0 0 0 / 0.4);
+}
+:root.dark {
+  --scrollbar-thumb: rgb(255 255 255 / 0.22);
+  --scrollbar-thumb-hover: rgb(255 255 255 / 0.35);
+}
+
+:root {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+* {
+  scrollbar-width: thin;
+}
+
+/*
+ * 標準のプロパティを解さないブラウザ（Safari 18.2 未満など）向け。
+ * 両方を解する Chrome は標準のほうを使うので、二重にはならない。
+ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border: none;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
 }
 
 /*

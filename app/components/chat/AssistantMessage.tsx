@@ -117,11 +117,7 @@ export function AssistantMessage({
       )}
       {!selecting && (
         <div className="mt-1 flex items-center gap-2">
-          <BranchPager
-            message={m}
-            disabled={isStreaming}
-            onSwitch={switchBranch}
-          />
+          <BranchPager message={m} onSwitch={switchBranch} />
           {m.usage && (
             <span className="text-xs text-neutral-400 dark:text-neutral-500">
               {m.usage.promptTokens != null &&
@@ -148,7 +144,12 @@ export function AssistantMessage({
               この画像を使う
             </button>
           )}
-          {m.id && !isStreaming && m.status !== "error" && (
+          {/*
+            分岐（別の会話へ写す）は生成中でも通す。ここまでの履歴を
+            読んで写すだけで、走っている生成には触れない。ただし
+            書きかけの応答そのものからは写せない（まだ中身が無い）。
+          */}
+          {m.id && m.status !== "error" && m.status !== "streaming" && (
             <button
               type="button"
               onClick={() => fork(m.id!)}

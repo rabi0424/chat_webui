@@ -44,6 +44,11 @@ export interface CreateConversationResponse {
   id: string;
 }
 
+/** 生成せずに保存したユーザー発言。採番されたIDを返す。 */
+export interface AppendMessageResponse {
+  id: string;
+}
+
 /** 生成の開始。採番されたIDを返す（クライアントの楽観表示に貼る）。 */
 export interface GenerateResponse {
   /** 新しいユーザー発言を保存しなかったときは null。 */
@@ -57,6 +62,13 @@ export interface UnreadResponse {
   ids: string[];
   /** いま生成が走っている会話ID。 */
   generating: string[];
+  /**
+   * 会話一覧で最後に何かが動いた時刻。
+   *
+   * これが変わったときだけ一覧を取り直す（毎回引くと、表示しているあいだ
+   * ずっと200行の読み出しが続く）。
+   */
+  latest: number;
 }
 
 /** モデル一覧。 */

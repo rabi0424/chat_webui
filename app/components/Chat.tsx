@@ -261,6 +261,8 @@ export function Chat({
     pollRunUntilDone,
     refreshPath,
     trackRunning,
+    runningId,
+    notePath,
   } = useGenerationTracking({ setMessages, setIsStreaming, markRead });
 
   /**
@@ -905,7 +907,7 @@ export function Chat({
 
       // 生成過程・最終状態はサーバーを正とし、ポーリングで追いかける
       if (retryConfig) {
-        await pollRunUntilDone(convId, track);
+        await pollRunUntilDone(convId, assistantMessageId, track);
       } else {
         await pollUntilDone(convId, assistantMessageId, track);
       }
@@ -1038,17 +1040,27 @@ export function Chat({
 
   function stop() {
     const convId = convIdRef.current;
-    // リトライ生成では末尾が完了済みの応答なので、生成中の行を探す
-    const target = [...messages]
-      .reverse()
-      .find((m) => m.role === "assistant" && m.id && m.status === "streaming");
-    if (!convId || !target?.id) {
-      // 保存の返事待ち。IDが付いた時点で送る
+    /*
+     * 狙うのは**追跡している行**。表示から探していたので、生成中に
+     * 別の枝へ移ると（画面にその行が居なくなり）押しても何も起きず、
+     * 「停止しています…」のまま止まらなかった。表示に居ないだけで
+     * 生成は走っている。
+     *
+     * 追跡がまだIDを知らない場合（保存の返事待ち）だけ、押した意思を
+     * 覚えておいて後で送る。
+     */
+    const target =
+      runningId() ??
+      [...messages]
+        .reverse()
+        .find((m) => m.role === "assistant" && m.id && m.status === "streaming")
+        ?.id;
+    if (!convId || !target) {
       stopWantedRef.current = true;
       showNotice("停止しています…");
       return;
     }
-    sendStop(convId, target.id);
+    sendStop(convId, target);
   }
 
   /**
@@ -1113,6 +1125,55 @@ export function Chat({
     }
     if (history.length === 0) return;
     void runGeneration(history, persistFor(history));
+  }
+
+  /**
+   * 編集した文面を、送らずに枝として保存する。
+   *
+   * 送信（保存 + 生成）と分けてあるのは、書き直しと生成が必ずしも同時
+   * ではないため——文面だけ整えておいて、モデルやパラメータを選んでから
+   * 送りたいことがある。生成の入口を通すと必ず1本走って課金されるので、
+   * 保存だけの入口を別に置く（api/conversations/:id/messages）。
+   *
+   * 生成中でも押せる。作るのは枝だけで、生成は始めない。
+   */
+  async function saveEdit() {
+    const convId = convIdRef.current;
+    if (!editing || !convId || editing.uploads > 0) return;
+    const text = editing.text.trim();
+    const attachments = editing.attachments;
+    if (!text && attachments.length === 0) return;
+    const parentId = messages[editing.index - 1]?.id ?? null;
+    setEditing(null);
+    try {
+      const res = await fetch(`/api/conversations/${convId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          parentId,
+          content: text,
+          attachmentIds: attachments.map((a) => a.id),
+        }),
+      });
+      if (!res.ok) throw new Error();
+      /*
+       * 保存したものを画面へ出すのは、取り直しで行う。楽観的に組み立てる
+       * と、枝の番号（1/2 のような兄弟の並び）を自前で作ることになり、
+       * サーバーが持つ木とずれる。保存は一度きりの操作なので、往復が
+       * 1回増えても体感は変わらない。
+       */
+      const path = await fetch(`/api/conversations/${convId}/path`);
+      if (path.ok) {
+        const { messages: fresh } = (await path.json()) as PathResponse;
+        setMessages(fresh);
+        notePath(fresh);
+      }
+      invalidateChat(convId);
+      revalidator.revalidate();
+      setError(null);
+    } catch {
+      setError("保存に失敗しました。");
+    }
   }
 
   /** 過去メッセージの編集・再送信（同一会話内で分岐を作る）。 */
@@ -1232,9 +1293,17 @@ export function Chat({
   const branchSeq = useRef(0);
 
   /** ブランチ切替（ページャ）。 */
+  /**
+   * 別の枝へ移る。
+   *
+   * **生成中でも通す**。過去の応答を見比べたり、そこから分岐を作ったり
+   * するのを、生成が終わるまで待たせる理由が無い（生成はサーバーで
+   * 走っていて、画面の表示位置とは関係しない）。移った先を追跡へ伝え、
+   * 実行の枝から離れているあいだは画面を上書きさせない。
+   */
   async function switchBranch(targetId: string) {
     const convId = convIdRef.current;
-    if (isStreaming || !convId) return;
+    if (!convId) return;
     const seq = ++branchSeq.current;
     try {
       const res = await fetch(`/api/conversations/${convId}/path`, {
@@ -1247,6 +1316,7 @@ export function Chat({
       // 追い越されていたら、こちらの結果は捨てる
       if (seq !== branchSeq.current) return;
       setMessages(fresh);
+      notePath(fresh);
       setError(null);
     } catch {
       if (seq !== branchSeq.current) return;
@@ -1288,7 +1358,9 @@ export function Chat({
   /** ここから分岐: この地点までの履歴で独立した新会話を作る。 */
   async function fork(messageId: string) {
     const convId = convIdRef.current;
-    if (isStreaming || !convId) return;
+    // 生成中でも通す。ここまでの履歴を新しい会話へ写すだけで、
+    // 走っている生成には触れない（写した先で続きを生成もしない）
+    if (!convId) return;
     if (
       !confirm(
         "ここまでの履歴をコピーして、独立した新しい会話を作成します。よろしいですか？",
@@ -1527,6 +1599,7 @@ export function Chat({
         editing={editing}
         setEditing={setEditing}
         onSubmitEdit={() => submitEdit()}
+        onSaveEdit={() => void saveEdit()}
         onAddEditFiles={(files) => void addEditFiles(files)}
         editFileInputRef={editFileInputRef}
         error={error}

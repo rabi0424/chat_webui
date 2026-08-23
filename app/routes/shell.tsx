@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Outlet,
   useNavigation,
+  useRevalidator,
   type ShouldRevalidateFunctionArgs,
 } from "react-router";
 import type { Route } from "./+types/shell";
@@ -152,6 +153,28 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
    * 未読と同じ往復で受け取る（印のためにもう1本増やさない）。
    */
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
+  /**
+   * 会話一覧で最後に何かが動いた時刻。ここが変わったら一覧を取り直す。
+   *
+   * 一覧（並び順・新しい会話・タイトル）はローダーが持っていて、遷移では
+   * 取り直さない決まりにしてある（shouldRevalidate。重いローダーを全遷移
+   * の裏で待たせないため）。そのため**送信した会話が一番上に上がらない**
+   * ——再読込するまで前の並びのまま、という状態になっていた。
+   *
+   * かといって一覧そのものを数秒おきに引くと、200行の読み出しが延々と
+   * 続く（D1 の無料枠は読んだ行数で数える）。動いたかどうかだけを
+   * 1つの数字で受け取り、変わったときだけ取り直す。
+   */
+  const latestRef = useRef<number | null>(null);
+  const revalidator = useRevalidator();
+  /**
+   * 取り直しの手続き。ポーリングの effect は貼り替えたくない（貼り替えると
+   * 5秒の間隔がそのたびに仕切り直しになる）ので、最新のものを控えて使う。
+   */
+  const revalidateRef = useRef(revalidator.revalidate);
+  useEffect(() => {
+    revalidateRef.current = revalidator.revalidate;
+  }, [revalidator.revalidate]);
 
   useEffect(() => {
     let alive = true;
@@ -160,10 +183,16 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       try {
         const res = await fetch("/api/conversations/unread");
         if (!res.ok) return;
-        const { ids, generating } = (await res.json()) as UnreadResponse;
+        const { ids, generating, latest } = (await res.json()) as UnreadResponse;
         if (!alive) return;
         setUnreadIds(new Set(ids));
         setGeneratingIds(new Set(generating ?? []));
+        // 最初の1回は「いまの値」を控えるだけ（開いた直後に取り直さない）
+        const known = latestRef.current;
+        if (typeof latest === "number") latestRef.current = latest;
+        if (known != null && typeof latest === "number" && latest > known) {
+          revalidateRef.current();
+        }
       } catch {
         // 印の更新が遅れても実害はない
       }

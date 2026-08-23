@@ -47,7 +47,28 @@ describe("生成中の吹き出し", () => {
     server.on("/generate", () => new Promise<never>(() => {}));
   }
 
-  it("生成中は、編集・分岐・削除の入口を出さない", async () => {
+  /**
+   * 生成中に閉じるのは「木から取り去る操作」と「2本目の生成」だけ。
+   *
+   * 枝を作る・見比べる操作まで閉じていたので、走っているあいだ
+   * （「成功するまで生成」では何分も）何もできなかった。
+   */
+  it("生成中でも、編集と分岐は開ける", async () => {
+    const { user } = renderChat({
+      initialMessages: [
+        msg("user", "前の質問", { id: "u1" }),
+        msg("assistant", "前の答え", { id: "a1" }),
+      ],
+    });
+    hangGeneration();
+    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
+
+    expect(screen.getAllByLabelText("編集して再送信").length).toBeGreaterThan(0);
+    expect(screen.getAllByTitle(/ここから分岐/).length).toBeGreaterThan(0);
+  });
+
+  it("生成中は、削除の入口だけ伏せる", async () => {
     const { user } = renderChat({
       initialMessages: [
         msg("user", "前の質問", { id: "u1" }),
@@ -55,18 +76,35 @@ describe("生成中の吹き出し", () => {
       ],
     });
     // 生成していないあいだは出ている
-    expect(screen.getAllByLabelText("編集して再送信").length).toBeGreaterThan(0);
     expect(screen.getAllByLabelText("削除").length).toBeGreaterThan(0);
 
     hangGeneration();
     await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
 
-    // 木が動いている最中なので、木を変える操作は伏せる
-    await waitFor(() =>
-      expect(screen.queryByLabelText("編集して再送信")).toBeNull(),
-    );
-    expect(screen.queryByLabelText("削除")).toBeNull();
-    expect(screen.queryByTitle(/ここから分岐/)).toBeNull();
+    // 走っている応答の親を消すと、書き込む先を失った生成が宙に浮く
+    await waitFor(() => expect(screen.queryByLabelText("削除")).toBeNull());
+  });
+
+  it("生成中の編集は、保存はできるが送信はできない", async () => {
+    const { user } = renderChat({
+      initialMessages: [
+        msg("user", "前の質問", { id: "u1" }),
+        msg("assistant", "前の答え", { id: "a1" }),
+      ],
+    });
+    hangGeneration();
+    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
+
+    await user.click(screen.getAllByLabelText("編集して再送信")[0]);
+    // 保存（枝を作るだけ）は通す
+    expect(
+      screen.getByRole("button", { name: "保存" }).hasAttribute("disabled"),
+    ).toBe(false);
+    // 送信は2本目の生成になるので閉じる
+    expect(
+      screen.getByRole("button", { name: "送信" }).hasAttribute("disabled"),
+    ).toBe(true);
   });
 });
 
