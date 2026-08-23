@@ -181,6 +181,16 @@ CREATE TABLE IF NOT EXISTS pending_file_deletions (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_deletion_at ON pending_file_deletions(noticed_at);
 `,
+  // v16: 生成中の行だけを引くための索引。
+  //
+  // サイドバーは「いま生成中の会話」を数秒おきに引く（タイトルを
+  // 光らせるため）。索引が無いと messages 全体の走査になり、会話が
+  // 増えるほど**5秒ごとに**重くなる。生成中の行は多くても数件なので、
+  // 条件付き索引にして索引自体も小さく保つ。
+  `
+CREATE INDEX IF NOT EXISTS idx_messages_streaming
+  ON messages(conversation_id) WHERE status = 'streaming';
+`,
 ];
 
 /**
@@ -308,4 +318,117 @@ export function undoGenerationStatements(params: {
     binds: [params.previousLeafId, params.conversationId],
   });
   return out;
+}
+
+/**
+ * 「生成が止まった」とみなすまでの無音時間。
+ *
+ * db.server.ts の中断検知（sweepStaleStreaming）と同じ値を使う。ここで
+ * 別の値にすると、サイドバーだけが**もう動いていない生成を光らせ続ける**
+ * ことになる（生成側が落ちても行は streaming のまま残るため）。
+ */
+export const STALE_STREAMING_MS = 60 * 1000;
+
+/**
+ * いま生成中の会話ID。
+ *
+ * サイドバーはこれを数秒おきに引き、タイトルを光らせる。行の status
+ * だけを見ると、生成側が落ちたまま残った行（中断検知が走るのは会話を
+ * 開いたときだけ）を永久に光らせてしまうので、最後の書き込みからの
+ * 経過でも切る。書き込みを伴わないぶん、印は自然に消える。
+ *
+ * バインドは1つ（この時刻より後に書かれたものだけを生成中とみなす）。
+ */
+export const GENERATING_CONVERSATIONS_SQL = `SELECT DISTINCT conversation_id AS id
+     FROM messages
+    WHERE status = 'streaming'
+      AND COALESCE(flushed_at, created_at) > ?`;
+
+/**
+ * 保管しているものの大きさ（使用量の画面に出す）。
+ *
+ * 1文にまとめてあるのは、D1 の応答に載る `meta.size_after`（データベース
+ * 本体のバイト数）を**同じ往復で**受け取るため。件数を数えるためだけの
+ * 問い合わせを増やすより、1回で両方取ったほうがサブリクエストを使わない。
+ *
+ * R2 の使用量は attachments の記録から出す。R2 には「バケットの合計を
+ * 返す」入口が無く、全オブジェクトを列挙すると枚数ぶんの往復になる。
+ * 実体はフォークや分岐で共有されるので、r2_key ごとにまとめて数える
+ * （行の数で数えると、共有しているぶんを何度も足してしまう）。
+ */
+export const STORAGE_STATS_SQL = `SELECT
+       (SELECT COUNT(*) FROM conversations) AS conversations,
+       (SELECT COUNT(*) FROM messages) AS messages,
+       (SELECT COUNT(*) FROM usage_events) AS usage_events,
+       (SELECT COUNT(*) FROM (SELECT 1 FROM attachments GROUP BY r2_key)) AS files,
+       (SELECT COALESCE(SUM(size), 0)
+          FROM (SELECT MAX(size) AS size FROM attachments GROUP BY r2_key)) AS file_bytes,
+       (SELECT COUNT(*) FROM pending_file_deletions) AS pending_deletions`;
+
+/**
+ * 期間の使用量。
+ *
+ * 本体（db.server.ts）と、SQLite に流して確かめるテストの両方がこれを
+ * 使う。手で書き写すと、片方だけ直したときに気づけない。
+ *
+ * バインドは1つ（この時刻以降）。「額が取れなかった分のポイント」を
+ * 別に数えているのは、上限の判定でそこだけ換算レートで見積もるため。
+ */
+export const USAGE_TOTALS_SQL = `SELECT
+         COALESCE(SUM(cost_usd), 0) AS cost_usd,
+         COALESCE(SUM(points), 0) AS points,
+         COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN points ELSE 0 END), 0)
+           AS points_without_cost,
+         COUNT(*) AS events
+       FROM usage_events WHERE at >= ?`;
+
+/** モデル別の内訳。バインドは1つ（この時刻以降）。 */
+export const USAGE_BY_MODEL_SQL = `SELECT model_id,
+              provider,
+              COALESCE(SUM(cost_usd), 0) AS cost_usd,
+              COALESCE(SUM(points), 0) AS points,
+              COUNT(*) AS events
+         FROM usage_events WHERE at >= ?
+        GROUP BY model_id, provider
+        ORDER BY cost_usd DESC, points DESC`;
+
+/**
+ * 確定済みの応答を1件積む文。
+ *
+ * 「成功するまで生成」が成功のたびに使う。本体（db.server.ts）と、
+ * SQLite に流して確かめるテストの両方がこれを使う。
+ *
+ * 未読の印を**ここで**立てるのが肝。生成の確定（finalizeGeneration）に
+ * 任せていたときは、1回の依頼で積まれる応答が全部終わるまで印が付かず、
+ * 別の画面から見ていると最初の成功が届いたことに気づけなかった。
+ * 既に走っている batch へ足すだけなので、往復は増えない。
+ */
+export function appendAssistantMessageStatements(params: {
+  id: string;
+  conversationId: string;
+  parentId: string;
+  modelId: string;
+  content: string;
+  usageJson: string | null;
+  now: number;
+}): Statement[] {
+  return [
+    {
+      sql: "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, status, flushed_at, created_at) VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'done', ?, ?)",
+      binds: [
+        params.id,
+        params.conversationId,
+        params.parentId,
+        params.content,
+        params.modelId,
+        params.usageJson,
+        params.now,
+        params.now,
+      ],
+    },
+    {
+      sql: "UPDATE conversations SET current_leaf_message_id = ?, updated_at = ?, unread = 1 WHERE id = ?",
+      binds: [params.id, params.now, params.conversationId],
+    },
+  ];
 }

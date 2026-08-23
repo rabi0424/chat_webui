@@ -182,3 +182,46 @@ describe("添付画像", () => {
     expect(scroller.scrollTop).toBe(5000);
   });
 });
+
+/**
+ * 本文の中の画像（モデルが返した `![](…)`）。
+ *
+ * 添付欄には出ないので、ここを押せなければ拡大して見る手立てが無い。
+ * 「成功するまで生成」で積まれた画像は全部この形で届くため、丸ごと
+ * 拡大できない状態になっていた。
+ */
+describe("本文の中の画像", () => {
+  const withGenerated = () =>
+    renderChat({
+      initialMessages: [
+        msg("user", "猫の絵を", { id: "u1" }),
+        msg("assistant", "![猫](/api/files/gen-1)", { id: "a1" }),
+      ],
+    });
+
+  it("タップすると拡大表示が開く", async () => {
+    const { container, user } = withGenerated();
+    const inline = await screen.findByAltText("猫");
+    // 拡大表示はまだ出ていない
+    expect(screen.queryByLabelText("閉じる")).toBeNull();
+
+    await user.click(inline);
+
+    // 開いたのはその画像（別のURLを開いていないこと）
+    const opened = screen.getByAltText("添付画像") as HTMLImageElement;
+    expect(opened.getAttribute("src")).toBe("/api/files/gen-1");
+    expect(screen.getByLabelText("閉じる")).toBeTruthy();
+    expect(container).toBeTruthy();
+  });
+
+  it("閉じれば元の本文に戻る", async () => {
+    const { user } = withGenerated();
+    await user.click(await screen.findByAltText("猫"));
+    await user.click(screen.getByLabelText("閉じる"));
+    await waitFor(() => {
+      expect(screen.queryByAltText("添付画像")).toBeNull();
+    });
+    // 本文の画像は残っている（閉じたときに一覧ごと消えていない）
+    expect(screen.getByAltText("猫")).toBeTruthy();
+  });
+});

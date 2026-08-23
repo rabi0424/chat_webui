@@ -1,17 +1,22 @@
+import { useState } from "react";
 import { useOutletContext } from "react-router";
 import type { Route } from "./+types/usage";
 import type { ShellContext } from "./shell";
 import {
   getAppSettings,
   readStoredUsdJpy,
-  usageByModelSince,
-  usageTotalsSince,
+  readUsageOverview,
+  type StorageStats,
   type UsageByModel,
 } from "../lib/db.server";
 import {
+  FREE_TIER,
+  USAGE_RANGES,
+  USAGE_RANGE_LABELS,
   checkLimit,
+  formatBytes,
   monthLabelJst,
-  monthStartJst,
+  type UsageRange,
   type UsageTotals,
 } from "../lib/usage";
 import { IconMenu } from "../components/icons";
@@ -20,27 +25,21 @@ export function meta() {
   return [{ title: "使用量 - Chat WebUI" }];
 }
 
-/** 直近この日数ぶんも併せて見せる（月初は月次だけだと様子が分からない）。 */
-const RECENT_DAYS = 7;
-
 export async function loader() {
   const now = Date.now();
-  const monthStart = monthStartJst(now);
-  const recentStart = now - RECENT_DAYS * 24 * 60 * 60 * 1000;
-
-  const [settings, month, recent, byModel, usdJpy] = await Promise.all([
+  const [settings, overview, usdJpy] = await Promise.all([
     getAppSettings(),
-    usageTotalsSince(monthStart),
-    usageTotalsSince(recentStart),
-    usageByModelSince(monthStart),
+    // 期間ごとの合計・内訳と、保管しているものの大きさを1回のbatchで読む
+    readUsageOverview(now),
     readStoredUsdJpy(),
   ]);
+  const month = overview.totals.month;
 
   return {
     now,
-    month,
-    recent,
-    byModel,
+    totals: overview.totals,
+    byModel: overview.byModel,
+    storage: overview.storage,
     usdJpy,
     limitJpy: settings.monthlyLimitJpy,
     verdict: checkLimit({
@@ -129,16 +128,19 @@ function Totals({
 
 function ByModel({
   rows,
+  label,
   usdJpy,
 }: {
   rows: UsageByModel[];
+  /** どの期間の内訳か（見出しに出す）。 */
+  label: string;
   usdJpy: number | null;
 }) {
   if (rows.length === 0) return null;
   const top = rows[0].costUsd;
   return (
     <div className="mt-8">
-      <h2 className="mb-2 text-sm font-semibold">モデル別（今月）</h2>
+      <h2 className="mb-2 text-sm font-semibold">モデル別（{label}）</h2>
       <ul className="space-y-1.5">
         {rows.map((r) => (
           <li key={`${r.provider}:${r.modelId}`} className="text-sm">
@@ -172,9 +174,121 @@ function ByModel({
   );
 }
 
+/** 使用量に対する割合の帯（無料枠の目安に対して、いまどれくらいか）。 */
+function QuotaBar({ used, limit }: { used: number; limit: number }) {
+  const ratio = Math.min(used / limit, 1);
+  const tone =
+    ratio >= 1 ? "bg-red-500" : ratio >= 0.8 ? "bg-amber-500" : "bg-accent/60";
+  return (
+    <div className="mt-1 h-1 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-900">
+      <div
+        className={`h-full rounded-full ${tone}`}
+        style={{ width: `${ratio * 100}%` }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Cloudflare 側の使用状況。
+ *
+ * 課金額は出さない——Cloudflare には個人アカウントの請求額を返す API が
+ * 無く、無理に見積もると「アプリが言った額」と実際の請求がずれる。
+ * 代わりに、無料枠を使い切りそうかどうかが分かる大きさを出す
+ * （超過は課金ではなく失敗として現れる。要件 §3.6 の運用面の前提）。
+ */
+function Cloudflare({ storage }: { storage: StorageStats }) {
+  const rows: { label: string; value: string; note?: string }[] = [
+    {
+      label: "会話",
+      value: `${storage.conversations.toLocaleString()}件`,
+      note: `メッセージ ${storage.messages.toLocaleString()}件`,
+    },
+    {
+      label: "使用量の記録",
+      value: `${storage.usageEvents.toLocaleString()}件`,
+    },
+  ];
+  return (
+    <div className="mt-8">
+      <h2 className="mb-2 text-sm font-semibold">Cloudflare</h2>
+      <div className="space-y-3 rounded-xl border border-neutral-200 px-3.5 py-3 dark:border-neutral-800">
+        <div>
+          <div className="flex items-baseline justify-between gap-3 text-sm">
+            <span>D1（データベース）</span>
+            <span className="tabular-nums text-neutral-600 dark:text-neutral-300">
+              {storage.d1Bytes != null ? formatBytes(storage.d1Bytes) : "—"}
+            </span>
+          </div>
+          {storage.d1Bytes != null ? (
+            <>
+              <QuotaBar used={storage.d1Bytes} limit={FREE_TIER.d1Bytes} />
+              <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                無料枠の目安 {formatBytes(FREE_TIER.d1Bytes)} の{" "}
+                {Math.round((storage.d1Bytes / FREE_TIER.d1Bytes) * 1000) / 10}%
+              </p>
+            </>
+          ) : (
+            <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+              大きさを取得できませんでした。
+            </p>
+          )}
+        </div>
+
+        <div>
+          <div className="flex items-baseline justify-between gap-3 text-sm">
+            <span>R2（画像・添付）</span>
+            <span className="tabular-nums text-neutral-600 dark:text-neutral-300">
+              {formatBytes(storage.fileBytes)}
+            </span>
+          </div>
+          <QuotaBar used={storage.fileBytes} limit={FREE_TIER.r2Bytes} />
+          <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+            {storage.files.toLocaleString()}個・無料枠の目安{" "}
+            {formatBytes(FREE_TIER.r2Bytes)} の{" "}
+            {Math.round((storage.fileBytes / FREE_TIER.r2Bytes) * 1000) / 10}%
+            {storage.pendingDeletions > 0 &&
+              `（削除待ち ${storage.pendingDeletions}個を含む）`}
+          </p>
+        </div>
+
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-1 border-t border-neutral-100 pt-3 text-sm dark:border-neutral-800">
+          {rows.map((r) => (
+            <div key={r.label} className="flex items-baseline justify-between gap-2">
+              <dt className="text-neutral-500 dark:text-neutral-400">
+                {r.label}
+              </dt>
+              <dd className="tabular-nums">
+                {r.value}
+                {r.note && (
+                  <span className="ml-1.5 text-xs text-neutral-400">
+                    {r.note}
+                  </span>
+                )}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+        R2 の大きさは、こちらが記録している添付の合計です（同じ実体を
+        共有している分は1つとして数えます）。Cloudflare の請求額は API から
+        取れないため出していません。無料枠の値は目安で、変わることがあります。
+      </p>
+    </div>
+  );
+}
+
 export default function Usage({ loaderData }: Route.ComponentProps) {
-  const { month, recent, byModel, usdJpy, verdict, now } = loaderData;
+  const { totals, byModel, storage, usdJpy, verdict, now } = loaderData;
   const { openSidebar } = useOutletContext<ShellContext>();
+  /**
+   * 見ている期間。3つとも読んであるので、切り替えても通信は起きない
+   * （押すたびにサーバーへ行くと、親レイアウトのローダーまで走り直す）。
+   */
+  const [range, setRange] = useState<UsageRange>("month");
+  const month = totals.month;
+  const shown = totals[range];
 
   return (
     <div className="h-full overflow-y-auto">
@@ -194,13 +308,42 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
           </span>
         </header>
 
+        {/* 期間の切り替え。押した期間の合計・内訳がその場で入れ替わる */}
+        <div
+          role="group"
+          aria-label="期間"
+          className="mb-4 inline-flex rounded-xl border border-neutral-200 p-0.5 dark:border-neutral-800"
+        >
+          {USAGE_RANGES.map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setRange(r)}
+              aria-pressed={range === r}
+              className={`rounded-[0.625rem] px-3 py-1.5 text-xs font-medium ${
+                range === r
+                  ? "bg-accent/10 text-accent-ink"
+                  : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              }`}
+            >
+              {USAGE_RANGE_LABELS[r]}
+            </button>
+          ))}
+        </div>
+
         <div className="grid grid-cols-2 gap-4">
-          <Totals title="今月" totals={month} usdJpy={usdJpy} />
           <Totals
-            title={`直近${RECENT_DAYS}日`}
-            totals={recent}
+            title={USAGE_RANGE_LABELS[range]}
+            totals={shown}
             usdJpy={usdJpy}
           />
+          {/*
+            上限は月ごとの決まりなので、別の期間を見ているあいだも
+            「今月いくら使ったか」は隣に出しておく（帯の根拠でもある）。
+          */}
+          {range !== "month" && (
+            <Totals title="今月" totals={month} usdJpy={usdJpy} />
+          )}
         </div>
 
         {verdict.limitJpy > 0 && verdict.usedJpy != null && (
@@ -236,13 +379,19 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
           </p>
         )}
 
-        <ByModel rows={byModel} usdJpy={usdJpy} />
+        <ByModel
+          rows={byModel[range]}
+          label={USAGE_RANGE_LABELS[range]}
+          usdJpy={usdJpy}
+        />
 
-        {month.events === 0 && (
+        {shown.events === 0 && (
           <p className="mt-10 text-center text-sm text-neutral-500 dark:text-neutral-400">
-            今月の記録はまだありません
+            {USAGE_RANGE_LABELS[range]}の記録はまだありません
           </p>
         )}
+
+        <Cloudflare storage={storage} />
 
         <p className="mt-10 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
           会話やメッセージを削除しても、ここの記録は残ります。使った額は

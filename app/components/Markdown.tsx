@@ -126,7 +126,18 @@ function CopyCodeButton({ text }: { text: string }) {
  * - diagrams: 図を描いてよい場所か。思考プロセスや入力の吹き出しでは、
  *   本文より目立ってしまうのでソースのまま見せる。
  */
-type BlockConfig = { streaming: boolean; diagrams: boolean };
+type BlockConfig = {
+  streaming: boolean;
+  diagrams: boolean;
+  /**
+   * 本文の中の画像をタップしたとき（拡大表示を開く）。
+   *
+   * 会話の中でだけ渡す。渡されていなければ画像はただの画像のままで、
+   * 押しどころにもならない（設定画面のヘルプなど、開く先が無い場所で
+   * 押せるように見せない）。
+   */
+  onImageClick?: (src: string) => void;
+};
 
 const BlockContext = createContext<BlockConfig>({
   streaming: false,
@@ -170,6 +181,34 @@ function CodeBlock({ node, children }: { node?: Element; children?: ReactNode })
   return frame;
 }
 
+/**
+ * 本文の中の画像。
+ *
+ * 拡大表示の入口が渡っているときだけボタンにする。モデルが返した画像は
+ * 本文のマークダウンとして届くので、添付（MessageImages）と違って
+ * ここを通らないと開けない——「成功するまで生成」で積まれた画像は
+ * タップしても何も起きなかった。
+ */
+const MarkdownImage: Components["img"] = ({ src, alt }) => {
+  const { onImageClick } = useContext(BlockContext);
+  const url = typeof src === "string" ? src : undefined;
+  const image = (
+    <img src={url} alt={alt ?? ""} loading="lazy" className="rounded-lg" />
+  );
+  if (!onImageClick || !url) return image;
+  return (
+    <button
+      type="button"
+      onClick={() => onImageClick(url)}
+      title="タップで拡大"
+      /* 画像の余白は prose が img に付けている。囲みは大きさを持たない */
+      className="block cursor-zoom-in transition active:opacity-80"
+    >
+      {image}
+    </button>
+  );
+};
+
 const components: Components = {
   pre: CodeBlock,
   // remark-alert が印を付けた引用ブロックだけ、警告ブロックとして描く
@@ -198,15 +237,11 @@ const components: Components = {
       </a>
     );
   },
-  img: ({ src, alt }) => (
-    <img
-      src={typeof src === "string" ? src : undefined}
-      alt={alt ?? ""}
-      loading="lazy"
-      className="rounded-lg"
-    />
-  ),
+  // 本文の中の画像。会話の中では押すと拡大表示に入る
+  // （「成功するまで生成」で積まれた画像はここを通る）
+  img: MarkdownImage,
 };
+
 
 const remarkPlugins: PluggableList = [
   remarkGfm,
@@ -360,6 +395,8 @@ type BodyProps = {
   children: string;
   /** 新しく現れた語をふわりと出す（生成中の末尾だけに使う）。 */
   animate?: boolean;
+  /** 本文の中の画像をタップしたとき（会話の中でだけ渡す）。 */
+  onImageClick?: (src: string) => void;
   /** 本文がまだ伸びている最中か（図を描くのを待たせるのに使う）。 */
   streaming?: boolean;
   /** ```mermaid を図にしてよいか。false ならソースのまま見せる。 */
@@ -382,14 +419,15 @@ export const MarkdownBody = memo(function MarkdownBody({
   streaming = false,
   diagrams = true,
   prepared = false,
+  onImageClick,
 }: BodyProps) {
   const source = useMemo(
     () => (prepared ? children : prepareMarkdown(children)),
     [children, prepared],
   );
   const config = useMemo<BlockConfig>(
-    () => ({ streaming, diagrams }),
-    [streaming, diagrams],
+    () => ({ streaming, diagrams, onImageClick }),
+    [streaming, diagrams, onImageClick],
   );
   return (
     <BlockContext.Provider value={config}>

@@ -1,15 +1,16 @@
-import { listUnreadConversationIds } from "../lib/db.server";
+import { listConversationFlags } from "../lib/db.server";
 import { apiJson, type UnreadResponse } from "../lib/api-types";
 
 /**
- * 未読の会話ID。
+ * サイドバーの印（未読・生成中）。
  *
  * 応答はサーバー側で進むため、別の画面にいるあいだに完成しても
  * クライアントは気づけない。サイドバーはこれを短い間隔で引いて印を更新する。
  */
 export async function loader() {
+  const flags = await listConversationFlags();
   return apiJson<UnreadResponse>(
-    { ids: await listUnreadConversationIds() },
+    { ids: flags.unread, generating: flags.generating },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

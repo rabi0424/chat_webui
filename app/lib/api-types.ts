@@ -51,9 +51,12 @@ export interface GenerateResponse {
   assistantMessageId: string;
 }
 
-/** 未読の会話。 */
+/** サイドバーの印（未読と、いま生成中の会話）。 */
 export interface UnreadResponse {
+  /** 未読の会話ID。 */
   ids: string[];
+  /** いま生成が走っている会話ID。 */
+  generating: string[];
 }
 
 /** モデル一覧。 */

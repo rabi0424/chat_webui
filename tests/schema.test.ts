@@ -2,9 +2,14 @@ import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DUE_PENDING_DELETIONS_SQL,
+  GENERATING_CONVERSATIONS_SQL,
   MIGRATIONS,
   PENDING_DELETION_GRACE_MS,
   QUEUE_PENDING_DELETION_SQL,
+  STALE_STREAMING_MS,
+  STORAGE_STATS_SQL,
+  USAGE_TOTALS_SQL,
+  appendAssistantMessageStatements,
   clearPendingDeletionsSql,
   generatedImagesSql,
   statementsOf,
@@ -93,18 +98,8 @@ describe("使用量の台帳", () => {
       )
       .run(eventId, 1000, cost, points, messageId);
 
-  const totals = () =>
-    db
-      .prepare(
-        `SELECT
-           COALESCE(SUM(cost_usd), 0) AS cost_usd,
-           COALESCE(SUM(points), 0) AS points,
-           COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN points ELSE 0 END), 0)
-             AS points_without_cost,
-           COUNT(*) AS events
-         FROM usage_events WHERE at >= ?`,
-      )
-      .get(0) as Record<string, number>;
+  const totals = (since = 0) =>
+    db.prepare(USAGE_TOTALS_SQL).get(since) as Record<string, number>;
 
   it("応答の使用量を載せると、モデルと会話が引き継がれる", () => {
     addMessage("m1", "c1", "openai/gpt-4o");
@@ -192,17 +187,11 @@ describe("使用量の台帳", () => {
     db.prepare(
       "INSERT INTO usage_events (id, at, kind, provider, cost_usd) VALUES ('b', 300, 'chat', 'openrouter', 2)",
     ).run();
-    const since = (t: number) =>
-      (
-        db
-          .prepare(
-            "SELECT COALESCE(SUM(cost_usd), 0) AS c FROM usage_events WHERE at >= ?",
-          )
-          .get(t) as { c: number }
-      ).c;
-    expect(since(0)).toBeCloseTo(3);
-    expect(since(200)).toBeCloseTo(2);
-    expect(since(400)).toBeCloseTo(0);
+    // 期間の切り方も本番と同じ文で見る（画面の期間切り替えはこれ1本）
+    expect(totals(0).cost_usd).toBeCloseTo(3);
+    expect(totals(200).cost_usd).toBeCloseTo(2);
+    expect(totals(400).cost_usd).toBeCloseTo(0);
+    expect(totals(200).events).toBe(1);
   });
 });
 
@@ -509,5 +498,180 @@ describe("消す候補の控え", () => {
     expect(due()).toEqual([]);
     // 生き残りは行が残っているので、また用済みになれば削除の側が控え直す
     expect(referenced(["生き残り"])).toEqual(["生き残り"]);
+  });
+});
+
+/**
+ * サイドバーが「いま生成中の会話」を引く問い合わせ。
+ *
+ * 行の status だけを見ると、生成側が落ちたまま残った行（中断検知が
+ * 走るのは会話を開いたときだけ）を永久に光らせてしまう。書き込みを
+ * 伴わずに消えることまで見る。
+ */
+describe("生成中の会話", () => {
+  beforeEach(() => migrate(db));
+
+  const now = 10_000_000;
+  const add = (
+    id: string,
+    conv: string,
+    status: string,
+    flushedAt: number | null,
+  ) =>
+    db
+      .prepare(
+        "INSERT INTO messages (id, conversation_id, role, content, status, flushed_at, created_at) VALUES (?, ?, 'assistant', '', ?, ?, ?)",
+      )
+      .run(id, conv, status, flushedAt, now);
+
+  const generating = (at = now) =>
+    (
+      db
+        .prepare(GENERATING_CONVERSATIONS_SQL)
+        .all(at - STALE_STREAMING_MS) as { id: string }[]
+    ).map((r) => r.id);
+
+  it("生成中の会話が出る", () => {
+    add("m1", "c1", "streaming", now);
+    add("m2", "c2", "done", now);
+    expect(generating()).toEqual(["c1"]);
+  });
+
+  it("同じ会話で2本走っていても1件にまとまる", () => {
+    add("m1", "c1", "streaming", now);
+    add("m2", "c1", "streaming", now);
+    expect(generating()).toEqual(["c1"]);
+  });
+
+  it("しばらく書き込みの無い行は、生成中とみなさない", () => {
+    add("m1", "c1", "streaming", now - STALE_STREAMING_MS - 1);
+    expect(generating()).toEqual([]);
+  });
+
+  it("flushed_at が無い行は、作られた時刻で見る", () => {
+    // 始まった直後（まだ一度も書いていない）は生成中に数える
+    add("m1", "c1", "streaming", null);
+    expect(generating()).toEqual(["c1"]);
+    // 作られてから時間が経てば、書き込みが無いまま止まったとみなす
+    expect(generating(now + STALE_STREAMING_MS + 1)).toEqual([]);
+  });
+});
+
+/**
+ * 「成功するまで生成」で応答を1件積む文。
+ *
+ * 未読の印がここで立つことが要（生成の確定まで待つと、1件目の成功が
+ * 届いても別の画面からは気づけない）。
+ */
+describe("応答を積む", () => {
+  beforeEach(() => {
+    migrate(db);
+    db.prepare(
+      "INSERT INTO conversations (id, title, unread, current_leaf_message_id, created_at, updated_at) VALUES ('c1', '画像', 0, 'u1', 1, 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1', 'c1', 'user', '猫の絵', 1)",
+    ).run();
+  });
+
+  const append = (id: string, parentId: string) => {
+    for (const st of appendAssistantMessageStatements({
+      id,
+      conversationId: "c1",
+      parentId,
+      modelId: "poe:Imagen",
+      content: `![](/api/files/${id})`,
+      usageJson: null,
+      now: 2_000,
+    })) {
+      db.prepare(st.sql).run(...st.binds);
+    }
+  };
+
+  const conversation = () =>
+    db.prepare("SELECT * FROM conversations WHERE id = 'c1'").get() as Record<
+      string,
+      unknown
+    >;
+
+  it("1件目の成功で未読の印が立つ", () => {
+    expect(conversation().unread).toBe(0);
+    append("a1", "u1");
+    expect(conversation().unread).toBe(1);
+  });
+
+  it("積んだ応答が表示中の枝の先になる", () => {
+    append("a1", "u1");
+    expect(conversation().current_leaf_message_id).toBe("a1");
+    // 成功は前の成功の下に繋がる（左右の切り替えなしで全部見える）
+    append("a2", "a1");
+    expect(conversation().current_leaf_message_id).toBe("a2");
+    const rows = db
+      .prepare("SELECT id, parent_id, status FROM messages ORDER BY id")
+      .all() as { id: string; parent_id: string; status: string }[];
+    expect(rows.map((r) => [r.id, r.parent_id])).toEqual([
+      ["a1", "u1"],
+      ["a2", "a1"],
+      ["u1", null],
+    ]);
+    // 積んだ時点で確定済み（生成中のまま残らない）
+    expect(rows.find((r) => r.id === "a1")?.status).toBe("done");
+  });
+});
+
+/**
+ * 保管しているものの大きさ（使用量の画面の Cloudflare 欄）。
+ *
+ * 実体はフォークや分岐で共有される。行の数で数えると、共有している
+ * ぶんを何度も足してしまう——「R2 に置いてある量」としては嘘になる。
+ */
+describe("保管しているものの大きさ", () => {
+  beforeEach(() => migrate(db));
+
+  const addFile = (id: string, key: string, size: number) =>
+    db
+      .prepare(
+        "INSERT INTO attachments (id, r2_key, mime_type, size, kind, created_at) VALUES (?, ?, 'image/png', ?, 'generated', 1)",
+      )
+      .run(id, key, size);
+
+  const stats = () =>
+    db.prepare(STORAGE_STATS_SQL).get() as Record<string, number>;
+
+  it("何も無ければ 0 が並ぶ", () => {
+    const s = stats();
+    expect(s.conversations).toBe(0);
+    expect(s.files).toBe(0);
+    expect(s.file_bytes).toBe(0);
+  });
+
+  it("同じ実体を指す行は、1つぶんとして数える", () => {
+    addFile("f1", "k1", 1000);
+    // フォークで増えた行。実体は同じなので R2 の使用量は増えない
+    addFile("f2", "k1", 1000);
+    addFile("f3", "k2", 500);
+    const s = stats();
+    expect(s.files).toBe(2);
+    expect(s.file_bytes).toBe(1500);
+  });
+
+  it("会話・メッセージ・台帳の件数が出る", () => {
+    db.prepare(
+      "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('c1', 'x', 1, 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('m1', 'c1', 'user', 'x', 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO usage_events (id, at, kind, provider, cost_usd) VALUES ('e1', 1, 'chat', 'openrouter', 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO pending_file_deletions (r2_key, noticed_at) VALUES ('k9', 1)",
+    ).run();
+    const s = stats();
+    expect(s.conversations).toBe(1);
+    expect(s.messages).toBe(1);
+    expect(s.usage_events).toBe(1);
+    expect(s.pending_deletions).toBe(1);
   });
 });

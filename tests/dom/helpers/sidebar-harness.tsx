@@ -139,6 +139,8 @@ export function renderSidebar(props: {
   conversations?: ConversationRow[];
   folders?: FolderRow[];
   unreadIds?: Set<string> | null;
+  /** いま生成が走っている会話。 */
+  generatingIds?: Set<string> | null;
   /** いま開いている会話（URLから読まれる）。 */
   current?: string;
 }): RenderResult & { user: ReturnType<typeof userEvent.setup> } {
@@ -153,6 +155,7 @@ export function renderSidebar(props: {
             conversations={props.conversations ?? []}
             folders={props.folders ?? []}
             unreadIds={props.unreadIds ?? null}
+            generatingIds={props.generatingIds ?? null}
           />
         </>
       ),

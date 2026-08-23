@@ -166,6 +166,60 @@
   animation: stream-token 0.38s ease-out both;
 }
 
+/*
+ * 生成中の会話（サイドバーのタイトル）。
+ *
+ * 別の画面にいるあいだも「まだ動いている会話」が分かるように、
+ * タイトルの文字の上を光の帯が流れる。印を1つ足すのではなく文字を
+ * 塗り替えるのは、行の幅も高さも変えずに済ませるため——一覧の中で
+ * 1行だけ幅が変わると、隣の行まで折り返しが動いて目が引っかかる。
+ *
+ * 色は変数で持つ。グラデーションの中では currentColor が使えない
+ * （文字色を transparent にするので、そのまま transparent になる）。
+ */
+:root {
+  --shimmer-base: #737373; /* neutral-500: 白地で 4.6:1 */
+  --shimmer-glow: #171717; /* neutral-900 */
+}
+:root.dark {
+  --shimmer-base: #a3a3a3; /* neutral-400 */
+  --shimmer-glow: #fafafa; /* neutral-50 */
+}
+
+@keyframes title-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+
+/*
+ * 背景を文字型で切り抜けない環境では、文字が丸ごと消える（色を
+ * transparent にしているため）。切り抜けると分かってから切り替える。
+ */
+.title-shimmer {
+  color: var(--shimmer-glow);
+}
+
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+  .title-shimmer {
+    color: transparent;
+    background-image: linear-gradient(
+      100deg,
+      var(--shimmer-base) 40%,
+      var(--shimmer-glow) 50%,
+      var(--shimmer-base) 60%
+    );
+    background-size: 250% 100%;
+    background-repeat: no-repeat;
+    -webkit-background-clip: text;
+    background-clip: text;
+    animation: title-shimmer 1.9s linear infinite;
+  }
+}
+
 /* 動きを減らす設定の尊重: アニメーションは実質無効化しフェードのみに */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -194,6 +248,17 @@
   .animate-pulse {
     animation: none !important;
     opacity: 0.55;
+  }
+
+  /*
+   * 生成中のタイトルは、帯を流さず濃い色で置く。止めた帯をそのまま
+   * 残すと、切り抜いた文字がグラデーションの端の色で描かれ、どこで
+   * 止まるかによっては読めない濃さになる。
+   */
+  .title-shimmer {
+    animation: none !important;
+    background-image: none;
+    color: var(--shimmer-glow);
   }
 
   html {

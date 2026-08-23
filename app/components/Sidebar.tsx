@@ -105,20 +105,35 @@ export function Sidebar({
   conversations,
   folders,
   unreadIds,
+  generatingIds,
   onNavigate,
 }: {
   conversations: ConversationRow[];
   folders: FolderRow[];
   /** 最新の未読状態。null のあいだは行の値を使う。 */
   unreadIds?: Set<string> | null;
+  /** いま生成が走っている会話（タイトルを光らせる）。 */
+  generatingIds?: Set<string> | null;
   onNavigate?: () => void;
 }) {
-  /** 取得済みならそちらを正とする（開いて既読になった分も即座に消える）。 */
-  const isUnread = (c: ConversationRow) =>
-    unreadIds ? unreadIds.has(c.id) : c.unread === 1;
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const params = useParams();
+
+  /**
+   * 未読の印を出すか。取得済みの状態があればそちらを正とする
+   * （開いて既読になった分も即座に消える）。
+   *
+   * ただし**いま開いている会話には出さない**。「成功するまで生成」は
+   * 最初の成功が届いた時点で印を立てるようになった（全部揃うまで
+   * 光らないのでは、別の画面から進み具合が分からない）ぶん、見ている
+   * 会話には見ている最中ずっと印が付くことになる。既読にするのは
+   * 生成を見届けたときなので、それまでの間を画面側で埋める。
+   */
+  const isUnread = (c: ConversationRow) =>
+    c.id !== params.id && (unreadIds ? unreadIds.has(c.id) : c.unread === 1);
+  const isGenerating = (c: ConversationRow) =>
+    generatingIds ? generatingIds.has(c.id) : false;
 
   /** null = ルート表示、フォルダID = そのフォルダの階層を表示 */
   const [view, setView] = useState<string | null>(null);
@@ -381,6 +396,7 @@ export function Sidebar({
     menu,
     setMenu,
     isUnread,
+    isGenerating,
     onNavigate,
     expanded,
     toggleExpanded,

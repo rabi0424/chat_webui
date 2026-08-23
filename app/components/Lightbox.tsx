@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { IconX } from "./icons";
 
 /**
@@ -6,8 +6,28 @@ import { IconX } from "./icons";
  * ダブルタップ（ダブルクリック）でタップ位置を中心に拡大/等倍へ切替、
  * 拡大中はドラッグで移動できる。等倍時のシングルタップ・×・Escで閉じる
  * （シングルタップはダブルタップ猶予の後に確定させる）。
+ *
+ * 出す画像は URL で受け取る。添付のIDだけを受け取る作りだと、本文の
+ * 中の画像（モデルが返した `![](…)`）を開けない——「成功するまで生成」で
+ * 積まれた画像はそちらなので、タップしても何も起きなかった。
  */
-export function Lightbox({ id, onClose }: { id: string; onClose: () => void }) {
+export function Lightbox({
+  src,
+  footer,
+  onClose,
+}: {
+  /** 表示する画像のURL。 */
+  src: string;
+  /**
+   * 画像の下に敷く帯（説明と操作）。
+   *
+   * 中の押しどころは、閉じる・拡大の判定へ渡さない（下の div で
+   * 止めている）。ここを止め忘れると、ボタンを押した指がそのまま
+   * 「等倍でのシングルタップ」と解釈されて閉じてしまう。
+   */
+  footer?: ReactNode;
+  onClose: () => void;
+}) {
   const ZOOM = 2.5;
   const [t, setT] = useState({ scale: 1, x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -138,17 +158,27 @@ export function Lightbox({ id, onClose }: { id: string; onClose: () => void }) {
       onTouchEnd={(e) => e.stopPropagation()}
     >
       <img
-        src={`/api/files/${id}`}
+        src={src}
         alt="添付画像"
         draggable={false}
         style={{
           transform: `translate(${t.x}px, ${t.y}px) scale(${t.scale})`,
           transition: dragging ? "none" : "transform 0.2s ease-out",
         }}
-        className={`max-h-full max-w-full rounded-xl object-contain ${
+        className={`max-h-full max-w-full object-contain ${
           t.scale > 1 ? "cursor-grab" : ""
         }`}
       />
+      {footer && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-8 text-white"
+        >
+          {footer}
+        </div>
+      )}
       <button
         type="button"
         onClick={(e) => {
