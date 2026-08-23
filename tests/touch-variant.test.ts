@@ -144,3 +144,56 @@ describe.skipIf(css == null)("読み上げ専用の隠し方", () => {
     expect(rule).toMatch(/height:\s*1px/);
   });
 });
+
+/**
+ * 生成中の会話（サイドバーのタイトルを流れる光）。
+ *
+ * 文字を透明にして背景を文字型で切り抜く作りなので、切り抜きが効かない
+ * 環境ではタイトルが**丸ごと消える**。効くと分かってから切り替えている
+ * ——が、それは出力を見ないと確かめられない（ソースを読んでも、
+ * 束ね方しだいで @supports の外に出ていないとは言い切れない）。
+ */
+describe.skipIf(css == null)("生成中のタイトル", () => {
+  const c = css ?? "";
+  /** @supports の中に入っている規則。 */
+  const supported =
+    /@supports\s*\([^{]*background-clip:\s*text[^{]*\{([^}]*\{[^}]*\})*\}/.exec(
+      c,
+    )?.[0] ?? "";
+
+  it("切り抜きが効く環境だけ、文字を透明にする", () => {
+    expect(supported).toContain(".title-shimmer");
+    // #0000 は minify 後の transparent
+    expect(supported).toMatch(/color:\s*(#0000|transparent)/);
+    expect(supported).toMatch(/background-clip:\s*text/);
+    expect(supported).toMatch(/animation:[^}]*title-shimmer/);
+  });
+
+  it("透明にする指定が @supports の外へ漏れていない", () => {
+    // 漏れると、切り抜けない環境でタイトルが消える
+    const outside = c.replace(supported, "");
+    const leaked = /\.title-shimmer\{[^}]*color:\s*(#0000|transparent)/.exec(
+      outside,
+    );
+    expect(leaked).toBeNull();
+  });
+
+  it("切り抜けない環境でも読める色を先に置く", () => {
+    const outside = c.replace(supported, "");
+    expect(outside).toMatch(/\.title-shimmer\{color:var\(--shimmer-glow\)\}/);
+    // 光の色は明暗どちらでも定義してある（片方だけだと地に溶ける）
+    expect(c).toMatch(/--shimmer-base:/);
+    expect(c).toMatch(/\.dark[^{]*\{[^}]*--shimmer-glow:/);
+  });
+
+  it("動きを控える設定では、帯を流さず濃い色で置く", () => {
+    // 止めた帯をそのまま残すと、切り抜いた文字がグラデーションの端の色で
+    // 描かれ、どこで止まるかによっては読めない濃さになる
+    const i = c.search(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+    const block = i < 0 ? "" : c.slice(i);
+    const rule = /\.title-shimmer\{([^}]*)\}/.exec(block)?.[1] ?? "";
+    expect(rule).toMatch(/animation:\s*none/);
+    expect(rule).toMatch(/background-image:\s*none/);
+    expect(rule).toMatch(/color:\s*var\(--shimmer-glow\)/);
+  });
+});

@@ -12,6 +12,7 @@ import type { ShellContext } from "./shell";
 import { listGeneratedImages, type GeneratedImageRow } from "../lib/db.server";
 import { Lightbox } from "../components/Lightbox";
 import type { ImagesResponse } from "../lib/api-types";
+import { invalidateChat } from "../lib/chat-cache";
 import { IconEllipsis, IconMenu, IconSearch, IconX } from "../components/icons";
 import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
 import { useEscapeToClose } from "../lib/dismiss";
@@ -274,7 +275,46 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     }
   }
 
+  /**
+   * その画像を作った枝を開く。
+   *
+   * 会話を開くだけでは、**最後に見ていた枝**が出る。何度も作り直した
+   * 会話では、いま見ている画像とは違う結果（別の依頼文で作った枝）が
+   * 開くことになり、どれがこの画像の元なのか辿れない。開く前に、
+   * その画像を返した応答の枝へ表示を移しておく。
+   *
+   * 先読みキャッシュも捨てる。枝の切り替えは会話の updated_at を
+   * 動かさないので、鮮度の突き合わせでは古いと判定されない——
+   * 捨てずに開くと、切り替える前のスナップショットがそのまま出る。
+   */
+  async function openConversation(img: GeneratedImageRow) {
+    const convId = img.conversation_id;
+    if (!convId) return;
+    if (img.message_id) {
+      try {
+        const res = await fetch(`/api/conversations/${convId}/path`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messageId: img.message_id }),
+        });
+        // 切り替えられなかったときは、そのまま（最後に見ていた枝で）開く。
+        // 開けないより、違う枝でも会話に着いたほうがましなため
+        if (res.ok) invalidateChat(convId);
+      } catch {
+        // 通信が落ちていても会話は開く
+      }
+    }
+    navigate(`/chat/${convId}`);
+  }
+
   useEscapeToClose(menu != null, closeMenu);
+
+  /**
+   * 拡大表示中の1枚。IDではなく行を引き直すのは、開いたまま
+   * お気に入りを切り替えたときに帯の★もその場で変わるようにするため。
+   * 一覧から消えた（検索が変わった）ときは null になり、拡大表示も閉じる。
+   */
+  const current = lightbox ? images.find((x) => x.id === lightbox) : undefined;
 
   return (
     <div
@@ -360,26 +400,32 @@ export default function Images({ loaderData }: Route.ComponentProps) {
           </p>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+            {/*
+              隙間を詰めたタイル。1枚ごとに依頼文と日付を添えると、
+              画像より説明のほうが場所を取り、並べたときに絵として
+              見渡せない。説明と操作は開いたとき（Lightbox）に出す。
+            */}
+            <div className="grid grid-cols-3 gap-0.5 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
               {images.map((img) => (
                 <div key={img.id} className="group/img relative">
                   <button
                     type="button"
                     onClick={() => setLightbox(img.id)}
-                    className="block w-full overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900"
+                    title={img.prompt ?? undefined}
+                    className="block w-full overflow-hidden bg-neutral-100 dark:bg-neutral-900"
                   >
                     <img
                       src={`/api/files/${img.id}`}
                       alt={img.prompt ?? "生成画像"}
                       loading="lazy"
-                      className="aspect-square w-full object-cover transition-transform group-hover/img:scale-[1.02]"
+                      className="aspect-square w-full object-cover transition-opacity group-hover/img:opacity-90"
                     />
                   </button>
 
                   {img.favorite === 1 && (
                     <span
                       aria-label="お気に入り"
-                      className="pointer-events-none absolute left-1.5 top-1.5 rounded-full bg-black/45 px-1.5 py-0.5 text-xs text-white"
+                      className="pointer-events-none absolute left-1 top-1 rounded-full bg-black/45 px-1.5 py-0.5 text-xs text-white"
                     >
                       ★
                     </span>
@@ -392,7 +438,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                       setMenu(menu === img.id ? null : img.id);
                     }}
                     aria-label="この画像の操作"
-                    className="absolute right-1.5 top-1.5 rounded-lg bg-black/45 p-1 text-white opacity-0 group-hover/img:opacity-100 focus:opacity-100 touch:opacity-100"
+                    className="absolute right-1 top-1 rounded-lg bg-black/45 p-1 text-white opacity-0 group-hover/img:opacity-100 focus:opacity-100 touch:opacity-100"
                   >
                     <IconEllipsis className="h-4 w-4" />
                   </button>
@@ -400,7 +446,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                   {menu === img.id && (
                     <div
                       onClick={(e) => e.stopPropagation()}
-                      className={`absolute right-1.5 top-9 z-10 w-44 rounded-xl p-1 animate-pop ${GLASS_PANEL}`}
+                      className={`absolute right-1 top-8 z-10 w-44 rounded-xl p-1 animate-pop ${GLASS_PANEL}`}
                     >
                       <button
                         type="button"
@@ -414,7 +460,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                       <button
                         type="button"
                         disabled={!img.conversation_id}
-                        onClick={() => navigate(`/chat/${img.conversation_id}`)}
+                        onClick={() => void openConversation(img)}
                         className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-white/10"
                       >
                         会話を開く
@@ -431,23 +477,6 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                       </button>
                     </div>
                   )}
-
-                  <div className="mt-1 px-0.5">
-                    {img.prompt && (
-                      <p
-                        className="truncate text-xs text-neutral-500 dark:text-neutral-400"
-                        title={img.prompt}
-                      >
-                        {img.prompt}
-                      </p>
-                    )}
-                    <p className="truncate text-[11px] text-neutral-400 dark:text-neutral-500">
-                      <span suppressHydrationWarning>
-                        {formatDate(img.created_at)}
-                      </span>
-                      {img.model_id && ` · ${modelName(img.model_id)}`}
-                    </p>
-                  </div>
                 </div>
               ))}
             </div>
@@ -473,8 +502,61 @@ export default function Images({ loaderData }: Route.ComponentProps) {
         )}
       </div>
 
-      {lightbox && (
-        <Lightbox id={lightbox} onClose={() => setLightbox(null)} />
+      {current && (
+        <Lightbox
+          src={`/api/files/${current.id}`}
+          onClose={() => setLightbox(null)}
+          /*
+            開いたまま何もできないと、会話へ戻るのに一度閉じて一覧の
+            「…」を開き直すことになる。説明と操作はここに置く。
+          */
+          footer={
+            <div className="mx-auto flex max-w-3xl items-end gap-3">
+              <div className="min-w-0 flex-1">
+                {current.prompt && (
+                  <p className="line-clamp-3 text-sm leading-relaxed">
+                    {current.prompt}
+                  </p>
+                )}
+                <p className="mt-1 truncate text-xs text-white/70">
+                  <span suppressHydrationWarning>
+                    {formatDate(current.created_at)}
+                  </span>
+                  {current.model_id && ` · ${modelName(current.model_id)}`}
+                  {current.title && ` · ${current.title}`}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void toggleFavorite(current)}
+                  aria-pressed={current.favorite === 1}
+                  aria-label={
+                    current.favorite === 1
+                      ? "お気に入りを解除"
+                      : "お気に入りに追加"
+                  }
+                  className={`grid h-9 w-9 place-items-center rounded-full backdrop-blur ${
+                    current.favorite === 1
+                      ? "bg-white text-black"
+                      : "bg-black/50 text-white hover:bg-black/70"
+                  }`}
+                >
+                  ★
+                </button>
+                {current.conversation_id && (
+                  <button
+                    type="button"
+                    onClick={() => void openConversation(current)}
+                    className="rounded-full bg-white/90 px-3.5 py-2 text-xs font-medium text-black hover:bg-white"
+                  >
+                    会話を開く
+                  </button>
+                )}
+              </div>
+            </div>
+          }
+        />
       )}
     </div>
   );

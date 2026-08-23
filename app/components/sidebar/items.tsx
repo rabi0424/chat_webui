@@ -131,8 +131,9 @@ export function MenuItems({ target }: { target: MenuTarget }) {
 // --- 行レンダリング -----------------------------------------------------
 
 export function ConversationItem({ c, indent = false }: { c: ConversationRow; indent?: boolean }) {
-  const { menu, isUnread, onNavigate } = useSidebar();
+  const { menu, isUnread, isGenerating, onNavigate } = useSidebar();
   const open = menu?.type === "conversation" && menu.id === c.id;
+  const generating = isGenerating(c);
   const prefetchRef = usePrefetchOnVisible(c.id);
   return (
     <li ref={prefetchRef} className={`group relative ${open ? "menu-open" : ""} ${indent ? "ml-5" : ""}`}>
@@ -166,7 +167,19 @@ export function ConversationItem({ c, indent = false }: { c: ConversationRow; in
             className="h-3.5 w-3.5 shrink-0 text-neutral-500 dark:text-white"
           />
         )}
-        <span className="min-w-0 truncate">{c.title}</span>
+        {/*
+          生成中は、タイトルの上を光の帯が流れる（.title-shimmer）。
+          別の画面にいるあいだも「まだ動いている会話」が一目で分かる。
+          文字そのものを塗り替えるので、行の高さも位置も変わらない。
+        */}
+        <span
+          className={`min-w-0 truncate ${generating ? "title-shimmer" : ""}`}
+          title={generating ? "生成中です" : undefined}
+        >
+          {c.title}
+        </span>
+        {/* 見た目だけでは支援技術に伝わらないので、状態は言葉でも置く */}
+        {generating && <span className="sr-only">（生成中）</span>}
       </NavLink>
       <MenuButton target={{ type: "conversation", id: c.id }} />
       <MenuItems target={{ type: "conversation", id: c.id }} />

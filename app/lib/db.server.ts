@@ -13,16 +13,28 @@ import {
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
 import {
   DUE_PENDING_DELETIONS_SQL,
+  appendAssistantMessageStatements,
+  GENERATING_CONVERSATIONS_SQL,
   MIGRATIONS,
   PENDING_DELETION_GRACE_MS,
   QUEUE_PENDING_DELETION_SQL,
+  STALE_STREAMING_MS,
+  STORAGE_STATS_SQL,
+  USAGE_BY_MODEL_SQL,
+  USAGE_TOTALS_SQL,
   clearPendingDeletionsSql,
   generatedImagesSql,
   statementsOf,
   stillReferencedSql,
   undoGenerationStatements,
 } from "./schema";
-import { EMPTY_TOTALS, type UsageTotals } from "./usage";
+import {
+  EMPTY_TOTALS,
+  USAGE_RANGES,
+  usageRangeStart,
+  type UsageRange,
+  type UsageTotals,
+} from "./usage";
 
 /**
  * Data access layer for D1.
@@ -274,9 +286,10 @@ export interface AttachmentRow {
  * 「生成中」のまま一定時間更新がない行を、中断とみなして確定させる。
  * 生成プロセスが不慮に落ちてもUIが永久に固まらないための保険。
  * 対象行は渡された配列内でも書き換えて返す。
+ *
+ * しきい値（STALE_STREAMING_MS）は schema.ts に置いて、サイドバーが
+ * 「生成中」を判定するSQLと同じ値を使う。
  */
-const STALE_STREAMING_MS = 60 * 1000;
-
 async function sweepStaleStreaming(rows: MessageRow[]): Promise<void> {
   const now = Date.now();
   const stale = rows.filter(
@@ -1632,31 +1645,135 @@ export async function recordStandaloneUsage(entry: {
 }
 
 /** 期間の合計。上限の判定と使用量の画面が使う。 */
-export async function usageTotalsSince(since: number): Promise<UsageTotals> {
-  const d = await db();
-  const row = await d
-    .prepare(
-      `SELECT
-         COALESCE(SUM(cost_usd), 0) AS cost_usd,
-         COALESCE(SUM(points), 0) AS points,
-         COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN points ELSE 0 END), 0)
-           AS points_without_cost,
-         COUNT(*) AS events
-       FROM usage_events WHERE at >= ?`,
-    )
-    .bind(since)
-    .first<{
-      cost_usd: number;
-      points: number;
-      points_without_cost: number;
-      events: number;
-    }>();
+interface UsageTotalsRow {
+  cost_usd: number;
+  points: number;
+  points_without_cost: number;
+  events: number;
+}
+
+function toTotals(row: UsageTotalsRow | undefined | null): UsageTotals {
   if (!row) return { ...EMPTY_TOTALS };
   return {
     costUsd: row.cost_usd ?? 0,
     points: row.points ?? 0,
     pointsWithoutCost: row.points_without_cost ?? 0,
     events: row.events ?? 0,
+  };
+}
+
+export async function usageTotalsSince(since: number): Promise<UsageTotals> {
+  const d = await db();
+  const row = await d
+    .prepare(USAGE_TOTALS_SQL)
+    .bind(since)
+    .first<UsageTotalsRow>();
+  return toTotals(row);
+}
+
+/**
+ * 保管しているものの大きさ（使用量の画面の「Cloudflare」欄）。
+ *
+ * D1 の大きさは応答に載る `meta.size_after` から取る。Cloudflare の API を
+ * 叩けば正確な値も取れるが、そのためだけにアカウントID とトークンを
+ * 秘密として持つことになる。ここで足りるものを、既にある往復から拾う。
+ */
+export interface StorageStats {
+  /** D1 のデータベース本体のバイト数。取れなければ null。 */
+  d1Bytes: number | null;
+  /** R2 に置いてある実体の数と、その合計バイト数（attachments の記録から）。 */
+  files: number;
+  fileBytes: number;
+  conversations: number;
+  messages: number;
+  usageEvents: number;
+  /** 消す候補として控えてあるキーの数（猶予が過ぎたら実際に落ちる）。 */
+  pendingDeletions: number;
+}
+
+interface StorageRow {
+  conversations: number;
+  messages: number;
+  usage_events: number;
+  files: number;
+  file_bytes: number;
+  pending_deletions: number;
+}
+
+function toStorageStats(res: D1Result<StorageRow>): StorageStats {
+  const row = res.results[0];
+  // size_after は D1 が付ける値。付かない実装（ローカルの代替など）でも
+  // 画面が壊れないように「取れなかった」を持てる形にする
+  const size = res.meta?.size_after;
+  return {
+    d1Bytes: typeof size === "number" && size > 0 ? size : null,
+    files: row?.files ?? 0,
+    fileBytes: row?.file_bytes ?? 0,
+    conversations: row?.conversations ?? 0,
+    messages: row?.messages ?? 0,
+    usageEvents: row?.usage_events ?? 0,
+    pendingDeletions: row?.pending_deletions ?? 0,
+  };
+}
+
+/** 使用量の画面がまとめて読むもの。 */
+export interface UsageOverview {
+  /** 期間ごとの合計（画面側で切り替える）。 */
+  totals: Record<UsageRange, UsageTotals>;
+  /** 期間ごとのモデル別内訳。 */
+  byModel: Record<UsageRange, UsageByModel[]>;
+  storage: StorageStats;
+}
+
+/**
+ * 使用量の画面ぶんを1回のbatchで読む。
+ *
+ * 期間の切り替え（今日 / 直近7日 / 今月）はページを開き直さず画面側で
+ * 行う。押すたびにサーバーへ行くと、そのたびに親レイアウトのローダー
+ * （会話一覧・ボット・フォルダ）まで走り直すことになる——見たいのは
+ * 同じ台帳の切り口だけなので、最初にまとめて受け取っておく。
+ *
+ * batch は全体で1サブリクエストとして数えられるので、7文をまとめても
+ * 消費は1回ぶん（Cloudflareの制約は CLAUDE.md 参照）。
+ */
+export async function readUsageOverview(
+  now: number,
+): Promise<UsageOverview> {
+  const d = await db();
+  /*
+   * 何をどの順で流すかを、先に1つの並びとして持つ。読むときも同じ
+   * 並びを辿るので、文を足したときに**読む側の添字だけがずれる**
+   * ことがない（ずれても型は通り、画面には別の期間の数字が出る）。
+   */
+  const plan = USAGE_RANGES.flatMap((range) =>
+    (["totals", "byModel"] as const).map((kind) => ({ range, kind })),
+  );
+  const results = await d.batch([
+    ...plan.map((p) =>
+      d
+        .prepare(p.kind === "totals" ? USAGE_TOTALS_SQL : USAGE_BY_MODEL_SQL)
+        .bind(usageRangeStart(p.range, now)),
+    ),
+    d.prepare(STORAGE_STATS_SQL),
+  ]);
+
+  const totals = {} as Record<UsageRange, UsageTotals>;
+  const byModel = {} as Record<UsageRange, UsageByModel[]>;
+  plan.forEach((p, i) => {
+    if (p.kind === "totals") {
+      totals[p.range] = toTotals(
+        (results[i] as D1Result<UsageTotalsRow>).results[0],
+      );
+    } else {
+      byModel[p.range] = (
+        results[i] as D1Result<UsageByModelRow>
+      ).results.map(toByModel);
+    }
+  });
+  return {
+    totals,
+    byModel,
+    storage: toStorageStats(results[plan.length] as D1Result<StorageRow>),
   };
 }
 
@@ -1669,36 +1786,33 @@ export interface UsageByModel {
   events: number;
 }
 
-export async function usageByModelSince(
-  since: number,
-): Promise<UsageByModel[]> {
-  const d = await db();
-  const { results } = await d
-    .prepare(
-      `SELECT model_id,
-              provider,
-              COALESCE(SUM(cost_usd), 0) AS cost_usd,
-              COALESCE(SUM(points), 0) AS points,
-              COUNT(*) AS events
-         FROM usage_events WHERE at >= ?
-        GROUP BY model_id, provider
-        ORDER BY cost_usd DESC, points DESC`,
-    )
-    .bind(since)
-    .all<{
-      model_id: string | null;
-      provider: string;
-      cost_usd: number;
-      points: number;
-      events: number;
-    }>();
-  return (results ?? []).map((r) => ({
+interface UsageByModelRow {
+  model_id: string | null;
+  provider: string;
+  cost_usd: number;
+  points: number;
+  events: number;
+}
+
+function toByModel(r: UsageByModelRow): UsageByModel {
+  return {
     modelId: r.model_id,
     provider: r.provider,
     costUsd: r.cost_usd ?? 0,
     points: r.points ?? 0,
     events: r.events ?? 0,
-  }));
+  };
+}
+
+export async function usageByModelSince(
+  since: number,
+): Promise<UsageByModel[]> {
+  const d = await db();
+  const { results } = await d
+    .prepare(USAGE_BY_MODEL_SQL)
+    .bind(since)
+    .all<UsageByModelRow>();
+  return (results ?? []).map(toByModel);
 }
 
 export async function finalizeGeneration(
@@ -1779,13 +1893,32 @@ export async function rewriteMessageContent(
     .run();
 }
 
-/** 未読の会話ID。サイドバーの印を再読み込みなしで更新するために引く。 */
-export async function listUnreadConversationIds(): Promise<string[]> {
+/** サイドバーの印。未読と、いま生成中の会話。 */
+export interface ConversationFlags {
+  /** 応答が完成したのにまだ開いていない会話。 */
+  unread: string[];
+  /** いま生成が走っている会話（タイトルを光らせる）。 */
+  generating: string[];
+}
+
+/**
+ * サイドバーの印を再読み込みなしで更新するために引く。
+ *
+ * 2つの問い合わせを batch でまとめる。表示中は数秒おきに引くので、
+ * 別々に投げるとサブリクエストの消費が倍になる（batch 全体で1回）。
+ */
+export async function listConversationFlags(): Promise<ConversationFlags> {
   const d = await db();
-  const { results } = await d
-    .prepare("SELECT id FROM conversations WHERE unread = 1")
-    .all<{ id: string }>();
-  return results.map((r) => r.id);
+  const [unread, generating] = await d.batch<{ id: string | null }>([
+    d.prepare("SELECT id FROM conversations WHERE unread = 1"),
+    d.prepare(GENERATING_CONVERSATIONS_SQL).bind(Date.now() - STALE_STREAMING_MS),
+  ]);
+  const ids = (rows: { id: string | null }[]) =>
+    rows.map((r) => r.id).filter((id): id is string => id != null);
+  return {
+    unread: ids(unread.results),
+    generating: ids(generating.results),
+  };
 }
 
 /** 会話を既読にする（開いたとき・応答を見届けたとき）。 */
@@ -1939,29 +2072,17 @@ export async function appendAssistantMessage(params: {
   usageJson?: string | null;
 }): Promise<string> {
   const d = await db();
-  const now = Date.now();
   const id = crypto.randomUUID();
-  await d.batch([
-    d
-      .prepare(
-        "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, status, flushed_at, created_at) VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'done', ?, ?)",
-      )
-      .bind(
-        id,
-        params.conversationId,
-        params.parentId,
-        params.content,
-        params.modelId,
-        params.usageJson ?? null,
-        now,
-        now,
-      ),
-    d
-      .prepare(
-        "UPDATE conversations SET current_leaf_message_id = ?, updated_at = ? WHERE id = ?",
-      )
-      .bind(id, now, params.conversationId),
-  ]);
+  const statements = appendAssistantMessageStatements({
+    id,
+    conversationId: params.conversationId,
+    parentId: params.parentId,
+    modelId: params.modelId,
+    content: params.content,
+    usageJson: params.usageJson ?? null,
+    now: Date.now(),
+  });
+  await d.batch(statements.map((st) => d.prepare(st.sql).bind(...st.binds)));
   return id;
 }
 

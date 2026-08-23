@@ -27,7 +27,8 @@ export function MessageImages({
   onLoad,
 }: {
   attachments: UiAttachment[];
-  onOpen: (id: string) => void;
+  /** 拡大表示を開く。渡すのは画像のURL（本文の中の画像と同じ入口）。 */
+  onOpen: (src: string) => void;
   /**
    * 画像が1枚表示し終わったとき。
    *
@@ -44,7 +45,7 @@ export function MessageImages({
         <button
           key={a.id}
           type="button"
-          onClick={() => onOpen(a.id)}
+          onClick={() => onOpen(`/api/files/${a.id}`)}
           title={a.name ?? "画像"}
           /*
             読み込みが終わるまでの下敷き。高さゼロから一気に伸びるのを

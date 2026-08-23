@@ -144,12 +144,15 @@ export function StreamingMessage({
   text,
   streaming,
   onReveal,
+  onImageClick,
 }: {
   text: string;
   /** サーバー側でまだ生成中か。終わったら残りを早めに出し切る。 */
   streaming: boolean;
   /** 表示が伸びるたびに呼ぶ（最下部への追従に使う）。 */
   onReveal?: () => void;
+  /** 本文の中の画像をタップしたとき（拡大表示を開く）。 */
+  onImageClick?: (src: string) => void;
 }) {
   // 切れ目が見つからないとき（長いコードブロックなど）は塊にも分かれず、
   // 伸びるたび全体を描き直すことになるので、長さに応じて間隔を広げる
@@ -201,6 +204,7 @@ export function StreamingMessage({
           prepared
           streaming={!done}
           animate={!done && i === blocks.length - 1}
+          onImageClick={onImageClick}
         >
           {block}
         </MarkdownBody>

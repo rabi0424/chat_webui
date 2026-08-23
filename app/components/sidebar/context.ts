@@ -26,6 +26,8 @@ export interface SidebarActions {
 
   /** その会話に未読の印を出すか。 */
   isUnread: (c: ConversationRow) => boolean;
+  /** その会話でいま生成が走っているか（タイトルを光らせる）。 */
+  isGenerating: (c: ConversationRow) => boolean;
   /** リンクを押したときに呼ぶ（スマホでドロワーを閉じる）。 */
   onNavigate?: () => void;
 

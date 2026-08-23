@@ -28,6 +28,75 @@ export function monthLabelJst(now: number): string {
   return `${d.getUTCFullYear()}-${m}`;
 }
 
+/**
+ * その時刻が属する日の始まり（JST の 00:00）を epoch ms で返す。
+ * 月の境界（monthStartJst）と同じ理由で、境界はここで数値にする。
+ */
+export function dayStartJst(now: number): number {
+  const d = new Date(now + JST_OFFSET_MS);
+  return (
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) -
+    JST_OFFSET_MS
+  );
+}
+
+/**
+ * 使用量を見る期間。
+ *
+ * 「今日」と「今月」は暦の境界（JST）で切り、「直近7日」だけは
+ * そこからの遡りで切る。週の初めを月曜とするか日曜とするかは
+ * 決めの問題で、どちらにしても月初や週初は数字が急に小さくなる——
+ * 見たいのは「このところどれだけ使っているか」なので、遡りのほうが
+ * その問いに答える。
+ */
+export const USAGE_RANGES = ["day", "week", "month"] as const;
+export type UsageRange = (typeof USAGE_RANGES)[number];
+
+export const USAGE_RANGE_LABELS: Record<UsageRange, string> = {
+  day: "今日",
+  week: "直近7日",
+  month: "今月",
+};
+
+/** 直近◯日で切る期間の日数。 */
+export const USAGE_WEEK_DAYS = 7;
+
+/** その期間の始まり（epoch ms）。 */
+export function usageRangeStart(range: UsageRange, now: number): number {
+  if (range === "day") return dayStartJst(now);
+  if (range === "week") return now - USAGE_WEEK_DAYS * 24 * 60 * 60 * 1000;
+  return monthStartJst(now);
+}
+
+/**
+ * 無料枠の目安（Cloudflare の公表値）。
+ *
+ * 使い切ると課金ではなく失敗になる（そういう契約で運用している。
+ * 要件 §3.6 の運用面の前提を参照）ので、超える前に気づけるように
+ * 割合で出す。**公表値は変わりうる**ので、画面でも「目安」と断る。
+ */
+export const FREE_TIER = {
+  /** D1 のストレージ（無料プランのアカウント合計）。 */
+  d1Bytes: 5 * 1024 ** 3,
+  /** R2 の保存容量（月あたり）。 */
+  r2Bytes: 10 * 1024 ** 3,
+};
+
+/** バイト数を読める単位にする。 */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  // 1桁台は小数第1位まで（1GB と 1.5GB の差が潰れないように）
+  return `${value >= 10 ? Math.round(value) : Math.round(value * 10) / 10} ${units[unit]}`;
+}
+
 /** 期間の使用量。 */
 export interface UsageTotals {
   /** ドル建ての額が取れた分の合計。 */

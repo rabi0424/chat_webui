@@ -52,6 +52,51 @@ describe("一覧の表示", () => {
     expect(within(readRow).queryByLabelText("新しい応答があります")).toBeNull();
   });
 
+  it("見ている会話には未読の印を出さない", () => {
+    // 「成功するまで生成」は1件目の成功で印を立てる。見ている会話にも
+    // 立つので、そのままだと開いている行にずっと印が残る
+    renderSidebar({
+      conversations: [conv("c1", "見ている"), conv("c2", "別の会話")],
+      unreadIds: new Set(["c1", "c2"]),
+      current: "c1",
+    });
+    const openRow = screen.getByText("見ている").closest("li") as HTMLElement;
+    expect(within(openRow).queryByLabelText("新しい応答があります")).toBeNull();
+    // 隣の会話には出ている（＝行そのものが描けていないのではない）
+    const otherRow = screen.getByText("別の会話").closest("li") as HTMLElement;
+    expect(
+      within(otherRow).getByLabelText("新しい応答があります"),
+    ).toBeTruthy();
+  });
+
+  it("生成中の会話はタイトルが光る", () => {
+    renderSidebar({
+      conversations: [conv("c1", "生成中の会話"), conv("c2", "止まっている")],
+      generatingIds: new Set(["c1"]),
+    });
+    const running = screen.getByText("生成中の会話");
+    expect(running.className).toContain("title-shimmer");
+    // 見た目だけでは伝わらないので、状態は言葉でも置く
+    const row = running.closest("li") as HTMLElement;
+    expect(within(row).getByText("（生成中）")).toBeTruthy();
+
+    const idle = screen.getByText("止まっている");
+    expect(idle.className).not.toContain("title-shimmer");
+    const idleRow = idle.closest("li") as HTMLElement;
+    expect(within(idleRow).queryByText("（生成中）")).toBeNull();
+  });
+
+  it("生成中が分かっていないうちは、どれも光らせない", () => {
+    // 印を引く前（null）に全部光らせると、開くたびに一覧が波打つ
+    renderSidebar({
+      conversations: [conv("c1", "まだ分からない会話")],
+      generatingIds: null,
+    });
+    expect(screen.getByText("まだ分からない会話").className).not.toContain(
+      "title-shimmer",
+    );
+  });
+
   it("フォルダが並ぶ", () => {
     renderSidebar({
       conversations: [],

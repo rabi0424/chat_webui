@@ -147,6 +147,11 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
    * null = まだ取得していない（ローダーの値をそのまま使う）。
    */
   const [unreadIds, setUnreadIds] = useState<Set<string> | null>(null);
+  /**
+   * いま生成が走っている会話。サイドバーはこれを見てタイトルを光らせる。
+   * 未読と同じ往復で受け取る（印のためにもう1本増やさない）。
+   */
+  const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let alive = true;
@@ -155,8 +160,10 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       try {
         const res = await fetch("/api/conversations/unread");
         if (!res.ok) return;
-        const { ids } = (await res.json()) as UnreadResponse;
-        if (alive) setUnreadIds(new Set(ids));
+        const { ids, generating } = (await res.json()) as UnreadResponse;
+        if (!alive) return;
+        setUnreadIds(new Set(ids));
+        setGeneratingIds(new Set(generating ?? []));
       } catch {
         // 印の更新が遅れても実害はない
       }
@@ -339,6 +346,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
           conversations={conversations}
           folders={folders}
           unreadIds={unreadIds}
+          generatingIds={generatingIds}
         />
       </div>
 
@@ -370,6 +378,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
               conversations={conversations}
               folders={folders}
               unreadIds={unreadIds}
+              generatingIds={generatingIds}
               onNavigate={closeSidebar}
             />
           </div>

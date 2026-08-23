@@ -180,7 +180,7 @@ export function Chat({
   });
   /** ドラッグ&ドロップのハイライト。 */
   const [dragOver, setDragOver] = useState(false);
-  /** 原寸表示中の添付ID。 */
+  /** 原寸表示中の画像のURL（添付も、本文の中の画像も同じ入口で開く）。 */
   const [lightbox, setLightbox] = useState<string | null>(null);
   /**
    * 「成功するまで生成」の実行確認待ち。
@@ -1683,7 +1683,7 @@ export function Chat({
       )}
 
       {lightbox && (
-        <Lightbox id={lightbox} onClose={() => setLightbox(null)} />
+        <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
       )}
     </div>
   );

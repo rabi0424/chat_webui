@@ -42,6 +42,7 @@ export function AssistantMessage({
     switchBranch,
     fork,
     regenerate,
+    openImage,
     attachGeneratedImages,
     followBottom,
   } = useMessageActions();
@@ -96,6 +97,12 @@ export function AssistantMessage({
           text={m.content}
           streaming={m.status === "streaming"}
           onReveal={isLast ? followBottom : undefined}
+          /*
+           * モデルが返した画像は本文のマークダウンとして届く（添付欄には
+           * 出ない）。「成功するまで生成」で積まれた画像もこちらなので、
+           * ここを渡さないとタップしても何も起きない
+           */
+          onImageClick={openImage}
         />
       )}
       {/* 進捗の見出しは秒が動いているのでカーソルは出さない */}
