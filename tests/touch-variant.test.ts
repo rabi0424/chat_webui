@@ -226,3 +226,47 @@ describe.skipIf(css == null)("生成中のタイトル", () => {
     expect(rule).toMatch(/color:\s*var\(--shimmer-glow\)/);
   });
 });
+
+/**
+ * スクロールバー。
+ *
+ * 何も指定しないと、Chrome（PC）は溝と、本文との境の線まで描く——
+ * 一覧や入力欄の右端に枠が1本増えたように見える。溝を透明にして
+ * つまみだけを出しているが、**当たっているかは CSS を見ないと分から
+ * ない**（画面には何のエラーも出ず、既定の見た目に戻るだけ）。
+ */
+describe.skipIf(css == null)("スクロールバー", () => {
+  const c = css ?? "";
+
+  it("溝を塗らない（枠に見える面を作らない）", () => {
+    // 2つ目の値が溝の色。transparent 以外だと帯が出る
+    expect(c).toMatch(/scrollbar-color:\s*var\(--scrollbar-thumb\)\s+transparent/);
+  });
+
+  it("細くする指定が、内側のスクロール領域にも当たる", () => {
+    /*
+     * scrollbar-width は**継承しない**。:root にだけ置くとページ全体の
+     * スクロールバーしか細くならず、会話一覧や入力欄は既定の太さのまま
+     * になる（最初にそう書いて、実際に内側だけ太いままだった）。
+     */
+    expect(c).toMatch(/\*\{[^}]*scrollbar-width:\s*thin/);
+  });
+
+  it("古い環境向けの指定でも、溝と角を塗らずつまみに枠を付けない", () => {
+    // 最小化で `background:transparent` は `background:0 0` になる
+    const track = /::-webkit-scrollbar-track\{([^}]*)\}/.exec(c)?.[1] ?? "";
+    const corner = /::-webkit-scrollbar-corner\{([^}]*)\}/.exec(c)?.[1] ?? "";
+    expect(track).toMatch(/background:\s*(0 0|transparent|none)/);
+    expect(corner).toMatch(/background:\s*(0 0|transparent|none)/);
+
+    const thumb = /::-webkit-scrollbar-thumb\{([^}]*)\}/.exec(c)?.[1] ?? "";
+    expect(thumb).not.toBe("");
+    expect(thumb).toMatch(/border:\s*none/);
+  });
+
+  it("明るいときも暗いときも、つまみの色がある", () => {
+    // 片方だけだと、もう片方では地に溶けて掴めなくなる
+    expect(c).toMatch(/:root\{[^}]*--scrollbar-thumb:/);
+    expect(c).toMatch(/\.dark\{[^}]*--scrollbar-thumb:/);
+  });
+});
