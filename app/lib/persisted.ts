@@ -11,6 +11,7 @@
  * 別のタブでの変更（storage イベント）も同じ経路で拾う。
  */
 import { useMemo, useSyncExternalStore } from "react";
+import { MODEL_STORAGE_KEY } from "./constants";
 
 /** 読めなければ null（プライベートモードや容量超過でも投げない）。 */
 export function readRaw(key: string): string | null {
@@ -158,4 +159,37 @@ export function useExpandedFolders(): Set<string> {
   // 素の文字列を挟んでから集合に変える
   const raw = usePersisted(EXPANDED_KEY, () => readRaw(EXPANDED_KEY) ?? "", "");
   return useMemo(() => new Set(readExpandedFolders()), [raw]);
+}
+
+// --- 最後に使ったモデル ---------------------------------------------------
+
+/**
+ * この端末で最後に使ったモデル。
+ *
+ * 設定画面の既定より**こちらが優先される**。選び直したモデルが次の
+ * チャットでも続くのは、切り替えながら使う上で欠かせないため。
+ * ただしそのぶん「設定を変えても画面が変わらない」ことが起きるので、
+ * 設定画面はこの値を読んで、いま効いている側と、消す手立てを出す。
+ *
+ * ここを通すのは、消したことが同じ端末の別タブにも伝わるようにするため
+ * （素の localStorage を直に触ると、開いている設定画面が古い値のまま
+ * 残る）。
+ */
+export function readLastUsedModel(): string | null {
+  return readRaw(MODEL_STORAGE_KEY);
+}
+
+export function writeLastUsedModel(id: string): void {
+  writeRaw(MODEL_STORAGE_KEY, id);
+  notifyChanged(MODEL_STORAGE_KEY);
+}
+
+export function clearLastUsedModel(): void {
+  removeRaw(MODEL_STORAGE_KEY);
+  notifyChanged(MODEL_STORAGE_KEY);
+}
+
+/** いま効いている「最後に使ったモデル」。サーバー側では null。 */
+export function useLastUsedModel(): string | null {
+  return usePersisted(MODEL_STORAGE_KEY, readLastUsedModel, null);
 }

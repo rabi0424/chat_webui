@@ -5,6 +5,7 @@ import type { Route } from "./+types/settings";
 import type { ShellContext } from "./shell";
 import { getAppSettings } from "../lib/db.server";
 import {
+  DEFAULT_SYSTEM_PROMPT_MAX,
   MONTHLY_LIMIT_RANGE,
   NEW_MODEL_DAYS_RANGE,
   POE_RATE_RANGE,
@@ -20,6 +21,12 @@ import {
 } from "../lib/chat-font";
 import { AccentPicker } from "../components/ThemeToggle";
 import { NumberInput } from "../components/NumberInput";
+import { ModelPicker } from "../components/ModelPicker";
+import { ParamsEditor } from "../components/ParamsEditor";
+import { DEFAULT_MODEL } from "../lib/constants";
+import { clearLastUsedModel, useLastUsedModel } from "../lib/persisted";
+import { PROSE_INPUT } from "../lib/ui";
+import type { ParamsState } from "../lib/params";
 import { IconCheck, IconCopy, IconMenu, IconTrash } from "../components/icons";
 import {
   clearSamples,
@@ -268,7 +275,7 @@ function PerfPanel() {
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
-  const { openSidebar } = useOutletContext<ShellContext>();
+  const { openSidebar, models } = useOutletContext<ShellContext>();
   const revalidator = useRevalidator();
   const [settings, setSettings] = useState<AppSettings>(loaderData.settings);
   /** 一時解除の対象月。ローダーの時刻から作る（描画のたびに変わらない）。 */
@@ -280,6 +287,12 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   // サイドバーのトグルで変えた分もここに出る（SSRでは既定値）
   const theme = useTheme();
   const chatFont = useChatFontSize();
+
+  /*
+   * この端末で最後に使ったモデル。設定の既定より優先されるので、
+   * いま効いている値としてここに出す。
+   */
+  const lastUsedModel = useLastUsedModel();
 
   async function save(patch: Partial<AppSettings>) {
     const next = { ...settings, ...patch };
@@ -332,6 +345,98 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl p-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
+          <Section
+            title="新規チャットの既定"
+            note="ここで決めた内容は、会話を作った時点で写し取られます。あとで変えても、既にある会話は変わりません。ボットを選んで始めたときは、ボットの設定が優先されます。"
+          >
+            <Row
+              label="既定のモデル"
+              description="新しいチャットで最初に選ばれるモデル"
+            >
+              <div className="w-56 rounded-xl border border-neutral-200 p-1 dark:border-neutral-700">
+                <ModelPicker
+                  models={models}
+                  value={settings.defaultModelId ?? DEFAULT_MODEL}
+                  newModelDays={settings.newModelDays}
+                  onChange={(id) => void save({ defaultModelId: id })}
+                />
+              </div>
+            </Row>
+            {settings.defaultModelId !== null &&
+              models.length > 0 &&
+              !models.some((m) => m.id === settings.defaultModelId) && (
+                /*
+                 * 指定したモデルが一覧から消えた（提供終了・名前変更）。
+                 * 黙って別のモデルで始めると、意図と違う額がかかる
+                 */
+                <p className="mt-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                  「{settings.defaultModelId}
+                  」はいまのモデル一覧にありません。新しいチャットは一覧の先頭のモデルで始まります。
+                </p>
+              )}
+            {lastUsedModel !== null && lastUsedModel !== settings.defaultModelId && (
+              /*
+               * この端末では「最後に使ったモデル」が優先される。設定を
+               * 変えても画面が変わらないと壊れて見えるので、いま効いて
+               * いる値と、戻す手立てをここに出す
+               */
+              <div className="mt-1 flex items-center justify-between gap-3 rounded-lg bg-neutral-100 px-3 py-2 text-xs dark:bg-white/5">
+                <span className="min-w-0">
+                  この端末では、最後に使った「
+                  {models.find((m) => m.id === lastUsedModel)?.name ??
+                    lastUsedModel}
+                  」が優先されます。
+                </span>
+                <button
+                  type="button"
+                  onClick={() => clearLastUsedModel()}
+                  className="shrink-0 rounded-lg border border-neutral-300 px-2 py-1 hover:bg-neutral-200 dark:border-white/20 dark:hover:bg-white/10"
+                >
+                  この端末の記憶を消す
+                </button>
+              </div>
+            )}
+
+            <Row
+              label="システムプロンプト"
+              description="ボットを使わないチャットに入れる指示。空なら入れません"
+            >
+              <span className="text-xs text-neutral-400">
+                {settings.defaultSystemPrompt.length} / {DEFAULT_SYSTEM_PROMPT_MAX}
+              </span>
+            </Row>
+            <textarea
+              value={settings.defaultSystemPrompt}
+              onChange={(e) =>
+                void save({
+                  defaultSystemPrompt: e.target.value.slice(
+                    0,
+                    DEFAULT_SYSTEM_PROMPT_MAX,
+                  ),
+                })
+              }
+              rows={4}
+              aria-label="既定のシステムプロンプト"
+              placeholder="例: 回答は日本語で、結論から先に書いてください。"
+              {...PROSE_INPUT}
+              className="mb-2 w-full resize-y rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+            />
+
+            <Row
+              label="生成パラメータ"
+              description="ボットを使わないチャットの初期値。自動のままならモデル本来の既定に任せます"
+            >
+              <span />
+            </Row>
+            <ParamsEditor
+              model={models.find(
+                (m) => m.id === (settings.defaultModelId ?? DEFAULT_MODEL),
+              )}
+              value={settings.defaultParams as ParamsState}
+              onChange={(v) => void save({ defaultParams: v })}
+            />
+          </Section>
+
           <Section
             title="生成"
             note="上流のAPIに繰り返し要求を出す機能の歯止め。会話ごとの設定はこの値を超えられません。"

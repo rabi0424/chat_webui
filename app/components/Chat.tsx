@@ -40,6 +40,7 @@ import { LiveRegion } from "./chat/LiveRegion";
 import { SelectionBar } from "./chat/SelectionBar";
 import { type MessageActions } from "./chat/message-context";
 import { useEscapeToClose } from "../lib/dismiss";
+import { readLastUsedModel, writeLastUsedModel } from "../lib/persisted";
 import type {
   CreateConversationResponse,
   ErrorResponse,
@@ -63,7 +64,6 @@ export interface BotContext {
   params: ParamsState | null;
 }
 
-const MODEL_STORAGE_KEY = "chat-webui:model";
 
 /* 引っぱって更新の寸法は lib/pull-to-refresh.ts に集約（画像一覧と共通） */
 
@@ -97,6 +97,7 @@ export function Chat({
   bot = null,
   initialModel = null,
   initialParams = null,
+  systemPrompt = null,
   emptyState,
 }: {
   conversationId: string | null;
@@ -105,6 +106,14 @@ export function Chat({
   initialModel?: string | null;
   /** この会話の生成パラメータ（会話 or ボットのスナップショット）。 */
   initialParams?: ParamsState | null;
+  /**
+   * この会話で効くシステムプロンプト（会話のスナップショット）。
+   *
+   * ボットのものと、ボットを使わない会話のアプリ既定の、どちらもここへ
+   * 入れる。呼ぶ側が決めるのは、既存の会話には**作ったときの写し**を、
+   * 新規チャットにはいまの既定を渡す必要があるため。
+   */
+  systemPrompt?: string | null;
   emptyState?: React.ReactNode;
 }) {
   const { models, usdJpy, settings, openSidebar } =
@@ -112,9 +121,11 @@ export function Chat({
   const navigate = useNavigate();
   const revalidator = useRevalidator();
 
-  const [model, setModel] = useState(initialModel ?? DEFAULT_MODEL);
+  const [model, setModel] = useState(
+    initialModel ?? settings.defaultModelId ?? DEFAULT_MODEL,
+  );
   const [params, setParams] = useState<ParamsState>(
-    initialParams ?? bot?.params ?? {},
+    initialParams ?? bot?.params ?? (settings.defaultParams as ParamsState),
   );
   const [paramsOpen, setParamsOpen] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>(initialMessages);
@@ -276,16 +287,30 @@ export function Chat({
     setDraftScope(convId);
   }
 
+  /*
+   * 新規チャットで最初に選ぶモデル。
+   *
+   * その端末で最後に使ったモデルを優先する——選び直したモデルが次の
+   * チャットでも続くのは、切り替えながら使う上で欠かせないため。
+   * 設定画面の既定は「まだ何も選んでいない端末での出発点」として効く。
+   *
+   * どちらも一覧に無ければ先頭へ落ちる。指定した既定が一覧から消えて
+   * いることは設定画面で知らせる（ここで気づく手立ては無いため）。
+   */
   useEffect(() => {
-    if (!initialModel) {
-      const saved = localStorage.getItem(MODEL_STORAGE_KEY);
-      if (saved && models.some((m) => m.id === saved)) {
-        setModel(saved);
-      } else if (!models.some((m) => m.id === DEFAULT_MODEL) && models[0]) {
-        setModel(models[0].id);
-      }
+    if (initialModel) return;
+    const saved = readLastUsedModel();
+    if (saved && models.some((m) => m.id === saved)) {
+      setModel(saved);
+      return;
     }
-  }, [models, initialModel]);
+    const base = settings.defaultModelId ?? DEFAULT_MODEL;
+    if (models.some((m) => m.id === base)) {
+      setModel(base);
+    } else if (models[0]) {
+      setModel(models[0].id);
+    }
+  }, [models, initialModel, settings.defaultModelId]);
 
   /** この会話を既読にする（一覧の未読マークを落とす）。 */
   function markRead(convId: string) {
@@ -311,7 +336,7 @@ export function Chat({
 
   const selectModel = (id: string) => {
     setModel(id);
-    localStorage.setItem(MODEL_STORAGE_KEY, id);
+    writeLastUsedModel(id);
     if (convIdRef.current) {
       // 先読みキャッシュにも会話のモデルが入っている。捨てておかないと
       // 別の会話へ移って60秒以内に戻ったとき、選択が巻き戻って見える
@@ -827,8 +852,8 @@ export function Chat({
           userContent: persistInfo.userContent,
           userAttachmentIds: persistInfo.userAttachmentIds ?? [],
           messages: [
-            ...(bot?.systemPrompt
-              ? [{ role: "system", content: bot.systemPrompt }]
+            ...(systemPrompt
+              ? [{ role: "system", content: systemPrompt }]
               : []),
             // 画像を送るのはユーザーの発言だけ。生成画像もアシスタントの
             // メッセージに紐づくが、応答に画像を差し戻す形式は

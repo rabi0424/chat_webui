@@ -66,6 +66,8 @@ export default function ChatRoute({ loaderData }: Route.ComponentProps) {
       bot={bot}
       initialModel={conversation.model_id}
       initialParams={parseParamsJson(conversation.params_json)}
+      // 作ったときの写し。あとで既定やボットを変えても遡らない
+      systemPrompt={conversation.system_prompt}
     />
   );
 }

@@ -50,3 +50,13 @@ export const POE_PREFIX = "poe:";
 export function isPoeModel(modelId: string | null | undefined): boolean {
   return typeof modelId === "string" && modelId.startsWith(POE_PREFIX);
 }
+
+/**
+ * この端末で最後に使ったモデル（localStorage の鍵）。
+ *
+ * 設定画面の既定より**こちらが優先される**。選び直したモデルが次の
+ * チャットでも続くのは、切り替えながら使う上で欠かせないため。
+ * ただしそのぶん「設定を変えても画面が変わらない」ことが起きるので、
+ * 設定画面はこの値を読んで、いま効いている側を出す。
+ */
+export const MODEL_STORAGE_KEY = "chat-webui:model";
