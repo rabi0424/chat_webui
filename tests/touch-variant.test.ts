@@ -186,6 +186,35 @@ describe.skipIf(css == null)("生成中のタイトル", () => {
     expect(c).toMatch(/\.dark[^{]*\{[^}]*--shimmer-glow:/);
   });
 
+  /**
+   * 帯が文字から外れる時点を作らない。
+   *
+   * 塗りは要素より広く（250%）、繰り返さない（no-repeat）。この形で
+   * 位置を 0%〜100% の外まで動かすと、塗りの外に出た部分は**透明のまま**
+   * になる——文字色は transparent なので、タイトルが一瞬まるごと消えて
+   * 点滅して見えた。3つの指定が噛み合って初めて「消えない」ので、
+   * 1つを変えたときに気づけるよう、まとめて見張る。
+   */
+  it("どの時点でも文字が塗られる（消える瞬間を作らない）", () => {
+    const frames = /@keyframes title-shimmer\{([^@]*?)\}\}/.exec(c)?.[1] ?? "";
+    expect(frames).not.toBe("");
+
+    // 最小化で 0% は 0 になるので、単位は問わずに数値だけ見る
+    const positions = [
+      ...frames.matchAll(/background-position:\s*(-?[\d.]+)/g),
+    ].map((m) => Number(m[1]));
+    expect(positions.length).toBeGreaterThan(1);
+    for (const p of positions) {
+      expect(p).toBeGreaterThanOrEqual(0);
+      expect(p).toBeLessThanOrEqual(100);
+    }
+
+    // 0%〜100% が「全体を覆う」と言えるのは、塗りが要素より広いから
+    const size = /background-size:\s*([\d.]+)%/.exec(supported)?.[1];
+    expect(Number(size)).toBeGreaterThan(100);
+    expect(supported).toMatch(/background-repeat:\s*no-repeat/);
+  });
+
   it("動きを控える設定では、帯を流さず濃い色で置く", () => {
     // 止めた帯をそのまま残すと、切り抜いた文字がグラデーションの端の色で
     // 描かれ、どこで止まるかによっては読めない濃さになる

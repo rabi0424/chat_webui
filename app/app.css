@@ -186,12 +186,20 @@
   --shimmer-glow: #fafafa; /* neutral-50 */
 }
 
+/*
+ * 位置は 0%〜100% の内側だけを動かす。
+ *
+ * 背景は要素より広い（250%）ので、この範囲なら**どの時点でも文字の
+ * 全体が塗られる**。範囲の外（150% や -50%）まで動かすと、塗りが要素の
+ * 外へ出た部分は透明のままになり——文字色は transparent なので——
+ * タイトルが一瞬まるごと消える。脈打つのではなく、点滅して見えていた。
+ */
 @keyframes title-shimmer {
   from {
-    background-position: 150% 0;
+    background-position: 100% 0;
   }
   to {
-    background-position: -50% 0;
+    background-position: 0% 0;
   }
 }
 
