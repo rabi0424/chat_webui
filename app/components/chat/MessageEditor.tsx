@@ -5,6 +5,11 @@
  * （元のやり取りは枝として残り、BranchPager で行き来できる）。そのため
  * 見た目も送信欄ではなく、その場に開く小さな箱にしている。
  *
+ * 出口は2つ。「保存」は枝を作るだけで生成しない（文面を整えておいて、
+ * モデルやパラメータを選んでから送りたいことがある）。「送信」は保存
+ * してそのまま生成する。生成中は送信だけを閉じる——2本目の生成を
+ * 同時に走らせない決まりだが、枝を作っておくことはできる。
+ *
  * 添付は本文と同じく編集できる。既にある画像は外せて、新しく足すことも
  * できる——アップロードの最中は uploads に枚数が入り、その分だけ枠を
  * 先に見せる（何枚増えるのか分かるように）。
@@ -32,16 +37,25 @@ export function MessageEditor({
   editing,
   setEditing,
   onSubmit,
+  onSave,
+  submitDisabled = false,
   onAddFiles,
   fileInputRef,
 }: {
   editing: EditingState;
   setEditing: Dispatch<SetStateAction<EditingState | null>>;
+  /** 保存して、そのまま生成する。 */
   onSubmit: () => void;
+  /** 枝として保存するだけ（生成しない）。 */
+  onSave: () => void;
+  /** 生成中など、送信だけを閉じるとき。 */
+  submitDisabled?: boolean;
   onAddFiles: (files: File[]) => void;
   fileInputRef: RefObject<HTMLInputElement | null>;
 }) {
   const full = editing.attachments.length + editing.uploads >= MAX_ATTACHMENTS;
+  const empty = !editing.text.trim() && editing.attachments.length === 0;
+  const busy = editing.uploads > 0;
   return (
     <div className="rounded-2xl border border-accent/50 bg-neutral-50 p-3 dark:bg-neutral-900">
       {(editing.attachments.length > 0 || editing.uploads > 0) && (
@@ -138,12 +152,28 @@ export function MessageEditor({
           </button>
           <button
             type="button"
-            onClick={onSubmit}
-            disabled={
-              (!editing.text.trim() && editing.attachments.length === 0) ||
-              editing.uploads > 0
+            onClick={onSave}
+            disabled={empty || busy}
+            title={
+              busy
+                ? "画像をアップロード中…"
+                : "送らずに枝として保存する（あとから送信できます）"
             }
-            title={editing.uploads > 0 ? "画像をアップロード中…" : "送信"}
+            className="rounded-lg border border-neutral-300 px-3 py-1.5 text-neutral-600 hover:bg-neutral-100 disabled:opacity-30 dark:border-neutral-600 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            保存
+          </button>
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={empty || busy || submitDisabled}
+            title={
+              busy
+                ? "画像をアップロード中…"
+                : submitDisabled
+                  ? "生成中は送信できません（保存はできます）"
+                  : "保存して生成する"
+            }
             className="rounded-lg bg-accent px-3 py-1.5 text-accent-fg hover:bg-accent/85 disabled:opacity-30"
           >
             送信

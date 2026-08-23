@@ -105,3 +105,58 @@ describe("編集して再送信", () => {
     expect(server.calls.some((c) => c.path.includes("/generate"))).toBe(false);
   });
 });
+
+/**
+ * 編集の「保存」。
+ *
+ * 書き直しと生成は必ずしも同時ではない——文面だけ整えておいて、モデルや
+ * パラメータを選んでから送りたいことがある。生成の入口を通すと必ず1本
+ * 走って課金されるので、保存だけの入口を別に持つ。
+ */
+describe("編集して保存（送らない）", () => {
+  const saveButton = () => screen.getByRole("button", { name: "保存" });
+
+  async function editFirstAndSave(text: string) {
+    const { user } = renderChat({
+      conversationId: "conv-1",
+      initialMessages: conversation(),
+    });
+    const buttons = await screen.findAllByLabelText("編集して再送信");
+    await user.click(buttons[0]);
+    const box = await screen.findByDisplayValue("最初の質問");
+    await user.clear(box);
+    await user.type(box, text);
+    await user.click(saveButton());
+    return user;
+  }
+
+  it("生成せずに、書き換えた発言だけを保存する", async () => {
+    await editFirstAndSave("書き直した質問");
+
+    await waitFor(() => {
+      expect(server.countOf("/api/conversations/conv-1/messages")).toBe(1);
+    });
+    expect(server.lastBody("/api/conversations/conv-1/messages")).toEqual({
+      parentId: null,
+      content: "書き直した質問",
+      attachmentIds: [],
+    });
+    // ここが肝。生成の入口は叩かない（＝課金しない）
+    expect(server.countOf("/generate")).toBe(0);
+  });
+
+  it("保存した枝を出すために、パスを取り直す", async () => {
+    // 兄弟の番号（1/2 のような表示）はサーバーが持つ木からしか作れない
+    await editFirstAndSave("書き直した質問");
+    await waitFor(() => {
+      expect(server.countOf("/path")).toBeGreaterThan(0);
+    });
+  });
+
+  it("保存すると編集欄は閉じる", async () => {
+    await editFirstAndSave("書き直した質問");
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "保存" })).toBeNull();
+    });
+  });
+});

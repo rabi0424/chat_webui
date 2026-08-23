@@ -427,8 +427,34 @@ export function appendAssistantMessageStatements(params: {
       ],
     },
     {
-      sql: "UPDATE conversations SET current_leaf_message_id = ?, updated_at = ?, unread = 1 WHERE id = ?",
-      binds: [params.id, params.now, params.conversationId],
+      sql: "UPDATE conversations SET updated_at = ?, unread = 1 WHERE id = ?",
+      binds: [params.now, params.conversationId],
+    },
+    {
+      /*
+       * 表示中の枝を進めるのは、**まだこの実行の枝を見ているとき**だけ。
+       *
+       * 実行中でも別の枝へ移れる（過去の応答を見比べる・分岐を作る）。
+       * 無条件に進めていたので、成功が1件届くたびに表示が実行の枝へ
+       * 引き戻されていた——数秒おきに勝手に画面が変わるので、実行中は
+       * 他の枝を落ち着いて見られない。
+       *
+       * 直前の位置（この実行が繋いでいた先）と一致するときだけ動かす。
+       * 移った先から戻ってくれば、枝の切り替えが葉を実行の枝の末尾へ
+       * 置き直すので、次の成功からはまた付いていく。
+       */
+      sql: "UPDATE conversations SET current_leaf_message_id = ? WHERE id = ? AND current_leaf_message_id = ?",
+      binds: [params.id, params.conversationId, params.parentId],
     },
   ];
 }
+
+/**
+ * ユーザーの発言を1件保存する文。
+ *
+ * 生成の開始（beginGeneration）と、生成せずに保存だけする経路
+ * （編集の「保存」）の両方がこれを使う。片方だけ直したときに気づけ
+ * ないので、文は1箇所に置く。
+ */
+export const INSERT_USER_MESSAGE_SQL =
+  "INSERT INTO messages (id, conversation_id, parent_id, role, content, status, created_at) VALUES (?, ?, ?, 'user', ?, 'done', ?)";

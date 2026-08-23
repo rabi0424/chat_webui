@@ -13,6 +13,7 @@ import {
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
 import {
   DUE_PENDING_DELETIONS_SQL,
+  INSERT_USER_MESSAGE_SQL,
   appendAssistantMessageStatements,
   GENERATING_CONVERSATIONS_SQL,
   MIGRATIONS,
@@ -1425,9 +1426,7 @@ export async function beginGeneration(params: {
     userMessageId = crypto.randomUUID();
     statements.push(
       d
-        .prepare(
-          "INSERT INTO messages (id, conversation_id, parent_id, role, content, status, created_at) VALUES (?, ?, ?, 'user', ?, 'done', ?)",
-        )
+        .prepare(INSERT_USER_MESSAGE_SQL)
         .bind(userMessageId, params.conversationId, parent, params.userContent, now),
     );
     const attachments = await getAttachments(params.userAttachmentIds ?? []);
@@ -1458,6 +1457,46 @@ export async function beginGeneration(params: {
 
   await d.batch(statements);
   return { userMessageId, assistantMessageId };
+}
+
+/**
+ * ユーザーの発言を1件だけ保存する（生成はしない）。
+ *
+ * 編集の「保存」。書き直した文面を枝として残しておき、送るのは後から
+ * ——という使い方のため。生成を伴わないので、応答のプレースホルダも
+ * 未読の印も作らない（自分でやった操作なので、知らせる相手がいない）。
+ *
+ * 表示中の枝は保存したところへ移す。移さないと、保存したのに画面は
+ * 元の枝のままで、何が起きたのか分からない。
+ */
+export async function appendUserMessage(params: {
+  conversationId: string;
+  parentId: string | null;
+  content: string;
+  /** 添付する画像（アップロード済み、または既にどこかに紐づいた添付ID）。 */
+  attachmentIds?: string[];
+}): Promise<string> {
+  const d = await db();
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  // 既に別の発言へ紐づいている添付は、付け替えではなく複製になる
+  // （元の枝から画像が消えないように。linkAttachmentStatements を参照）
+  const attachments = await getAttachments(params.attachmentIds ?? []);
+  await d.batch([
+    d
+      .prepare(INSERT_USER_MESSAGE_SQL)
+      .bind(id, params.conversationId, params.parentId, params.content, now),
+    ...linkAttachmentStatements(d, attachments, {
+      messageId: id,
+      conversationId: params.conversationId,
+    }),
+    d
+      .prepare(
+        "UPDATE conversations SET current_leaf_message_id = ?, updated_at = ? WHERE id = ?",
+      )
+      .bind(id, now, params.conversationId),
+  ]);
+  return id;
 }
 
 /**

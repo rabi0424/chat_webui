@@ -18,6 +18,7 @@ export default [
   route("api/conversations/:id", "routes/api.conversations.$id.ts"),
   route("api/conversations/:id/generate", "routes/api.conversations.$id.generate.ts"),
   route("api/conversations/:id/stop", "routes/api.conversations.$id.stop.ts"),
+  route("api/conversations/:id/messages", "routes/api.conversations.$id.messages.ts"),
   route("api/conversations/:id/messages/:mid", "routes/api.conversations.$id.messages.$mid.ts"),
   route("api/conversations/:id/title", "routes/api.conversations.$id.title.ts"),
   route("api/conversations/:id/path", "routes/api.conversations.$id.path.ts"),

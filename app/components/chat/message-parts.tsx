@@ -416,13 +416,18 @@ export function ContextBoundaryLine({
  * touch-manipulation はダブルタップ拡大の待ち時間を外し、
  * タップしてから切り替わるまでの間を詰めるため。
  */
+/**
+ * 兄弟の枝を行き来する ‹ › 。
+ *
+ * **生成中でも押せる**。生成はサーバーで走っていて、画面がどの枝を
+ * 出しているかとは関係しない。閉じていたころは、走っているあいだ
+ * （「成功するまで生成」では何分も）過去の応答を見比べられなかった。
+ */
 export function BranchPager({
   message,
-  disabled,
   onSwitch,
 }: {
   message: UiMessage;
-  disabled: boolean;
   onSwitch: (targetId: string) => void;
 }) {
   const { siblingIds, siblingIndex } = message;
@@ -436,7 +441,7 @@ export function BranchPager({
     <span className="-my-1 inline-flex items-center text-xs text-neutral-400 dark:text-neutral-500">
       <button
         type="button"
-        disabled={disabled || siblingIndex === 0}
+        disabled={siblingIndex === 0}
         onClick={() => onSwitch(siblingIds[siblingIndex - 1])}
         className={arrowClass}
         aria-label="前のブランチ"
@@ -449,7 +454,7 @@ export function BranchPager({
       </span>
       <button
         type="button"
-        disabled={disabled || siblingIndex === siblingIds.length - 1}
+        disabled={siblingIndex === siblingIds.length - 1}
         onClick={() => onSwitch(siblingIds[siblingIndex + 1])}
         className={arrowClass}
         aria-label="次のブランチ"

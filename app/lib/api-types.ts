@@ -44,6 +44,11 @@ export interface CreateConversationResponse {
   id: string;
 }
 
+/** 生成せずに保存したユーザー発言。採番されたIDを返す。 */
+export interface AppendMessageResponse {
+  id: string;
+}
+
 /** 生成の開始。採番されたIDを返す（クライアントの楽観表示に貼る）。 */
 export interface GenerateResponse {
   /** 新しいユーザー発言を保存しなかったときは null。 */
