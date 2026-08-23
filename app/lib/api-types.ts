@@ -62,6 +62,13 @@ export interface UnreadResponse {
   ids: string[];
   /** いま生成が走っている会話ID。 */
   generating: string[];
+  /**
+   * 会話一覧で最後に何かが動いた時刻。
+   *
+   * これが変わったときだけ一覧を取り直す（毎回引くと、表示しているあいだ
+   * ずっと200行の読み出しが続く）。
+   */
+  latest: number;
 }
 
 /** モデル一覧。 */

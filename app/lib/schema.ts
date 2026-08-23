@@ -345,6 +345,21 @@ export const GENERATING_CONVERSATIONS_SQL = `SELECT DISTINCT conversation_id AS 
       AND COALESCE(flushed_at, created_at) > ?`;
 
 /**
+ * 会話一覧が変わったかを見るための1行。
+ *
+ * 一覧そのものを数秒おきに引くと、200行の読み出しが延々と続く
+ * （D1 の無料枠は読んだ行数で数える）。「最後に何かが動いた時刻」だけ
+ * なら、updated_at の索引の端を1行見るだけで済む。値が動いたときだけ
+ * 一覧を取り直す。
+ *
+ * 拾えないのは削除だけ（消しても最大値は動かない）。消したのが自分の
+ * 端末なら操作の直後に取り直しているので、残るのは「別の端末で消した
+ * 会話が、次に何かが動くまで一覧に居座る」場合だけ。開けば404になる。
+ */
+export const CONVERSATIONS_LATEST_SQL =
+  "SELECT MAX(updated_at) AS latest FROM conversations";
+
+/**
  * 保管しているものの大きさ（使用量の画面に出す）。
  *
  * 1文にまとめてあるのは、D1 の応答に載る `meta.size_after`（データベース

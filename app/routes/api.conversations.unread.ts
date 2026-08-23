@@ -10,7 +10,11 @@ import { apiJson, type UnreadResponse } from "../lib/api-types";
 export async function loader() {
   const flags = await listConversationFlags();
   return apiJson<UnreadResponse>(
-    { ids: flags.unread, generating: flags.generating },
+    {
+      ids: flags.unread,
+      generating: flags.generating,
+      latest: flags.latest,
+    },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

@@ -29,8 +29,11 @@ const MODEL = {
 function installFetch(plan: {
   models?: () => Response | Promise<Response> | never;
   fx?: () => Response | Promise<Response>;
-}): { modelCalls: () => number } {
+  /** サイドバーの印（未読・生成中・一覧が動いた時刻）。 */
+  unread?: () => unknown;
+}): { modelCalls: () => number; unreadCalls: () => number } {
   let modelCalls = 0;
+  let unreadCalls = 0;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const path = String(input);
     const ok = (body: unknown) =>
@@ -43,12 +46,18 @@ function installFetch(plan: {
       return plan.models ? plan.models() : ok({ models: [MODEL] });
     }
     if (path.includes("/api/fx")) return plan.fx ? plan.fx() : ok({ usdJpy: 150 });
+    if (path.includes("/api/conversations/unread")) {
+      unreadCalls++;
+      return ok(
+        plan.unread ? plan.unread() : { ids: [], generating: [], latest: 0 },
+      );
+    }
     return ok({ ids: [] });
   }) as typeof fetch;
-  return { modelCalls: () => modelCalls };
+  return { modelCalls: () => modelCalls, unreadCalls: () => unreadCalls };
 }
 
-function renderShell() {
+function renderShell(options: { onLoad?: () => void } = {}) {
   const loaderData = {
     conversations: [],
     bots: [],
@@ -59,6 +68,10 @@ function renderShell() {
     {
       path: "/",
       // 型は本物のルートのものだが、テストで要るのは loaderData だけ
+      loader: () => {
+        options.onLoad?.();
+        return loaderData;
+      },
       Component: () => <Shell {...({ loaderData } as never)} />,
     },
   ]);
@@ -135,4 +148,50 @@ describe("裏の取得が失敗したとき", () => {
     await waitFor(() => expect(readCachedModels()).toHaveLength(1));
     expect(screen.queryByRole("status")).toBeNull();
   }, 15000);
+});
+
+/**
+ * 会話一覧の鮮度。
+ *
+ * 一覧（並び順・新しい会話・タイトル）はローダーが持っていて、遷移では
+ * 取り直さない決まりになっている（重いローダーを全遷移の裏で待たせない
+ * ため）。そのため**送信した会話が一番上に上がらず**、再読込するまで前の
+ * 並びのままだった。動いたかどうかだけを短い間隔で受け取り、変わった
+ * ときだけ取り直す。
+ */
+describe("会話一覧の取り直し", () => {
+  /** 初回の描画ぶんを差し引いて、取り直しの回数だけを数える。 */
+  async function settle(loads: () => number): Promise<number> {
+    await new Promise((r) => setTimeout(r, 80));
+    return loads();
+  }
+
+  it("何も動いていないうちは取り直さない", async () => {
+    let loads = 0;
+    installFetch({ unread: () => ({ ids: [], generating: [], latest: 100 }) });
+    renderShell({ onLoad: () => loads++ });
+
+    // 最初の取得は「いまの値」を控えるだけ（開いた直後に取り直さない）
+    const base = await settle(() => loads);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(await settle(() => loads)).toBe(base);
+  });
+
+  it("一覧が動いたら取り直す", async () => {
+    let latest = 100;
+    let loads = 0;
+    installFetch({ unread: () => ({ ids: [], generating: [], latest }) });
+    renderShell({ onLoad: () => loads++ });
+    const base = await settle(() => loads);
+
+    // 別の画面（や別の端末）で会話が動いた
+    latest = 200;
+    // 印の引き直しは5秒おきだが、他アプリから戻ったときは即座に反映する
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(loads).toBe(base + 1));
+
+    // 同じ値のままなら、何度引いても取り直さない
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(await settle(() => loads)).toBe(base + 1);
+  });
 });
