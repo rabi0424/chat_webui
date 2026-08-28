@@ -6,6 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import { useIsDark } from "../lib/appearance";
+import { useCopied } from "../lib/use-copied";
 import { IconCheck, IconCopy, IconDownload, IconSwatch } from "./icons";
 
 /**
@@ -79,10 +80,30 @@ export function SvgBlock({
   } | null>(null);
   const [showSource, setShowSource] = useState(false);
   const [asAuthored, setAsAuthored] = useState(false);
-  const [copied, setCopied] = useState(false);
+  // 印の出し入れは共通のフックに任せる（自前の setTimeout は、外れたあとに
+  // 鳴るぶんと、続けて押したときに前の時計が先に鳴るぶんが残る）
+  const [copied, flashCopied] = useCopied();
   const isDark = useIsDark();
   const host = useRef<HTMLDivElement | null>(null);
   const shadow = useRef<ShadowRoot | null>(null);
+  /**
+   * 保存のあとに解放を待っている blob URL。
+   *
+   * すぐ捨てるとダウンロードが始まる前に無効になる端末があるので少し
+   * 待つのだが、その間に画面を離れると時計だけが残る。外れるときは
+   * 待たずに解放する（監査 C-10）。
+   */
+  const revokes = useRef(new Map<ReturnType<typeof setTimeout>, string>());
+  useEffect(
+    () => () => {
+      for (const [timer, url] of revokes.current) {
+        clearTimeout(timer);
+        URL.revokeObjectURL(url);
+      }
+      revokes.current.clear();
+    },
+    [],
+  );
 
   /**
    * 図の入れ物が張り替わったら、shadow も作り直す。
@@ -149,8 +170,7 @@ export function SvgBlock({
   const copySource = async () => {
     try {
       await navigator.clipboard.writeText(code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      flashCopied();
     } catch {
       // クリップボード不許可時は何もしない
     }
@@ -164,7 +184,11 @@ export function SvgBlock({
     a.download = "figure.svg";
     a.click();
     // すぐ捨てるとダウンロードが始まる前に無効になる端末があるので少し待つ
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    const timer = setTimeout(() => {
+      URL.revokeObjectURL(url);
+      revokes.current.delete(timer);
+    }, 10_000);
+    revokes.current.set(timer, url);
   };
 
   if (!svg) return <>{fallback}</>;

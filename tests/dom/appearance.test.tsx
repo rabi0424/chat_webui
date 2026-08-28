@@ -9,6 +9,7 @@ import {
   saveChatFontSize,
 } from "../../app/lib/chat-font";
 import { readRaw } from "../../app/lib/persisted";
+import { useIsDark } from "../../app/lib/appearance";
 
 /**
  * 端末ごとの見た目の設定。
@@ -124,3 +125,76 @@ describe("壊れた保存値", () => {
 async function user_click(el: HTMLElement) {
   await userEvent.setup().click(el);
 }
+
+/**
+ * 図の配色に使う「いまダークか」。
+ *
+ * useState(false) + effect で入れ直していたころは、ダークで開いた図が
+ * 必ず2回描かれていた——1回目は明るい配色、effect が true にして2回目。
+ * mermaid の描画は重く、図の数だけ重なる。監視（MutationObserver）も
+ * 図ごとに1つ作られていた（監査 C-4）。
+ */
+describe("useIsDark", () => {
+  /** 何回描かれたか（描くたびに値を控える）。 */
+  function probe(seen: boolean[]) {
+    return function Probe() {
+      const dark = useIsDark();
+      seen.push(dark);
+      return <span data-testid="dark">{String(dark)}</span>;
+    };
+  }
+
+  it("ダークで開いたら、最初の描画から true（描き直さない）", () => {
+    document.documentElement.classList.add("dark");
+    const seen: boolean[] = [];
+    const Probe = probe(seen);
+    render(<Probe />);
+    // false で描いてから貼り直す作りだと [false, true] になる
+    expect(seen).toEqual([true]);
+    expect(screen.getByTestId("dark").textContent).toBe("true");
+  });
+
+  // MutationObserver の通知はマイクロタスクで届くので、待ってから見る
+  const flip = (add: boolean) =>
+    act(async () => {
+      document.documentElement.classList.toggle("dark", add);
+      await Promise.resolve();
+    });
+
+  it("クラスの付け外しに追従する", async () => {
+    const seen: boolean[] = [];
+    const Probe = probe(seen);
+    render(<Probe />);
+    expect(screen.getByTestId("dark").textContent).toBe("false");
+    await flip(true);
+    expect(screen.getByTestId("dark").textContent).toBe("true");
+    await flip(false);
+    expect(screen.getByTestId("dark").textContent).toBe("false");
+  });
+
+  it("いくつ並べても、見張りは1つだけ", () => {
+    const created: unknown[] = [];
+    const Real = window.MutationObserver;
+    class Counting extends Real {
+      constructor(cb: MutationCallback) {
+        super(cb);
+        created.push(this);
+      }
+    }
+    window.MutationObserver = Counting as typeof MutationObserver;
+    try {
+      const Probe = probe([]);
+      render(
+        <>
+          <Probe />
+          <Probe />
+          <Probe />
+        </>,
+      );
+      expect(screen.getAllByTestId("dark")).toHaveLength(3);
+      expect(created).toHaveLength(1);
+    } finally {
+      window.MutationObserver = Real;
+    }
+  });
+});

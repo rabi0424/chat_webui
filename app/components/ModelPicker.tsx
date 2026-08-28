@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ModelInfo } from "../lib/openrouter.server";
+import { useEscapeToClose } from "../lib/dismiss";
 import { IconChevronDown } from "./icons";
 import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
 import { rankedModelIds } from "../lib/recent-models";
@@ -216,16 +217,18 @@ export function ModelPicker({
         setOpen(false);
       }
     };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
     document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open]);
+
+  /*
+   * Escape は共通の重なり順（dismiss の openLayers）へ預ける。
+   *
+   * 自前で keydown を見ていたころは、この一覧の上に何か重なっていても
+   * 両方が反応し、一度の Escape で2枚まとめて閉じていた（監査 C-7）。
+   */
+  const close = useCallback(() => setOpen(false), []);
+  useEscapeToClose(open, close);
 
   return (
     <div ref={containerRef} className="relative min-w-0">

@@ -24,9 +24,18 @@ import { isAcceptedImage } from "../../lib/image";
 import { PROSE_INPUT } from "../../lib/ui";
 import { IconPlus } from "../icons";
 
-/** 編集中のメッセージ。index は messages の位置。 */
+/**
+ * 編集中のメッセージ。
+ *
+ * 指すのは**位置ではなくID**。添字で覚えていたころは、編集を開いたまま
+ * 別のメッセージのページャで枝を切り替えると、同じ添字が別の発言を指す
+ * ようになり、編集欄がその発言へ付き替わっていた（打ちかけの文はそのまま
+ * 残るので、書いていた相手が入れ替わったことに気づけない）。保存すると
+ * 移った先の枝の発言を親として枝が作られる（監査 C-2）。
+ */
 export interface EditingState {
-  index: number;
+  /** 編集対象のメッセージID。位置はそのつど messages から引き直す。 */
+  id: string;
   text: string;
   attachments: UiAttachment[];
   /** アップロード中の枚数。終わると attachments に移る。 */

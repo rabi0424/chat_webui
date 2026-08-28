@@ -19,7 +19,6 @@ import {
 
 export function UserMessage({
   m,
-  index,
   editing,
   setEditing,
   onSubmitEdit,
@@ -28,8 +27,7 @@ export function UserMessage({
   editFileInputRef,
 }: {
   m: UiMessage;
-  index: number;
-  /** この位置を編集中なら中身が入る。他の行を編集中なら null。 */
+  /** この発言を編集中なら中身が入る。他の行を編集中なら null。 */
   editing: EditingState | null;
   setEditing: Dispatch<SetStateAction<EditingState | null>>;
   onSubmitEdit: () => void;
@@ -71,7 +69,12 @@ export function UserMessage({
           {m.attachments && m.attachments.length > 0 && (
             <MessageImages
               attachments={m.attachments}
-              onOpen={openImage}
+              /*
+                選択モード中は開かない。行を選ぶつもりのタップで拡大表示
+                まで開き、閉じたときには行も選ばれている（監査 C-8）。
+                タップ自体は行の選択として通す。
+              */
+              onOpen={selecting ? () => {} : openImage}
               onLoad={followBottom}
             />
           )}
@@ -107,7 +110,9 @@ export function UserMessage({
                     type="button"
                     onClick={() =>
                       setEditing({
-                        index,
+                        // 位置ではなくIDで覚える。枝を切り替えても
+                        // 別の発言へ付き替わらないように（監査 C-2）
+                        id: m.id!,
                         text: m.content,
                         attachments: m.attachments ?? [],
                         uploads: 0,

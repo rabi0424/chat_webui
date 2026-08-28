@@ -120,6 +120,11 @@ export default function Images({ loaderData }: Route.ComponentProps) {
       await reloadRef.current();
       setLoading(false);
     }, 250);
+    // 待っている途中で外れたら引き直さない。閉じた画面のための問い合わせで
+    // Workers のサブリクエストを使ってしまう（監査 C-9）
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, favoritesOnly]);
 

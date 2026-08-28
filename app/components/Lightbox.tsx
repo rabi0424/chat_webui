@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEscapeToClose } from "../lib/dismiss";
 import { IconX } from "./icons";
 
 /**
@@ -77,20 +78,41 @@ export function Lightbox({
     setSwipeX(0);
   }
 
+  /*
+   * Escape は共通の重なり順（dismiss の openLayers）へ預ける。
+   *
+   * 自前で keydown を見ていたころは、その順番に加わっていなかったので
+   * 一度の Escape で2枚——拡大表示と、その下のパネル——が同時に閉じて
+   * いた（監査 C-7）。矢印だけは拡大表示に固有なので、ここに残す。
+   *
+   * 渡す関数は固定する。onClose は呼ぶ側で毎回作り直されるので、その
+   * まま渡すと描画のたびに重なり順から出入りし、順番が入れ替わる。
+   */
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
+  const close = useCallback(() => closeRef.current(), []);
+  useEscapeToClose(true, close);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
       // 拡大中の矢印は画像を動かすためのものではないので、等倍のときだけ
       if (t.scale !== 1) return;
       if (e.key === "ArrowLeft") onPrev?.();
       if (e.key === "ArrowRight") onNext?.();
     };
     window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onPrev, onNext, t.scale]);
+
+  // 閉じるのを待っている時計（シングルタップの猶予）は、外れるときに畳む
+  useEffect(
+    () => () => {
       if (closeTimer.current) clearTimeout(closeTimer.current);
-    };
-  }, [onClose, onPrev, onNext, t.scale]);
+    },
+    [],
+  );
 
   const clamp = (v: number, limit: number) =>
     Math.max(-limit, Math.min(limit, v));

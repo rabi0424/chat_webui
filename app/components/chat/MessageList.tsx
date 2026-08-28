@@ -100,8 +100,10 @@ export function MessageList({
                   <UserMessage
                     key={m.id ?? `u${i}`}
                     m={m}
-                    index={i}
-                    editing={editing?.index === i ? editing : null}
+                    // 編集中かどうかはIDで見る。添字で見ていたころは、
+                    // 枝を切り替えた先の同じ位置の発言に編集欄が
+                    // 付き替わっていた（監査 C-2）
+                    editing={editing?.id === m.id ? editing : null}
                     setEditing={setEditing}
                     onSubmitEdit={onSubmitEdit}
                     onSaveEdit={onSaveEdit}
