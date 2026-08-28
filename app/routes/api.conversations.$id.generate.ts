@@ -4,6 +4,7 @@ import {
   beginGeneration,
   getAppSettings,
   getConversation,
+  getMessage,
   undoGeneration,
 } from "../lib/db.server";
 import { readRetryConfig } from "../lib/retry";
@@ -78,6 +79,18 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       ? readRetryConfig(body.params, settings.retryAttemptCeiling)
       : null;
 
+  // 繋ぎ先（親）がこの会話のものかを、書く前に確かめる。確かめずに書くと、
+  // 古いタブから消えたIDや別の会話のIDを渡されたときに**どこにも繋がって
+  // いない発言**ができ、パスがそこで途切れて会話が2件のやり取りに置き換わった
+  // ように見える（行は残るのに、画面から戻る手立てが無い）。
+  // 「保存だけ」の入口（api.conversations.$id.messages.ts）と同じ確認。
+  if (body.parentId != null) {
+    const parent = await getMessage(params.id, body.parentId);
+    if (!parent) {
+      return apiError("親メッセージが見つかりません", 400);
+    }
+  }
+
   const { userMessageId, assistantMessageId } = await beginGeneration({
     conversationId: params.id,
     parentId: body.parentId ?? null,
@@ -88,33 +101,9 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     modelId: body.model,
   });
 
-  // 生成ジョブをDurable Objectのアラームに登録（ブラウザ切断後も完了まで継続）
-  const { env } = context.get(cloudflareContext);
-  const stub = env.GENERATOR.get(env.GENERATOR.idFromName(assistantMessageId));
-  const doResponse = await stub.fetch("https://generator/start", {
-    method: "POST",
-    body: JSON.stringify({
-      conversationId: params.id,
-      assistantMessageId,
-      model: body.model,
-      web: body.web === true,
-      webTools: body.webTools === true,
-      imageOutput: body.imageOutput === true,
-      retry: retry ?? undefined,
-      paramsState: body.params ?? null,
-      messages: body.messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-        attachmentIds: Array.isArray(m.attachmentIds)
-          ? m.attachmentIds.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)
-          : undefined,
-      })),
-    }),
-  });
-
-  if (!doResponse.ok) {
-    // 保存だけが残ると、送り直すたびに同じ発言が木へ積まれる。
-    // 始める前の状態へ戻してから返す
+  // 開始に失敗したら、保存した発言とプレースホルダを取り消してから返す。
+  // 保存だけが残ると、送り直すたびに同じ発言が木へ積まれる
+  const undoAndFail = async () => {
     await undoGeneration({
       conversationId: params.id,
       userMessageId,
@@ -129,6 +118,42 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       });
     });
     return apiError("生成の開始に失敗しました", 502);
+  };
+
+  // 生成ジョブをDurable Objectのアラームに登録（ブラウザ切断後も完了まで継続）
+  const { env } = context.get(cloudflareContext);
+  const stub = env.GENERATOR.get(env.GENERATOR.idFromName(assistantMessageId));
+  let doResponse: Response;
+  try {
+    doResponse = await stub.fetch("https://generator/start", {
+      method: "POST",
+      body: JSON.stringify({
+        conversationId: params.id,
+        assistantMessageId,
+        model: body.model,
+        web: body.web === true,
+        webTools: body.webTools === true,
+        imageOutput: body.imageOutput === true,
+        retry: retry ?? undefined,
+        paramsState: body.params ?? null,
+        messages: body.messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          attachmentIds: Array.isArray(m.attachmentIds)
+            ? m.attachmentIds.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)
+            : undefined,
+        })),
+      }),
+    });
+  } catch {
+    // DO の起動失敗・ストレージ書き込み失敗は**非ok応答ではなく例外**として
+    // 現れる。下の !ok 分岐だけでは、この経路で発言と「生成中」の応答が
+    // 永久に残っていた
+    return undoAndFail();
+  }
+
+  if (!doResponse.ok) {
+    return undoAndFail();
   }
 
   return apiJson<GenerateResponse>({ userMessageId, assistantMessageId });

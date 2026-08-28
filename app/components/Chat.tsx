@@ -719,8 +719,9 @@ export function Chat({
    *
    * 画像生成は本文が流れてこないので、待っているあいだ画面に動きがなく、
    * どれだけ待ったのかも分からない。応答ごとに使ったモデルは違いうるので、
-   * メッセージに記録されたモデルを優先し、無ければ今の選択を使う
-   * （送信直後のまだIDが付いていないプレースホルダ用）。
+   * メッセージに記録されたモデルで判断する。プレースホルダにも送信時の
+   * モデルを入れてあるので、ここが今の選択に落ちるのは modelId を持たない
+   * 古い行だけ（生成中に選択を変えても、走っている応答の見た目は動かない）。
    */
   const isImageGeneration = (modelId: string | undefined) =>
     models
@@ -857,7 +858,11 @@ export function Chat({
 
       setMessages([
         ...history,
-        { role: "assistant", content: "", status: "streaming" },
+        // modelId をここで入れておく。送信の時点で決まる値なのに空にして
+        // いたので、表示は「いま選んでいるモデル」に落ちて解釈されていた
+        // ——生成中にモデルを切り替えると、流れている応答の見た目が
+        // 「画像を生成中…」と本文とで入れ替わっていた（監査 C-6）
+        { role: "assistant", content: "", status: "streaming", modelId: model },
       ]);
 
       const res = await fetch(`/api/conversations/${convId}/generate`, {
@@ -1152,6 +1157,46 @@ export function Chat({
   }
 
   /**
+   * 編集中の発言が、いま表示している並びのどこに居るか。
+   *
+   * 編集は開いたまま別の枝へ移れる（ページャは生成中でも押せる）ので、
+   * 覚えた位置はすぐ古くなる。描画も保存も送信も、そのつどIDで引き直す。
+   * 見つからなければ -1。
+   */
+  function editingIndex(): number {
+    if (!editing) return -1;
+    return messages.findIndex((m) => m.id === editing.id);
+  }
+
+  /**
+   * 編集していた発言が、移った先の枝に無かったとき。
+   *
+   * 黙って閉じると、打ちかけの文が消えた理由が分からない。何が起きたかを
+   * 伝えてから畳む。
+   */
+  function closeStaleEditing() {
+    setEditing(null);
+    showNotice("編集していた発言は、この枝にはありません");
+  }
+
+  /*
+   * 表示中の枝から編集対象が消えたら、編集欄を畳む。
+   *
+   * 出しっぱなしにすると、どの発言を書き直しているのか画面から読めない
+   * まま入力欄だけが残り、保存すると別の枝の発言にぶら下がる（監査 C-2）。
+   */
+  useEffect(() => {
+    if (!editing) return;
+    if (messages.some((m) => m.id === editing.id)) return;
+    // 畳むきっかけは「並びが入れ替わったこと」なので、描画のあとでしか
+    // 判断できない（描いている最中に知らせを出すこともできない）
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    closeStaleEditing();
+    // showNotice は描画のたびに作り直されるので依存に入れない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, editing]);
+
+  /**
    * 編集した文面を、送らずに枝として保存する。
    *
    * 送信（保存 + 生成）と分けてあるのは、書き直しと生成が必ずしも同時
@@ -1167,7 +1212,12 @@ export function Chat({
     const text = editing.text.trim();
     const attachments = editing.attachments;
     if (!text && attachments.length === 0) return;
-    const parentId = messages[editing.index - 1]?.id ?? null;
+    const at = editingIndex();
+    if (at < 0) {
+      closeStaleEditing();
+      return;
+    }
+    const parentId = messages[at - 1]?.id ?? null;
     setEditing(null);
     try {
       const res = await fetch(`/api/conversations/${convId}/messages`, {
@@ -1210,8 +1260,13 @@ export function Chat({
     const text = editing.text.trim();
     const attachments = editing.attachments;
     if (!text && attachments.length === 0) return;
+    const at = editingIndex();
+    if (at < 0) {
+      closeStaleEditing();
+      return;
+    }
     const history = [
-      ...messages.slice(0, editing.index),
+      ...messages.slice(0, at),
       {
         role: "user" as const,
         content: text,
@@ -1220,7 +1275,7 @@ export function Chat({
     ];
     setEditing(null);
     void runGeneration(history, {
-      parentId: messages[editing.index - 1]?.id ?? null,
+      parentId: messages[at - 1]?.id ?? null,
       userContent: text,
       userAttachmentIds: attachments.map((a) => a.id),
     });
@@ -1437,7 +1492,9 @@ export function Chat({
   useEscapeToClose(selecting != null, cancelSelecting);
   useEscapeToClose(paramsOpen, closeParams);
   useEscapeToClose(pendingRun != null, closePending);
-  // 拡大表示（Lightbox）は自前で Escape を見ているので、ここでは足さない
+  // 拡大表示（Lightbox）とモデル選択は、それぞれの中で同じ重なり順へ
+  // 加わっている（自前で keydown を見ていたころは、Escape 一度で
+  // 2枚同時に閉じていた——監査 C-7）
 
   const lastMessage = messages[messages.length - 1];
   /** 表示中の枝にコンテキストの区切りがあるか（入力欄のアイコンの色）。 */

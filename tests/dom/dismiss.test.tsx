@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, renderHook } from "@testing-library/react";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEscapeToClose } from "../../app/lib/dismiss";
+import { Lightbox } from "../../app/components/Lightbox";
+import { ModelPicker } from "../../app/components/ModelPicker";
+import { TEST_MODEL } from "./helpers/chat-harness";
 
 /**
  * Escape で閉じる。
@@ -114,5 +117,73 @@ describe("重なっているとき", () => {
     // あとから開いたほうが手前
     expect(second).toHaveBeenCalledTimes(1);
     expect(first).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 自前で Escape を見ていたもの。
+ *
+ * 拡大表示とモデル一覧は、共通の重なり順に加わらないまま自分で keydown を
+ * 見ていた。すると Escape が2箇所で拾われ、一度押しただけで2枚——手前の
+ * ものと、その下のパネル——が同時に閉じていた（監査 C-7）。
+ */
+describe("重なり順に加わる", () => {
+  it("拡大表示を Escape で閉じても、下のものは開いたまま", async () => {
+    const user = userEvent.setup();
+    const back = vi.fn();
+    const close = vi.fn();
+
+    function Layered({ zoomed }: { zoomed: boolean }) {
+      // 下に開いているパネル（⚙など）に相当する
+      useEscapeToClose(true, back);
+      return zoomed ? (
+        <Lightbox src="/api/files/att-1" onClose={close} />
+      ) : null;
+    }
+    // 実際の順番に合わせる（パネルが開いている上で、画像を拡大する）
+    const { rerender } = render(<Layered zoomed={false} />);
+    rerender(<Layered zoomed />);
+
+    await escape(user);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(back).not.toHaveBeenCalled();
+  });
+
+  it("拡大表示の矢印キーは残っている", async () => {
+    const user = userEvent.setup();
+    const next = vi.fn();
+    render(
+      <Lightbox src="/api/files/att-1" onClose={() => {}} onNext={next} />,
+    );
+    await user.keyboard("{ArrowRight}");
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it("モデル一覧を Escape で閉じても、下のものは開いたまま", async () => {
+    const user = userEvent.setup();
+    const back = vi.fn();
+
+    function Layered() {
+      useEscapeToClose(true, back);
+      return (
+        <ModelPicker
+          models={[TEST_MODEL]}
+          value={TEST_MODEL.id}
+          newModelDays={0}
+          onChange={() => {}}
+        />
+      );
+    }
+    render(<Layered />);
+    await user.click(screen.getByRole("button"));
+    expect(await screen.findByLabelText("モデルを検索")).toBeTruthy();
+
+    await escape(user);
+    // 一覧は閉じる（＝手前の1枚は確かに反応している）
+    await waitFor(() =>
+      expect(screen.queryByLabelText("モデルを検索")).toBeNull(),
+    );
+    // 下のものまで巻き込まない
+    expect(back).not.toHaveBeenCalled();
   });
 });

@@ -7,6 +7,8 @@
  * （壊れたマイグレーションはアプリ全体を起動不能にするため）。
  */
 
+import { isPoeModel } from "./constants";
+
 /**
  * バージョン管理付きのランタイムマイグレーション。配列に追記していく。
  * 適用済みバージョンは meta テーブルに記録される。
@@ -190,6 +192,21 @@ CREATE INDEX IF NOT EXISTS idx_pending_deletion_at ON pending_file_deletions(not
   `
 CREATE INDEX IF NOT EXISTS idx_messages_streaming
   ON messages(conversation_id) WHERE status = 'streaming';
+`,
+  // v17: 索引の張り忘れ2件（S-4 / S-5）。
+  //
+  // 未読の印は5秒おきに引くのに索引が無く、conversations の全表走査に
+  // なっていた（v16 で「生成中」に足したときと同じ見落とし。同じ batch の
+  // 隣の文だった）。立っている行は多くても数件なので、v16 と同じ
+  // 条件付き索引で索引自体も小さく保つ。
+  //
+  // attachments.conversation_id は会話の削除が2回（キー収集と削除）使うのに
+  // 索引が無く、生成画像が増えるほど削除のたびの全表走査が重くなっていた。
+  `
+CREATE INDEX IF NOT EXISTS idx_conversations_unread
+  ON conversations(unread) WHERE unread = 1;
+CREATE INDEX IF NOT EXISTS idx_attachments_conversation
+  ON attachments(conversation_id);
 `,
 ];
 
@@ -440,6 +457,12 @@ export const USAGE_BY_MODEL_SQL = `SELECT model_id,
  * 任せていたときは、1回の依頼で積まれる応答が全部終わるまで印が付かず、
  * 別の画面から見ていると最初の成功が届いたことに気づけなかった。
  * 既に走っている batch へ足すだけなので、往復は増えない。
+ *
+ * 台帳（usage_events）も同じ理由で**ここで**積む。finalizeGeneration に
+ * 任せていたときは、この経路（成功を積む）が台帳を素通りし、リトライ生成の
+ * OpenRouter 課金が使用量画面にも月間上限にも一切現れなかった——1回の
+ * 依頼で何十枚も生成する、最も高額になりうるモードの支出だけが抜けていた。
+ * message_id の一意索引があるので、二度流しても二重には数えない。
  */
 export function appendAssistantMessageStatements(params: {
   id: string;
@@ -450,7 +473,7 @@ export function appendAssistantMessageStatements(params: {
   usageJson: string | null;
   now: number;
 }): Statement[] {
-  return [
+  const statements: Statement[] = [
     {
       sql: "INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, status, flushed_at, created_at) VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'done', ?, ?)",
       binds: [
@@ -485,6 +508,85 @@ export function appendAssistantMessageStatements(params: {
       binds: [params.id, params.conversationId, params.parentId],
     },
   ];
+  const usage = usageForLedger(params.usageJson);
+  if (usage) {
+    statements.push({
+      sql: `INSERT OR IGNORE INTO usage_events
+         (id, at, kind, provider, model_id, cost_usd, points,
+          prompt_tokens, completion_tokens, conversation_id, message_id)
+       VALUES (?, ?, 'retry', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      binds: [
+        crypto.randomUUID(),
+        params.now,
+        isPoeModel(params.modelId) ? "poe" : "openrouter",
+        params.modelId,
+        usage.cost,
+        usage.points,
+        usage.promptTokens,
+        usage.completionTokens,
+        params.conversationId,
+        params.id,
+      ],
+    });
+  }
+  return statements;
+}
+
+/**
+ * usage_json から台帳に載せる値を取り出す。額もポイントも無ければ null
+ * （支出として記録するものが無い）。db.server.ts の recordMessageUsage と
+ * 同じ読み方をする。
+ */
+function usageForLedger(usageJson: string | null): {
+  cost: number | null;
+  points: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+} | null {
+  if (!usageJson) return null;
+  let u: Record<string, unknown>;
+  try {
+    u = JSON.parse(usageJson) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const num = (v: unknown): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const cost = num(u.cost);
+  const points = num(u.points);
+  if (cost == null && points == null) return null;
+  return {
+    cost,
+    points,
+    promptTokens: num(u.promptTokens),
+    completionTokens: num(u.completionTokens),
+  };
+}
+
+/**
+ * 会話検索の文を組み立てる。語数ぶんの句を並べるので文自体が可変。
+ *
+ * 抜粋の元になる本文は、**相関サブクエリで本体に同梱する**（`hit` 列）。
+ * 結果行ごとに別の SELECT を投げていたときは、検索1回で D1 へ最大51往復
+ * （本体1 + 50件×1）していて、文字を打つたびの検索がそのまま重かった。
+ *
+ * バインドの数は D1 の上限（1文あたり100個）に収まる:
+ * hit の1個 + 語ごとに2個（タイトル・本文）× 最大10語 = 21個。
+ */
+export function searchConversationsSql(counts: {
+  positives: number;
+  negatives: number;
+}): string {
+  const matchClause =
+    "(c.title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\'))";
+  let sql =
+    "SELECT c.id, c.title, (SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\' LIMIT 1) AS hit FROM conversations c WHERE 1=1";
+  for (let i = 0; i < counts.positives; i++) sql += ` AND ${matchClause}`;
+  for (let i = 0; i < counts.negatives; i++) sql += ` AND NOT ${matchClause}`;
+  sql += " ORDER BY c.updated_at DESC LIMIT 50";
+  return sql;
 }
 
 /**

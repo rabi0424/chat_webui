@@ -5,6 +5,10 @@ import { finalizeGeneration, getMessage } from "../app/lib/db.server";
 import { isRetryProgress } from "../app/lib/retry";
 import { crossSiteReason } from "../app/lib/same-origin";
 import {
+  accessDenialReason,
+  readAccessConfig,
+} from "../app/lib/access-jwt.server";
+import {
   runGenerationJob,
   type GenerationJob,
   type RetryRunState,
@@ -186,6 +190,23 @@ const requestHandler = createRequestHandler(
 
 export default {
   async fetch(request, env, ctx) {
+    /*
+     * Access を通った要求かを確かめる（多層防御）。
+     *
+     * 手前の Cloudflare Access が本人だけを通しているが、それが外れた
+     * ことにアプリからは気づけない——ルートの足し忘れやポリシーの適用
+     * 漏れで、会話の全文と生成の入口がそのまま公開される。設定
+     * （ACCESS_TEAM_DOMAIN / ACCESS_AUD）が無い手元の開発では何もしない。
+     */
+    const access = readAccessConfig(env);
+    if (access) {
+      const denial = await accessDenialReason(request, access);
+      if (denial) {
+        console.warn(`[security] Access の検証に失敗しました: ${denial}`);
+        return Response.json({ error: "認証が必要です" }, { status: 403 });
+      }
+    }
+
     // 別のサイトからの書き換えはここで断つ。ルートは17本あり、
     // 1本ずつ足すと足し忘れがそのまま穴になるので、入口で一度だけ見る
     const reason = crossSiteReason(request);

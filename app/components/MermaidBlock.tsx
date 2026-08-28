@@ -1,5 +1,6 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useIsDark } from "../lib/appearance";
+import { useCopied } from "../lib/use-copied";
 import { loadMermaid } from "../lib/mermaid.client";
 import { IconCheck, IconCopy, IconDownload } from "./icons";
 
@@ -72,9 +73,29 @@ export function MermaidBlock({
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showSource, setShowSource] = useState(false);
-  const [copied, setCopied] = useState(false);
+  // 印の出し入れは共通のフックに任せる（自前の setTimeout は、外れたあとに
+  // 鳴るぶんと、続けて押したときに前の時計が先に鳴るぶんが残る）
+  const [copied, flashCopied] = useCopied();
   const dark = useIsDark();
   const baseId = useId();
+  /**
+   * 保存のあとに解放を待っている blob URL。
+   *
+   * すぐ捨てるとダウンロードが始まる前に無効になる端末があるので少し
+   * 待つのだが、その間に画面を離れると時計だけが残る。外れるときは
+   * 待たずに解放する（監査 C-10）。
+   */
+  const revokes = useRef(new Map<ReturnType<typeof setTimeout>, string>());
+  useEffect(
+    () => () => {
+      for (const [timer, url] of revokes.current) {
+        clearTimeout(timer);
+        URL.revokeObjectURL(url);
+      }
+      revokes.current.clear();
+    },
+    [],
+  );
 
   useEffect(() => {
     let alive = true;
@@ -126,8 +147,7 @@ export function MermaidBlock({
   const copySource = async () => {
     try {
       await navigator.clipboard.writeText(code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      flashCopied();
     } catch {
       // クリップボード不許可時は何もしない
     }
@@ -143,7 +163,11 @@ export function MermaidBlock({
     a.download = "diagram.svg";
     a.click();
     // すぐ捨てるとダウンロードが始まる前に無効になる端末があるので少し待つ
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    const timer = setTimeout(() => {
+      URL.revokeObjectURL(url);
+      revokes.current.delete(timer);
+    }, 10_000);
+    revokes.current.set(timer, url);
   };
 
   // まだ図にできていない間は、ふつうのコードブロックとして見せる。

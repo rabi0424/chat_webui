@@ -154,12 +154,20 @@ export function useAttachments({
    * 実体はR2にあるためアップロードは不要で、添付IDをそのまま使う。
    */
   function attachGeneratedImages(attachments: UiAttachment[]) {
+    /*
+     * 上限の判定は更新関数の**外**で行う。中で setError を呼んでいたので、
+     * StrictMode が更新関数を二度走らせる開発時には知らせも二度出ていた
+     * （更新関数は同じ入力から同じ結果を返すだけにしておく決まり）。
+     * 空き枚数を ref から数えるのも addFiles と同じ形（監査 C-12）。
+     */
+    if (pendingCountRef.current >= MAX_ATTACHMENTS_PER_MESSAGE) {
+      tooMany();
+      return;
+    }
     setPending((prev) => {
+      // 実際に入る枚数は並びから数える（知らせは上で出し終えている）
       const room = MAX_ATTACHMENTS_PER_MESSAGE - prev.length;
-      if (room <= 0) {
-        tooMany();
-        return prev;
-      }
+      if (room <= 0) return prev;
       const added = attachments
         .filter((a) => !prev.some((p) => p.id === a.id))
         .slice(0, room)

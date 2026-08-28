@@ -27,6 +27,7 @@ import {
   USAGE_TOTALS_SQL,
   clearPendingDeletionsSql,
   generatedImagesSql,
+  searchConversationsSql,
   statementsOf,
   stillReferencedSql,
   undoGenerationStatements,
@@ -483,51 +484,37 @@ export async function searchConversations(
   if (positives.length === 0) return [];
 
   const d = await db();
-  let sql = "SELECT c.id, c.title FROM conversations c WHERE 1=1";
-  const binds: string[] = [];
-  const matchClause =
-    "(c.title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\'))";
-  for (const t of positives) {
-    sql += ` AND ${matchClause}`;
+  // 抜粋の元（最初の検索語がヒットした本文）は hit 列として本体に同梱される。
+  // 文は schema.ts に置き、本物の SQLite に流すテストと共有する
+  const sql = searchConversationsSql({
+    positives: positives.length,
+    negatives: negatives.length,
+  });
+  const firstLike = `%${escapeLike(positives[0])}%`;
+  const binds: string[] = [firstLike];
+  for (const t of [...positives, ...negatives]) {
     const like = `%${escapeLike(t)}%`;
     binds.push(like, like);
   }
-  for (const t of negatives) {
-    sql += ` AND NOT ${matchClause}`;
-    const like = `%${escapeLike(t)}%`;
-    binds.push(like, like);
-  }
-  sql += " ORDER BY c.updated_at DESC LIMIT 50";
 
   const { results } = await d
     .prepare(sql)
     .bind(...binds)
-    .all<{ id: string; title: string }>();
+    .all<{ id: string; title: string; hit: string | null }>();
 
   // 抜粋: 最初の検索語が本文にヒットした位置の前後を切り出す
-  const firstLike = `%${escapeLike(positives[0])}%`;
-  const out: SearchResult[] = [];
-  for (const row of results) {
-    const hit = await d
-      .prepare(
-        "SELECT content FROM messages WHERE conversation_id = ? AND content LIKE ? ESCAPE '\\' LIMIT 1",
-      )
-      .bind(row.id, firstLike)
-      .first<{ content: string }>();
+  return results.map((row) => {
     let snippet: string | null = null;
-    if (hit) {
-      const idx = hit.content
-        .toLowerCase()
-        .indexOf(positives[0].toLowerCase());
+    if (row.hit) {
+      const idx = row.hit.toLowerCase().indexOf(positives[0].toLowerCase());
       const start = Math.max(0, idx - 30);
       snippet =
         (start > 0 ? "…" : "") +
-        hit.content.slice(start, start + 90).replace(/\n/g, " ") +
-        (start + 90 < hit.content.length ? "…" : "");
+        row.hit.slice(start, start + 90).replace(/\n/g, " ") +
+        (start + 90 < row.hit.length ? "…" : "");
     }
-    out.push({ id: row.id, title: row.title, snippet });
-  }
-  return out;
+    return { id: row.id, title: row.title, snippet };
+  });
 }
 
 // --- Folders / サイドバー整理 ---------------------------------------------
@@ -1881,7 +1868,16 @@ export async function finalizeGeneration(
   },
 ): Promise<boolean> {
   const d = await db();
-  const [applied] = await d.batch([
+  // 未読の印を立てる文が**先**。あとに置いて status を見ずに走らせると、
+  // 既に確定済みの行へ二重に確定しに来ただけでも印が立つ（何も起きて
+  // いない会話に点が付く）。1文目が status を書き換えてしまうので、
+  // 「まだ streaming か」を見られるのは書き換える前だけ。
+  const [, applied] = await d.batch([
+    d
+      .prepare(
+        "UPDATE conversations SET unread = 1 WHERE id = (SELECT conversation_id FROM messages WHERE id = ? AND status = 'streaming')",
+      )
+      .bind(messageId),
     d
       .prepare(
         "UPDATE messages SET content = ?, reasoning = ?, usage_json = ?, status = ?, error = ?, citations_json = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'",
@@ -1896,12 +1892,6 @@ export async function finalizeGeneration(
         Date.now(),
         messageId,
       ),
-    // 完成を会話一覧で知らせる。開いている会話はクライアントがすぐ落とす
-    d
-      .prepare(
-        "UPDATE conversations SET unread = 1 WHERE id = (SELECT conversation_id FROM messages WHERE id = ?)",
-      )
-      .bind(messageId),
   ]);
   const changed = (applied.meta.changes ?? 0) > 0;
 
@@ -1994,18 +1984,26 @@ export async function markConversationRead(id: string): Promise<void> {
     .run();
 }
 
-/** 生成停止を要求する（次のフラッシュ時に生成側が検知する）。 */
+/**
+ * 生成停止を要求する（次のフラッシュ時に生成側が検知する）。
+ *
+ * 返り値は「フラグを立てられたか」。対象の行が既に確定している・IDが
+ * 違うときは false——押しても何も起きないのに `ok: true` だけ返すのは、
+ * このリポジトリが潰してきた「やっていないのに『やった』と返す」型に
+ * なるため、当たらなかったことも呼ぶ側へ伝える。
+ */
 export async function requestStop(
   conversationId: string,
   messageId: string,
-): Promise<void> {
+): Promise<boolean> {
   const d = await db();
-  await d
+  const res = await d
     .prepare(
       "UPDATE messages SET stop_requested = 1 WHERE id = ? AND conversation_id = ? AND status = 'streaming'",
     )
     .bind(messageId, conversationId)
     .run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
 /**

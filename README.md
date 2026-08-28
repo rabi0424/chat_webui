@@ -66,7 +66,7 @@ iPhone の Safari で共有メニュー →「ホーム画面に追加」する�
 
 ## テスト
 
-`npm test` で走る。3層に分かれている。
+`npm test` で走る。5層に分かれている（`vitest.config.ts` の projects）。
 
 - **純粋なロジック**（`tests/*.test.ts`）: 生成パラメータの組み立て、
   リトライ設定の読み取り、Markdownの分割、月間上限の判定など。Workers の

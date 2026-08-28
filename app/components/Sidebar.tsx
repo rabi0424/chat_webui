@@ -215,6 +215,11 @@ export function Sidebar({
         if (seq === searchSeq.current) setSearching(false);
       }
     }, 300);
+    // 待っている途中で外れたら投げない。閉じた画面のために検索させると、
+    // Workers のサブリクエストを1件ぶん無駄にする（監査 C-9）
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
   }, [searchQuery]);
 
   const viewFolder =

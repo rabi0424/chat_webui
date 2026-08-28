@@ -93,3 +93,31 @@ describe("削除", () => {
     });
   });
 });
+
+/**
+ * 選択モード中の画像。
+ *
+ * 行を選ぶつもりのタップで拡大表示まで開き、閉じたときには行も選ばれて
+ * いた（タップが二重に効く）。選択モード中は拡大の入口を渡さない
+ * ——本文の画像はただの画像に戻る（監査 C-8）。
+ */
+describe("選択モード中の画像", () => {
+  const withImage = () => [
+    msg("user", "質問1", { id: "u1" }),
+    msg("assistant", "図です\n\n![図](/api/files/att-1)", { id: "a1" }),
+  ];
+
+  it("選択モードでは、本文の画像が拡大の押しどころにならない", async () => {
+    server = installServer(withImage());
+    const { user } = renderChat({ initialMessages: withImage() });
+    // ふだんは押せる（ここが出ていないと、次の確認が空振りする）
+    expect(await screen.findByTitle("タップで拡大")).toBeTruthy();
+
+    await user.click((await screen.findAllByLabelText("削除"))[0]);
+    await screen.findByText(/1件選択中/);
+
+    expect(screen.queryByTitle("タップで拡大")).toBeNull();
+    // 画像そのものは出したまま（消えたり畳まれたりはしない）
+    expect(screen.getByAltText("図")).toBeTruthy();
+  });
+});

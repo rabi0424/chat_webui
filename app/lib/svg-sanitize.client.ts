@@ -103,13 +103,62 @@ function dropFetchingFunctions(css: string): string {
   }
 }
 
+/** `url(` の始まり。前が語の一部でないことまで見て、別の関数名と取り違えない。 */
+const URL_FUNCTION = /(^|[^\w-])url\s*\(/gi;
+
+/**
+ * `url(...)` の中身を取り出す。判定できない書き方なら null。
+ *
+ * クォートの中は `)` も `'` も書けるので、閉じ括弧やクォートを
+ * 「出てきた最初の1つ」で切ってはいけない。正規表現でそう切っていた
+ * ころは、`url("https://…/x.png?a)b")` が**どの規則にも当たらず素通り**
+ * していた（そこで消えるものが無いので、エスケープを解いて掃除し直す
+ * 二段目の検査も差分ゼロで通ってしまう）。
+ */
+function urlArgument(inner: string): string | null {
+  const text = inner.trim();
+  const quote = text[0];
+  if (quote !== '"' && quote !== "'") return text;
+  for (let i = 1; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\") {
+      i++; // エスケープされた1文字は閉じクォートにならない
+      continue;
+    }
+    if (c !== quote) continue;
+    // 閉じたあとに何か続いていたら、CSS としては別のものになる。
+    // 読み切れないものは安全側（＝落とす）へ倒す
+    return text.slice(i + 1).trim() ? null : text.slice(1, i);
+  }
+  return null; // 閉じていない
+}
+
+/** url(...) のうち、参照先が安全でないものを none に置き換える。 */
+function dropUnsafeUrls(css: string): string {
+  let out = "";
+  let from = 0;
+  for (;;) {
+    URL_FUNCTION.lastIndex = from;
+    const m = URL_FUNCTION.exec(css);
+    if (!m) return out + css.slice(from);
+    const nameAt = m.index + m[1].length;
+    const open = m.index + m[0].length - 1;
+    const close = matchParen(css, open);
+    // 閉じていない＝どこまでが引数か決められない。丸ごと捨てる
+    if (close < 0) return out + css.slice(from, nameAt) + "none";
+    const arg = urlArgument(css.slice(open + 1, close));
+    out +=
+      css.slice(from, nameAt) +
+      (arg !== null && safeRef(arg) ? css.slice(nameAt, close + 1) : "none");
+    from = close + 1;
+  }
+}
+
 /** 外部を取りに行く書き方を落とす（1回ぶん）。 */
 function scrubOnce(css: string): string {
-  return dropFetchingFunctions(css)
-    .replace(/@import[^;]*;?/gi, "")
-    .replace(/url\(\s*(['"]?)([^)'"]*)\1\s*\)/gi, (whole, _q, url: string) =>
-      safeRef(url) ? whole : "none",
-    );
+  return dropUnsafeUrls(
+    dropFetchingFunctions(css).replace(/@import[^;]*;?/gi, ""),
+  );
 }
 
 /**
@@ -150,6 +199,33 @@ function scrubCss(css: string): string {
   return scrubOnce(decoded) === decoded ? cleaned : "";
 }
 
+/**
+ * 値が CSS として解釈される属性（プレゼンテーション属性）。
+ *
+ * SVG では `fill="url(https://外部/x.svg#p)"` のように、**属性の値にも**
+ * 参照を書ける。href / src / style だけを見ていたころは、これらが
+ * まるごと素通りしていた——開いただけで相手に接続してしまう。
+ *
+ * `d` や `points` のような属性は CSS として読まれないので、そこに
+ * url(...) と書いても取りに行かれない。掃除するのは値が CSS の
+ * 属性だけに絞る（正当な値を巻き込まないため）。
+ */
+const CSS_VALUE_ATTRIBUTES = [
+  "fill",
+  "stroke",
+  "filter",
+  "mask",
+  "mask-image",
+  "clip-path",
+  "marker",
+  "marker-start",
+  "marker-mid",
+  "marker-end",
+  "cursor",
+  "background",
+  "background-image",
+];
+
 let hooked = false;
 
 /**
@@ -171,6 +247,14 @@ function installHooks(): void {
     // style="background:url(...)" のような書き方からの通信も止める
     const style = el.getAttribute?.("style");
     if (style) el.setAttribute("style", scrubCss(style));
+
+    // fill="url(https://…)" のように、属性の値に直接書かれた参照も同じ
+    for (const name of CSS_VALUE_ATTRIBUTES) {
+      const value = el.getAttribute?.(name);
+      if (value == null) continue;
+      const scrubbed = scrubCss(value);
+      if (scrubbed !== value) el.setAttribute(name, scrubbed);
+    }
 
     // <style> の中身（クラス定義）はここでしか触れない
     if (el.tagName?.toLowerCase() === "style" && el.textContent) {

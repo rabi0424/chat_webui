@@ -161,6 +161,61 @@ describe("切替の連打", () => {
 })
 
 /**
+ * 編集を開いたまま枝を移ったとき。
+ *
+ * 編集中でもページャは押せる（生成中でも押せるのと同じ理由で、見比べる
+ * のを妨げない）。編集対象を**添字**で覚えていたころは、移った先の同じ
+ * 位置の発言に編集欄がそのまま付き替わっていた——打ちかけの文は残るので、
+ * 書いていた相手が入れ替わったことに気づけない。そのまま保存すると、
+ * 別の枝の発言を親として枝ができる（監査 C-2）。
+ */
+describe("編集中に枝を移る", () => {
+  /** 手前の発言に兄弟があり、後ろの発言を書き直している状態を作る。 */
+  const editable = () => [
+    msg("user", "最初の質問", {
+      id: "u1",
+      siblingIds: ["u1", "u1b"],
+      siblingIndex: 0,
+    }),
+    msg("assistant", "最初の応答", { id: "a1" }),
+    msg("user", "2つ目の質問", { id: "u2" }),
+    msg("assistant", "2つ目の応答", { id: "a2" }),
+  ];
+
+  it("編集欄が、移った先の別の発言に付き替わらない", async () => {
+    server = installServer(editable());
+    // 移った先は続きごと別（編集していた u2 は、この枝には無い）
+    server.on("/path", () => ({
+      messages: [
+        msg("user", "書き直した最初の質問", {
+          id: "u1b",
+          siblingIds: ["u1", "u1b"],
+          siblingIndex: 1,
+        }),
+        msg("assistant", "別の枝の応答", { id: "b1" }),
+        msg("user", "別の枝の2つ目", { id: "b2" }),
+        msg("assistant", "別の枝の2つ目の応答", { id: "b3" }),
+      ],
+    }));
+
+    const { user } = renderChat({ initialMessages: editable() });
+    // 2つ目のユーザー発言（添字では2）を編集し始める
+    await user.click((await screen.findAllByLabelText("編集して再送信"))[1]);
+    expect(await screen.findByDisplayValue("2つ目の質問")).toBeTruthy();
+
+    await user.click(screen.getByLabelText("次のブランチ"));
+    await screen.findByText("別の枝の2つ目の応答");
+
+    // 打ちかけの本文が、無関係な発言の編集欄として残らない
+    expect(screen.queryByDisplayValue("2つ目の質問")).toBeNull();
+    // 同じ位置にある発言は、編集欄ではなく本文として出ている
+    expect(screen.getByText("別の枝の2つ目")).toBeTruthy();
+    // 黙って畳まず、消えた理由を知らせる
+    expect(screen.getByText(/編集していた発言/)).toBeTruthy();
+  });
+});
+
+/**
  * 生成中の枝の行き来。
  *
  * 生成はサーバーで走っていて、画面がどの枝を出しているかとは関係しない。

@@ -18,7 +18,7 @@ import "katex/contrib/mhchem";
 import "../lib/katex-copy-tex.client";
 import { IconCheck, IconCopy } from "./icons";
 import { prepareMarkdown } from "../lib/markdown";
-import { alertTypeOf, remarkAlert } from "../lib/remark-alert";
+import { ALERT_TYPES, alertTypeOf, remarkAlert } from "../lib/remark-alert";
 import { remarkSup } from "../lib/remark-sup";
 import { MarkdownAlert } from "./MarkdownAlert";
 import { MarkdownTable } from "./MarkdownTable";
@@ -256,17 +256,64 @@ const remarkPlugins: PluggableList = [
   remarkBreaks,
 ];
 
+type PropertyDefinition = NonNullable<
+  (typeof defaultSchema)["attributes"]
+>[string][number];
+
+/**
+ * その要素の既定の許可から className の定義を外し、値を絞った定義に差し替える。
+ *
+ * 同じ属性の定義は**最初に見つかった1つ**しか使われないので、既定の
+ * `['className', /^language-./]` を残したまま足しても、足したほうは
+ * 見られない。必ず置き換える。
+ *
+ * 値を1つも渡さないと `['className']` になり、hast-util-sanitize は
+ * それを「**どの値でも通す**」と読む（絞ったつもりが全開になる）。
+ * 許可する値は必ず1つ以上渡すこと。
+ */
+function classNames(
+  tag: string,
+  ...values: Array<string | RegExp>
+): PropertyDefinition[] {
+  const kept = (defaultSchema.attributes?.[tag] ?? []).filter(
+    (d) => (Array.isArray(d) ? d[0] : d) !== "className",
+  );
+  return [...kept, ["className", ...values]];
+}
+
 /**
  * モデルが混ぜてくる生HTML（`<br>` `<sub>` `<details>` `<ruby>` など）を通すための
- * 許可リスト。既定（GitHubのサニタイズ相当）に class だけ足す。
- * remark-math が付ける `math-inline` / `math-display` クラスが消えると
- * 後段の rehype-katex が数式を見つけられなくなるため。
+ * 許可リスト。既定（GitHubのサニタイズ相当）に、描画で実際に使うクラスだけ足す。
+ *
+ * **クラス名は値まで絞る。** 以前は `"*": ["className"]` として全要素に
+ * 好きなクラスを許していたが、この画面は Tailwind を使っているので
+ * `fixed inset-0 z-50 bg-white` と書くだけで**会話の画面を全面が覆える**。
+ * 本文はモデルの出力（＝間接的に外部由来）なので、偽の対話箱を描かれると
+ * 利用者はそれをアプリの一部として読む。
+ *
+ * 通すのは次の4つだけ。ここに無いクラスは黙って落ちる。
+ *  - `language-*` … コードブロックの言語（既定から引き継ぎ）
+ *  - `math-inline` / `math-display` … remark-math の印。消えると後段の
+ *    rehype-katex が数式を見つけられない
+ *  - `md-alert` / `md-alert-*` … remark-alert が付ける警告ブロックの印
+ *  - 既定にある GFM のもの（`contains-task-list` `task-list-item`
+ *    `footnotes` `sr-only` `data-footnote-backref`）
+ *
+ * 描画のあとで付くクラス（KaTeX・hljs・`stream-token`）は、この消毒より
+ * 後ろの段で足すのでここには要らない。
  */
 const sanitizeSchema = {
   ...defaultSchema,
   attributes: {
     ...defaultSchema.attributes,
-    "*": [...(defaultSchema.attributes?.["*"] ?? []), "className"],
+    code: classNames("code", /^language-./, "math-inline", "math-display"),
+    pre: classNames("pre", "math-inline", "math-display"),
+    span: classNames("span", "math-inline", "math-display"),
+    div: classNames(
+      "div",
+      "md-alert",
+      ...ALERT_TYPES.map((type) => `md-alert-${type}`),
+    ),
   },
 };
 

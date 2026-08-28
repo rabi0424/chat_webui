@@ -132,6 +132,89 @@ describe("外部への通信を止める", () => {
   });
 
   /**
+   * クォートの中には `)` も `'` も書ける（監査 X-1）。
+   * 「最初に出てきた `)` まで」で切る読み方だと、この形はどの規則にも
+   * 当たらず素通りする。何も消えないので、エスケープを解いて掃除し直す
+   * 二段目の検査も差分ゼロで通ってしまう。
+   */
+  it("クォートの中に ) や ' を含む url() も通さない", () => {
+    const cases = [
+      '.a{background:url("http://evil.example/x.png?a)b")}',
+      ".a{background:url('http://evil.example/x.png?a\\'b')}",
+      '.a{background:url("http://evil.example/x.png?q=\\")")}',
+      '@font-face{font-family:x;src:url("http://evil.example/f.woff?a)b")}',
+    ];
+    for (const css of cases) {
+      const out = clean(wrap(`<style>${css}</style><rect class="a"/>`));
+      expect(out, css).not.toContain("evil.example");
+    }
+  });
+
+  it("style 属性でも、クォートの中の ) を読み違えない", () => {
+    const out = clean(
+      wrap(
+        '<rect style=\'background:url("http://evil.example/z.png?a)b")\' width="10" height="10"/>',
+      ),
+    );
+    expect(out).not.toContain("evil.example");
+  });
+
+  /**
+   * 図の中の参照（url(#…)）と埋め込み画像は、掃除で巻き添えにしない。
+   * ここが落ちると「全部 none にしているから通っている」だけになる。
+   */
+  it("図の中の参照と埋め込み画像は残す", () => {
+    const dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+    const out = clean(
+      wrap(
+        `<defs><linearGradient id="g"><stop stop-color="#f00"/></linearGradient></defs>` +
+          `<style>.a{fill:url(#g)}.b{background:url("${dataUri}")}</style>` +
+          '<rect class="a" width="10" height="10"/>',
+      ),
+    );
+    expect(out).toContain("url(#g)");
+    expect(out).toContain("data:image/png");
+  });
+
+  /**
+   * 参照を書けるのは href / style だけではない（監査 X-6）。
+   * fill や filter などの属性の値も CSS として読まれるので、
+   * ここに外部の url() を書かれると開いただけで取りに行く。
+   */
+  it("fill などの属性に書かれた外部参照も落とす", () => {
+    for (const attr of [
+      "fill",
+      "stroke",
+      "filter",
+      "mask",
+      "clip-path",
+      "marker-end",
+    ]) {
+      const out = clean(
+        wrap(`<rect ${attr}="url(https://evil.example/x.svg#p)" width="10" height="10"/>`),
+      );
+      expect(out, attr).not.toContain("evil.example");
+    }
+  });
+
+  it("属性に書かれた図の中の参照は残す（塗りが消えない）", () => {
+    const out = clean(
+      wrap(
+        '<defs><linearGradient id="g"><stop stop-color="#f00"/></linearGradient></defs>' +
+          '<rect fill="url(#g)" width="10" height="10"/>',
+      ),
+    );
+    expect(out).toContain('fill="url(#g)"');
+  });
+
+  it("属性でも、エスケープで書いた url() は通さない", () => {
+    const out = clean(
+      wrap('<rect fill=\'\\75 rl("http://evil.example/x.png")\' width="10" height="10"/>'),
+    );
+    expect(out).not.toContain("evil.example");
+  });
+
+  /**
    * CSS は関数名そのものをエスケープで書ける。\\75 rl(...) はブラウザに
    * とって url(...) だが、文字列としては url( を含まないので、正規表現で
    * 探すやり方では見つからない。
