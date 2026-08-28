@@ -14,6 +14,7 @@ import {
 } from "./retry";
 import { checkMonthlyLimit } from "./limit.server";
 import { isFetchableImageUrl, looksLikeImageUrl } from "./image-url";
+import { sniffImageFormat } from "./image-signature";
 import { readBounded } from "./read-bounded";
 import { flushInterval } from "./flush-cadence";
 import {
@@ -184,6 +185,13 @@ const UPSTREAM_IDLE_TIMEOUT_MS = 120_000;
 
 const MAX_CAPTURED_IMAGES = 8;
 const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
+/**
+ * 生成画像の取り込みで、自分で辿るリダイレクトの回数。
+ *
+ * 上流のCDNは1回ほど噛ませてくるので0では足りない。一方で辿るたびに
+ * 外部リクエストの枠を1件使うので、深追いはしない。
+ */
+const MAX_IMAGE_REDIRECTS = 3;
 
 /**
  * 1回の実行（＝DOのアラーム1回）で発行してよい外部リクエストの本数。
@@ -385,6 +393,89 @@ function decodeDataUrl(
   }
 }
 
+/**
+ * 生成画像を取りに行く。リダイレクトは自分で辿る。
+ *
+ * `fetch` の既定（`redirect: "follow"`）だと、**入口で確かめた行き先の
+ * 検査が意味を失う**。宛先を決めるのはモデルの出力なので、外向きの
+ * URL を返しておいて `302` で `127.0.0.1` や `169.254.169.254` へ
+ * 飛ばせば、そのまま追いかけてしまう。手で辿り、飛び先も毎回同じ
+ * 検査に通す。
+ *
+ * 1ホップごとに外部リクエストを1件使う（サブリクエストの枠に効くので、
+ * 辿った回数ぶんきちんと数える）。
+ */
+async function fetchImageResponse(
+  url: string,
+  budget: ExternalBudget,
+): Promise<Response | null> {
+  let target = url;
+  for (let hop = 0; hop <= MAX_IMAGE_REDIRECTS; hop++) {
+    // 取りに行く宛先はモデルが本文に書いたもの。こちらが決めた値では
+    // ないので、仕組みと宛先を確かめてから出す
+    if (!isFetchableImageUrl(target)) return null;
+    budget.spend();
+    const res = await fetch(target, { redirect: "manual" });
+    if (res.status < 300 || res.status >= 400) return res;
+    const location = res.headers.get("location");
+    if (!location) return res;
+    try {
+      // 相対の Location も来る
+      target = new URL(location, target).toString();
+    } catch {
+      return null;
+    }
+  }
+  return null; // 辿りすぎ（堂々巡りに付き合わない）
+}
+
+/**
+ * 画像1枚を実体として取り込む。取り込めなければ null。
+ *
+ * 返す mimeType は**申告ではなく中身**から決める。上流の申告
+ * （Content-Type や data: URL の型）は当てにならないので、先頭バイトを
+ * 読んで本当の形式を確かめる。画像でないものは捨てる——ここを通すと、
+ * 画像のふりをした別のものが R2 に入り、そのまま配信されることになる。
+ *
+ * 呼び出し側（storeImage）は null を「取り込めなかった」として扱い、
+ * 本文のURLを元のまま残す。
+ */
+export async function captureImagePayload(
+  url: string,
+  budget: ExternalBudget,
+): Promise<{ buffer: ArrayBuffer; mimeType: string } | null> {
+  let payload: { buffer: ArrayBuffer; mimeType: string } | null;
+  if (url.startsWith("data:")) {
+    payload = decodeDataUrl(url);
+  } else {
+    const res = await fetchImageResponse(url, budget);
+    if (!res || !res.ok) return null;
+    const mimeType = (res.headers.get("content-type") ?? "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) return null;
+    // 申告されている大きさで先に弾く（読む前に分かるなら読まない）
+    const declared = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_CAPTURED_BYTES) {
+      return null;
+    }
+    const buffer = await readBounded(res, MAX_CAPTURED_BYTES);
+    if (!buffer) return null;
+    payload = { buffer, mimeType };
+  }
+  if (
+    !payload ||
+    payload.buffer.byteLength === 0 ||
+    payload.buffer.byteLength > MAX_CAPTURED_BYTES
+  ) {
+    return null;
+  }
+  const actual = sniffImageFormat(payload.buffer);
+  if (!actual) return null;
+  return { buffer: payload.buffer, mimeType: actual };
+}
+
 /** 画像1枚をR2へ保存し、添付IDを返す。取り込めなければ null。 */
 async function storeImage(
   url: string,
@@ -392,37 +483,8 @@ async function storeImage(
   budget: ExternalBudget,
 ): Promise<string | null> {
   try {
-    let payload: { buffer: ArrayBuffer; mimeType: string } | null = null;
-    if (url.startsWith("data:")) {
-      payload = decodeDataUrl(url);
-    } else {
-      // 取りに行く宛先はモデルが本文に書いたもの。こちらが決めた値では
-      // ないので、仕組みと宛先を確かめてから出す
-      if (!isFetchableImageUrl(url)) return null;
-      budget.spend();
-      const res = await fetch(url);
-      if (!res.ok) return null;
-      const mimeType = (res.headers.get("content-type") ?? "")
-        .split(";")[0]
-        .trim()
-        .toLowerCase();
-      if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) return null;
-      // 申告されている大きさで先に弾く（読む前に分かるなら読まない）
-      const declared = Number(res.headers.get("content-length"));
-      if (Number.isFinite(declared) && declared > MAX_CAPTURED_BYTES) {
-        return null;
-      }
-      const buffer = await readBounded(res, MAX_CAPTURED_BYTES);
-      if (!buffer) return null;
-      payload = { buffer, mimeType };
-    }
-    if (
-      !payload ||
-      payload.buffer.byteLength === 0 ||
-      payload.buffer.byteLength > MAX_CAPTURED_BYTES
-    ) {
-      return null;
-    }
+    const payload = await captureImagePayload(url, budget);
+    if (!payload) return null;
 
     const key = `generated/${target.messageId}/${crypto.randomUUID()}`;
     await putFile(key, payload.buffer, payload.mimeType);

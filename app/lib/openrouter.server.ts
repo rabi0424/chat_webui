@@ -315,6 +315,26 @@ function redactSecrets(value: unknown): unknown {
   return value;
 }
 
+/**
+ * 構造の読めない本文から、APIキーそのものを伏せる。
+ *
+ * JSON なら鍵の名前（key / token など）を頼りに伏せられるが、返って
+ * くるのが上流のJSONとは限らない——手前のプロキシやゲートウェイが
+ * HTMLのエラーページを返すことがあり、そこには**こちらが送った
+ * Authorization ヘッダがそのまま写っている**ことがある。診断画面は
+ * 生の本文を見せる作りなので、鍵の値そのものを探して消す。
+ */
+function redactRawText(text: string): string {
+  let out = text;
+  for (const secret of [env.POE_API_KEY, env.OPENROUTER_API_KEY]) {
+    // 短すぎる値で置換すると、無関係な文字列まで塗り潰してしまう
+    if (typeof secret === "string" && secret.length >= 8) {
+      out = out.split(secret).join("***");
+    }
+  }
+  return out;
+}
+
 export interface PoeProbeResult {
   endpoint: string;
   status: number | null;
@@ -346,11 +366,15 @@ export async function probePoeBot(botName: string): Promise<PoeProbeResult[]> {
     try {
       const res = await fetch(endpoint, { headers });
       const text = await res.text();
-      let body: unknown = text.slice(0, 20000);
+      // 伏せ字は読む前に掛ける。JSONとして読めない本文（プロキシの
+      // エラーページなど）はそのまま見せる作りなので、鍵の名前を頼りに
+      // する redactSecrets だけでは素通りしていた
+      const safe = redactRawText(text);
+      let body: unknown = safe.slice(0, 20000);
       try {
-        body = redactSecrets(JSON.parse(text));
+        body = redactSecrets(JSON.parse(safe));
       } catch {
-        // JSONでなければ本文の先頭をそのまま見せる
+        // JSONでなければ本文の先頭をそのまま見せる（伏せ字済み）
       }
       results.push({ endpoint, status: res.status, body });
     } catch (e) {
