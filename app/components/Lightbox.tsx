@@ -6,6 +6,7 @@ import { IconX } from "./icons";
  * ダブルタップ（ダブルクリック）でタップ位置を中心に拡大/等倍へ切替、
  * 拡大中はドラッグで移動できる。等倍時のシングルタップ・×・Escで閉じる
  * （シングルタップはダブルタップ猶予の後に確定させる）。
+ * 等倍のときは左右に払う（または ← → ）と隣の画像へ移る。
  *
  * 出す画像は URL で受け取る。添付のIDだけを受け取る作りだと、本文の
  * 中の画像（モデルが返した `![](…)`）を開けない——「成功するまで生成」で
@@ -13,11 +14,22 @@ import { IconX } from "./icons";
  */
 export function Lightbox({
   src,
+  onPrev,
+  onNext,
   footer,
   onClose,
 }: {
   /** 表示する画像のURL。 */
   src: string;
+  /**
+   * 隣へ移る。渡されたぶんだけ、その向きへの払いと矢印キーが効く。
+   *
+   * 端では渡さない（undefined）。すると払っても戻るだけになり、
+   * 「これ以上は無い」が指に返る。無い向きへ空振りで移ったように
+   * 見せると、閉じたのか進んだのか分からなくなる。
+   */
+  onPrev?: () => void;
+  onNext?: () => void;
   /**
    * 画像の下に敷く帯（説明と操作）。
    *
@@ -29,7 +41,13 @@ export function Lightbox({
   onClose: () => void;
 }) {
   const ZOOM = 2.5;
+  /** 隣へ移すのに要る払いの距離。これに満たなければ元へ戻す。 */
+  const SWIPE_COMMIT_PX = 60;
+  /** 払いと縦の動きを見分ける最小の傾き。 */
+  const SWIPE_RATIO = 1.2;
   const [t, setT] = useState({ scale: 1, x: 0, y: 0 });
+  /** 等倍のときの、指に付いてくる横の移動量。 */
+  const [swipeX, setSwipeX] = useState(0);
   const [dragging, setDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{
@@ -43,16 +61,36 @@ export function Lightbox({
   const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /*
+    隣へ移ったら、拡大と払いを戻す。この入れ物は画像を差し替えても
+    作り直されないので、戻さないと次の画像が前の倍率と位置のまま出る。
+
+    描画の中で戻すのは、effect まで待つと**前の倍率のまま一度描かれる**
+    ため（拡大した状態で隣へ払うと、次の画像が一瞬拡大して見える）。
+    key で作り直す手もあるが、それだと入れ物ごと出直しになり、
+    背景のフェードが払うたびに掛かる。
+  */
+  const [shownSrc, setShownSrc] = useState(src);
+  if (shownSrc !== src) {
+    setShownSrc(src);
+    setT({ scale: 1, x: 0, y: 0 });
+    setSwipeX(0);
+  }
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      // 拡大中の矢印は画像を動かすためのものではないので、等倍のときだけ
+      if (t.scale !== 1) return;
+      if (e.key === "ArrowLeft") onPrev?.();
+      if (e.key === "ArrowRight") onNext?.();
     };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
       if (closeTimer.current) clearTimeout(closeTimer.current);
     };
-  }, [onClose]);
+  }, [onClose, onPrev, onNext, t.scale]);
 
   const clamp = (v: number, limit: number) =>
     Math.max(-limit, Math.min(limit, v));
@@ -106,7 +144,13 @@ export function Lightbox({
     const dy = e.clientY - d.startY;
     if (!d.moved && Math.abs(dx) + Math.abs(dy) > 6) {
       d.moved = true;
-      if (t.scale > 1) setDragging(true);
+      setDragging(true);
+    }
+    if (d.moved && t.scale === 1 && Math.abs(dx) > Math.abs(dy) * SWIPE_RATIO) {
+      // 行き先が無い向きは重くする（動かないと壊れて見え、そのまま
+      // 動くと「進めた」と誤解される）
+      const blocked = dx > 0 ? !onPrev : !onNext;
+      setSwipeX(blocked ? dx * 0.25 : dx);
     }
     if (d.moved && t.scale > 1) {
       const lim = limits(t.scale);
@@ -123,7 +167,22 @@ export function Lightbox({
     if (!d || d.pointerId !== e.pointerId) return;
     drag.current = null;
     setDragging(false);
-    if (d.moved) return; // ドラッグはタップとして扱わない
+    if (d.moved) {
+      // 払い切っていれば隣へ。足りなければ戻すだけ（どちらも指を離した
+      // 時点で swipeX は 0 に戻す——隣へ移れば新しい画像が中央に出る）
+      const dx = e.clientX - d.startX;
+      const dy = e.clientY - d.startY;
+      if (
+        t.scale === 1 &&
+        Math.abs(dx) >= SWIPE_COMMIT_PX &&
+        Math.abs(dx) > Math.abs(dy) * SWIPE_RATIO
+      ) {
+        if (dx > 0) onPrev?.();
+        else onNext?.();
+      }
+      setSwipeX(0);
+      return; // ドラッグはタップとして扱わない
+    }
 
     const now = Date.now();
     const last = lastTap.current;
@@ -152,6 +211,7 @@ export function Lightbox({
       onPointerCancel={() => {
         drag.current = null;
         setDragging(false);
+        setSwipeX(0);
       }}
       onTouchStart={(e) => e.stopPropagation()}
       onTouchMove={(e) => e.stopPropagation()}
@@ -162,7 +222,7 @@ export function Lightbox({
         alt="添付画像"
         draggable={false}
         style={{
-          transform: `translate(${t.x}px, ${t.y}px) scale(${t.scale})`,
+          transform: `translate(${t.x + swipeX}px, ${t.y}px) scale(${t.scale})`,
           transition: dragging ? "none" : "transform 0.2s ease-out",
         }}
         className={`max-h-full max-w-full object-contain ${

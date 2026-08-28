@@ -9,7 +9,7 @@
  * 受け取る形にした。
  */
 import { NavLink } from "react-router";
-import type { ConversationRow, FolderRow } from "../../lib/db.server";
+import type { ConversationListRow, FolderRow } from "../../lib/db.server";
 import { useSidebar, type MenuTarget } from "./context";
 import {
   IconChatBubble,
@@ -130,7 +130,7 @@ export function MenuItems({ target }: { target: MenuTarget }) {
 
 // --- 行レンダリング -----------------------------------------------------
 
-export function ConversationItem({ c, indent = false }: { c: ConversationRow; indent?: boolean }) {
+export function ConversationItem({ c, indent = false }: { c: ConversationListRow; indent?: boolean }) {
   const { menu, isUnread, isGenerating, onNavigate } = useSidebar();
   const open = menu?.type === "conversation" && menu.id === c.id;
   const generating = isGenerating(c);

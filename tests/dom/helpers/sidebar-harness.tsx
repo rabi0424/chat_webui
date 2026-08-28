@@ -9,7 +9,10 @@ import { createRoutesStub, useLocation } from "react-router";
 import { render, type RenderResult } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Sidebar } from "../../../app/components/Sidebar";
-import type { ConversationRow, FolderRow } from "../../../app/lib/db.server";
+import type {
+  ConversationListRow,
+  FolderRow,
+} from "../../../app/lib/db.server";
 
 export interface SidebarServer {
   calls: { method: string; path: string; body: unknown }[];
@@ -95,8 +98,8 @@ export function answerConfirm(answer = true): void {
 export function conv(
   id: string,
   title: string,
-  extra: Partial<ConversationRow> = {},
-): ConversationRow {
+  extra: Partial<ConversationListRow> = {},
+): ConversationListRow {
   return {
     id,
     title,
@@ -110,7 +113,7 @@ export function conv(
     created_at: 1_700_000_000_000,
     updated_at: 1_700_000_000_000,
     ...extra,
-  } as ConversationRow;
+  } as ConversationListRow;
 }
 
 export function folder(
@@ -136,7 +139,7 @@ function Location() {
 }
 
 export function renderSidebar(props: {
-  conversations?: ConversationRow[];
+  conversations?: ConversationListRow[];
   folders?: FolderRow[];
   unreadIds?: Set<string> | null;
   /** いま生成が走っている会話。 */

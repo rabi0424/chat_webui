@@ -217,27 +217,48 @@ export function Chat({
   const stickToBottomRef = useRef(true);
 
   /**
-   * 遷移直後の初回描画は末尾だけにして、画面が出たらすぐ
-   * startTransition で全件に広げる（スクロールは待たない）。
-   * 低優先度の割り込み可能なレンダリングなので、広げている最中に
-   * スクロールやタップが来てもそちらが先に処理される。
+   * 本文をどこまで描くか。none → tail → all と広げる。
+   *
+   * **none（サーバー側）が要る理由**: 本文は Markdown として描いていて、
+   * その道具立て（数式・強調表示・記法の解釈）はどれも重い。1件2〜3KBの
+   * 応答を24件描くだけで、Workers の中で実測1秒近いCPUを使う。
+   * Workers のCPU上限は1回の呼び出しあたり無料プランで10msなので、
+   * 会話の画面をサーバーで描くと上限を二桁超える。超えた呼び出しは
+   * Cloudflare に打ち切られ、利用者には「Error 1102 Worker exceeded
+   * resource limits」の画面が出る——画面の再読み込み・PWAの起動・
+   * 共有されたURLを開いたとき、つまり会話のURLへ**文書として**入った
+   * ときだけ起きるので、画面内の移動では気づけない。
+   *
+   * この画面は個人用で、検索に拾わせる必要も、JSを切って読ませる必要も
+   * ない。本文はブラウザに出てから描けば足りる（サーバーが返すのは
+   * 器だけ。中身は loader のデータとして既にHTMLに載っている）。
+   *
+   * tail を挟むのは従来どおり、初回描画を末尾だけにして早く出すため。
+   * 全件へは startTransition で広げるので、広げている最中にスクロールや
+   * タップが来てもそちらが先に処理される。
    */
-  const [renderAll, setRenderAll] = useState(
-    initialMessages.length <= DEFERRED_TAIL,
+  const [renderStage, setRenderStage] = useState<"none" | "tail" | "all">(
+    "none",
   );
   useEffect(() => {
-    if (renderAll) return;
-    startTransition(() => setRenderAll(true));
+    startTransition(() =>
+      setRenderStage(initialMessages.length > DEFERRED_TAIL ? "tail" : "all"),
+    );
     // 初回マウント時のみ
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    // 全件に広がると上に内容が増える。最下部に貼り付いていたなら貼り直す
-    if (renderAll && stickToBottomRef.current) {
+    // 末尾が出たら全件へ。段を分けるのは、末尾を描き終える前に全件へ
+    // 進むと、長い会話で最初の1枚が出るまで待たされるため
+    if (renderStage === "tail") startTransition(() => setRenderStage("all"));
+  }, [renderStage]);
+  useEffect(() => {
+    // 段階が進むと上に内容が増える。最下部に貼り付いていたなら貼り直す
+    if (renderStage !== "none" && stickToBottomRef.current) {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renderAll]);
+  }, [renderStage]);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // ガラス面フッターの高さ（コンテンツ下部の余白に使う）
   const footerRef = useRef<HTMLElement>(null);
@@ -675,9 +696,12 @@ export function Chat({
 
   // --- 添付画像 -----------------------------------------------------------
 
-  const visibleMessages = renderAll
-    ? messages
-    : messages.slice(-DEFERRED_TAIL);
+  const visibleMessages =
+    renderStage === "all"
+      ? messages
+      : renderStage === "tail"
+        ? messages.slice(-DEFERRED_TAIL)
+        : [];
   const hiddenCount = messages.length - visibleMessages.length;
 
   const selectedModel = models.find((m) => m.id === model);

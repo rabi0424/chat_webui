@@ -13,6 +13,7 @@ import {
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
 import {
   CONVERSATIONS_LATEST_SQL,
+  CONVERSATIONS_SIDEBAR_SQL,
   DUE_PENDING_DELETIONS_SQL,
   INSERT_USER_MESSAGE_SQL,
   appendAssistantMessageStatements,
@@ -321,13 +322,23 @@ async function sweepStaleStreaming(rows: MessageRow[]): Promise<void> {
   await d.batch(statements);
 }
 
-export async function listConversations(): Promise<ConversationRow[]> {
+/**
+ * サイドバーが受け取る会話の行。
+ *
+ * system_prompt と params_json を**わざと外している**。どちらも長さに
+ * 上限が無く、サイドバーは読まない。詳しい理由は
+ * CONVERSATIONS_SIDEBAR_SQL のコメントに書いてある。
+ */
+export type ConversationListRow = Omit<
+  ConversationRow,
+  "system_prompt" | "params_json"
+>;
+
+export async function listConversations(): Promise<ConversationListRow[]> {
   const d = await db();
   const { results } = await d
-    .prepare(
-      "SELECT * FROM conversations ORDER BY pinned DESC, updated_at DESC LIMIT 200",
-    )
-    .all<ConversationRow>();
+    .prepare(CONVERSATIONS_SIDEBAR_SQL)
+    .all<ConversationListRow>();
   return results;
 }
 

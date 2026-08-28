@@ -73,7 +73,7 @@ playwright は `/opt/node22/lib/node_modules` にある。
 | `tests/dom/*.test.tsx` | dom | jsdom + setup | 画面の操作（送信・編集・分岐・削除） |
 | `tests/server/*.test.ts` | server | node | `cloudflare:workers` を差し替え、バインディングに触らない経路 |
 | `tests/schema.test.ts` | schema | node | 本物の SQLite にスキーマと問い合わせを流す |
-| `tests/touch-variant.test.ts` | css | node | ビルド後の CSS を読む |
+| `tests/touch-variant.test.ts`<br>`tests/built-css.test.ts` | css | node | ビルド後の CSS を読む |
 
 サーバー側のモジュールは `tests/stubs/cloudflare-workers.ts` で `env` を
 差し替えている。`env` に触ると例外を投げる Proxy なので、「バインディングに

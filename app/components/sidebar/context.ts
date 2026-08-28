@@ -8,7 +8,7 @@
  * まとめて文脈として配る。
  */
 import { createContext, useContext } from "react";
-import type { ConversationRow, FolderRow } from "../../lib/db.server";
+import type { ConversationListRow, FolderRow } from "../../lib/db.server";
 
 /** いま「…」メニューを開いている対象。 */
 export type MenuTarget =
@@ -17,7 +17,7 @@ export type MenuTarget =
 
 export interface SidebarActions {
   /** いま表示している会話とフォルダ（メニューの中身を組み立てるのに使う）。 */
-  conversations: ConversationRow[];
+  conversations: ConversationListRow[];
   folders: FolderRow[];
 
   /** 開いているメニュー（null なら閉じている）。 */
@@ -25,9 +25,9 @@ export interface SidebarActions {
   setMenu: (target: MenuTarget | null) => void;
 
   /** その会話に未読の印を出すか。 */
-  isUnread: (c: ConversationRow) => boolean;
+  isUnread: (c: ConversationListRow) => boolean;
   /** その会話でいま生成が走っているか（タイトルを光らせる）。 */
-  isGenerating: (c: ConversationRow) => boolean;
+  isGenerating: (c: ConversationListRow) => boolean;
   /** リンクを押したときに呼ぶ（スマホでドロワーを閉じる）。 */
   onNavigate?: () => void;
 
@@ -39,12 +39,12 @@ export interface SidebarActions {
   setView: (id: string | null) => void;
 
   /** そのフォルダに属する会話。 */
-  conversationsIn: (folderId: string) => ConversationRow[];
+  conversationsIn: (folderId: string) => ConversationListRow[];
   /** お気に入りの会話。 */
-  favorites: ConversationRow[];
+  favorites: ConversationListRow[];
 
-  renameConversation: (c: ConversationRow) => void;
-  removeConversation: (c: ConversationRow) => void;
+  renameConversation: (c: ConversationListRow) => void;
+  removeConversation: (c: ConversationListRow) => void;
   patchConversation: (id: string, body: Record<string, unknown>) => void;
   renameFolder: (f: FolderRow) => void;
   removeFolder: (f: FolderRow) => void;

@@ -48,6 +48,15 @@ if (!globalThis.IntersectionObserver) {
     thresholds = [];
   } as unknown as typeof IntersectionObserver;
 }
+// 拡大表示は指を1本つかんで追う（払いと移動の判定）。jsdom には無い
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = function setPointerCapture() {};
+  Element.prototype.releasePointerCapture = function releasePointerCapture() {};
+  Element.prototype.hasPointerCapture = function hasPointerCapture() {
+    return false;
+  };
+}
+
 // 画像のプレビューURLに使う
 if (!URL.createObjectURL) {
   URL.createObjectURL = () => "blob:test";

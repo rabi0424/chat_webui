@@ -28,6 +28,21 @@ export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
  */
 export const MAX_TITLE_LENGTH = 60;
 
+/**
+ * 画像一覧を一度に読む枚数。
+ *
+ * 一覧のルート（images.tsx）と続き読みのAPI（api.images.ts）が**同じ値を
+ * 使わないと壊れる**。一覧は「返ってきた枚数がこれ未満なら終端」と
+ * 判断しているので、APIのほうが小さいと1ページ読んだだけで
+ * 「もう無い」と決めつけ、続きが読めなくなる。画面には何も出ない
+ * 壊れ方なので、値そのものを1箇所に置いて分かれないようにする。
+ *
+ * 枚数は原寸の枚数でもある。この一覧はサムネイルを持たず原寸を並べる
+ * ため、1枚が1〜2MBになりうる。60枚だと初回だけで100MB近く読むことに
+ * なるので、少なめにして続きはスクロールで足す。
+ */
+export const IMAGES_PAGE_SIZE = 30;
+
 /** モデルを選んでいないときに使うモデル。 */
 export const DEFAULT_MODEL = "openai/gpt-4o-mini";
 
