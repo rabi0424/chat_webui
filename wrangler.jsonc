@@ -55,7 +55,26 @@
 			"binding": "FILES",
 			"bucket_name": "chat-webui-file"
 		}
-	]
+	],
+	/**
+	 * Cloudflare Access の検証（多層防御。app/lib/access-jwt.server.ts）。
+	 *
+	 * 秘密ではない——AUD はブラウザが受け取るトークンに載っている値で、
+	 * チームドメインはログイン時のリダイレクト先そのもの。これを知って
+	 * いても認証は通らないので、Secret ではなく変数として置く。
+	 *
+	 * AUD は Access の「アプリケーション」ごとに違う。この Worker は
+	 * 本体URL・プレビューURL・Worker全体の3つに覆われているので、
+	 * どれが当たっても通るように3つとも並べる。1つ減らすと、その経路
+	 * から来た正当な要求が 403 になる。
+	 *
+	 * ここが空だと検証はまるごと行われない（手元の開発のため）。
+	 * 本番へ出すときは必ず入っていること。
+	 */
+	"vars": {
+		"ACCESS_TEAM_DOMAIN": "white-wind-7648.cloudflareaccess.com",
+		"ACCESS_AUD": "8bdb5608e288538c72843a6881edbba39e52e8f6ac4f3e3009326b3e91966181,6d0af0e0e785a846241da642f2ec4f61eb8dd42e7c47dc161580a8ce6ce5815b,aea6ed76073e997fa48aae61f447117837fe9c31e51434e471917ad081a8db8b"
+	}
 	/**
 	 * Secrets (never committed):
 	 *   OPENROUTER_API_KEY - set locally in .dev.vars (copy .dev.vars.example),
