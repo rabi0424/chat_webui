@@ -15,14 +15,18 @@ import type { ImagesResponse } from "../lib/api-types";
 import { invalidateChat } from "../lib/chat-cache";
 import { IconEllipsis, IconMenu, IconSearch, IconX } from "../components/icons";
 import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
+import { IMAGES_PAGE_SIZE } from "../lib/constants";
 import { useEscapeToClose } from "../lib/dismiss";
 
 export function meta() {
   return [{ title: "画像 - Chat WebUI" }];
 }
 
-/** 一度に読む枚数。続きは末尾まで送ると自動で足す。 */
-const PAGE_SIZE = 60;
+/**
+ * 一度に読む枚数。続きは末尾まで送ると自動で足す。
+ * 値は lib/constants.ts に置く（続き読みのAPIと同じものを使うため）。
+ */
+const PAGE_SIZE = IMAGES_PAGE_SIZE;
 /* 引っぱって更新の寸法は lib/pull-to-refresh.ts に集約（会話画面と共通） */
 
 export async function loader() {
@@ -315,6 +319,24 @@ export default function Images({ loaderData }: Route.ComponentProps) {
    * 一覧から消えた（検索が変わった）ときは null になり、拡大表示も閉じる。
    */
   const current = lightbox ? images.find((x) => x.id === lightbox) : undefined;
+  const currentIndex = current ? images.indexOf(current) : -1;
+
+  /**
+   * 拡大表示のまま隣の画像へ移る。
+   *
+   * 端の手前まで来たら、裏で続きを読み始める（払い続けているあいだに
+   * 途切れないように）。読み終わるまでは行き先が無いので onNext を
+   * 渡さない側に倒れるが、次の払いには間に合う。
+   */
+  const NEAR_END = 5;
+  const goTo = (delta: number) => {
+    const next = images[currentIndex + delta];
+    if (!next) return;
+    setLightbox(next.id);
+    if (!exhausted && currentIndex + delta >= images.length - NEAR_END) {
+      loadMoreRef.current();
+    }
+  };
 
   return (
     <div
@@ -407,18 +429,35 @@ export default function Images({ loaderData }: Route.ComponentProps) {
             */}
             <div className="grid grid-cols-3 gap-0.5 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
               {images.map((img) => (
-                <div key={img.id} className="group/img relative">
+                /*
+                  画面の外に出たマスは中身の組み立てを飛ばす
+                  （content-visibility）。スクロールで足していく一覧なので
+                  枚数は数百に達し、画面外のぶんも毎回レイアウトと描画の
+                  対象になっていた。
+
+                  そのために **マスの大きさをマスの側で決める**。
+                  content-visibility が効いている間、中身は大きさの
+                  計算から外れる（size containment）ので、高さを中の
+                  画像から取っていると畳まれた瞬間に潰れる。正方形は
+                  ここで宣言し、画像はその中いっぱいに敷く。
+                */
+                <div
+                  key={img.id}
+                  className="group/img relative aspect-square [content-visibility:auto]"
+                >
                   <button
                     type="button"
                     onClick={() => setLightbox(img.id)}
                     title={img.prompt ?? undefined}
-                    className="block w-full overflow-hidden bg-neutral-100 dark:bg-neutral-900"
+                    className="block h-full w-full overflow-hidden bg-neutral-100 dark:bg-neutral-900"
                   >
                     <img
                       src={`/api/files/${img.id}`}
                       alt={img.prompt ?? "生成画像"}
                       loading="lazy"
-                      className="aspect-square w-full object-cover transition-opacity group-hover/img:opacity-90"
+                      // 復号を本筋から外す。原寸を並べるので1枚が重い
+                      decoding="async"
+                      className="h-full w-full object-cover transition-opacity group-hover/img:opacity-90"
                     />
                   </button>
 
@@ -506,6 +545,16 @@ export default function Images({ loaderData }: Route.ComponentProps) {
         <Lightbox
           src={`/api/files/${current.id}`}
           onClose={() => setLightbox(null)}
+          /*
+            端では渡さない。渡さないほうへ払うと戻るだけになるので、
+            「これ以上は無い」が指に返る
+          */
+          onPrev={currentIndex > 0 ? () => goTo(-1) : undefined}
+          onNext={
+            currentIndex >= 0 && currentIndex < images.length - 1
+              ? () => goTo(1)
+              : undefined
+          }
           /*
             開いたまま何もできないと、会話へ戻るのに一度閉じて一覧の
             「…」を開き直すことになる。説明と操作はここに置く。

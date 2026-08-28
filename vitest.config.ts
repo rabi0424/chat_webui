@@ -21,7 +21,11 @@ export default defineConfig({
         test: {
           name: "node",
           include: ["tests/*.test.ts"],
-          exclude: ["tests/schema.test.ts", "tests/touch-variant.test.ts"],
+          exclude: [
+            "tests/schema.test.ts",
+            "tests/touch-variant.test.ts",
+            "tests/built-css.test.ts",
+          ],
           // localStorage を触るものがあるので DOM を用意する
           environment: "jsdom",
         },
@@ -55,7 +59,7 @@ export default defineConfig({
         test: {
           name: "css",
           // ビルド結果の CSS を読むので、素の Node で
-          include: ["tests/touch-variant.test.ts"],
+          include: ["tests/touch-variant.test.ts", "tests/built-css.test.ts"],
           environment: "node",
         },
       },

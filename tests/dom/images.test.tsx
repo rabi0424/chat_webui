@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createRoutesStub, Outlet, useLocation } from "react-router";
 import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -114,6 +114,35 @@ describe("タイルの並び", () => {
   });
 });
 
+/**
+ * 画面外のマスを飛ばす指定（content-visibility）と、マス自身が正方形で
+ * あることの結び付き。
+ *
+ * content-visibility が効いているあいだ、中身は**大きさの計算から外れる**
+ * （size containment）。高さを中の画像から取っていると、画面外に出た
+ * 瞬間にマスが潰れ、一覧全体が飛び跳ねる。正方形はマスの側で宣言して
+ * おかないといけない——片方だけ動かしても型もテストも通ってしまうので、
+ * 結び付きをここで見張る。
+ */
+describe("画面外のマスを飛ばす指定", () => {
+  it("飛ばす指定と正方形は、同じ要素に付いている", () => {
+    renderImages([image("i1")]);
+    const tile = screen
+      .getByAltText("i1 の依頼文")
+      .closest("[class*='content-visibility']");
+    expect(tile).not.toBeNull();
+    expect(tile!.className).toMatch(/\baspect-square\b/);
+  });
+
+  it("大きさを中の画像から取っていない", () => {
+    renderImages([image("i1")]);
+    // 画像側に縦横比を持たせると、飛ばされた瞬間に潰れる
+    expect(screen.getByAltText("i1 の依頼文").className).not.toMatch(
+      /\baspect-/,
+    );
+  });
+});
+
 describe("会話へ戻る", () => {
   it("拡大表示から、その画像を作った枝を開く", async () => {
     const { user } = renderImages([image("i1")]);
@@ -177,5 +206,99 @@ describe("拡大表示の操作", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("お気に入りを解除")).toBeTruthy();
     });
+  });
+});
+
+/**
+ * 拡大表示のまま隣の画像へ移る。
+ *
+ * 一覧へ戻ってから次のマスを押す、を繰り返すのは見比べるときに重い。
+ * 左右に払う（マウスならドラッグ、キーボードなら ← → ）と隣へ移る。
+ *
+ * 払いは「閉じる」「拡大する」と同じ指の操作から見分けている。短い動きは
+ * タップ（＝閉じる）、縦向きは払いにしない、端では戻すだけ——ここが崩れると
+ * 見比べている最中に画面が閉じたり、行き止まりで空振りしたりする。
+ */
+describe("拡大表示を左右に払う", () => {
+  const three = [image("i1"), image("i2"), image("i3")];
+
+  /** いま開いている画像（帯に出ている依頼文で見分ける）。 */
+  function openedId(): string | null {
+    for (const id of ["i1", "i2", "i3"]) {
+      if (screen.queryByText(`${id} の依頼文`)) return id;
+    }
+    return null;
+  }
+
+  /** 拡大表示の上を払う。dx が負なら左へ（＝次へ）。 */
+  function swipe(dx: number, dy = 0) {
+    const overlay = screen.getByAltText("添付画像").parentElement!;
+    fireEvent.pointerDown(overlay, { pointerId: 1, clientX: 200, clientY: 200 });
+    fireEvent.pointerMove(overlay, {
+      pointerId: 1,
+      clientX: 200 + dx / 2,
+      clientY: 200 + dy / 2,
+    });
+    fireEvent.pointerMove(overlay, {
+      pointerId: 1,
+      clientX: 200 + dx,
+      clientY: 200 + dy,
+    });
+    fireEvent.pointerUp(overlay, {
+      pointerId: 1,
+      clientX: 200 + dx,
+      clientY: 200 + dy,
+    });
+  }
+
+  it("左へ払うと次、右へ払うと前の画像になる", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i1");
+    expect(openedId()).toBe("i1");
+
+    swipe(-120);
+    expect(openedId()).toBe("i2");
+
+    swipe(-120);
+    expect(openedId()).toBe("i3");
+
+    swipe(120);
+    expect(openedId()).toBe("i2");
+  });
+
+  it("端では動かず、閉じもしない", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i1");
+
+    // 先頭で右へ（前は無い）
+    swipe(120);
+    expect(openedId()).toBe("i1");
+    // 払いをタップとして扱うと、猶予のあとに閉じてしまう
+    await new Promise((r) => setTimeout(r, 350));
+    expect(openedId()).toBe("i1");
+  });
+
+  it("短い動きでは移らない（タップと見分けるため）", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i1");
+    swipe(-30);
+    expect(openedId()).toBe("i1");
+  });
+
+  it("縦に流したぶんは払いにしない", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i1");
+    // 横に十分動いていても、縦のほうが大きければ払いではない
+    swipe(-120, 300);
+    expect(openedId()).toBe("i1");
+  });
+
+  it("矢印キーでも隣へ移る", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i2");
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(openedId()).toBe("i3");
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(openedId()).toBe("i2");
   });
 });
