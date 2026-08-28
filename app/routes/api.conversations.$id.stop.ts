@@ -19,6 +19,8 @@ export async function action({ request, params }: Route.ActionArgs) {
   if (!conversation) {
     return apiError("会話が見つかりません", 404);
   }
-  await requestStop(params.id, body.messageId);
-  return Response.json({ ok: true });
+  // stopped=false は「対象の行が既に確定していた（＝止めるものが無い）」。
+  // 目的は達成されているので 200 のまま、当たらなかったことだけ伝える
+  const stopped = await requestStop(params.id, body.messageId);
+  return Response.json({ ok: true, stopped });
 }

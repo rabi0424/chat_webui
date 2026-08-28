@@ -21,10 +21,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   const bad = requireMethod(request, ["POST"]);
   if (bad) return bad;
   if (!isStorageConfigured()) {
-    return Response.json(
-      { error: new StorageUnavailableError().message },
-      { status: 503 },
-    );
+    return apiError(new StorageUnavailableError().message, 503);
   }
 
   let file: File | null = null;
@@ -41,11 +38,9 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const mimeType = file.type.split(";")[0].trim().toLowerCase();
   if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) {
-    return Response.json(
-      {
-        error: `対応していない形式です（${ALLOWED_IMAGE_TYPES.join(" / ")} のみ）`,
-      },
-      { status: 415 },
+    return apiError(
+      `対応していない形式です（${ALLOWED_IMAGE_TYPES.join(" / ")} のみ）`,
+      415,
     );
   }
   if (file.size > MAX_UPLOAD_BYTES) {

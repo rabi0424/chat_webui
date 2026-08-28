@@ -1498,10 +1498,17 @@ async function runRetryGenerationJob(
   /**
    * まだ投げるべき試行が残っているか。停止・打ち切り・目標到達・
    * 上限到達のいずれでもなければ、枠切れで中断しただけなので続ける。
+   *
+   * `budgetStopped` を忘れてはならない。抜けていたときは、月間上限に
+   * 達した実行が「枠切れで中断しただけ」と解釈されて done にならず、
+   * DO が 50ms 間隔でアラームを打ち直し続けた——毎周 R2 と D1 を読む
+   * 無限ループで、止める手立ては停止ボタンだけだった
+   * （tests/retry-stop-wiring.test.ts が見張る）。
    */
   const moreAttempts =
     !stopped &&
     !rateLimitExhausted &&
+    !budgetStopped &&
     state.successes < retry.target &&
     state.attempts < retry.maxAttempts;
   if (moreAttempts || state.pendingCapture.length > 0) {

@@ -13,6 +13,7 @@ import {
   appendAssistantMessageStatements,
   clearPendingDeletionsSql,
   generatedImagesSql,
+  searchConversationsSql,
   statementsOf,
   stillReferencedSql,
   undoGenerationStatements,
@@ -738,6 +739,90 @@ describe("応答を積む", () => {
     // 積んだ時点で確定済み（生成中のまま残らない）
     expect(rows.find((r) => r.id === "a1")?.status).toBe("done");
   });
+
+  /*
+   * 台帳（usage_events）もこの文で積まれること。
+   *
+   * finalizeGeneration に任せていたときは、この経路（成功を積む）が
+   * 台帳を素通りし、リトライ生成の OpenRouter 課金が使用量画面にも
+   * 月間上限にも一切現れなかった。
+   */
+  const appendWithUsage = (
+    id: string,
+    parentId: string,
+    usageJson: string | null,
+    modelId = "google/gemini-image",
+  ) => {
+    for (const st of appendAssistantMessageStatements({
+      id,
+      conversationId: "c1",
+      parentId,
+      modelId,
+      content: `![](/api/files/${id})`,
+      usageJson,
+      now: 2_000,
+    })) {
+      db.prepare(st.sql).run(...st.binds);
+    }
+  };
+  const ledger = () =>
+    db.prepare("SELECT * FROM usage_events").all() as Record<
+      string,
+      unknown
+    >[];
+
+  it("使用量が台帳へ載る", () => {
+    appendWithUsage(
+      "a1",
+      "u1",
+      JSON.stringify({ cost: 0.12, promptTokens: 10, completionTokens: 20 }),
+    );
+    const rows = ledger();
+    expect(rows.length).toBe(1);
+    expect(rows[0].kind).toBe("retry");
+    expect(rows[0].provider).toBe("openrouter");
+    expect(rows[0].cost_usd).toBe(0.12);
+    expect(rows[0].prompt_tokens).toBe(10);
+    expect(rows[0].completion_tokens).toBe(20);
+    expect(rows[0].conversation_id).toBe("c1");
+    expect(rows[0].message_id).toBe("a1");
+  });
+
+  it("Poe のモデルは provider が poe になる", () => {
+    appendWithUsage("a1", "u1", JSON.stringify({ points: 30 }), "poe:Imagen");
+    const rows = ledger();
+    expect(rows.length).toBe(1);
+    expect(rows[0].provider).toBe("poe");
+    expect(rows[0].points).toBe(30);
+  });
+
+  it("額もポイントも無い応答は台帳に載せない", () => {
+    appendWithUsage("a1", "u1", null);
+    appendWithUsage("a2", "a1", JSON.stringify({ promptTokens: 5 }));
+    expect(ledger().length).toBe(0);
+    // メッセージ自体は積まれている（台帳の有無と応答の保存は別）
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM messages").get() as { n: number })
+        .n,
+    ).toBe(3);
+  });
+
+  it("同じ応答を二度数えようとしても、二重には載らない", () => {
+    appendWithUsage("a1", "u1", JSON.stringify({ cost: 0.5 }));
+    // 台帳の文だけをもう一度流す（message_id の一意索引で弾かれる）
+    const usageSt = appendAssistantMessageStatements({
+      id: "a1",
+      conversationId: "c1",
+      parentId: "u1",
+      modelId: "google/gemini-image",
+      content: "x",
+      usageJson: JSON.stringify({ cost: 0.5 }),
+      now: 2_000,
+    }).find((st) => st.sql.includes("usage_events"));
+    expect(usageSt).toBeDefined();
+    db.prepare(usageSt!.sql).run(...usageSt!.binds);
+    expect(ledger().length).toBe(1);
+  });
 });
 
 /**
@@ -794,5 +879,116 @@ describe("保管しているものの大きさ", () => {
     expect(s.messages).toBe(1);
     expect(s.usage_events).toBe(1);
     expect(s.pending_deletions).toBe(1);
+  });
+});
+
+/**
+ * 会話検索の文。
+ *
+ * 抜粋の元（最初の検索語がヒットした本文）は hit 列として本体に同梱される。
+ * 結果行ごとに別の SELECT を投げていたときは、検索1回で D1 へ最大51往復
+ * していた。文を書き写さず、本番と同じものをここで流す。
+ */
+describe("会話検索", () => {
+  beforeEach(() => {
+    migrate(db);
+    const conv = db.prepare(
+      "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, 1, ?)",
+    );
+    conv.run("c1", "猫の話", 3);
+    conv.run("c2", "犬の話", 2);
+    conv.run("c3", "無関係", 1);
+    const msg = db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, 'user', ?, 1)",
+    );
+    msg.run("m1", "c1", "うちの猫はよく寝る");
+    msg.run("m2", "c2", "犬の散歩と猫よけの話");
+    msg.run("m3", "c3", "天気の話だけ");
+  });
+
+  const search = (positives: string[], negatives: string[] = []) => {
+    const sql = searchConversationsSql({
+      positives: positives.length,
+      negatives: negatives.length,
+    });
+    const like = (t: string) => `%${t}%`;
+    const binds = [like(positives[0])];
+    for (const t of [...positives, ...negatives]) binds.push(like(t), like(t));
+    return db.prepare(sql).all(...binds) as {
+      id: string;
+      title: string;
+      hit: string | null;
+    }[];
+  };
+
+  it("タイトルと本文の両方から探し、新しい順に出る", () => {
+    expect(search(["猫"]).map((r) => r.id)).toEqual(["c1", "c2"]);
+  });
+
+  it("抜粋の元になる本文が同じ行に載る", () => {
+    const rows = search(["猫"]);
+    expect(rows[0].hit).toBe("うちの猫はよく寝る");
+    // タイトルにしか無い会話でも、本文のヒットがあればそれが載る
+    expect(rows[1].hit).toBe("犬の散歩と猫よけの話");
+  });
+
+  it("本文にヒットが無ければ hit は空（会話は出る）", () => {
+    db.prepare(
+      "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('c4', '猫だけのタイトル', 1, 4)",
+    ).run();
+    const rows = search(["猫"]);
+    expect(rows[0].id).toBe("c4");
+    expect(rows[0].hit).toBeNull();
+  });
+
+  it("空白区切りは AND、-語 は除外", () => {
+    expect(search(["猫", "犬"]).map((r) => r.id)).toEqual(["c2"]);
+    expect(search(["話"], ["犬"]).map((r) => r.id)).toEqual(["c1", "c3"]);
+  });
+
+  it("最大語数でもバインドは D1 の上限（100個）に収まる", () => {
+    // 語は10個で頭打ち（db.server.ts の MAX_SEARCH_TERMS）
+    const sql = searchConversationsSql({ positives: 10, negatives: 0 });
+    expect((sql.match(/\?/g) ?? []).length).toBeLessThanOrEqual(100);
+  });
+});
+
+/**
+ * 索引と実クエリの突き合わせ。
+ *
+ * 索引が無くても画面は同じに見え、効いてくるのは無料枠（読んだ行数）を
+ * 使い切ったときだけ——「静かに壊れる結び付き」なので、実行計画で見張る。
+ * v16 で「生成中」に索引を足したとき、同じ batch の隣の文（未読）と
+ * 会話削除（attachments.conversation_id）が漏れていた。同じ見落としを
+ * 繰り返さないためのガード。
+ */
+describe("索引が効いている", () => {
+  beforeEach(() => migrate(db));
+
+  const plan = (sql: string): string =>
+    (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[])
+      .map((r) => r.detail)
+      .join("\n");
+
+  it("未読の一覧（5秒ごと）は全表走査にならない", () => {
+    const p = plan("SELECT id FROM conversations WHERE unread = 1");
+    expect(p).toContain("idx_conversations_unread");
+    expect(p).not.toMatch(/SCAN conversations(?! USING)/);
+  });
+
+  it("会話削除の添付の収集と削除は全表走査にならない", () => {
+    for (const sql of [
+      "SELECT r2_key FROM attachments WHERE conversation_id = 'c1'",
+      "DELETE FROM attachments WHERE conversation_id = 'c1'",
+    ]) {
+      const p = plan(sql);
+      expect(p).toContain("idx_attachments_conversation");
+      expect(p).not.toMatch(/SCAN attachments(?! USING)/);
+    }
+  });
+
+  it("生成中の会話（5秒ごと）は全表走査にならない", () => {
+    const p = plan(GENERATING_CONVERSATIONS_SQL.replace("?", "0"));
+    expect(p).toContain("idx_messages_streaming");
   });
 });

@@ -245,17 +245,28 @@ export async function fetchModels(): Promise<ModelInfo[]> {
   if (modelsCache && Date.now() - modelsCache.fetchedAt < MODELS_TTL_MS) {
     return modelsCache.models;
   }
+  try {
+    return await fetchModelsUncached();
+  } catch (e) {
+    // 失敗の現れ方は1つではない——非ok応答のほか、fetch 自体の例外
+    // （サブリクエスト枠切れ・DNS失敗）や本文の読み損ねもある。どの形でも、
+    // 期限切れの一覧が残っていればそれで凌ぐ（無いよりずっとよい）。
+    // 以前は非ok のときしか stale を返さず、例外の経路では古い一覧が
+    // あっても使われずに落ちていた
+    if (modelsCache) return modelsCache.models;
+    throw e instanceof Error
+      ? e
+      : new Error("モデル一覧の取得に失敗しました");
+  }
+}
 
+async function fetchModelsUncached(): Promise<ModelInfo[]> {
   const [res, poeModels] = await Promise.all([
     fetch(`${OPENROUTER_BASE}/models`),
     fetchPoeModels(),
   ]);
   if (!res.ok) {
-    // Serve stale data instead of failing if we have any.
-    if (modelsCache) return modelsCache.models;
-    throw new Response(`OpenRouterのモデル一覧取得に失敗しました (${res.status})`, {
-      status: 502,
-    });
+    throw new Error(`OpenRouterのモデル一覧取得に失敗しました (${res.status})`);
   }
 
   const body = (await res.json()) as { data: Record<string, unknown>[] };
