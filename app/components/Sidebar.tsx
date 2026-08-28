@@ -1,6 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
-import type { ConversationRow, FolderRow, SearchResult } from "../lib/db.server";
+import type {
+  ConversationListRow,
+  FolderRow,
+  SearchResult,
+} from "../lib/db.server";
 import { ThemeToggle } from "./ThemeToggle";
 import {
   SidebarProvider,
@@ -108,7 +119,7 @@ export function Sidebar({
   generatingIds,
   onNavigate,
 }: {
-  conversations: ConversationRow[];
+  conversations: ConversationListRow[];
   folders: FolderRow[];
   /** 最新の未読状態。null のあいだは行の値を使う。 */
   unreadIds?: Set<string> | null;
@@ -130,9 +141,9 @@ export function Sidebar({
    * 会話には見ている最中ずっと印が付くことになる。既読にするのは
    * 生成を見届けたときなので、それまでの間を画面側で埋める。
    */
-  const isUnread = (c: ConversationRow) =>
+  const isUnread = (c: ConversationListRow) =>
     c.id !== params.id && (unreadIds ? unreadIds.has(c.id) : c.unread === 1);
-  const isGenerating = (c: ConversationRow) =>
+  const isGenerating = (c: ConversationListRow) =>
     generatingIds ? generatingIds.has(c.id) : false;
 
   /** null = ルート表示、フォルダID = そのフォルダの階層を表示 */
@@ -238,6 +249,30 @@ export function Sidebar({
       }),
     [folders, conversations],
   );
+  /**
+   * サーバー側で描く行数の上限。
+   *
+   * サイドバーは全ページの土台なので、ここで描くものは**どの画面を
+   * 開いても**サーバーのCPUとHTMLに乗る。会話200件（一覧の上限）を
+   * そのまま描くと、実測で1件あたり約1.1KB・0.09ms——素の画面が
+   * 24.5KB/10ms のところ、245KB/27ms になっていた。Workers のCPU上限は
+   * 無料プランで1回の呼び出しにつき10msなので、サイドバーだけで
+   * 使い切る。使い切ると Cloudflare がその呼び出しを打ち切り、
+   * 「Error 1102 Worker exceeded resource limits」で画面ごと開かなくなる。
+   *
+   * 一画面に入るのはせいぜい20行なので、サーバーが返すのはそこまで。
+   * 残りはブラウザに出てから足す（会話の一覧そのものはローダーの
+   * データとして既にHTMLに載っているので、往復は増えない）。
+   */
+  const SSR_ROWS = 20;
+  const [allRows, setAllRows] = useState(false);
+  useEffect(() => {
+    startTransition(() => setAllRows(true));
+  }, []);
+  /** 一覧を描くときに通す。サーバー側では先頭だけに切る。 */
+  const rows = <T,>(list: T[]): T[] =>
+    allRows ? list : list.slice(0, SSR_ROWS);
+
   const unpinnedFolders = folders.filter((f) => !f.pinned);
   const rootConversations = conversations.filter(
     (c) => !c.pinned && c.folder_id == null,
@@ -301,12 +336,12 @@ export function Sidebar({
     });
   }
 
-  function renameConversation(c: ConversationRow) {
+  function renameConversation(c: ConversationListRow) {
     const name = prompt("新しい名前を入力してください", c.title);
     if (name?.trim()) void patchConversation(c.id, { title: name.trim() });
   }
 
-  async function removeConversation(c: ConversationRow) {
+  async function removeConversation(c: ConversationListRow) {
     if (!confirm(`「${c.title}」を削除しますか？この操作は取り消せません。`)) {
       return;
     }
@@ -568,7 +603,7 @@ export function Sidebar({
                     「お気に入りに追加」で入ります。
                   </li>
                 )}
-                {favoriteConversations.map((c) => (
+                {rows(favoriteConversations).map((c) => (
                   <ConversationItem key={c.id} c={c} />
                 ))}
               </ul>
@@ -595,7 +630,7 @@ export function Sidebar({
                     このフォルダは空です
                   </li>
                 )}
-                {folderConversations(viewFolder.id).map((c) => (
+                {rows(folderConversations(viewFolder.id)).map((c) => (
                   <ConversationItem key={c.id} c={c} />
                 ))}
               </ul>
@@ -609,7 +644,7 @@ export function Sidebar({
                     ピン留め
                   </p>
                   <ul className="space-y-0.5">
-                    {pinnedItems.map((it) =>
+                    {rows(pinnedItems).map((it) =>
                       it.type === "folder" ? (
                         <FolderItem key={`f${it.folder.id}`} f={it.folder} />
                       ) : (
@@ -640,7 +675,7 @@ export function Sidebar({
               <ul className="space-y-0.5">
                 {/* 常設。削除も名前の変更もできないので、常に先頭に置く */}
                 <FavoritesFolderItem />
-                {unpinnedFolders.map((f) => (
+                {rows(unpinnedFolders).map((f) => (
                   <FolderItem key={f.id} f={f} />
                 ))}
               </ul>
@@ -654,7 +689,7 @@ export function Sidebar({
                 </p>
               )}
               <ul className="space-y-0.5">
-                {rootConversations.map((c) => (
+                {rows(rootConversations).map((c) => (
                   <ConversationItem key={c.id} c={c} />
                 ))}
               </ul>

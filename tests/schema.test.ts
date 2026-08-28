@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  CONVERSATIONS_SIDEBAR_SQL,
   DUE_PENDING_DELETIONS_SQL,
   GENERATING_CONVERSATIONS_SQL,
   MIGRATIONS,
@@ -203,6 +204,84 @@ describe("使用量の台帳", () => {
  * 1行ずつに効かせていたため、1ページ目に新しいほうの行で出た画像が、
  * 2ページ目では古いほうの行で**もう一度出て**いた。
  */
+/**
+ * サイドバーに出す会話の一覧。
+ *
+ * `SELECT *` で引くと、会話が作成時に写し取った system_prompt と
+ * params_json まで付いてくる。どちらも長さに上限が無く、サイドバーは
+ * 読まない。サイドバーは全ページの土台なので、載せるとどの画面を開いても
+ * その全文がHTMLへ乗る（会話200件・system_prompt 800字で 99KB → 261KB）。
+ *
+ * 列を並べて書く以上、書き間違いは本番でしか出ない（`SELECT *` なら
+ * 起きなかった失敗の仕方）。本物の SQLite に流して確かめる。
+ */
+describe("サイドバーの会話一覧", () => {
+  beforeEach(() => migrate(db));
+
+  const addConversation = (
+    id: string,
+    o: { pinned?: number; updatedAt?: number } = {},
+  ) =>
+    db
+      .prepare(
+        `INSERT INTO conversations (id, title, model_id, pinned,
+           current_leaf_message_id, system_prompt, params_json,
+           created_at, updated_at)
+         VALUES (?, ?, 'openai/gpt-4o', ?, NULL, ?, ?, 1, ?)`,
+      )
+      .run(
+        id,
+        `題 ${id}`,
+        o.pinned ?? 0,
+        "あ".repeat(800),
+        '{"temperature":0.7}',
+        o.updatedAt ?? 1,
+      );
+
+  /** 本番と同じSQL（書き写さない）。 */
+  const list = () =>
+    db.prepare(CONVERSATIONS_SIDEBAR_SQL).all() as Record<string, unknown>[];
+
+  it("重い列（system_prompt・params_json）は付いてこない", () => {
+    addConversation("a");
+    const [row] = list();
+    // 行そのものは引けている。これが無いと「空だから含まれない」でも通る
+    expect(row.id).toBe("a");
+    expect(row.title).toBe("題 a");
+    expect(Object.keys(row)).not.toContain("system_prompt");
+    expect(Object.keys(row)).not.toContain("params_json");
+  });
+
+  it("サイドバーが読む列は揃っている", () => {
+    addConversation("a");
+    const [row] = list();
+    // 画面が使う列。1つでも欠けると、印や並べ替えが黙って効かなくなる
+    for (const column of [
+      "id",
+      "title",
+      "pinned",
+      "favorite",
+      "unread",
+      "folder_id",
+      "sort_order",
+      "created_at",
+      "updated_at",
+      "bot_icon",
+      "model_id",
+      "current_leaf_message_id",
+    ]) {
+      expect(Object.keys(row)).toContain(column);
+    }
+  });
+
+  it("ピン留めが先、そのあとは更新の新しい順", () => {
+    addConversation("古", { updatedAt: 100 });
+    addConversation("新", { updatedAt: 300 });
+    addConversation("ピン", { pinned: 1, updatedAt: 1 });
+    expect(list().map((r) => r.id)).toEqual(["ピン", "新", "古"]);
+  });
+});
+
 describe("画像一覧のページ送り", () => {
   beforeEach(() => migrate(db));
 

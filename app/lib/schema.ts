@@ -360,6 +360,29 @@ export const CONVERSATIONS_LATEST_SQL =
   "SELECT MAX(updated_at) AS latest FROM conversations";
 
 /**
+ * サイドバーに出す会話の一覧。
+ *
+ * `SELECT *` にしない。会話の行には作成時に写し取った system_prompt と
+ * params_json が入っていて、これは**長さに上限が無い**。サイドバーは
+ * 全ページの土台なので、載せるとどの画面を開いてもその全文がHTMLへ
+ * 乗る。会話200件・system_prompt 800字で実測 99KB → 261KB、
+ * 14ms → 21ms になった。どちらもサイドバーは読まない列なので、
+ * 引くところで落とす。
+ *
+ * production とテストが同じ文字列を使う。列名を書き間違えても
+ * `SELECT *` なら気づけないため、実際の SQLite に流して確かめる
+ * （tests/schema.test.ts）。
+ */
+export const CONVERSATIONS_SIDEBAR_SQL = `SELECT
+         id, title, model_id, pinned, current_leaf_message_id,
+         bot_id, bot_name, bot_icon,
+         folder_id, sort_order, unread, favorite,
+         created_at, updated_at
+       FROM conversations
+      ORDER BY pinned DESC, updated_at DESC
+      LIMIT 200`;
+
+/**
  * 保管しているものの大きさ（使用量の画面に出す）。
  *
  * 1文にまとめてあるのは、D1 の応答に載る `meta.size_after`（データベース
