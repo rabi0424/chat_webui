@@ -65,7 +65,7 @@ playwright は `/opt/node22/lib/node_modules` にある。
 
 ## テストの層
 
-`vitest.config.ts` に6つの project がある。置き場所で走らせ方が決まる。
+`vitest.config.ts` に5つの project がある。置き場所で走らせ方が決まる。
 
 | 置き場所 | 名前 | 環境 | 何のため |
 |---|---|---|---|
