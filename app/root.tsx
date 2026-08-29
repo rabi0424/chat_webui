@@ -5,23 +5,52 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  useRouteLoaderData,
 } from "react-router";
 
 import type { Route } from "./+types/root";
 import { THEME_COLOR_LIGHT } from "./lib/theme";
 import { APPEARANCE_INIT_SCRIPT } from "./lib/appearance-init";
 import { useAppearanceSync } from "./lib/appearance";
+import { conversationLanguage } from "./lib/content-language";
 import "./app.css";
+
+/**
+ * 会話ルートのID。`app/routes.ts` のモジュールパスから拡張子を除いたもの。
+ *
+ * 文字列で結ばれているので、会話ルートのファイル名を変えるとここが黙って
+ * 外れる——`useRouteLoaderData` は見つからなければ undefined を返すだけで、
+ * 画面には何も出ず、翻訳が出なくなるだけになる。
+ * `tests/document-lang-wiring.test.ts` が routes.ts と突き合わせて見張る。
+ */
+const CHAT_ROUTE_ID = "routes/chat.$id";
+
+/**
+ * 文書に宣言する言語。
+ *
+ * 会話画面はサーバーが器だけを返すので（Error 1102 対策。§3.3）、読み込みが
+ * 終わった時点でブラウザが見られる本文が無い。ここで `ja` と書いたままだと、
+ * 英語の会話を開いても Safari は「日本語のページ」と判定し、翻訳が出てこない。
+ * **本文はローダーのデータとして既に手元にある**ので、それを見て宣言を決める
+ * （描いてから直すのでは、判定はもう済んでいて間に合わない）。
+ */
+export function useDocumentLanguage(): string {
+  const data = useRouteLoaderData(CHAT_ROUTE_ID) as
+    | { messages?: { content?: string }[] }
+    | undefined;
+  return conversationLanguage(data?.messages);
+}
 
 export function Layout({ children }: { children: React.ReactNode }) {
   // <html> に載せた見た目（テーマ等）は React の管理外なので、
   // 描き直しで消されても保存値から貼り直す（lib/appearance.ts）
   useAppearanceSync();
+  const lang = useDocumentLanguage();
   return (
     // <html> の class / data-accent / style は下のインラインスクリプトと
     // lib/appearance.ts が持つ（Reactは描かない）。サーバーの出力と
     // 食い違うのは想定どおりなので、この要素だけ警告を止める
-    <html lang="ja" suppressHydrationWarning>
+    <html lang={lang} suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />

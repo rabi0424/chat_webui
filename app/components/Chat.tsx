@@ -704,6 +704,7 @@ export function Chat({
         : [];
   const hiddenCount = messages.length - visibleMessages.length;
 
+
   const selectedModel = models.find((m) => m.id === model);
   /**
    * 「成功するまで生成」。セーフティ判定の揺らぎで弾かれた依頼を
