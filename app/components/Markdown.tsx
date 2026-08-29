@@ -174,12 +174,33 @@ function CodeBlock({ node, children }: { node?: Element; children?: ReactNode })
   if (diagrams && lang === "mermaid") {
     return <MermaidBlock code={text} streaming={streaming} fallback={frame} />;
   }
-  // `xml` は SVG 以外にも使われるので、中身を見て判断するのは SvgBlock 側
-  if (diagrams && (lang === "svg" || lang === "xml")) {
+  if (diagrams && SVG_FENCES.has(lang ?? "")) {
     return <SvgBlock code={text} streaming={streaming} fallback={frame} />;
   }
   return frame;
 }
+
+/**
+ * SVG の図として扱うコードブロックの言語。
+ *
+ * モデルは同じ SVG を色々な名前で返してくる。`svg` と `xml` しか見て
+ * いなかったので、`html` で返された図が**ソースのまま**表示されていた
+ * （利用者からは「描画されない」としか見えない）。
+ *
+ * どれも SVG 以外にも使われる名前なので、**中身が本当に `<svg` で
+ * 始まるかは SvgBlock 側で見る**。始まっていなければ黙ってコードブロックの
+ * まま出るので、本物の HTML 文書（`<!DOCTYPE html>` で始まる）や設定ファイルの
+ * XML を図にしてしまうことはない。
+ */
+const SVG_FENCES = new Set([
+  "svg",
+  "xml",
+  "html",
+  "xhtml",
+  "svg+xml",
+  // Prism が HTML/XML に付ける名前。これで返す上流がある
+  "markup",
+]);
 
 /**
  * 本文の中の画像。
