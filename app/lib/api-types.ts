@@ -1,3 +1,4 @@
+import type { ContentPayload } from "./polling";
 /**
  * APIの応答の形。サーバーとクライアントの両方がここを見る。
  *
@@ -30,8 +31,7 @@ export interface FullConversationResponse {
 }
 
 /** 生成中メッセージ1件の最新状態。 */
-export interface MessageStateResponse {
-  content: string;
+export interface MessageStateResponse extends ContentPayload {
   reasoning: string | null;
   status: string;
   error: string | null;
