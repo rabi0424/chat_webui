@@ -79,3 +79,28 @@ export function detectContentLanguage(
   if (letters < LANGUAGE_MIN_SAMPLE) return null;
   return japanese / letters >= JAPANESE_MIN_RATIO ? "ja" : "en";
 }
+
+/** 判定できないとき、および会話を開いていないときに宣言する言語。 */
+export const DEFAULT_DOCUMENT_LANGUAGE = "ja";
+
+/**
+ * 会話から、文書に宣言する言語を決める。
+ *
+ * **サーバーが返す HTML に載せる**ためのもの。描画後に書き換えるだけでは
+ * 間に合わない——Safari は読み込んだ時点の文書を見て翻訳の要否を決めるので、
+ * そのとき `ja` と書いてあれば、あとから直しても翻訳は出てこない。
+ *
+ * 新しい発言から順に見る。上限まで読んだところで打ち切るので、長い会話では
+ * いま読んでいるあたりの言語が反映される。
+ */
+export function conversationLanguage(
+  messages: { content?: string }[] | undefined | null,
+): string {
+  if (!messages || messages.length === 0) return DEFAULT_DOCUMENT_LANGUAGE;
+  const texts: string[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const content = messages[i]?.content;
+    if (typeof content === "string" && content) texts.push(content);
+  }
+  return detectContentLanguage(texts) ?? DEFAULT_DOCUMENT_LANGUAGE;
+}

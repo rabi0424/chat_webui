@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
@@ -15,7 +15,6 @@ import {
   PULL_SLOP_PX,
   PULL_TRIGGER_PX,
 } from "../lib/pull-to-refresh";
-import { detectContentLanguage } from "../lib/content-language";
 import { type ParamsState } from "../lib/params";
 import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
@@ -705,39 +704,6 @@ export function Chat({
         : [];
   const hiddenCount = messages.length - visibleMessages.length;
 
-  /*
-   * 会話の言語を <html lang> に伝える。
-   *
-   * この画面はサーバーが器だけを返すので（Error 1102 対策）、読み込みが
-   * 終わった時点で Safari が見られるのは <html lang="ja"> の宣言だけになる。
-   * 英語の会話を開いても「日本語のページ」と判定され、翻訳が出てこない
-   * ——本文はそのあと React が描くが、判定はもう済んでいる。
-   *
-   * 本文を描いたあとに宣言を実態へ直す。判定は末尾から見る（いま読んで
-   * いるあたりの言語を優先する）。
-   */
-  const contentLang = useMemo(
-    () =>
-      detectContentLanguage(
-        Array.from(visibleMessages, (m) => m.content).reverse(),
-      ),
-    // 本文は生成中も伸び続けるが、数え直すのは件数が変わったときで足りる。
-    // 依存に本文そのものを入れると、ポーリングのたび（400ms ごと）に
-    // 会話を走査することになる
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleMessages.length, renderStage],
-  );
-  useEffect(() => {
-    if (!contentLang) return;
-    const root = document.documentElement;
-    const previous = root.lang;
-    if (previous === contentLang) return;
-    root.lang = contentLang;
-    // 会話を離れたら戻す。設定画面などのUIは日本語のままにしたい
-    return () => {
-      root.lang = previous;
-    };
-  }, [contentLang]);
 
   const selectedModel = models.find((m) => m.id === model);
   /**
