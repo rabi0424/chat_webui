@@ -16,6 +16,8 @@ import { Chat } from "../../../app/components/Chat";
 import { DEFAULT_APP_SETTINGS } from "../../../app/lib/settings";
 import type { ModelInfo } from "../../../app/lib/openrouter.server";
 import type { UiMessage } from "../../../app/lib/types";
+import { contentPayload } from "../../../app/lib/polling";
+import { isRetryProgress } from "../../../app/lib/retry";
 
 export const TEST_MODEL: ModelInfo = {
   id: "openai/gpt-4o-mini",
@@ -60,6 +62,31 @@ export interface ServerStub {
   countOf(match: string): number;
   /** 直近のリクエスト本文を取り出す。 */
   lastBody(match: string): unknown;
+}
+
+/**
+ * 1件追いの応答を、本物のルートと同じ形に整える。
+ *
+ * テストは `{ content, status }` と書けば済むようにしておきたいが、
+ * 実際のサーバーは `?since=` を見て**差分**を返す（生成中の長い応答で
+ * 全文を毎回運ばないため）。ここで同じ規則を通しておくと、画面側の
+ * 組み立てが壊れたときに既存のテストがそのまま落ちる——テストの側が
+ * 旧い形を喋り続けると、その壊れ方を誰も見張らないことになる。
+ */
+function asWireFormat(path: string, payload: unknown): unknown {
+  if (!path.includes("/messages/") || payload == null) return payload;
+  const p = payload as Record<string, unknown>;
+  if (typeof p.content !== "string" || p.contentLength != null) return payload;
+  const since = Number(
+    new URLSearchParams(path.split("?")[1] ?? "").get("since") ?? 0,
+  );
+  const appendOnly = p.status === "streaming" && !isRetryProgress(p.content);
+  const { content, ...rest } = p;
+  void content;
+  return {
+    ...rest,
+    ...contentPayload(p.content, Number.isFinite(since) ? since : 0, appendOnly),
+  };
 }
 
 let seq = 0;
@@ -126,7 +153,8 @@ export function installServer(initial: UiMessage[] = []): ServerStub {
     if (path.includes("/fork")) return { id: "forked-conv" };
     if (path.includes("/context")) return { messages: [...messages] };
     if (path.includes("/messages/")) {
-      const id = path.split("/messages/")[1];
+      // `?since=` が付くので、IDはクエリを外してから引く
+      const id = path.split("/messages/")[1].split("?")[0];
       const m = messages.find((x) => x.id === id);
       return {
         content: m?.content ?? "応答です",
@@ -176,7 +204,7 @@ export function installServer(initial: UiMessage[] = []): ServerStub {
       : fallback(method, path, body);
     // 自前で組み立てた応答はそのまま返す
     if (payload instanceof Response) return payload;
-    return new Response(JSON.stringify(payload ?? {}), {
+    return new Response(JSON.stringify(asWireFormat(path, payload) ?? {}), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });

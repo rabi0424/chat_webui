@@ -10,6 +10,7 @@
  */
 import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { isRetryProgress } from "../../lib/retry";
+import { applyContentPayload } from "../../lib/polling";
 import type { UiCitation, UiMessage } from "../../lib/types";
 import type {
   MessageStateResponse,
@@ -167,8 +168,14 @@ export function useGenerationTracking({
     convId: string,
     statusId: string,
     track: Tracking,
-  ) {
+  ): Promise<void> {
     let failures = 0;
+    /*
+     * 前回受け取った札。同じものを送り返すと、中身が変わっていなければ
+     * 304 が返る——積み上がった成功の本文をまるごと運ばずに済む
+     * （この追跡は1秒ごとに走るので、実行が長引くほど効く）。
+     */
+    let etag: string | null = null;
     noteRunning(statusId);
     for (;;) {
       if (!alive(track)) return;
@@ -184,11 +191,20 @@ export function useGenerationTracking({
         continue;
       }
       try {
-        const res = await fetch(`/api/conversations/${convId}/path`, {
-          signal: track.signal,
-        });
-        if (res.ok) {
+        const res: Response = await fetch(
+          `/api/conversations/${convId}/path`,
+          {
+            signal: track.signal,
+            // 札があるときだけ送る（headers: undefined を渡さない）
+            ...(etag ? { headers: { "If-None-Match": etag } } : {}),
+          },
+        );
+        if (res.status === 304) {
+          // 何も変わっていない＝まだ実行中。終われば行の状態が動き、札も変わる
           failures = 0;
+        } else if (res.ok) {
+          failures = 0;
+          etag = res.headers.get("ETag");
           const { messages: fresh } = (await res.json()) as PathResponse;
           if (!alive(track)) return;
           // 見ているあいだに枝が変わっていたら、上書きせず見出しを見に行く
@@ -258,6 +274,7 @@ export function useGenerationTracking({
    * 書き込んでいた（画面上、別の応答が書き換わって見える）。
    */
   function applyRemoteState(messageId: string, remote: {
+    /** 組み立て済みの全文。差分のまま渡してはならない。 */
     content: string;
     reasoning: string | null;
     status: string;
@@ -319,14 +336,22 @@ export function useGenerationTracking({
     convId: string,
     messageId: string,
     track: Tracking,
-  ) {
+  ): Promise<void> {
     let failures = 0;
+    /*
+     * サーバーへ「ここまで持っている」と伝え、その先だけを受け取る。
+     * 全文を毎回運んでいたので、長い応答ほど1回のポーリングが重くなって
+     * いた（400ms ごとに走るため、実測で二桁の無駄になる。§3.3）。
+     *
+     * 空から始めるので、最初の1回は全文が返る。
+     */
+    let held = "";
     noteRunning(messageId);
     for (;;) {
       if (!alive(track)) return;
       try {
         const res = await fetch(
-          `/api/conversations/${convId}/messages/${messageId}`,
+          `/api/conversations/${convId}/messages/${messageId}?since=${held.length}`,
           { signal: track.signal },
         );
         if (!res.ok) {
@@ -340,12 +365,22 @@ export function useGenerationTracking({
         failures = 0;
         const remote = (await res.json()) as MessageStateResponse;
         if (!alive(track)) return;
-        applyRemoteState(messageId, remote);
+        const content = applyContentPayload(held, remote);
+        if (content == null) {
+          // 継ぎ足した結果が、サーバーの言う長さと合わない。本文が置き換わった
+          // （書き直し・確定）ので、次の回で全文を取り直す。黙って継ぎ足すと
+          // 壊れた本文を表示し続けることになる
+          held = "";
+          await sleep(POLL_INTERVAL_MS, track.signal);
+          continue;
+        }
+        held = content;
+        applyRemoteState(messageId, { ...remote, content });
         if (remote.status !== "streaming") return;
         // リトライ生成だと分かったら、パスごと追う方へ移る。見出しの下に
         // 成功が積まれていくので、1件だけ見張っていても増えた応答に
         // 気づけない（開始直後は見出しの本文がまだ空で判別できない）
-        if (isRetryProgress(remote.content)) {
+        if (isRetryProgress(content)) {
           await pollRunUntilDone(convId, messageId, track);
           return;
         }

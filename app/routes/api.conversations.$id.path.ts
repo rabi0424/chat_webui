@@ -5,6 +5,7 @@ import {
   switchToBranch,
 } from "../lib/db.server";
 import { toUiMessage } from "../lib/serialize.server";
+import { pathFingerprint } from "../lib/polling";
 import { apiError, apiJson, requireMethod, type PathResponse } from "../lib/api-types";
 
 /**
@@ -12,19 +13,36 @@ import { apiError, apiJson, requireMethod, type PathResponse } from "../lib/api-
  */
 const NO_STORE = { headers: { "Cache-Control": "no-store" } };
 
-async function pathResponse(id: string): Promise<Response> {
+/**
+ * @param ifNoneMatch 前回受け取った札。中身が変わっていなければ 304 で返す
+ */
+async function pathResponse(
+  id: string,
+  ifNoneMatch?: string | null,
+): Promise<Response> {
   const conversation = await getConversation(id);
   if (!conversation) return apiError("会話が見つかりません", 404);
   const path = await getConversationPath(conversation);
-  return apiJson<PathResponse>(
-    { messages: path.map(toUiMessage) },
-    NO_STORE,
-  );
+  /*
+   * 「成功するまで生成」の追跡は1秒ごとにここを叩く。積み上がった成功の
+   * 本文まで毎回運ぶので、実行が長引くほど重くなる。中身が変わっていない
+   * ことを札で伝えられれば、本文はまるごと省ける（D1を読む分は変わらない）。
+   */
+  const etag = pathFingerprint(path);
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    return new Response(null, {
+      status: 304,
+      headers: { ETag: etag, ...NO_STORE.headers },
+    });
+  }
+  return apiJson<PathResponse>({ messages: path.map(toUiMessage) }, {
+    headers: { ...NO_STORE.headers, ETag: etag },
+  });
 }
 
 /** GET: 現在表示中のパスを返す（ページャ情報付き）。 */
-export async function loader({ params }: Route.LoaderArgs) {
-  return await pathResponse(params.id);
+export async function loader({ request, params }: Route.LoaderArgs) {
+  return await pathResponse(params.id, request.headers.get("If-None-Match"));
 }
 
 /** POST: 指定メッセージのブランチへ切り替え、新しいパスを返す。 */
