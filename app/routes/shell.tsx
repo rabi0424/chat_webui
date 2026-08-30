@@ -362,6 +362,16 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
 
   return (
     <div
+      /*
+        画面まわり（サイドバー・ボタン・入力欄の案内）は会話の言語に関わらず
+        日本語なので、そう宣言しておく。`<html lang>` は開いている会話の言語を
+        載せる（Safari の翻訳のため。§3.3）ので、ここで断らないと「英語の
+        ページに混じった日本語」を英語だと言い張ることになり、
+        ①短い会話では Safari 自身の数えたほうが日本語に振れて翻訳が出ない
+        ②翻訳を出せたとき、日本語のままでよいボタン名まで訳される。
+        やり取り本文だけは MessageList が会話の言語で上書きする。
+      */
+      lang="ja"
       className="flex overflow-x-hidden bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100"
       style={{ height: "var(--app-height, 100dvh)" }}
       onTouchStart={onTouchStart}

@@ -12,15 +12,20 @@ import {
  * ブラウザが見られる本文が無い。`ja` と宣言したままだと、英語の会話でも
  * Safari は「日本語のページ」と判定し、翻訳が出てこない。
  *
- * 結び付きが2つあり、どちらも**外れても画面には何も出ない**:
+ * 結び付きが3つあり、どれも**外れても画面には何も出ない**:
  *   ① root.tsx が会話ルートのIDを文字列で指している
  *      → ルートのファイル名を変えると useRouteLoaderData が undefined を
  *        返すようになり、宣言が既定値へ黙って戻る
  *   ② <html lang> が固定値に戻される
+ *   ③ 画面まわり（日本語）が `lang="ja"` と断っている
+ *      → 外れると、英語の会話に混じった日本語のボタン名まで英語だと
+ *        言うことになり、短い会話では Safari 自身の数えたほうが日本語へ
+ *        振れて翻訳が出ない
  */
 
 const root = readFileSync("app/root.tsx", "utf8");
 const routes = readFileSync("app/routes.ts", "utf8");
+const shell = readFileSync("app/routes/shell.tsx", "utf8");
 
 describe("会話の言語を文書に宣言する配線", () => {
   it("root.tsx が指すルートIDが、routes.ts の会話ルートと一致する", () => {
@@ -43,6 +48,17 @@ describe("会話の言語を文書に宣言する配線", () => {
   it("会話ルートのローダーが messages を返している（宣言の元になる）", () => {
     const chat = readFileSync("app/routes/chat.$id.tsx", "utf8");
     expect(chat).toMatch(/messages:\s*found\.path\.map/);
+  });
+
+  it("全画面の土台が、画面まわりを日本語だと断っている", () => {
+    expect(shell).toMatch(/lang="ja"/);
+  });
+
+  it("やり取りの範囲が、そこで会話の言語へ宣言し直している", () => {
+    // 土台の lang="ja" は入れ子で継がれるので、本文側で上書きしないと
+    // 英語の会話まで日本語だと言ったままになる
+    const list = readFileSync("app/components/chat/MessageList.tsx", "utf8");
+    expect(list).toMatch(/lang=\{conversationLanguage\(messages\)\}/);
   });
 });
 

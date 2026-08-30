@@ -8,6 +8,14 @@
  *
  * そこで本文が出そろった時点で宣言を実態に合わせる。判定はここで行う。
  *
+ * **ただし宣言だけでは足りない。** Safari は宣言を鵜呑みにせず、文書に入って
+ * いる文字を自分で数える。器だけを返していたころ、英語の会話を開いても HTML に
+ * 入っていた文字は画面まわりの日本語73字だけで、`lang="en"` と宣言しても
+ * 翻訳ボタンは出なかった。そこで `languageSample()` が拾った——つまり宣言の
+ * 元にしたのと同じ——本文を、サーバーも素のテキストとして HTML へ出す
+ * （`app/components/chat/PlainMessages.tsx`）。宣言と、ブラウザが実際に読める
+ * 文字とを、同じところから出すための分け方になっている。
+ *
  * **ライブラリは使わない。** 判定に必要なのは「日本語かそれ以外か」だけで、
  * そのために数百KBをバンドルへ持ち込むと、Workers の側で払うものが
  * 大きすぎる（文字種を数えれば足りる）。
@@ -84,23 +92,57 @@ export function detectContentLanguage(
 export const DEFAULT_DOCUMENT_LANGUAGE = "ja";
 
 /**
+ * 判定に使う本文を、新しい発言から上限まで拾う。
+ *
+ * 返すのは**古い順**（画面に並べる順）。判定するだけなら順序は要らないが、
+ * この同じ並びをサーバーが HTML へ描くのに使うため（下記）、拾った時点で
+ * 表示の順に直しておく。
+ *
+ * 発言は途中で切らず、上限に届いた時点の1件までを丸ごと入れる。切ると
+ * 文の途中から始まる本文が画面に出てしまう。1件が長すぎる場合だけは
+ * その中で切る（1件で数万字になりうるので、上限が効かなくなる）。
+ */
+export function languageSample<T extends { content?: string }>(
+  messages: T[] | undefined | null,
+  limit: number = LANGUAGE_SAMPLE_LIMIT,
+): { message: T; text: string }[] {
+  if (!messages) return [];
+  const picked: { message: T; text: string }[] = [];
+  let total = 0;
+  for (let i = messages.length - 1; i >= 0 && total < limit; i--) {
+    const message = messages[i];
+    const content = message?.content;
+    // 本文の無い行（画像だけの発言・生成待ちの空欄）は飛ばす。飛ばしたぶん
+    // 位置がずれるので、拾った本文には**その行そのもの**を添えて返す
+    // （呼び出し側が末尾から数え直すと、空欄の手前で1件ずれる）。
+    if (typeof content !== "string" || !content) continue;
+    const text = content.length > limit ? content.slice(0, limit) : content;
+    picked.push({ message, text });
+    total += text.length;
+  }
+  return picked.reverse();
+}
+
+/**
  * 会話から、文書に宣言する言語を決める。
  *
  * **サーバーが返す HTML に載せる**ためのもの。描画後に書き換えるだけでは
  * 間に合わない——Safari は読み込んだ時点の文書を見て翻訳の要否を決めるので、
  * そのとき `ja` と書いてあれば、あとから直しても翻訳は出てこない。
  *
- * 新しい発言から順に見る。上限まで読んだところで打ち切るので、長い会話では
- * いま読んでいるあたりの言語が反映される。
+ * 見るのは `languageSample()` が拾った範囲——**サーバーが HTML へ描く本文と
+ * 同じもの**にする。宣言と、ブラウザが実際に読める文字とが食い違うと、
+ * Safari は自分で数えたほうを採る（宣言だけ `en` にしても翻訳は出ない）。
  */
 export function conversationLanguage(
   messages: { content?: string }[] | undefined | null,
 ): string {
   if (!messages || messages.length === 0) return DEFAULT_DOCUMENT_LANGUAGE;
-  const texts: string[] = [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const content = messages[i]?.content;
-    if (typeof content === "string" && content) texts.push(content);
-  }
+  // 拾った並びは表示順（古い順）なので、数えるときは新しい側へ戻す。
+  // `languageSample()` は上限に届いた1件を丸ごと入れるぶん行き過ぎることが
+  // あり、古い順のまま数えると、そこで打ち切られて**古いほうだけ**を見て
+  // 決めてしまう（会話の途中で言語が変わったとき、宣言が前の言語で止まる）。
+  const texts = languageSample(messages).map((s) => s.text);
+  texts.reverse();
   return detectContentLanguage(texts) ?? DEFAULT_DOCUMENT_LANGUAGE;
 }

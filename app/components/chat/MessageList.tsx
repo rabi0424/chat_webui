@@ -14,7 +14,9 @@ import { ContextBoundaryLine } from "./message-parts";
 import { MessageProvider, type MessageActions } from "./message-context";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
+import { PlainMessages } from "./PlainMessages";
 import { type EditingState } from "./MessageEditor";
+import { conversationLanguage } from "../../lib/content-language";
 
 /**
  * 削除選択モードでコンテキストクリアを指す印。
@@ -29,6 +31,7 @@ export function MessageList({
   messages,
   visibleMessages,
   hiddenCount,
+  bodyDeferred,
   actions,
   editing,
   setEditing,
@@ -50,6 +53,13 @@ export function MessageList({
   visibleMessages: UiMessage[];
   /** 省いた件数。messages 上の位置に戻すのに使う。 */
   hiddenCount: number;
+  /**
+   * まだ本文を1件も描いていない段か（サーバー描画とハイドレーション直後）。
+   *
+   * `visibleMessages.length === 0` から察することもできるが、そうすると
+   * 「会話が空」と見分けが付かず、片方の意味が変わったときに黙ってずれる。
+   */
+  bodyDeferred: boolean;
   actions: MessageActions;
   editing: EditingState | null;
   setEditing: Dispatch<SetStateAction<EditingState | null>>;
@@ -79,6 +89,13 @@ export function MessageList({
     >
       <div
         ref={feedRef}
+        /*
+          やり取りの言語を、画面まわり（日本語）と区別して宣言する。
+          `<html lang>` と同じ判定を使うので、宣言が2箇所で食い違うことはない。
+          これが無いと、英語の会話の中に混じった日本語のボタン
+          （「↻ 再生成」など）まで英語だと言っていることになる。
+        */
+        lang={conversationLanguage(messages)}
         className="chat-text mx-auto max-w-3xl px-4 pt-[calc(5rem+env(safe-area-inset-top))]"
         style={{ paddingBottom: footerHeight + 24 }}
       >
@@ -90,6 +107,14 @@ export function MessageList({
               </p>
             )}
           </div>
+        )}
+        {/*
+          本物の描画が始まる前に、本文を素のテキストのまま置いておく。
+          これが無いと、読み込みが終わった時点の文書に本文が1文字も無く、
+          Safari が言語を数えられずに翻訳を出さない（PlainMessages）。
+        */}
+        {bodyDeferred && messages.length > 0 && (
+          <PlainMessages messages={messages} />
         )}
         <MessageProvider value={actions}>
           <div className="space-y-6">
