@@ -379,8 +379,37 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
     >
-      {/* デスクトップ: 常設サイドバー（幅はモバイルのドロワーと揃える） */}
-      <div className="hidden w-72 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
+      {/* 本文。見た目は右（order-2）だが、文書の中ではサイドバーより先に置く */}
+      <div className="order-2 min-w-0 flex-1">
+        <Outlet
+          context={
+            {
+              models,
+              bots,
+              usdJpy,
+              settings,
+              openSidebar,
+            } satisfies ShellContext
+          }
+        />
+      </div>
+
+      {/*
+        デスクトップ: 常設サイドバー（幅はモバイルのドロワーと揃える）。
+
+        **見た目より後ろに置いてある。** 見えている並びは左がサイドバーだが、
+        文書の中では本文のほうが先に来るようにし、`order` で見た目だけ左へ
+        戻す。ここを文書の先頭に置くと、サーバーが描く会話一覧（20件）の
+        日本語のタイトルが**文書の最初の250字を日本語で埋める**——実測で
+        先頭100字の81%、先頭200字の88%が日本語だった。言語の判定は文書の
+        先頭を標本にするので、英語の会話を開いても Safari は「日本語の
+        ページ」と数え、翻訳ボタンが出てこない。
+
+        画面の幅では変わらない。iPhone ではサイドバーは CSS で隠れている
+        だけで、HTML には同じように入っているため（`innerText` で測ると
+        隠れたぶんが落ちて、この問題が見えなくなる）。
+      */}
+      <div className="order-1 hidden w-72 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
         <Sidebar
           conversations={conversations}
           folders={folders}
@@ -457,19 +486,6 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         </div>
       )}
 
-      <div className="min-w-0 flex-1">
-        <Outlet
-          context={
-            {
-              models,
-              bots,
-              usdJpy,
-              settings,
-              openSidebar,
-            } satisfies ShellContext
-          }
-        />
-      </div>
     </div>
   );
 }
