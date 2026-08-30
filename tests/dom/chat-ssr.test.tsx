@@ -85,9 +85,34 @@ describe("会話の画面のサーバー描画", () => {
     expect(html).toContain("**強調**");
   });
 
-  it("本文は素のテキストとして入る（Safari に言語を数えさせるため）", () => {
+  it("本文は記法を解釈しないまま入る（Safari に言語を数えさせるため）", () => {
     const html = serverHtml(history(3));
     expect(html).toContain(`${BODY_MARK}2`);
+  });
+
+  /**
+   * ここが今回いちばん静かに壊れるところ。
+   *
+   * 本文を `<div>` に直接置き、改行を保つため `whitespace-pre-wrap` を
+   * 掛けていたとき、**文字は文書に入っているのに翻訳ボタンは出なかった**。
+   * 壊れる前（本文をサーバーで描いていたころ）の HTML と比べると、文字の
+   * 中身も量も並びも同じで、違いは入れ物だけだった:
+   *
+   *   出た  : <div class="prose"><p>本文</p></div>
+   *   出ない: <div class="whitespace-pre-wrap">本文</div>
+   *
+   * 戻しても画面の見た目はほとんど変わらないので、ここで見張る。
+   */
+  it("本文は段落に入っていて、整形済みテキストにはなっていない", () => {
+    const html = serverHtml(history(1));
+    const body = html.indexOf(`${BODY_MARK}0`);
+    expect(body).toBeGreaterThanOrEqual(0);
+    // 本文の直前が <p>（段落に入っている）
+    expect(html.slice(0, body)).toMatch(/<p[^>]*>$/);
+    // 本文を囲む枠は、本物の描画と同じ prose
+    expect(html.slice(0, body)).toMatch(/class="prose[^"]*"><p[^>]*>$/);
+    // 整形済みテキストとして扱われる掛け方をしていない
+    expect(html).not.toContain("whitespace-pre-wrap");
   });
 
   it("長い会話でも、載せる本文は判定に要るぶんで頭打ちになる", () => {

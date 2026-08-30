@@ -1,47 +1,66 @@
 /**
- * 本文を描く前に置いておく、**素のテキストのままの**やり取り。
+ * 本文を描く前に置いておく、**記法を解釈しないままの**やり取り。
  *
  * サーバーが返すのは器だけで、本文はブラウザに出てから Markdown として
  * 描く（Error 1102 対策。§3.3）。その結果、読み込みが終わった時点で文書に
- * 入っている文字は画面まわりの日本語だけになっていた——`<html lang="en">`
- * と宣言しても、Safari は自分で本文を数えて言語を決めるので、英語の会話でも
- * 「日本語のページ」と判定して翻訳を出さない。実測で、英語の会話を開いた
- * ときの HTML に入っていた文字はこれだけだった:
+ * 本文が1文字も無くなり、Safari が言語を数えられずに翻訳ボタンを出さなく
+ * なっていた。そこで、宣言の元にしたのと同じ本文（`languageSample()`）を
+ * サーバーからも出す。Markdown の道具立て（記法の解釈・数式・強調表示）は
+ * どれも重いが、文字を段落に入れて流すだけならほとんど掛からない——CPU
+ * 上限に効くのは描画であって文字数ではないため。
  *
- *   「Chat ボット管理 画像 使用量 フォルダ お気に入り 0 会話 …… ↻ 再生成」
+ * **本文は `<p>` に入れる。`white-space: pre-wrap` は掛けない。**
+ * ここが今回の肝。最初は素のテキストを `<div>` に直接置き、改行を保つため
+ * `whitespace-pre-wrap` を掛けていた——本文は文書に入ったのに、翻訳ボタンは
+ * 出ないままだった。壊れる前（本文をサーバーで描いていたころ）の HTML と
+ * 比べて分かったのは、**文字の中身でも量でも位置でもなく、入れ物が違う**
+ * ということだった:
  *
- * そこで、宣言の元にしたのと**同じ本文**（`languageSample()`）を、素の
- * テキストとしてサーバーからも出す。Markdown の道具立て（記法の解釈・
- * 数式・強調表示）はどれも重いが、テキストをそのまま流すだけなら
- * ほとんど掛からない——CPU上限に引っかかるのは描画のほうで、文字数では
- * ないため。
+ *   壊れる前（出た）: <div class="prose"><p>Could you explain…</p></div>
+ *   直したつもり（出ない）: <div class="whitespace-pre-wrap">Could you explain…</div>
  *
- * ハイドレーション時もここが描かれる（`renderStage` は "none" から始まる）
- * ので、サーバーの出力とクライアントの初回描画は一致する。その直後に段が
- * 進んで本物の描画へ差し替わる。
+ * 文字の並びは同じで、日本語の割合もほぼ同じ（19.5% と 17.9%）。むしろ
+ * 出ていたほうが文書の先頭100字の81%が日本語だった。違いは、本文が段落に
+ * 入っていないことと、整形済みテキスト（＝コードのような扱いを受けうる）
+ * だったことだけ。したがってここは、壊れる前と**同じ形**を作る。
  *
- * 見た目を本物へ寄せてあるのは、差し替わる瞬間の飛びを小さくするため。
- * ついでに、JS が届くまでのあいだ画面が空にならなくなる。
+ * ハイドレーション直後まで同じものを描き（`renderStage` は "none" から
+ * 始まる）、そのあと本物の描画へ入れ替える。枠のクラスも本物と共有して
+ * あるので、入れ替わる瞬間の飛びも小さい。
  */
 import type { UiMessage } from "../../lib/types";
 import { languageSample } from "../../lib/content-language";
+import { proseClassName } from "../Markdown";
+
+/**
+ * 段落に割る。
+ *
+ * 空行で切り、段落の中の改行は空白でつなぐ。Markdown が描くときと同じ
+ * 区切り方で、`<p>` がそのまま対応する（`white-space` に頼らないので、
+ * 整形済みテキストとして扱われることもない）。
+ */
+export function paragraphs(text: string): string[] {
+  return text
+    .split(/\n{2,}/)
+    .map((block) => block.replace(/\s*\n\s*/g, " ").trim())
+    .filter(Boolean);
+}
 
 export function PlainMessages({ messages }: { messages: UiMessage[] }) {
   return (
     <div className="space-y-6">
       {languageSample(messages).map(({ message, text }, i) => {
+        const body = paragraphs(text).map((p, j) => <p key={j}>{p}</p>);
+        // 枠は本物（UserMessage / AssistantMessage）と同じものを使う
         return message.role === "user" ? (
           <div key={i} className="flex justify-end">
-            <div className="max-w-[85%] min-w-0 [overflow-wrap:anywhere] whitespace-pre-wrap rounded-3xl rounded-br-lg bg-accent px-4 py-2.5 text-accent-fg">
-              {text}
+            <div className="max-w-[85%] min-w-0 [overflow-wrap:anywhere] rounded-3xl rounded-br-lg bg-accent px-4 py-2.5 text-accent-fg">
+              <div className={proseClassName("chat-bubble")}>{body}</div>
             </div>
           </div>
         ) : (
-          <div
-            key={i}
-            className="min-w-0 [overflow-wrap:anywhere] whitespace-pre-wrap"
-          >
-            {text}
+          <div key={i} className={proseClassName()}>
+            {body}
           </div>
         );
       })}
