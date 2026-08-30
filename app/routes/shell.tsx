@@ -362,6 +362,16 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
 
   return (
     <div
+      /*
+        画面まわり（サイドバー・ボタン・入力欄の案内）は会話の言語に関わらず
+        日本語なので、そう宣言しておく。`<html lang>` は開いている会話の言語を
+        載せる（Safari の翻訳のため。§3.3）ので、ここで断らないと「英語の
+        ページに混じった日本語」を英語だと言い張ることになり、
+        ①短い会話では Safari 自身の数えたほうが日本語に振れて翻訳が出ない
+        ②翻訳を出せたとき、日本語のままでよいボタン名まで訳される。
+        やり取り本文だけは MessageList が会話の言語で上書きする。
+      */
+      lang="ja"
       className="flex overflow-x-hidden bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100"
       style={{ height: "var(--app-height, 100dvh)" }}
       onTouchStart={onTouchStart}
@@ -369,8 +379,40 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
     >
-      {/* デスクトップ: 常設サイドバー（幅はモバイルのドロワーと揃える） */}
-      <div className="hidden w-72 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
+      {/* 本文。見た目は右（order-2）だが、文書の中ではサイドバーより先に置く */}
+      <div className="order-2 min-w-0 flex-1">
+        <Outlet
+          context={
+            {
+              models,
+              bots,
+              usdJpy,
+              settings,
+              openSidebar,
+            } satisfies ShellContext
+          }
+        />
+      </div>
+
+      {/*
+        デスクトップ: 常設サイドバー（幅はモバイルのドロワーと揃える）。
+
+        **見た目より後ろに置いてある。** 見えている並びは左がサイドバーだが、
+        文書の中では本文のほうが先に来るようにし、`order` で見た目だけ左へ
+        戻す。ここを文書の先頭に置くと、サーバーが描く会話一覧（20件）の
+        日本語のタイトルが**文書の最初の250字を日本語で埋める**（実測で
+        先頭100字の81%が日本語）。
+
+        **これは Safari の翻訳が出なかった原因ではない。** 壊れる前
+        （8334dd9^）の HTML を取って比べたところ、当時はサイドバーが200件を
+        先頭に描いていて先頭100字の81%が日本語——それでも翻訳は出ていた。
+        原因は本文の入れ物のほうだった（`PlainMessages`）。
+
+        それでも本文を先にしてあるのは、文書の頭がその文書の主題と一致する
+        ほうが素直で、判定の作りしだいでは効きうるから。見た目も操作も
+        変わらないので、戻す理由も無い。
+      */}
+      <div className="order-1 hidden w-72 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
         <Sidebar
           conversations={conversations}
           folders={folders}
@@ -447,19 +489,6 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         </div>
       )}
 
-      <div className="min-w-0 flex-1">
-        <Outlet
-          context={
-            {
-              models,
-              bots,
-              usdJpy,
-              settings,
-              openSidebar,
-            } satisfies ShellContext
-          }
-        />
-      </div>
     </div>
   );
 }

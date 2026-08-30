@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  conversationLanguage,
   detectContentLanguage,
+  languageSample,
   JAPANESE_MIN_RATIO,
   LANGUAGE_MIN_SAMPLE,
   LANGUAGE_SAMPLE_LIMIT,
@@ -86,5 +88,64 @@ describe("会話の言語の判定", () => {
     // 𠮟 は BMP の外。文字単位で回さないと2つに割れて数え損ねる
     const text = "𠮟".repeat(50) + "a".repeat(50);
     expect(detectContentLanguage([text])).toBe("ja");
+  });
+});
+
+/**
+ * 宣言の元にした本文は、そのままサーバーが HTML へ描く（PlainMessages）。
+ *
+ * 「宣言」と「ブラウザが実際に読める文字」が同じものから出ていないと、
+ * Safari は自分で数えたほうを採る——`lang="en"` と書いてあっても、
+ * 文書に日本語しか入っていなければ翻訳は出てこない。この不具合そのもの。
+ */
+describe("宣言と表示に使う本文を拾う", () => {
+  const item = (content: string, role = "assistant") => ({ role, content });
+
+  it("新しい側から拾い、画面に並べる順（古い順）で返す", () => {
+    const sample = languageSample([item("1"), item("2"), item("3")]);
+    expect(sample.map((s) => s.text)).toEqual(["1", "2", "3"]);
+  });
+
+  it("上限を超えたぶんの古い発言は拾わない", () => {
+    const long = "a".repeat(LANGUAGE_SAMPLE_LIMIT);
+    const sample = languageSample([item("古い"), item(long)]);
+    // 末尾の1件で上限に届くので、その手前は入らない
+    expect(sample.map((s) => s.text)).toEqual([long]);
+  });
+
+  it("1件が上限より長ければ、その中で切る", () => {
+    const huge = "a".repeat(LANGUAGE_SAMPLE_LIMIT * 5);
+    const [only] = languageSample([item(huge)]);
+    expect(only.text).toHaveLength(LANGUAGE_SAMPLE_LIMIT);
+  });
+
+  it("本文の無い行を飛ばしても、本文と発言の対応がずれない", () => {
+    // 画像だけの発言・生成待ちの空欄は本文を持たない。位置で数え直すと、
+    // 空欄の手前で1件ずれて、こちらの発言が相手の吹き出しで出る
+    const messages = [
+      item("わたしの発言", "user"),
+      item(""),
+      item("相手の応答", "assistant"),
+    ];
+    const sample = languageSample(messages);
+    expect(sample.map((s) => [s.message.role, s.text])).toEqual([
+      ["user", "わたしの発言"],
+      ["assistant", "相手の応答"],
+    ]);
+  });
+
+  it("拾った本文を数えるときは、新しい側から数える", () => {
+    /*
+      拾う側は上限に届いた1件を丸ごと入れるので、拾った総量は上限を
+      超えうる（ここでは 3999×2）。数える側にも同じ上限があるため、
+      **どちらの端から数えるか**で答えが変わる:
+        古い順のまま数える → 古い日本語を 3999 字読んだところで打ち切り、ja
+        新しい側から数える → 新しい英語を 3999 字読んで、en
+      会話の途中で言語が変わったとき、前者だと宣言が前の言語で止まる。
+    */
+    const almost = LANGUAGE_SAMPLE_LIMIT - 1;
+    const messages = [item("あ".repeat(almost)), item("a".repeat(almost))];
+    expect(languageSample(messages)).toHaveLength(2);
+    expect(conversationLanguage(messages)).toBe("en");
   });
 });

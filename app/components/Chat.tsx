@@ -230,8 +230,14 @@ export function Chat({
    * ときだけ起きるので、画面内の移動では気づけない。
    *
    * この画面は個人用で、検索に拾わせる必要も、JSを切って読ませる必要も
-   * ない。本文はブラウザに出てから描けば足りる（サーバーが返すのは
-   * 器だけ。中身は loader のデータとして既にHTMLに載っている）。
+   * ない。本文はブラウザに出てから描けば足りる（中身は loader のデータと
+   * して既にHTMLに載っている）。
+   *
+   * ただし none でも**素のテキストとしての本文は出す**（PlainMessages）。
+   * 器だけを返していたころは、読み込みが終わった時点の文書に日本語の
+   * ボタン名しか無く、英語の会話でも Safari が「日本語のページ」と数えて
+   * 翻訳ボタンを出さなかった。重いのは Markdown の描画であって文字数では
+   * ないので、テキストをそのまま流すぶんには上限に触れない。
    *
    * tail を挟むのは従来どおり、初回描画を末尾だけにして早く出すため。
    * 全件へは startTransition で広げるので、広げている最中にスクロールや
@@ -1677,6 +1683,7 @@ export function Chat({
         messages={messages}
         visibleMessages={visibleMessages}
         hiddenCount={hiddenCount}
+        bodyDeferred={renderStage === "none"}
         actions={messageActions}
         editing={editing}
         setEditing={setEditing}
