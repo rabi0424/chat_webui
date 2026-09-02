@@ -461,35 +461,42 @@ body {
  * title 属性は出るまで1秒待たされ、iPhone では出ない。自前で描いて
  * すぐ出す。ポインタを載せられる端末だけで出し、指の端末では出さない
  * （押した指の下に出ても読めない。そちらは aria-label が担う）。
+ *
+ * **吹き出しの要素そのものを hover のある端末でだけ作る。** 透明にして
+ * 置いておくだけでも、折り返さない文字が右端の操作（右寄せの発言の
+ * 削除など）から画面の外へはみ出し、会話のフィードが横に 20px ほど
+ * 動くようになっていた（iPhone で左右に微妙にスワイプできる症状）。
+ * 見えないものが幅を持ってはならない。tests/built-css.test.ts が、
+ * この規則がメディアクエリの中に出ていることを見張る。
  */
 .tip {
   position: relative;
 }
-.tip::after {
-  content: attr(data-tip);
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 6px);
-  transform: translateX(-50%) translateY(2px);
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: #171717; /* neutral-900 */
-  color: #fafafa;
-  font-size: 11px;
-  line-height: 1.3;
-  white-space: nowrap;
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 0.12s ease-out,
-    transform 0.12s ease-out;
-  z-index: 20;
-}
-.dark .tip::after {
-  background: #fafafa;
-  color: #171717;
-}
 @media (hover: hover) {
+  .tip::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 6px);
+    transform: translateX(-50%) translateY(2px);
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: #171717; /* neutral-900 */
+    color: #fafafa;
+    font-size: 11px;
+    line-height: 1.3;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      opacity 0.12s ease-out,
+      transform 0.12s ease-out;
+    z-index: 20;
+  }
+  .dark .tip::after {
+    background: #fafafa;
+    color: #171717;
+  }
   .tip:hover::after,
   .tip:focus-visible::after {
     opacity: 1;

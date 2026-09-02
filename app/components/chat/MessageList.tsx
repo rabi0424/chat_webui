@@ -86,7 +86,11 @@ export function MessageList({
     <div
       ref={scrollRef}
       onScroll={onScroll}
-      className="absolute inset-0 overflow-y-auto overscroll-contain"
+      /*
+        横には動かさない。中身が右へはみ出しても（吹き出し・長い一行）
+        フィードごと横に滑るのではなく、その要素の中で収める。
+      */
+      className="absolute inset-0 overflow-y-auto overflow-x-hidden overscroll-contain"
     >
       <div
         ref={feedRef}
