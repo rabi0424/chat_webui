@@ -3,19 +3,16 @@
  *
  * 右寄せの吹き出しに本文と添付を出し、下に操作を並べる。編集中は
  * 吹き出しごと MessageEditor に差し替わる（その場で書き直す形）。
+ * 操作列はアイコンだけで揃える（AssistantMessage と同じ）。
  */
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { UiMessage } from "../../lib/types";
 import { Markdown } from "../Markdown";
-import { IconPencil, IconTrash } from "../icons";
+import { IconBranch, IconPencil, IconTrash } from "../icons";
 import { BranchPager, CopyButton, MessageImages } from "./message-parts";
 import { MessageEditor, type EditingState } from "./MessageEditor";
 import { selectionClassOf, useMessageActions } from "./message-context";
-import {
-  MSG_DELETE_ACTION,
-  MSG_ICON_ACTION,
-  MSG_TEXT_ACTION,
-} from "../../lib/ui";
+import { MSG_DELETE_ACTION, MSG_ICON_ACTION } from "../../lib/ui";
 
 export function UserMessage({
   m,
@@ -94,7 +91,7 @@ export function UserMessage({
             </div>
           )}
           {!selecting && (
-            <div className="mt-1 flex items-center justify-end gap-1.5">
+            <div className="mt-1 flex items-center justify-end gap-0.5">
               <BranchPager message={m} onSwitch={switchBranch} />
               {m.content && <CopyButton text={m.content} />}
               {/*
@@ -119,28 +116,29 @@ export function UserMessage({
                       })
                     }
                     aria-label="編集して再送信"
-                    title="編集（保存だけ / 送信して分岐）"
-                    className={MSG_ICON_ACTION}
+                    data-tip="編集（保存だけ / 送信して分岐）"
+                    className={`tip ${MSG_ICON_ACTION}`}
                   >
-                    <IconPencil className="h-3.5 w-3.5" />
+                    <IconPencil className="h-4 w-4" />
                   </button>
                   <button
                     type="button"
                     onClick={() => fork(m.id!)}
-                    title="ここから分岐（独立した新しい会話を作成）"
-                    className={MSG_TEXT_ACTION}
+                    aria-label="ここから分岐"
+                    data-tip="ここから分岐（新しい会話を作成）"
+                    className={`tip ${MSG_ICON_ACTION}`}
                   >
-                    ⑂ ここから分岐
+                    <IconBranch className="h-4 w-4" />
                   </button>
                   {!isStreaming && (
                     <button
                       type="button"
                       onClick={() => startSelect(m.id!)}
                       aria-label="削除"
-                      title="メッセージを削除（選択モードへ）"
-                      className={MSG_DELETE_ACTION}
+                      data-tip="削除（選択モードへ）"
+                      className={`tip ${MSG_DELETE_ACTION}`}
                     >
-                      <IconTrash className="h-3.5 w-3.5" />
+                      <IconTrash className="h-4 w-4" />
                     </button>
                   )}
                 </>

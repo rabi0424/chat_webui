@@ -5,7 +5,7 @@ import { getBot } from "../lib/db.server";
 import { BotForm } from "../components/BotForm";
 
 export function meta() {
-  return [{ title: "ボットを編集 - Chat WebUI" }];
+  return [{ title: "ボットを編集 - Chat" }];
 }
 
 export async function loader({ params }: Route.LoaderArgs) {
@@ -19,7 +19,7 @@ export async function loader({ params }: Route.LoaderArgs) {
 export default function BotEdit({ loaderData }: Route.ComponentProps) {
   const { models, settings } = useOutletContext<ShellContext>();
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full">
       <BotForm
         models={models}
         initial={loaderData.bot}

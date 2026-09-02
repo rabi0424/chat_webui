@@ -36,7 +36,7 @@ function RetryField({
     <div className="flex items-center gap-3">
       <div className="min-w-0 flex-1">
         <p className="text-sm">{label}</p>
-        <p className="truncate text-xs text-neutral-400 dark:text-neutral-500">
+        <p className="truncate text-xs text-ink-3">
           {hint}
         </p>
       </div>
@@ -49,7 +49,7 @@ function RetryField({
         min={min}
         max={max}
         step={1}
-        className="w-20 shrink-0 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+        className="w-20 shrink-0 rounded-lg border border-line bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
       />
     </div>
   );
@@ -107,7 +107,7 @@ export function RetrySettings({
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">成功するまで生成</p>
-          <p className="text-xs text-neutral-400 dark:text-neutral-500">
+          <p className="text-xs text-ink-3">
             画像が返るまで同じ依頼を投げ直す（拒否の揺らぎ対策）
           </p>
         </div>
@@ -129,7 +129,7 @@ export function RetrySettings({
         </button>
       </div>
       {config && (
-        <div className="mt-2 space-y-1.5 border-t border-neutral-100 pt-2 dark:border-white/10">
+        <div className="mt-2 space-y-1.5 border-t border-line pt-2">
           <RetryField
             label="目標の成功数"
             hint="ほしい応答の数"

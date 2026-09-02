@@ -94,7 +94,7 @@ function ExtraParams({
   return (
     <div className="mt-3 space-y-2 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
       <p className="px-1 text-sm font-medium">ボット独自パラメータ</p>
-      <p className="px-1 text-xs text-neutral-400 dark:text-neutral-500">
+      <p className="px-1 text-xs text-ink-3">
         {knownNames.size > 0
           ? "このボットが公開していない名前です。このまま送るとエラーになるので削除してください"
           : imageHint
@@ -110,7 +110,7 @@ function ExtraParams({
             placeholder="名前"
             aria-label="パラメータ名"
             {...TERSE_INPUT}
-            className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+            className="min-w-0 flex-1 rounded-lg border border-line bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
           />
           <input
             type="text"
@@ -119,13 +119,13 @@ function ExtraParams({
             placeholder="値"
             aria-label="パラメータの値"
             {...TERSE_INPUT}
-            className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+            className="min-w-0 flex-1 rounded-lg border border-line bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
           />
           <button
             type="button"
             onClick={() => commit(rows.filter((_, j) => j !== i))}
             aria-label={`${row.key || "この行"}を削除`}
-            className="shrink-0 rounded-lg border border-neutral-200 px-2 py-1.5 text-xs text-neutral-500 hover:bg-neutral-100 dark:border-white/10 dark:text-neutral-400 dark:hover:bg-white/10"
+            className="shrink-0 rounded-lg border border-line px-2 py-1.5 text-xs text-ink-2 hover:bg-hover"
           >
             削除
           </button>
@@ -134,7 +134,7 @@ function ExtraParams({
       <button
         type="button"
         onClick={() => setRows([...rows, { key: "", value: "" }])}
-        className="rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-200 dark:bg-white/10 dark:text-neutral-400 dark:hover:bg-white/15"
+        className="rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-ink-2 hover:bg-neutral-200 dark:bg-white/10 dark:hover:bg-white/15"
       >
         パラメータを追加
       </button>
@@ -182,7 +182,7 @@ export function ParamsEditor({
 
   if (!model) {
     return (
-      <p className="rounded-xl border border-dashed border-neutral-200 px-4 py-3 text-sm text-neutral-400 dark:border-white/15 dark:text-neutral-500">
+      <p className="rounded-xl border border-dashed border-neutral-200 px-4 py-3 text-sm text-ink-3 dark:border-white/15">
         モデルを選択するとパラメータが表示されます
       </p>
     );
@@ -212,7 +212,7 @@ export function ParamsEditor({
   if (defs.length === 0) {
     return (
       <>
-        <p className="rounded-xl border border-dashed border-neutral-200 px-4 py-3 text-sm text-neutral-400 dark:border-white/15 dark:text-neutral-500">
+        <p className="rounded-xl border border-dashed border-neutral-200 px-4 py-3 text-sm text-ink-3 dark:border-white/15">
           このモデルの対応パラメータ情報がありません
         </p>
         {extras}
@@ -223,7 +223,7 @@ export function ParamsEditor({
   return (
     <>
       <div className="space-y-1 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
-        <p className="px-1 pb-1 text-xs text-neutral-400 dark:text-neutral-500">
+        <p className="px-1 pb-1 text-xs text-ink-3">
           「自動」はAPIに送信せず、モデル本来の既定動作に任せます
         </p>
         {defs.map((def) => {
@@ -235,7 +235,7 @@ export function ParamsEditor({
             >
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium">{def.label}</p>
-                <p className="truncate text-xs text-neutral-400 dark:text-neutral-500">
+                <p className="truncate text-xs text-ink-3">
                   {def.description}
                 </p>
               </div>
@@ -257,7 +257,7 @@ export function ParamsEditor({
                         })
                       }
                       aria-label={def.label}
-                      className="w-24 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+                      className="w-24 rounded-lg border border-line bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
                     />
                   )}
                   {def.kind === "select" && (
@@ -267,7 +267,7 @@ export function ParamsEditor({
                         onChange({ ...value, [def.key]: e.target.value })
                       }
                       aria-label={def.label}
-                      className="rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+                      className="rounded-lg border border-line bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
                     >
                       {def.options.map((o) => (
                         <option key={o.value} value={o.value}>
@@ -286,14 +286,14 @@ export function ParamsEditor({
                       }
                       aria-label={def.label}
                       {...TERSE_INPUT}
-                      className="w-36 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+                      className="w-36 rounded-lg border border-line bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
                     />
                   )}
                   <button
                     type="button"
                     onClick={() => setAuto(def.key)}
                     aria-label={`${def.label}を自動に戻す`}
-                    className="shrink-0 rounded-lg border border-neutral-200 px-2 py-1.5 text-xs text-neutral-500 hover:bg-neutral-100 dark:border-white/10 dark:text-neutral-400 dark:hover:bg-white/10"
+                    className="shrink-0 rounded-lg border border-line px-2 py-1.5 text-xs text-ink-2 hover:bg-hover"
                   >
                     自動に戻す
                   </button>
@@ -303,7 +303,7 @@ export function ParamsEditor({
                   type="button"
                   onClick={() => setManual(def)}
                   aria-label={`${def.label}を手動設定`}
-                  className="shrink-0 rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-200 dark:bg-white/10 dark:text-neutral-400 dark:hover:bg-white/15"
+                  className="shrink-0 rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-ink-2 hover:bg-neutral-200 dark:bg-white/10 dark:hover:bg-white/15"
                 >
                   自動
                 </button>

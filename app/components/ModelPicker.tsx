@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ModelInfo } from "../lib/openrouter.server";
 import { useEscapeToClose } from "../lib/dismiss";
-import { IconChevronDown } from "./icons";
+import { IconChevronDown, IconX } from "./icons";
 import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
 import { rankedModelIds } from "../lib/recent-models";
+import { isPoeModel, POE_PREFIX } from "../lib/constants";
 
 function formatPricePerMillion(perToken: string): string {
   const n = Number(perToken) * 1_000_000;
@@ -37,6 +38,34 @@ function isNewModel(m: ModelInfo, now: number, windowDays: number): boolean {
   );
 }
 
+/**
+ * プロバイダの色。チップの左端の小さな四角に使う。
+ *
+ * モデル名の「Anthropic: 」のような接頭を文字で出す代わりに色で示す
+ * （チップは入力欄の中に居るので、文字数を節約したい）。知らない
+ * プロバイダは灰。
+ */
+export function providerColor(modelId: string): string {
+  const bare = isPoeModel(modelId) ? modelId.slice(POE_PREFIX.length) : modelId;
+  const vendor = bare.split("/")[0]?.toLowerCase() ?? "";
+  if (vendor.startsWith("anthropic")) return "#d97757";
+  if (vendor.startsWith("openai")) return "#10a37f";
+  if (vendor.startsWith("google")) return "#4285f4";
+  if (vendor.startsWith("x-ai")) return "#1c1c1e";
+  if (vendor.startsWith("meta")) return "#0668e1";
+  if (vendor.startsWith("mistral")) return "#ff7000";
+  if (vendor.startsWith("deepseek")) return "#4d6bfe";
+  if (isPoeModel(modelId)) return "#7c3aed";
+  return "#8e8e93";
+}
+
+/** チップに出す短い名前。「Anthropic: Claude Sonnet 4」→「Claude Sonnet 4」。 */
+export function shortModelName(m: ModelInfo | undefined, fallback: string): string {
+  const name = m?.name ?? fallback;
+  const i = name.indexOf(": ");
+  return i > 0 ? name.slice(i + 2) : name;
+}
+
 /** 一覧の1行。よく使う節と一覧本体で同じ見た目を使う。 */
 function ModelRow({
   model: m,
@@ -55,7 +84,7 @@ function ModelRow({
       <button
         type="button"
         onClick={() => onSelect(m.id)}
-        className={`relative w-full rounded-lg px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-white/10 ${
+        className={`relative w-full rounded-lg px-3 py-2 text-left hover:bg-hover ${
           selected ? "bg-neutral-100 dark:bg-white/10" : ""
         } ${isNew ? "pl-4" : ""}`}
       >
@@ -67,8 +96,15 @@ function ModelRow({
           />
         )}
         <div className="flex items-baseline justify-between gap-2">
-          <span className="truncate text-sm font-medium text-neutral-800 dark:text-neutral-100">
-            {m.name}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span
+              aria-hidden
+              className="h-2.5 w-2.5 shrink-0 rounded-[3px]"
+              style={{ backgroundColor: providerColor(m.id) }}
+            />
+            <span className="truncate text-sm font-medium text-neutral-800 dark:text-neutral-100">
+              {m.name}
+            </span>
           </span>
           <span className="flex shrink-0 gap-1">
             {isNew && (
@@ -77,7 +113,7 @@ function ModelRow({
               </span>
             )}
             {m.provider === "poe" && (
-              <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+              <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-2 dark:bg-neutral-800">
                 Poe
               </span>
             )}
@@ -88,10 +124,10 @@ function ModelRow({
             )}
           </span>
         </div>
-        <div className="mt-0.5 flex gap-3 text-xs text-neutral-400 dark:text-neutral-500">
+        <div className="mt-0.5 flex gap-3 text-xs text-ink-3">
           <span className="truncate">{m.id}</span>
         </div>
-        <div className="mt-0.5 flex gap-3 text-xs text-neutral-500 dark:text-neutral-400">
+        <div className="mt-0.5 flex gap-3 text-xs text-ink-2">
           {m.contextLength > 0 && (
             <span>{formatContext(m.contextLength)} ctx</span>
           )}
@@ -110,17 +146,36 @@ function ModelRow({
   );
 }
 
+/** 一覧の高さの上限（画面の比率）。上に開くか下に開くかの判断にも使う。 */
+const PANEL_MAX_RATIO = 0.6;
+
 export function ModelPicker({
   models,
   value,
   newModelDays,
   onChange,
+  variant = "plain",
+  leading,
+  onClear,
+  clearLabel,
 }: {
   models: ModelInfo[];
   value: string;
   /** 公開から何日間「NEW」を出すか（0 = 出さない）。 */
   newModelDays: number;
   onChange: (id: string) => void;
+  /**
+   * 見た目。
+   * - plain: 枠の無い文字（設定画面の中など、周りが枠を持つ場所）
+   * - chip:  入力欄の中のチップ（薄い塗り・プロバイダの色・短い名前）
+   * - field: 設定画面の入力欄と同じ形の、セレクト風のボタン
+   */
+  variant?: "plain" | "chip" | "field";
+  /** チップの先頭に置くもの（ボットの印など）。 */
+  leading?: React.ReactNode;
+  /** チップの末尾に × を出し、押したときに呼ぶ（ボットの選択を外す）。 */
+  onClear?: () => void;
+  clearLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -129,8 +184,18 @@ export function ModelPicker({
   /**
    * パネルの fixed 配置座標。ボタン位置から計算し、画面内へクランプする。
    * パネルはポータルで body 直下に描画する（後述のコメント参照）。
+   *
+   * 上下どちらへ開くかもここで決める。入力欄の中のチップは画面の下端に
+   * 居るので、下へ開くと一覧が画面の外へ出る。下に余裕が無ければ
+   * ボタンの上へ開く（bottom を基準にする）。
    */
-  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
+  const [pos, setPos] = useState<{
+    left: number;
+    width: number;
+    top?: number;
+    bottom?: number;
+    maxHeight: number;
+  } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -144,14 +209,28 @@ export function ModelPicker({
       window.innerWidth < 640
         ? window.innerWidth - margin * 2
         : Math.min(window.innerWidth * 0.9, 416); // 26rem
-    setPos({
-      left: Math.max(
-        margin,
-        Math.min(rect?.left ?? margin, window.innerWidth - width - margin),
-      ),
-      top: (rect?.bottom ?? 56) + 6,
-      width,
-    });
+    const left = Math.max(
+      margin,
+      Math.min(rect?.left ?? margin, window.innerWidth - width - margin),
+    );
+    const wanted = window.innerHeight * PANEL_MAX_RATIO;
+    const below = window.innerHeight - (rect?.bottom ?? 56) - margin;
+    const above = (rect?.top ?? 0) - margin;
+    if (below >= wanted || below >= above) {
+      setPos({
+        left,
+        width,
+        top: (rect?.bottom ?? 56) + 6,
+        maxHeight: Math.min(wanted, below - 6),
+      });
+    } else {
+      setPos({
+        left,
+        width,
+        bottom: window.innerHeight - (rect?.top ?? 0) + 6,
+        maxHeight: Math.min(wanted, above - 6),
+      });
+    }
     setRecentIds(rankedModelIds());
     setOpen(true);
   };
@@ -230,30 +309,73 @@ export function ModelPicker({
   const close = useCallback(() => setOpen(false), []);
   useEscapeToClose(open, close);
 
+  // 一覧がまだ届いていない・値が空のときは、四角だけが残らないよう文言を出す
+  const label = !value
+    ? "モデルを選択"
+    : variant === "chip"
+      ? shortModelName(selected, value)
+      : selected?.name ?? value;
+
+  const triggerClass =
+    variant === "chip"
+      ? "flex h-8 max-w-full items-center gap-1.5 rounded-full bg-black/[0.05] pl-2.5 pr-2 text-[13px] font-medium text-neutral-700 transition-colors hover:bg-black/[0.08] active:scale-[0.98] dark:bg-white/10 dark:text-neutral-200 dark:hover:bg-white/15"
+      : variant === "field"
+        ? "flex max-w-full items-center gap-2 rounded-lg border border-line bg-neutral-50 py-1.5 pl-2.5 pr-2 text-sm text-neutral-800 transition-colors hover:bg-hover active:scale-[0.98] dark:bg-white/5 dark:text-neutral-100"
+        : "flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-hover active:scale-[0.98] dark:text-neutral-200";
+
   return (
-    <div ref={containerRef} className="relative min-w-0">
+    <div ref={containerRef} className="relative flex min-w-0 items-center">
       <button
         type="button"
         onClick={() => (open ? setOpen(false) : openPicker())}
-        className="flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-100 active:scale-[0.98] dark:text-neutral-200 dark:hover:bg-neutral-800"
+        title={selected?.name}
+        className={triggerClass}
       >
-        <span className="truncate">{selected?.name ?? value ?? "モデルを選択"}</span>
+        {leading}
+        {variant !== "plain" && (
+          <span
+            aria-hidden
+            className="h-2.5 w-2.5 shrink-0 rounded-[3px]"
+            style={{ backgroundColor: providerColor(value) }}
+          />
+        )}
+        <span className="truncate">{label}</span>
         <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
       </button>
+      {onClear && variant === "chip" && (
+        <button
+          type="button"
+          onClick={onClear}
+          aria-label={clearLabel ?? "選択を解除"}
+          title={clearLabel ?? "選択を解除"}
+          className="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full text-neutral-400 hover:bg-black/[0.06] hover:text-neutral-600 dark:hover:bg-white/10 dark:hover:text-neutral-200"
+        >
+          <IconX className="h-3.5 w-3.5" />
+        </button>
+      )}
 
       {/*
         パネルはポータルで body 直下に描画する。ヘッダー（スクロール時に
         backdrop-blur が付く）の子孫に置くと、「backdrop-filter 要素の
         子孫では backdrop-filter が効かない」ブラウザの挙動により、
         スクロール中に開いたときだけパネルのブラーが消えてしまうため。
+        入力欄（同じくガラス面）の中に居るときも同じ。
       */}
       {open && pos != null && createPortal(
         <div
           ref={panelRef}
-          style={{ left: pos.left, top: pos.top, width: pos.width }}
-          className={`fixed z-30 flex max-h-[60vh] origin-top flex-col overflow-hidden rounded-xl animate-pop ${GLASS_PANEL}`}
+          style={{
+            left: pos.left,
+            top: pos.top,
+            bottom: pos.bottom,
+            width: pos.width,
+            maxHeight: pos.maxHeight,
+          }}
+          className={`fixed z-30 flex flex-col overflow-hidden rounded-xl animate-pop ${
+            pos.bottom != null ? "origin-bottom" : "origin-top"
+          } ${GLASS_PANEL}`}
         >
-          <div className="border-b border-neutral-100 p-2 dark:border-white/10">
+          <div className="border-b border-line p-2">
             <input
               ref={searchRef}
               type="text"
@@ -285,7 +407,7 @@ export function ModelPicker({
             */}
             {recent.length > 0 && (
               <>
-                <li className="px-3 pb-1 pt-2 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+                <li className="px-3 pb-1 pt-2 text-[11px] font-medium text-ink-3">
                   最近よく使うモデル
                 </li>
                 {recent.map((m) => (
@@ -299,7 +421,7 @@ export function ModelPicker({
                 ))}
                 <li
                   role="separator"
-                  className="mx-3 my-1 border-t border-neutral-100 dark:border-white/10"
+                  className="mx-3 my-1 border-t border-line"
                 />
               </>
             )}

@@ -12,7 +12,6 @@ import type {
   FolderRow,
   SearchResult,
 } from "../lib/db.server";
-import { ThemeToggle } from "./ThemeToggle";
 import {
   SidebarProvider,
   type MenuTarget,
@@ -22,6 +21,9 @@ import {
   ConversationItem,
   FavoritesFolderItem,
   FolderItem,
+  RenameField,
+  ROW_ACTIVE,
+  ROW_IDLE,
 } from "./sidebar/items";
 import { FAVORITES_ID, usePrefetchOnVisible } from "./sidebar/shared";
 import { useEscapeToClose } from "../lib/dismiss";
@@ -29,11 +31,14 @@ import {
   useExpandedFolders,
   writeExpandedFolders,
 } from "../lib/persisted";
+import { DATE_GROUP_LABELS, groupByDate } from "../lib/date-groups";
+import { useConfirm } from "./ConfirmDialog";
 import {
   IconArrowLeft,
   IconBot,
   IconChartBar,
   IconCog,
+  IconFolder,
   IconPencilSquare,
   IconPhoto,
   IconPlus,
@@ -97,13 +102,13 @@ function SearchResultItem({
         to={`/chat/${r.id}`}
         prefetch="intent"
         onClick={onNavigate}
-        className="block rounded-lg px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-900"
+        className={`block rounded-lg px-3 py-2 ${ROW_IDLE}`}
       >
-        <span className="block truncate text-[0.9375rem] text-neutral-700 dark:text-neutral-200">
+        <span className="block truncate text-[0.9375rem]">
           <Highlight text={r.title} terms={terms} />
         </span>
         {r.snippet && (
-          <span className="mt-0.5 block truncate text-[0.8125rem] text-neutral-400 dark:text-neutral-500">
+          <span className="mt-0.5 block truncate text-[0.8125rem] text-ink-3">
             <Highlight text={r.snippet} terms={terms} />
           </span>
         )}
@@ -112,11 +117,54 @@ function SearchResultItem({
   );
 }
 
+/** 節の見出し。右端に操作（フォルダの＋）を置けるようにしておく。 */
+function SectionLabel({
+  children,
+  action,
+}: {
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between px-3 pb-1 pt-3">
+      <p className="text-[11px] font-medium tracking-wide text-ink-2">
+        {children}
+      </p>
+      {action}
+    </div>
+  );
+}
+
+/**
+ * アプリの印。角丸の四角をアクセント色で塗る。アクセントを変えると
+ * 一緒に変わるので、それだけで「自分のアプリ」に見える。
+ */
+function AppMark() {
+  return (
+    <span
+      aria-hidden
+      className="grid h-6 w-6 shrink-0 place-items-center rounded-[7px] bg-gradient-to-br from-accent to-accent/70 text-accent-fg shadow-sm"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2.4}
+        strokeLinecap="round"
+        className="h-3.5 w-3.5"
+      >
+        <path d="M5 7h14M5 12h9M5 17h6" />
+      </svg>
+    </span>
+  );
+}
+
 export function Sidebar({
   conversations,
   folders,
   unreadIds,
   generatingIds,
+  now,
   onNavigate,
 }: {
   conversations: ConversationListRow[];
@@ -125,11 +173,18 @@ export function Sidebar({
   unreadIds?: Set<string> | null;
   /** いま生成が走っている会話（タイトルを光らせる）。 */
   generatingIds?: Set<string> | null;
+  /**
+   * 「今日」「昨日」の基準になる時刻。ローダーが決めてサーバーとブラウザで
+   * 同じ値を使う（描画のたびに時計を読むと、日付の境でサーバーの出力と
+   * 食い違い、ハイドレーションが失敗して <html> の見た目が消える）。
+   */
+  now: number;
   onNavigate?: () => void;
 }) {
   const navigate = useNavigate();
   const revalidator = useRevalidator();
   const params = useParams();
+  const confirm = useConfirm();
 
   /**
    * 未読の印を出すか。取得済みの状態があればそちらを正とする
@@ -161,6 +216,10 @@ export function Sidebar({
     writeExpandedFolders([...next]);
   };
   const [menu, setMenu] = useState<MenuTarget | null>(null);
+  /** 名前をその場で書き換えている行。 */
+  const [renaming, setRenaming] = useState<MenuTarget | null>(null);
+  /** 新しいフォルダの名前を打っている（見出しの＋を押した）。 */
+  const [creatingFolder, setCreatingFolder] = useState(false);
   /** フォルダ移動モーダルの対象会話ID */
   const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
@@ -282,6 +341,18 @@ export function Sidebar({
   const rootConversations = conversations.filter(
     (c) => !c.pinned && c.folder_id == null,
   );
+  /** ルートの会話を「今日・昨日・…」でまとめたもの。並びは変えない。 */
+  const rootGroups = useMemo(
+    () =>
+      groupByDate(
+        allRows ? rootConversations : rootConversations.slice(0, SSR_ROWS),
+        (c) => c.updated_at,
+        now,
+      ),
+    // rootConversations は描画のたびに作り直されるが、中身は props 由来
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [conversations, allRows, now],
+  );
   const folderConversations = (fid: string) =>
     conversations.filter((c) => c.folder_id === fid);
 
@@ -341,15 +412,15 @@ export function Sidebar({
     });
   }
 
-  function renameConversation(c: ConversationListRow) {
-    const name = prompt("新しい名前を入力してください", c.title);
-    if (name?.trim()) void patchConversation(c.id, { title: name.trim() });
-  }
-
   async function removeConversation(c: ConversationListRow) {
-    if (!confirm(`「${c.title}」を削除しますか？この操作は取り消せません。`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: `「${c.title}」を削除しますか？`,
+      description:
+        "会話とメッセージ、添付した画像が消えます。この操作は取り消せません。使用量の記録は残ります。",
+      confirmLabel: "削除",
+      destructive: true,
+    });
+    if (!ok) return;
     const res = await send("会話の削除", `/api/conversations/${c.id}`, {
       method: "DELETE",
     });
@@ -367,32 +438,45 @@ export function Sidebar({
     });
   }
 
-  function renameFolder(f: FolderRow) {
-    const name = prompt("フォルダの新しい名前を入力してください", f.name);
-    if (name?.trim()) void patchFolder(f.id, { name: name.trim() });
-  }
-
   async function removeFolder(f: FolderRow) {
-    if (
-      !confirm(
-        `フォルダ「${f.name}」を削除しますか？中の会話は削除されず、フォルダなしに戻ります。`,
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm({
+      title: `フォルダ「${f.name}」を削除しますか？`,
+      description: "中の会話は消えません。フォルダなしに戻ります。",
+      confirmLabel: "削除",
+      destructive: true,
+    });
+    if (!ok) return;
     const res = await send("フォルダの削除", `/api/folders/${f.id}`, {
       method: "DELETE",
     });
     if (res && view === f.id) setView(null);
   }
 
-  async function createFolderPrompt() {
-    const name = prompt("新しいフォルダの名前を入力してください");
-    if (!name?.trim()) return;
+  /**
+   * 名前の書き換えの確定。空・不変なら何も送らない（送っても一覧を
+   * 取り直すだけで害は無いが、往復が無駄になる）。
+   */
+  function finishRename(target: MenuTarget, name: string | null) {
+    setRenaming(null);
+    if (name == null) return;
+    if (target.type === "conversation") {
+      const c = conversations.find((x) => x.id === target.id);
+      if (!c || c.title === name) return;
+      void patchConversation(c.id, { title: name });
+    } else {
+      const f = folders.find((x) => x.id === target.id);
+      if (!f || f.name === name) return;
+      void patchFolder(f.id, { name });
+    }
+  }
+
+  async function createFolder(name: string | null) {
+    setCreatingFolder(false);
+    if (!name) return;
     await send("フォルダの作成", "/api/folders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim() }),
+      body: JSON.stringify({ name }),
     });
   }
 
@@ -416,12 +500,9 @@ export function Sidebar({
   useEscapeToClose(menu != null, closeMenu);
 
   const shortcutClass = ({ isActive }: { isActive: boolean }) =>
-    `flex items-center gap-2.5 rounded-xl px-3 py-2 text-[0.9375rem] ${
-      isActive
-        ? "bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
-        : "text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-900"
+    `flex items-center gap-2.5 rounded-lg px-3 py-2 text-[0.9375rem] ${
+      isActive ? ROW_ACTIVE : ROW_IDLE
     }`;
-
 
   /**
    * 行に配る操作一式。
@@ -443,10 +524,11 @@ export function Sidebar({
     setView,
     conversationsIn: folderConversations,
     favorites: favoriteConversations,
-    renameConversation,
+    renaming,
+    startRename: setRenaming,
+    finishRename,
     removeConversation,
     patchConversation,
-    renameFolder,
     removeFolder,
     patchFolder,
     movePinned,
@@ -458,8 +540,12 @@ export function Sidebar({
 
   return (
     <SidebarProvider value={actions}>
+      {/*
+        面は本文より1段沈める。Mac のサイドバー（灰の面）と同じ考えで、
+        白い紙の本文と、その脇の一覧を面の差で分ける。境界線は要らない。
+      */}
       <div
-        className="relative flex h-full flex-col pt-[env(safe-area-inset-top)]"
+        className="relative flex h-full flex-col bg-sunken pt-[env(safe-area-inset-top)]"
         onClick={() => menu && setMenu(null)}
       >
         {/* ヘッダー: アプリ名と検索。検索は押したときだけ入力欄に変わる */}
@@ -477,36 +563,37 @@ export function Sidebar({
                 placeholder="検索（-語 で除外）"
                 aria-label="会話を検索"
                 {...TERSE_INPUT}
-                className="w-full rounded-full border border-neutral-200 bg-neutral-50 py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-[0.9375rem] dark:border-neutral-700 dark:bg-neutral-900"
+                className="w-full rounded-full border border-black/[0.08] bg-surface py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-[0.9375rem] dark:border-white/10"
               />
               <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
               <button
                 type="button"
                 onClick={closeSearch}
                 aria-label="検索を閉じる"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full p-1.5 text-neutral-400 hover:bg-black/[0.06] hover:text-neutral-600 dark:hover:bg-white/10 dark:hover:text-neutral-300"
               >
                 <IconX className="h-4 w-4" />
               </button>
             </div>
           ) : (
             <>
-              {/* アプリ名は「新規チャット」の入口も兼ねる（下の丸ボタンと同じ行き先） */}
-              <NavLink
-                to="/"
-                prefetch="intent"
-                onClick={onNavigate}
-                title="新規チャット"
-                className="min-w-0 flex-1 truncate rounded-lg px-2 py-1 text-xl font-semibold tracking-tight transition-colors hover:bg-neutral-100 active:scale-[0.98] dark:hover:bg-neutral-800"
-              >
-                Chat
-              </NavLink>
+              {/*
+                アプリの名前。以前は「新規チャット」の入口を兼ねていたが、
+                見えない入口は無いのと同じで、しかもタイトルを押して会話が
+                消えた（ように見える）事故のもとになる。入口は下のドックに。
+              */}
+              <div className="flex min-w-0 flex-1 items-center gap-2 px-1">
+                <AppMark />
+                <span className="font-display truncate text-lg font-bold tracking-tight">
+                  Chat
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={openSearch}
                 aria-label="会話を検索"
                 title="会話を検索"
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-neutral-500 transition hover:bg-neutral-100 active:scale-95 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-2 transition hover:bg-black/[0.06] active:scale-95 dark:hover:bg-white/10"
               >
                 <IconSearch className="h-5 w-5" />
               </button>
@@ -522,7 +609,7 @@ export function Sidebar({
             className={shortcutClass}
           >
             <IconBot className="h-4 w-4" />
-            ボット管理
+            ボット
           </NavLink>
           <NavLink to="/images" prefetch="intent" onClick={onNavigate} className={shortcutClass}>
             <IconPhoto className="h-4 w-4" />
@@ -555,16 +642,16 @@ export function Sidebar({
         </div>
       )}
 
-      {/* 下部の浮いたボタンに隠れないよう、一覧は余分に下を空ける */}
-        <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-24">
+        {/* 一覧。下のドックはレイアウトの一部なので、ここは末尾まで見える */}
+        <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
           {searchQuery.trim() ? (
             /* --- 検索結果 --- */
             <>
-              <p className="px-3 pb-1 pt-1 text-xs font-medium text-neutral-500 dark:text-neutral-400">
+              <SectionLabel>
                 {searching
                   ? "検索中…"
                   : `検索結果 ${searchResults?.length ?? 0}件`}
-              </p>
+              </SectionLabel>
               <ul className="space-y-0.5">
                 {(searchResults ?? []).map((r) => (
                   <SearchResultItem
@@ -575,7 +662,7 @@ export function Sidebar({
                   />
                 ))}
                 {!searching && searchResults?.length === 0 && (
-                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
+                  <li className="px-3 py-6 text-center text-[0.8125rem] text-ink-2">
                     見つかりませんでした
                   </li>
                 )}
@@ -584,23 +671,23 @@ export function Sidebar({
           ) : view === FAVORITES_ID ? (
             /* --- お気に入りフォルダの階層表示 --- */
             <>
-              <div className="mb-1 flex items-center gap-1 px-1">
+              <div className="mb-1 flex items-center gap-1 px-1 pt-2">
                 <button
                   type="button"
                   onClick={() => setView(null)}
                   aria-label="戻る"
-                  className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                  className="rounded-lg p-1.5 text-ink-2 hover:bg-black/[0.06] dark:hover:bg-white/10"
                 >
                   <IconArrowLeft className="h-4 w-4" />
                 </button>
                 <span className="flex items-center gap-1.5 truncate text-[0.9375rem] font-medium">
-                  <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
+                  <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-300" />
                   お気に入り
                 </span>
               </div>
               <ul className="space-y-0.5">
                 {favoriteConversations.length === 0 && (
-                  <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-neutral-500 dark:text-neutral-400">
+                  <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-ink-2">
                     まだありません。
                     <br />
                     会話の「…」から
@@ -616,22 +703,23 @@ export function Sidebar({
           ) : viewFolder ? (
             /* --- フォルダ階層表示 --- */
             <>
-              <div className="mb-1 flex items-center gap-1 px-1">
+              <div className="mb-1 flex items-center gap-1 px-1 pt-2">
                 <button
                   type="button"
                   onClick={() => setView(null)}
                   aria-label="戻る"
-                  className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                  className="rounded-lg p-1.5 text-ink-2 hover:bg-black/[0.06] dark:hover:bg-white/10"
                 >
                   <IconArrowLeft className="h-4 w-4" />
                 </button>
-                <span className="truncate text-[0.9375rem] font-medium">
-                  📁 {viewFolder.name}
+                <span className="flex items-center gap-1.5 truncate text-[0.9375rem] font-medium">
+                  <IconFolder className="h-4 w-4 shrink-0 text-ink-2" />
+                  {viewFolder.name}
                 </span>
               </div>
               <ul className="space-y-0.5">
                 {folderConversations(viewFolder.id).length === 0 && (
-                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
+                  <li className="px-3 py-6 text-center text-[0.8125rem] text-ink-2">
                     このフォルダは空です
                   </li>
                 )}
@@ -645,9 +733,7 @@ export function Sidebar({
             <>
               {pinnedItems.length > 0 && (
                 <>
-                  <p className="px-3 pb-1 pt-2 text-xs font-medium text-neutral-500 dark:text-neutral-400">
-                    ピン留め
-                  </p>
+                  <SectionLabel>ピン留め</SectionLabel>
                   <ul className="space-y-0.5">
                     {rows(pinnedItems).map((it) =>
                       it.type === "folder" ? (
@@ -663,21 +749,33 @@ export function Sidebar({
                 </>
               )}
 
-              <div className="flex items-center justify-between px-3 pb-1 pt-3">
-                <p className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
-                  フォルダ
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void createFolderPrompt()}
-                  aria-label="フォルダを作成"
-                  title="フォルダを作成"
-                  className="rounded p-0.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800"
-                >
-                  <IconPlus className="h-4 w-4" />
-                </button>
-              </div>
+              <SectionLabel
+                action={
+                  <button
+                    type="button"
+                    onClick={() => setCreatingFolder(true)}
+                    aria-label="フォルダを作成"
+                    title="フォルダを作成"
+                    className="rounded p-0.5 text-neutral-400 hover:bg-black/[0.06] hover:text-neutral-600 touch:p-2 dark:hover:bg-white/10"
+                  >
+                    <IconPlus className="h-4 w-4" />
+                  </button>
+                }
+              >
+                フォルダ
+              </SectionLabel>
               <ul className="space-y-0.5">
+                {/* 新しいフォルダ。＋を押すと空の行が現れて、その場で名前を打つ */}
+                {creatingFolder && (
+                  <li className="px-1 py-0.5">
+                    <RenameField
+                      initial=""
+                      placeholder="新しいフォルダ"
+                      label="新しいフォルダの名前"
+                      onFinish={(name) => void createFolder(name)}
+                    />
+                  </li>
+                )}
                 {/* 常設。削除も名前の変更もできないので、常に先頭に置く */}
                 <FavoritesFolderItem />
                 {rows(unpinnedFolders).map((f) => (
@@ -685,54 +783,62 @@ export function Sidebar({
                 ))}
               </ul>
 
-              <p className="px-3 pb-1 pt-3 text-xs font-medium text-neutral-500 dark:text-neutral-400">
-                会話
-              </p>
               {rootConversations.length === 0 && pinnedItems.length === 0 && (
-                <p className="px-3 py-4 text-center text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
-                  まだ会話はありません
-                </p>
+                <>
+                  <SectionLabel>会話</SectionLabel>
+                  <p className="px-3 py-4 text-center text-[0.8125rem] text-ink-2">
+                    まだ会話はありません
+                  </p>
+                </>
               )}
-              <ul className="space-y-0.5">
-                {rows(rootConversations).map((c) => (
-                  <ConversationItem key={c.id} c={c} />
-                ))}
-              </ul>
+              {/*
+                会話は「今日・昨日・過去7日…」の見出しで区切る。並びは
+                最終更新順のままで、見出しを挟むだけ。200件の一覧に地図が
+                できる。
+              */}
+              {rootGroups.map(({ group, items }, i) => (
+                <div key={`${group}-${i}`}>
+                  <SectionLabel>{DATE_GROUP_LABELS[group]}</SectionLabel>
+                  <ul className="space-y-0.5">
+                    {items.map((c) => (
+                      <ConversationItem key={c.id} c={c} />
+                    ))}
+                  </ul>
+                </div>
+              ))}
             </>
           )}
         </nav>
 
         {/*
-          下部に浮かべるバー。一覧の上に重ね、背景をぼかしたガラスの
-          ボタンで「新規チャット・テーマ・設定」を常に手の届く位置に置く。
-          バー自体はタップを通し（pointer-events-none）、ボタンだけが拾う。
+          下のドック。「新規チャット」と設定を、指の届く位置に常に置く。
+          以前は一覧の上に浮かせてグラデーションで末尾を隠していたが、
+          いまはレイアウトの一部で、一覧はこの上で終わる（末尾まで見える）。
+          テーマの切替は設定画面へ移し、ピルの幅を稼いだ。
         */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/60 to-transparent pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-16 dark:from-neutral-950 dark:via-neutral-950/60">
-          <div className="pointer-events-auto flex items-center gap-2 px-3">
-            <NavLink
-              to="/"
-              prefetch="intent"
-              onClick={onNavigate}
-              title="新規チャット"
-              className={`flex min-w-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-3 text-[0.9375rem] font-semibold transition active:scale-95 ${GLASS_ACCENT_BUTTON}`}
-            >
-              <IconPencilSquare className="h-4.5 w-4.5 shrink-0" />
-              新規チャット
-            </NavLink>
-            <ThemeToggle />
-            <NavLink
-              to="/settings"
-              prefetch="intent"
-              onClick={onNavigate}
-              aria-label="設定"
-              title="設定"
-              className={({ isActive }) =>
-                `${GLASS_ICON_BUTTON} ${isActive ? "text-accent-ink" : ""}`
-              }
-            >
-              <IconCog className="h-5 w-5" />
-            </NavLink>
-          </div>
+        <div className="flex shrink-0 items-center gap-2 border-t border-black/[0.06] px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-2.5 dark:border-white/[0.08]">
+          <NavLink
+            to="/"
+            prefetch="intent"
+            onClick={onNavigate}
+            title="新規チャット"
+            className={`flex min-w-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-3 text-[0.9375rem] font-semibold transition active:scale-95 ${GLASS_ACCENT_BUTTON}`}
+          >
+            <IconPencilSquare className="h-4.5 w-4.5 shrink-0" />
+            新規チャット
+          </NavLink>
+          <NavLink
+            to="/settings"
+            prefetch="intent"
+            onClick={onNavigate}
+            aria-label="設定"
+            title="設定"
+            className={({ isActive }) =>
+              `${GLASS_ICON_BUTTON} ${isActive ? "text-accent-ink" : ""}`
+            }
+          >
+            <IconCog className="h-5 w-5" />
+          </NavLink>
         </div>
 
         {/*
@@ -750,7 +856,7 @@ export function Sidebar({
               className={`w-full max-w-sm rounded-2xl p-4 animate-pop ${GLASS_PANEL}`}
               onClick={(e) => e.stopPropagation()}
             >
-              <p className="mb-3 text-sm font-semibold">
+              <p className="font-display mb-3 text-sm font-bold">
                 「{moveConv.title}」をフォルダへ移動
               </p>
               <div className="max-h-60 space-y-1 overflow-y-auto">
@@ -766,10 +872,10 @@ export function Sidebar({
                     });
                     setMoveTarget(null);
                   }}
-                  className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
+                  className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-black/[0.05] dark:text-neutral-200 dark:hover:bg-white/10"
                 >
                   {moveConv.favorite === 1 ? (
-                    <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-white" />
+                    <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-300" />
                   ) : (
                     <IconStar className="h-4 w-4 shrink-0 text-neutral-400" />
                   )}
@@ -788,7 +894,7 @@ export function Sidebar({
                       void patchConversation(moveConv.id, { folderId: null });
                       setMoveTarget(null);
                     }}
-                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
+                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-black/[0.05] dark:text-neutral-200 dark:hover:bg-white/10"
                   >
                     フォルダから出す
                   </button>
@@ -802,9 +908,10 @@ export function Sidebar({
                       void patchConversation(moveConv.id, { folderId: f.id });
                       setMoveTarget(null);
                     }}
-                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-white/10"
+                    className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-black/[0.05] disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-white/10"
                   >
-                    📁 {f.name}
+                    <IconFolder className="h-4 w-4 shrink-0 text-neutral-400" />
+                    {f.name}
                   </button>
                 ))}
                 {folders.length === 0 && (
@@ -846,7 +953,7 @@ export function Sidebar({
                 <button
                   type="button"
                   onClick={() => setMoveTarget(null)}
-                  className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-white/10"
+                  className="rounded-lg px-3 py-1.5 text-sm text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/10"
                 >
                   キャンセル
                 </button>

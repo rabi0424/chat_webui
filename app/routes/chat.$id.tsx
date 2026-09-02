@@ -9,8 +9,8 @@ export function meta({ loaderData }: Route.MetaArgs) {
   return [
     {
       title: loaderData
-        ? `${loaderData.conversation.title} - Chat WebUI`
-        : "Chat WebUI",
+        ? `${loaderData.conversation.title} - Chat`
+        : "Chat",
     },
   ];
 }
@@ -65,6 +65,7 @@ export default function ChatRoute({ loaderData }: Route.ComponentProps) {
       initialMessages={messages}
       bot={bot}
       initialModel={conversation.model_id}
+      title={conversation.title}
       initialParams={parseParamsJson(conversation.params_json)}
       // 作ったときの写し。あとで既定やボットを変えても遡らない
       systemPrompt={conversation.system_prompt}

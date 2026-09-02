@@ -12,6 +12,17 @@
  * 枠切れで持ち越し）は表示されなくなるが、**出さないほうが害が小さい**。
  */
 
+/**
+ * 出典のファビコンの取得先。送るのはホスト名だけ（`/ip3/<host>.ico`）で、
+ * URL のパスやクエリは乗らないので、会話の中身が外へ出る経路にはならない。
+ * message-parts.tsx の CitationList と csp.test.ts が同じ値を見る。
+ */
+export const FAVICON_ORIGIN = "https://icons.duckduckgo.com";
+
+export function faviconUrl(host: string): string {
+  return `${FAVICON_ORIGIN}/ip3/${encodeURIComponent(host)}.ico`;
+}
+
 export interface CspInput {
   /** `<ServerRouter nonce>` と同じ値。React Router が撒くスクリプトに付く。 */
   nonce: string;
@@ -48,12 +59,15 @@ export function contentSecurityPolicy({
     // 埋め込み自体を禁じる（クリックジャッキング）
     ["frame-ancestors", ["'none'"]],
     ["form-action", ["'self'"]],
-    // data: は生成画像がそのまま埋まっている場合、blob: は添付のプレビュー
-    ["img-src", ["'self'", "data:", "blob:"]],
-    // KaTeX のフォントは束ねて同一オリジンから出る
-    ["font-src", ["'self'", "data:"]],
+    // data: は生成画像がそのまま埋まっている場合、blob: は添付のプレビュー。
+    // 出典のファビコンだけは外部から読む（ホスト名を送るだけで、会話の
+    // 中身は乗らない。URL 全体を送る形にはしないこと）
+    ["img-src", ["'self'", "data:", "blob:", FAVICON_ORIGIN]],
+    // KaTeX のフォントは束ねて同一オリジンから出る。見出しの書体だけ
+    // Google Fonts（root.tsx の <link>）
+    ["font-src", ["'self'", "data:", "https://fonts.gstatic.com"]],
     // KaTeX・Mermaid・React の style 属性。属性まで許す必要がある
-    ["style-src", ["'self'", "'unsafe-inline'"]],
+    ["style-src", ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"]],
     ["script-src", script],
     ["connect-src", connect],
     ["worker-src", ["'self'", "blob:"]],

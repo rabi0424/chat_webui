@@ -62,6 +62,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
           black-translucent でステータスバーの背後まで描画し（境界が消える）、
           はみ出しは各画面の safe-area パディングで吸収する。
         */}
+        {/*
+          見出しの書体（Zen Kaku Gothic New）。本文は system-ui のままで、
+          見出し・ダイアログの題・使用量の数字にだけ当てる（app.css の
+          --font-display）。読み込みが終わるまでは同系のシステム書体で
+          描かれ、届いたら差し替わる（display=swap）。
+        */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700&display=swap"
+        />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
         <meta name="mobile-web-app-capable" content="yes" />
@@ -113,7 +125,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
       <h1 className="text-2xl font-bold">{message}</h1>
       <p className="mt-2 text-neutral-600 dark:text-neutral-300">{details}</p>
       {stack && (
-        <pre className="mt-4 w-full overflow-x-auto rounded-lg bg-neutral-100 p-4 text-sm dark:bg-neutral-900">
+        <pre className="mt-4 w-full overflow-x-auto rounded-lg bg-sunken p-4 text-sm">
           <code>{stack}</code>
         </pre>
       )}

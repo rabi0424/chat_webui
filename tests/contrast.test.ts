@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -71,5 +72,41 @@ describe("hover が無い端末で出す操作の色", () => {
   it("ふだんの薄さは基準を満たさない（だから hover 前提にできない）", () => {
     expect(contrast(NEUTRAL["300"], WHITE)).toBeLessThan(UI_MIN);
     expect(contrast(NEUTRAL["700"], NEUTRAL_950)).toBeLessThan(UI_MIN);
+  });
+});
+
+/**
+ * 意味付きトークン（UI-10）の比。値は app.css から読む——ここに写すと、
+ * app.css を変えたときにテストだけ古い値で通り続ける。
+ */
+function cssTokens(selector: string): Record<string, string> {
+  const css = readFileSync("app/app.css", "utf-8");
+  // 同じセレクタのブロックはアクセントの分など複数ある。全部を読み、後勝ちで重ねる
+  const re = new RegExp(`^${selector.replace(/\./g, "\\.")} \\{([^}]*)\\}`, "gm");
+  const out: Record<string, string> = {};
+  for (const block of css.matchAll(re)) {
+    for (const m of block[1].matchAll(/--([\w-]+):\s*([^;]+);/g)) out[m[1]] = m[2].trim();
+  }
+  if (!("surface" in out)) throw new Error(`${selector} に --surface が無い`);
+  return out;
+}
+
+describe("面と文字のトークン", () => {
+  const light = cssTokens(":root");
+  const dark = cssTokens(":root.dark");
+
+  it("補助の文字（ink-2）は本文の基準を満たす", () => {
+    expect(contrast(light["ink-2"], light.surface)).toBeGreaterThanOrEqual(TEXT_MIN);
+    expect(contrast(dark["ink-2"], dark.surface)).toBeGreaterThanOrEqual(TEXT_MIN);
+  });
+
+  it("沈んだ面の上でも補助の文字は読める", () => {
+    expect(contrast(light["ink-2"], light.sunken)).toBeGreaterThanOrEqual(TEXT_MIN);
+    expect(contrast(dark["ink-2"], dark.sunken)).toBeGreaterThanOrEqual(TEXT_MIN);
+  });
+
+  it("薄い印（ink-3）は文字の基準を満たさない——だから読ませる文字には使わない", () => {
+    expect(contrast(light["ink-3"], light.surface)).toBeLessThan(TEXT_MIN);
+    expect(contrast(dark["ink-3"], dark.surface)).toBeLessThan(TEXT_MIN);
   });
 });

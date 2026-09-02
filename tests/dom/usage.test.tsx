@@ -18,8 +18,23 @@ const totals = (costUsd: number, events: number): UsageTotals => ({
   events,
 });
 
-function renderUsage(opts: { empty?: boolean; d1Bytes?: number | null } = {}) {
+const DAY = 24 * 60 * 60 * 1000;
+/** JST の日付を SQL の `day` にする。 */
+const jstDay = (iso: string) =>
+  Math.floor((Date.parse(iso) + 9 * 60 * 60 * 1000) / DAY);
+
+function renderUsage(
+  opts: {
+    empty?: boolean;
+    d1Bytes?: number | null;
+    usdJpy?: number | null;
+    limitJpy?: number;
+    daily?: boolean;
+  } = {},
+) {
   const empty = opts.empty ?? false;
+  const usdJpy = opts.usdJpy ?? null;
+  const limitJpy = opts.limitJpy ?? 0;
   const loaderData = {
     now: Date.parse("2026-08-21T12:00:00+09:00"),
     totals: {
@@ -59,13 +74,42 @@ function renderUsage(opts: { empty?: boolean; d1Bytes?: number | null } = {}) {
       usageEvents: 50,
       pendingDeletions: 0,
     },
-    usdJpy: null,
-    limitJpy: 0,
+    daily: opts.daily
+      ? [
+          {
+            day: jstDay("2026-08-03T10:00:00+09:00"),
+            modelId: "openai/gpt-4o",
+            provider: "openrouter",
+            costUsd: 2,
+            pointsWithoutCost: 0,
+            events: 20,
+          },
+          {
+            day: jstDay("2026-08-03T11:00:00+09:00"),
+            modelId: "anthropic/claude",
+            provider: "openrouter",
+            costUsd: 1,
+            pointsWithoutCost: 0,
+            events: 5,
+          },
+          {
+            day: jstDay("2026-08-21T09:00:00+09:00"),
+            modelId: "openai/gpt-4o",
+            provider: "openrouter",
+            costUsd: 2,
+            pointsWithoutCost: 0,
+            events: 25,
+          },
+        ]
+      : [],
+    usdJpy,
+    limitJpy,
+    pointsUsdRate: 0,
     verdict: {
       blocked: false,
-      reason: "no-limit" as const,
-      usedJpy: null,
-      limitJpy: 0,
+      reason: limitJpy > 0 ? ("under" as const) : ("no-limit" as const),
+      usedJpy: usdJpy != null ? 5 * usdJpy : null,
+      limitJpy,
       estimated: false,
     },
   };
@@ -133,12 +177,57 @@ describe("期間の切り替え", () => {
   });
 });
 
-describe("Cloudflare", () => {
+describe("日別のグラフ", () => {
+  it("月初から今日までの棒が並び、記録の無い日は 0 と読める", () => {
+    renderUsage({ daily: true });
+    const bars = within(
+      screen.getByRole("list", { name: "日別の使用額" }),
+    ).getAllByRole("listitem");
+    // 8/21 なので 21 本。並びの幅は月の日数（31）ぶんのうち今日まで
+    expect(bars).toHaveLength(21);
+    expect(
+      screen.getByRole("list", { name: "日別の使用額" }).style.width,
+    ).toBe(`${(21 / 31) * 100}%`);
+    expect(bars[2].getAttribute("aria-label")).toBe("8月3日 $3.00");
+    expect(bars[3].getAttribute("aria-label")).toBe("8月4日 $0.0000");
+    expect(bars[20].getAttribute("aria-label")).toBe("8月21日 $2.00");
+  });
+
+  it("記録の無い月にはグラフを出さない", () => {
+    renderUsage();
+    expect(screen.queryByRole("list", { name: "日別の使用額" })).toBeNull();
+  });
+
+  it("円のレートがあれば円で読み、上限があれば日割りの点線を引く", () => {
+    renderUsage({ daily: true, usdJpy: 150, limitJpy: 3100 });
+    const bars = within(
+      screen.getByRole("list", { name: "日別の使用額" }),
+    ).getAllByRole("listitem");
+    expect(bars[2].getAttribute("aria-label")).toBe("8月3日 ¥450");
+    // 3100 円 ÷ 31 日 = 100 円
+    expect(screen.getByText(/点線は上限を日割りした ¥100/)).toBeTruthy();
+    expect(screen.getByTestId("limit-line")).toBeTruthy();
+  });
+
+  it("レートが無いと上限の線は引けない（棒はドル、線は円で決まるため）", () => {
+    renderUsage({ daily: true, usdJpy: null, limitJpy: 3100 });
+    expect(screen.queryByTestId("limit-line")).toBeNull();
+    expect(screen.queryByText(/点線は/)).toBeNull();
+  });
+
+  it("ベンダーごとの凡例に今月の額を添える", () => {
+    renderUsage({ daily: true });
+    expect(screen.getByText("OpenAI").nextElementSibling?.textContent).toBe("$4.00");
+    expect(screen.getByText("Anthropic").nextElementSibling?.textContent).toBe("$1.00");
+  });
+});
+
+describe("保存しているもの", () => {
   it("保管しているものの大きさが出る", () => {
     renderUsage();
-    expect(screen.getByText("D1（データベース）")).toBeTruthy();
+    expect(screen.getByText("会話の保存")).toBeTruthy();
     expect(screen.getByText("3 MB")).toBeTruthy();
-    expect(screen.getByText("R2（画像・添付）")).toBeTruthy();
+    expect(screen.getByText("画像・添付の保存")).toBeTruthy();
     expect(screen.getByText("40 MB")).toBeTruthy();
   });
 

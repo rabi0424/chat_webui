@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoutesStub } from "react-router";
 import { Sidebar } from "../../app/components/Sidebar";
+import { ConfirmProvider } from "../../app/components/ConfirmDialog";
 import { conv } from "./helpers/sidebar-harness";
 
 /** サーバーが描く上限（Sidebar の SSR_ROWS と揃える）。 */
@@ -28,12 +29,15 @@ function serverHtml(count: number): string {
     {
       path: "/",
       Component: () => (
-        <Sidebar
-          conversations={conversations}
-          folders={[]}
-          unreadIds={null}
-          generatingIds={null}
-        />
+        <ConfirmProvider>
+          <Sidebar
+            conversations={conversations}
+            folders={[]}
+            unreadIds={null}
+            generatingIds={null}
+            now={1_700_000_000_000}
+          />
+        </ConfirmProvider>
       ),
     },
   ]);

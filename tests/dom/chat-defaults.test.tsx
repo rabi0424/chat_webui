@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createRoutesStub, Outlet } from "react-router";
+import { ConfirmProvider } from "../../app/components/ConfirmDialog";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Home from "../../app/routes/home";
@@ -36,7 +37,11 @@ function renderNewChat(settings: Partial<AppSettings>) {
   const Stub = createRoutesStub([
     {
       path: "/",
-      Component: () => <Outlet context={shell} />,
+      Component: () => (
+        <ConfirmProvider>
+          <Outlet context={shell} />
+        </ConfirmProvider>
+      ),
       children: [{ index: true, Component: Home }],
     },
   ]);
@@ -170,7 +175,11 @@ describe("既にある会話", () => {
     const Stub = createRoutesStub([
       {
         path: "/",
-        Component: () => <Outlet context={shell} />,
+        Component: () => (
+        <ConfirmProvider>
+          <Outlet context={shell} />
+        </ConfirmProvider>
+      ),
         children: [
           {
             index: true,

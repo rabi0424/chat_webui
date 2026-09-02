@@ -1,21 +1,27 @@
 import { Link, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "./shell";
 import { IconMenu } from "../components/icons";
+import { useConfirm } from "../components/ConfirmDialog";
 import { MAX_TITLE_LENGTH } from "../lib/constants";
 
 export function meta() {
-  return [{ title: "ボット管理 - Chat WebUI" }];
+  return [{ title: "ボット管理 - Chat" }];
 }
 
 export default function Bots() {
   const { bots, models, openSidebar } = useOutletContext<ShellContext>();
   const revalidator = useRevalidator();
   const navigate = useNavigate();
+  const confirm = useConfirm();
 
   async function remove(id: string, name: string) {
-    if (!confirm(`ボット「${name}」を削除しますか？既存の会話には影響しません。`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: `ボット「${name}」を削除しますか？`,
+      description: "このボットで始めた会話はそのまま残ります。",
+      confirmLabel: "削除",
+      destructive: true,
+    });
+    if (!ok) return;
     await fetch(`/api/bots/${id}`, { method: "DELETE" });
     revalidator.revalidate();
   }
@@ -39,12 +45,12 @@ export default function Bots() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-1 border-b border-neutral-100 px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-neutral-800">
+      <header className="flex shrink-0 items-center gap-1 border-b border-line px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
         <button
           type="button"
           onClick={openSidebar}
           aria-label="メニュー"
-          className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
+          className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
         >
           <IconMenu className="h-5 w-5" />
         </button>
@@ -62,8 +68,8 @@ export default function Bots() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-6">
           {bots.length === 0 && (
-            <div className="rounded-3xl border border-dashed border-neutral-200 px-6 py-14 text-center dark:border-neutral-800">
-              <p className="text-sm leading-relaxed text-neutral-400 dark:text-neutral-500">
+            <div className="rounded-3xl border border-dashed border-line px-6 py-14 text-center">
+              <p className="text-sm leading-relaxed text-ink-3">
                 ボットはまだありません。
                 <br />
                 「モデル + システムプロンプト」の組み合わせを登録すると、
@@ -85,7 +91,7 @@ export default function Bots() {
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-semibold tracking-tight">{b.name}</p>
-                  <p className="mt-0.5 truncate text-xs text-neutral-400 dark:text-neutral-500">
+                  <p className="mt-0.5 truncate text-xs text-ink-3">
                     {models.find((m) => m.id === b.model_id)?.name ?? b.model_id}
                   </p>
                 </div>
@@ -93,14 +99,14 @@ export default function Bots() {
                   <button
                     type="button"
                     onClick={() => void navigate(`/bots/${b.id}/edit`)}
-                    className="rounded-lg px-2.5 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                    className="rounded-lg px-2.5 py-1.5 text-ink-2 hover:bg-hover"
                   >
                     編集
                   </button>
                   <button
                     type="button"
                     onClick={() => void duplicate(b.id)}
-                    className="rounded-lg px-2.5 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                    className="rounded-lg px-2.5 py-1.5 text-ink-2 hover:bg-hover"
                   >
                     複製
                   </button>

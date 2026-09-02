@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { createRoutesStub } from "react-router";
+import { ConfirmProvider } from "../../app/components/ConfirmDialog";
 import { BotForm } from "../../app/components/BotForm";
 import { installServer, msg, renderChat } from "./helpers/chat-harness";
 import { installSidebarServer, renderSidebar } from "./helpers/sidebar-harness";
@@ -74,7 +75,9 @@ describe("描かれた入力欄の属性", () => {
       {
         path: "/",
         Component: () => (
-          <BotForm models={[TEST_MODEL]} retryCeiling={5} newModelDays={7} />
+          <ConfirmProvider>
+            <BotForm models={[TEST_MODEL]} retryCeiling={5} newModelDays={7} />
+          </ConfirmProvider>
         ),
       },
     ]);

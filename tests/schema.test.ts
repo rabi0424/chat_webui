@@ -9,6 +9,7 @@ import {
   QUEUE_PENDING_DELETION_SQL,
   STALE_STREAMING_MS,
   STORAGE_STATS_SQL,
+  USAGE_DAILY_SQL,
   USAGE_TOTALS_SQL,
   appendAssistantMessageStatements,
   clearPendingDeletionsSql,
@@ -102,6 +103,41 @@ describe("使用量の台帳", () => {
 
   const totals = (since = 0) =>
     db.prepare(USAGE_TOTALS_SQL).get(since) as Record<string, number>;
+
+  /**
+   * 日別のグラフ。日は JST で切る。UTC で切ると 09:00 JST より前の
+   * 使用が前の日に数えられ、朝の分だけ棒が1本ずれる。
+   */
+  it("日別の内訳は JST の日付で切る", () => {
+    addMessage("m1", "c1", "openai/gpt-4o");
+    addMessage("m2", "c1", "openai/gpt-4o");
+    addMessage("m3", "c1", "anthropic/claude");
+    // 2026-09-02 00:00 JST = 2026-09-01 15:00 UTC
+    const jstMidnight = Date.UTC(2026, 8, 1, 15, 0, 0);
+    const insert = (id: string, mid: string, at: number, cost: number) =>
+      db
+        .prepare(
+          `INSERT INTO usage_events (id, at, kind, provider, model_id, cost_usd, points, conversation_id, message_id)
+           SELECT ?, ?, 'chat', 'openrouter', model_id, ?, NULL, conversation_id, id FROM messages WHERE id = ?`,
+        )
+        .run(id, at, cost, mid);
+    insert("e1", "m1", jstMidnight - 1, 1); // JST では 9/1 の 23:59:59.999
+    insert("e2", "m2", jstMidnight, 2); // JST では 9/2 の 00:00:00
+    insert("e3", "m3", jstMidnight + 1000, 4); // 同じ日、別のモデル
+
+    const rows = db.prepare(USAGE_DAILY_SQL).all(0) as {
+      day: number;
+      model_id: string;
+      cost_usd: number;
+      events: number;
+    }[];
+    const dayOf = (at: number) => Math.floor((at + 9 * 3600 * 1000) / 86_400_000);
+    expect(rows.map((r) => [r.day - dayOf(jstMidnight), r.model_id, r.cost_usd])).toEqual([
+      [-1, "openai/gpt-4o", 1],
+      [0, "anthropic/claude", 4],
+      [0, "openai/gpt-4o", 2],
+    ]);
+  });
 
   it("応答の使用量を載せると、モデルと会話が引き継がれる", () => {
     addMessage("m1", "c1", "openai/gpt-4o");

@@ -1,18 +1,18 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { IconCog, IconPlus } from "./icons";
+import { IconBot, IconChevronRight, IconCog, IconPlus } from "./icons";
+import { useHomeStyle } from "../lib/home-style";
 
 /**
  * ホーム（新規チャット）の空状態。ボットのランチャーを兼ねる。
  *
- * 見た目は2スタイルあり、切り替えて使い比べられる:
+ * 見た目は2様式あり、設定画面の「外観」で切り替える（lib/home-style.ts）。
  * - glass:   淡い環境光の上にすりガラスのカードを並べる
  * - minimal: 大きな挨拶タイポグラフィ + 罫線区切りのリスト
- * 好みは端末ごとでよいので localStorage に持つ。
+ *
+ * ボットが1つも無いときも、この画面が出る。以前は素の「モデルを選んで
+ * メッセージを送信」に落ちていて、ボットを作る入口が無かった。
  */
-export type HomeStyle = "glass" | "minimal";
-
-const HOME_STYLE_KEY = "chat-webui:home-style";
 
 /** 表示に必要な分だけの構造的な型（DB行やモデル情報の部分集合）。 */
 export interface HomeBot {
@@ -32,20 +32,17 @@ export function HomeEmptyState({
   modelNames: Map<string, string>;
   onSelect: (bot: HomeBot) => void;
 }) {
-  const [style, setStyle] = useState<HomeStyle>("glass");
+  /*
+   * 様式は保存値を購読する（設定画面で変えるとその場で切り替わる）。
+   * サーバーでは既定（glass）で描かれ、マウント後に保存値へ揃う。
+   */
+  const style = useHomeStyle();
   // 挨拶はローカル時刻依存なので、SSRとずれないようマウント後に確定させる
   const [hour, setHour] = useState<number | null>(null);
 
   useEffect(() => {
     setHour(new Date().getHours());
-    const saved = localStorage.getItem(HOME_STYLE_KEY);
-    if (saved === "minimal" || saved === "glass") setStyle(saved);
   }, []);
-
-  const switchStyle = (s: HomeStyle) => {
-    setStyle(s);
-    localStorage.setItem(HOME_STYLE_KEY, s);
-  };
 
   const greeting =
     hour == null || (hour >= 11 && hour < 18)
@@ -68,11 +65,17 @@ export function HomeEmptyState({
         {style === "glass" ? (
           <>
             <div className="mb-7 text-center">
-              <h1 className="bg-gradient-to-r from-[#453e63] via-neutral-800 to-[#2e4a5c] bg-clip-text text-[26px] font-bold tracking-tight text-transparent dark:from-[#e8e0ff] dark:via-white dark:to-[#c8e4f5]">
+              {/*
+                挨拶はアクセント色から本文の色へ流すグラデーション。
+                以前は紫〜青緑の固定色で、アクセントを変えても動かなかった。
+              */}
+              <h1 className="font-display bg-gradient-to-r from-accent-ink via-neutral-800 to-accent-ink bg-clip-text text-[26px] font-bold tracking-tight text-transparent dark:from-accent dark:via-white dark:to-accent">
                 {greeting}
               </h1>
-              <p className="mt-2 text-[13.5px] text-neutral-500 dark:text-neutral-400">
-                ボットを選ぶか、そのままメッセージを送信
+              <p className="mt-2 text-[13.5px] text-ink-2">
+                {bots.length > 0
+                  ? "ボットを選ぶか、そのままメッセージを送信"
+                  : "そのままメッセージを送るか、ボットを作って始める"}
               </p>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -107,26 +110,32 @@ export function HomeEmptyState({
               <Link
                 to="/bots/new"
                 style={{ animationDelay: `${bots.length * 45}ms` }}
-                className="animate-pop flex min-h-[120px] flex-col items-center justify-center gap-1.5 rounded-[22px] border border-dashed border-black/[0.14] bg-white/25 text-[13px] text-neutral-500 backdrop-blur-xl transition hover:bg-white/50 active:scale-[0.97] dark:border-white/[0.16] dark:bg-white/[0.025] dark:text-neutral-400 dark:hover:bg-white/[0.06]"
+                className="animate-pop flex min-h-[120px] flex-col items-center justify-center gap-1.5 rounded-[22px] border border-dashed border-black/[0.14] bg-white/25 text-[13px] text-ink-2 backdrop-blur-xl transition hover:bg-white/50 active:scale-[0.97] dark:border-white/[0.16] dark:bg-white/[0.025] dark:hover:bg-white/[0.06]"
               >
-                <IconPlus className="h-5 w-5" />
-                新しいボット
+                {bots.length === 0 ? (
+                  <IconBot className="h-6 w-6" />
+                ) : (
+                  <IconPlus className="h-5 w-5" />
+                )}
+                {bots.length === 0 ? "最初のボットを作る" : "新しいボット"}
               </Link>
             </div>
-            <div className="mt-6 flex justify-center">
-              <Link
-                to="/bots"
-                className="flex items-center gap-1.5 rounded-full border border-black/[0.06] bg-white/40 px-3.5 py-1.5 text-xs text-neutral-600 backdrop-blur-md transition hover:bg-white/70 dark:border-white/[0.09] dark:bg-white/[0.03] dark:text-neutral-300 dark:hover:bg-white/[0.07]"
-              >
-                <IconCog className="h-3.5 w-3.5" />
-                ボットを管理
-              </Link>
-            </div>
+            {bots.length > 0 && (
+              <div className="mt-6 flex justify-center">
+                <Link
+                  to="/bots"
+                  className="flex items-center gap-1.5 rounded-full border border-black/[0.06] bg-white/40 px-3.5 py-1.5 text-xs text-neutral-600 backdrop-blur-md transition hover:bg-white/70 dark:border-white/[0.09] dark:bg-white/[0.03] dark:text-neutral-300 dark:hover:bg-white/[0.07]"
+                >
+                  <IconCog className="h-3.5 w-3.5" />
+                  ボットを管理
+                </Link>
+              </div>
+            )}
           </>
         ) : (
           <>
-            <h1 className="mb-8 px-1 text-[28px] font-bold leading-[1.3] tracking-tight">
-              <span className="text-neutral-500 dark:text-neutral-400">
+            <h1 className="font-display mb-8 px-1 text-[28px] font-bold leading-[1.3] tracking-tight">
+              <span className="text-ink-2">
                 {greeting}。
               </span>
               <br />
@@ -151,16 +160,11 @@ export function HomeEmptyState({
                     <span className="block truncate text-[15px] font-semibold tracking-tight">
                       {b.name}
                     </span>
-                    <span className="mt-0.5 block truncate text-xs text-neutral-500 dark:text-neutral-400">
+                    <span className="mt-0.5 block truncate text-xs text-ink-2">
                       {subtitleOf(b)}
                     </span>
                   </span>
-                  <span
-                    aria-hidden
-                    className="text-lg text-neutral-400 dark:text-neutral-500"
-                  >
-                    ›
-                  </span>
+                  <IconChevronRight className="h-4 w-4 shrink-0 text-ink-3" />
                 </button>
               ))}
               <div className="flex items-center justify-between border-b border-neutral-900/[0.08] px-1 py-3 dark:border-white/[0.08]">
@@ -174,43 +178,20 @@ export function HomeEmptyState({
                   >
                     <IconPlus className="h-4 w-4" />
                   </span>
-                  新しいボットを作成
+                  {bots.length === 0 ? "最初のボットを作る" : "新しいボットを作成"}
                 </Link>
-                <Link
-                  to="/bots"
-                  className="py-1 text-xs text-neutral-500 underline-offset-2 transition hover:underline dark:text-neutral-400"
-                >
-                  管理
-                </Link>
+                {bots.length > 0 && (
+                  <Link
+                    to="/bots"
+                    className="py-1 text-xs text-ink-2 underline-offset-2 transition hover:underline"
+                  >
+                    管理
+                  </Link>
+                )}
               </div>
             </div>
           </>
         )}
-
-        {/* スタイルの切り替え（好みが決まったら片方に固定してこのUIは外してよい） */}
-        <div className="mt-8 flex justify-center">
-          <div className="inline-flex rounded-full border border-neutral-900/[0.07] p-0.5 dark:border-white/[0.09]">
-            {(
-              [
-                ["glass", "グラス"],
-                ["minimal", "ミニマル"],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => switchStyle(value)}
-                className={`rounded-full px-3 py-1 text-[11px] transition ${
-                  style === value
-                    ? "bg-neutral-900/[0.06] font-medium text-neutral-600 dark:bg-white/10 dark:text-neutral-200"
-                    : "text-neutral-500 dark:text-neutral-400"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );

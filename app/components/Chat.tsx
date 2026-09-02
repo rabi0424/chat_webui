@@ -39,7 +39,9 @@ import { Composer } from "./chat/Composer";
 import { LiveRegion } from "./chat/LiveRegion";
 import { SelectionBar } from "./chat/SelectionBar";
 import { type MessageActions } from "./chat/message-context";
+import { formatJpy } from "./chat/message-parts";
 import { useEscapeToClose } from "../lib/dismiss";
+import { useConfirm } from "./ConfirmDialog";
 import { readLastUsedModel, writeLastUsedModel } from "../lib/persisted";
 import type {
   CreateConversationResponse,
@@ -99,10 +101,16 @@ export function Chat({
   initialParams = null,
   systemPrompt = null,
   emptyState,
+  title = null,
+  onClearBot,
 }: {
   conversationId: string | null;
   initialMessages: UiMessage[];
   bot?: BotContext | null;
+  /** ツールバーの中央に出す会話の名前。無ければ「新規チャット」。 */
+  title?: string | null;
+  /** ホームでボットを選んでいるとき、その選択を外す（チップの ×）。 */
+  onClearBot?: () => void;
   initialModel?: string | null;
   /** この会話の生成パラメータ（会話 or ボットのスナップショット）。 */
   initialParams?: ParamsState | null;
@@ -120,6 +128,7 @@ export function Chat({
     useOutletContext<ShellContext>();
   const navigate = useNavigate();
   const revalidator = useRevalidator();
+  const confirm = useConfirm();
 
   const [model, setModel] = useState(
     initialModel ?? settings.defaultModelId ?? DEFAULT_MODEL,
@@ -205,7 +214,7 @@ export function Chat({
   const location = useLocation();
   useEffect(() => {
     if ((location.state as { forked?: boolean } | null)?.forked) {
-      showNotice("⑂ 分岐を作成しました");
+      showNotice("分岐を作成しました");
     }
     // 分岐直後のマウント時のみ
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -407,14 +416,13 @@ export function Chat({
     }, 600);
   };
 
-  const resetParams = () => {
-    if (
-      !confirm(
-        "生成パラメータを初期設定（すべて自動 = モデル既定値）に戻します。よろしいですか？",
-      )
-    ) {
-      return;
-    }
+  const resetParams = async () => {
+    const ok = await confirm({
+      title: "生成パラメータを初期設定に戻しますか？",
+      description: "すべて「自動」（モデル本来の既定値）に戻ります。",
+      confirmLabel: "戻す",
+    });
+    if (!ok) return;
     changeParams({});
   };
 
@@ -1324,17 +1332,16 @@ export function Chat({
     ]
       .filter(Boolean)
       .join("と");
-    if (
-      !confirm(
-        `${what}を削除します。` +
-          (messageIds.length > 0
-            ? "メッセージの削除は取り消せません。"
-            : "履歴はそのままで、すべてが再びコンテキストになります。") +
-          "よろしいですか？",
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm({
+      title: `${what}を削除しますか？`,
+      description:
+        messageIds.length > 0
+          ? "メッセージの削除は取り消せません。"
+          : "履歴はそのままで、すべてが再びコンテキストになります。",
+      confirmLabel: "削除",
+      destructive: messageIds.length > 0,
+    });
+    if (!ok) return;
 
     try {
       let fresh: UiMessage[] | null = null;
@@ -1441,19 +1448,17 @@ export function Chat({
     }
   }
 
-  /** ここから分岐: この地点までの履歴で独立した新会話を作る。 */
+  /**
+   * ここから分岐: この地点までの履歴で独立した新会話を作る。
+   *
+   * 確認は取らない。会話が1つ増えるだけで元は何も変わらず、遷移先の
+   * 通知（「分岐を作成しました」）で何が起きたかは分かる。
+   */
   async function fork(messageId: string) {
     const convId = convIdRef.current;
     // 生成中でも通す。ここまでの履歴を新しい会話へ写すだけで、
     // 走っている生成には触れない（写した先で続きを生成もしない）
     if (!convId) return;
-    if (
-      !confirm(
-        "ここまでの履歴をコピーして、独立した新しい会話を作成します。よろしいですか？",
-      )
-    ) {
-      return;
-    }
     try {
       const res = await fetch(`/api/conversations/${convId}/fork`, {
         method: "POST",
@@ -1506,6 +1511,22 @@ export function Chat({
   const lastMessage = messages[messages.length - 1];
   /** 表示中の枝にコンテキストの区切りがあるか（入力欄のアイコンの色）。 */
   const hasContextBoundary = messages.some((m) => m.contextBoundary);
+  /**
+   * ツールバーの副題（ターン数と、表示中の枝の累計）。各応答の下に並んで
+   * いた数字をここへ引き上げ、本文の脇には額と秒だけを残す。
+   */
+  const conversationSummary = (() => {
+    if (messages.length === 0) return null;
+    const turns = messages.filter((m) => m.role === "user").length;
+    const cost = messages.reduce((sum, m) => sum + (m.usage?.cost ?? 0), 0);
+    const parts = [`${turns}ターン`];
+    if (cost > 0) {
+      parts.push(
+        usdJpy != null ? formatJpy(cost * usdJpy) : `$${cost.toFixed(4)}`,
+      );
+    }
+    return parts.join(" · ");
+  })();
 
   return (
     <div
@@ -1537,42 +1558,50 @@ export function Chat({
             : "border-transparent"
         }`}
       >
-        <button
-          type="button"
-          onClick={openSidebar}
-          aria-label="メニュー"
-          className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
-        >
-          <IconMenu className="h-5 w-5" />
-        </button>
-        {bot && (
-          <span
-            className="flex min-w-0 shrink items-center gap-1.5 rounded-lg bg-neutral-100 px-2.5 py-1.5 text-sm font-medium dark:bg-neutral-800"
-            title={bot.systemPrompt ?? undefined}
+        {/*
+          3列。左＝サイドバーの開閉（iPhone だけ）、中央＝いまの会話、
+          右＝この会話の操作。左右を同じ幅にして中央を本当の中央に置く。
+          モデルの選択は入力欄の中のチップへ移した（Composer 参照）。
+        */}
+        <div className="flex w-9 shrink-0 justify-start">
+          <button
+            type="button"
+            onClick={openSidebar}
+            aria-label="メニュー"
+            className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
           >
-            <span aria-hidden>{bot.icon}</span>
-            <span className="truncate">{bot.name}</span>
-          </span>
-        )}
-        <ModelPicker
-          models={models}
-          value={model}
-          newModelDays={settings.newModelDays}
-          onChange={selectModel}
-        />
-        <div className="ml-auto">
+            <IconMenu className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="min-w-0 flex-1 text-center">
+          <p className="font-display truncate text-[0.9375rem] font-bold leading-tight tracking-tight">
+            {title ?? (bot ? bot.name : "新規チャット")}
+          </p>
+          {conversationSummary && (
+            <p className="truncate text-[11px] leading-tight text-ink-2 tabular-nums">
+              {conversationSummary}
+            </p>
+          )}
+        </div>
+        <div className="flex w-9 shrink-0 justify-end">
           <button
             type="button"
             onClick={() => setParamsOpen((v) => !v)}
             aria-label="生成パラメータ"
             title="生成パラメータ（この会話にのみ適用）"
-            className={`rounded-lg p-2 ${
-              Object.keys(params).length > 0
-                ? "text-accent-ink hover:bg-accent/10"
-                : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-            }`}
+            className="relative rounded-lg p-2 text-ink-2 hover:bg-hover"
           >
             <IconSliders className="h-5 w-5" />
+            {/*
+              変更があることは色ではなく点で示す。色だと、アクセントが
+              グラファイトのときに既定と見分けが付かない
+            */}
+            {Object.keys(params).length > 0 && (
+              <span
+                aria-label="変更あり"
+                className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent ring-2 ring-white dark:ring-neutral-950"
+              />
+            )}
           </button>
         </div>
       </header>
@@ -1593,29 +1622,29 @@ export function Chat({
                 <p className="text-sm font-semibold">生成パラメータ</p>
                 {/* 対応パラメータも送信形式もプロバイダで異なるため明示する */}
                 {selectedModel && (
-                  <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                  <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-2 dark:bg-neutral-800">
                     {selectedModel.provider === "poe" ? "Poe" : "OpenRouter"}
                   </span>
                 )}
               </div>
               <button
                 type="button"
-                onClick={resetParams}
-                className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                onClick={() => void resetParams()}
+                className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"
               >
                 初期設定に戻す
               </button>
             </div>
-            <p className="mb-3 text-xs text-neutral-400 dark:text-neutral-500">
+            <p className="mb-3 text-xs text-ink-3">
               この会話にのみ適用されます
               {bot ? "（ボットの設定が初期状態です）" : ""}
             </p>
             {!isPoeModel(model) && (
               <div className="mb-3 flex items-center gap-3 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
-                <IconGlobe className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+                <IconGlobe className="h-5 w-5 shrink-0 text-ink-3" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">Web検索</p>
-                  <p className="text-xs text-neutral-400 dark:text-neutral-500">
+                  <p className="text-xs text-ink-3">
                     最新情報を検索して回答（検索1回ごとに数円の追加料金）
                   </p>
                 </div>
@@ -1765,6 +1794,28 @@ export function Chat({
             onClearContext={() => {
               if (lastMessage?.id) void toggleBoundary(lastMessage.id, true);
             }}
+            modelPicker={
+              <ModelPicker
+                models={models}
+                value={model}
+                newModelDays={settings.newModelDays}
+                onChange={selectModel}
+                variant="chip"
+                leading={
+                  bot ? (
+                    <span
+                      aria-hidden
+                      title={bot.name}
+                      className="-ml-0.5 text-[15px] leading-none"
+                    >
+                      {bot.icon}
+                    </span>
+                  ) : undefined
+                }
+                onClear={bot && onClearBot ? onClearBot : undefined}
+                clearLabel="ボットの選択を解除"
+              />
+            }
           />
         )}
       </footer>
@@ -1785,30 +1836,30 @@ export function Chat({
             onClick={(e) => e.stopPropagation()}
           >
             <p className="text-sm font-semibold">成功するまで生成します</p>
-            <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+            <p className="mt-1 text-xs text-ink-3">
               画像が返るまで同じ依頼を投げ直します。試行のたびに課金されます。
             </p>
             <dl className="mt-3 space-y-1.5 rounded-xl border border-neutral-200/80 p-3 text-sm dark:border-white/10">
               <div className="flex justify-between gap-3">
-                <dt className="text-neutral-500 dark:text-neutral-400">
+                <dt className="text-ink-2">
                   目標の成功数
                 </dt>
                 <dd className="font-medium">{retryConfig.target}件</dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-neutral-500 dark:text-neutral-400">
+                <dt className="text-ink-2">
                   上限の試行回数
                 </dt>
                 <dd className="font-medium">{retryConfig.maxAttempts}回</dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-neutral-500 dark:text-neutral-400">
+                <dt className="text-ink-2">
                   並列数
                 </dt>
                 <dd className="font-medium">{retryConfig.concurrency}</dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-neutral-500 dark:text-neutral-400">
+                <dt className="text-ink-2">
                   モデル
                 </dt>
                 <dd className="min-w-0 truncate font-medium">
@@ -1816,7 +1867,7 @@ export function Chat({
                 </dd>
               </div>
             </dl>
-            <p className="mt-2 text-xs text-neutral-400 dark:text-neutral-500">
+            <p className="mt-2 text-xs text-ink-3">
               最大 {retryConfig.maxAttempts}回ぶんの生成が行われます。並列数が
               目標を超える場合、成功が目標より多くなることがあります（受け取ります）。
             </p>
@@ -1824,7 +1875,7 @@ export function Chat({
               <button
                 type="button"
                 onClick={() => setPendingRun(null)}
-                className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                className="rounded-lg px-3 py-1.5 text-sm text-ink-2 hover:bg-hover"
               >
                 キャンセル
               </button>

@@ -8,8 +8,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
-import { GLASS_PANEL } from "../../lib/ui";
-import { IconCheck, IconCopy, IconInfo } from "../icons";
+import { GLASS_PANEL, MSG_ICON_ACTION } from "../../lib/ui";
+import { faviconUrl } from "../../lib/csp";
+import {
+  IconCheck,
+  IconChevronDown,
+  IconChevronLeft,
+  IconChevronRight,
+  IconCopy,
+  IconInfo,
+  IconLink,
+  IconThought,
+} from "../icons";
 import { Markdown } from "../Markdown";
 
 
@@ -108,7 +118,7 @@ export function GenerationProgress({
   }, [startedAt]);
 
   return (
-    <p className="flex items-center gap-2 text-sm text-neutral-500 dark:text-neutral-400">
+    <p className="flex items-center gap-2 text-sm text-ink-2">
       <span
         aria-hidden
         className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-700 dark:border-t-accent"
@@ -121,7 +131,14 @@ export function GenerationProgress({
   );
 }
 
-/** thinking対応モデルの思考内容の折りたたみ表示。 */
+/**
+ * thinking対応モデルの思考内容。本文の前に置く小さなカード。
+ *
+ * 以前は本文と同じ位置に「💭 思考プロセスを表示」の小さな文字があり、
+ * 開くと灰色の枠が出るだけで、思考中も文字が変わるだけだった。カードに
+ * して、思考中は左端の短い線をアクセント色で流す（サイドバーの
+ * 生成中の帯と同じ手法。動きを控える設定では静止する）。
+ */
 export function ReasoningBlock({
   reasoning,
   streaming,
@@ -132,19 +149,29 @@ export function ReasoningBlock({
   const [open, setOpen] = useState(streaming);
   const show = open || streaming;
   return (
-    <div className="mb-2">
+    <div className="mb-3 overflow-hidden rounded-xl border border-neutral-200/80 bg-neutral-50/70 dark:border-white/10 dark:bg-white/[0.04]">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        aria-expanded={show}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-ink-2 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
       >
-        <span aria-hidden>💭</span>
-        {streaming ? "思考中…" : show ? "思考プロセスを隠す" : "思考プロセスを表示"}
+        {streaming ? (
+          <span aria-hidden className="thinking-line h-0.5 w-6 shrink-0 rounded-full" />
+        ) : (
+          <IconThought className="h-3.5 w-3.5 shrink-0" />
+        )}
+        <span className="min-w-0 flex-1 truncate">
+          {streaming ? "思考中…" : "思考プロセス"}
+        </span>
+        <IconChevronDown
+          className={`h-3.5 w-3.5 shrink-0 transition-transform ${show ? "rotate-180" : ""}`}
+        />
       </button>
       {show && (
         // 思考プロセスにも数式やコードが混ざるので、本文と同じ描き方をする。
         // 図まで描くと本文より目立ってしまうので、ここはソースのまま。
-        <div className="mt-1 max-h-64 overflow-y-auto rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+        <div className="max-h-64 overflow-y-auto border-t border-neutral-200/80 px-3 py-2 text-xs leading-relaxed text-ink-2 dark:border-white/10">
           <Markdown
             streaming={streaming}
             diagrams={false}
@@ -174,24 +201,88 @@ export function hostOf(url: string): string {
  * 手を入れない（コピーしても、次のターンでモデルへ送り返す履歴にも
  * 出典は混ざらない）。使わなかった応答には何も出ない。
  */
+/** 畳んだ状態で見せる出典の数。それ以上は「+N」にまとめる。 */
+const CITATION_CHIPS = 3;
+
+/** サイトの印。取れなければ何も出さない（壊れた画像の枠を残さない）。 */
+function Favicon({ host }: { host: string }) {
+  return (
+    <img
+      src={faviconUrl(host)}
+      alt=""
+      width={14}
+      height={14}
+      loading="lazy"
+      className="h-3.5 w-3.5 shrink-0 rounded-sm"
+      onError={(e) => {
+        e.currentTarget.style.display = "none";
+      }}
+    />
+  );
+}
+
 export function CitationList({ citations }: { citations: UiCitation[] }) {
   const [open, setOpen] = useState(false);
+  const chips = citations.slice(0, CITATION_CHIPS);
+  const rest = citations.length - chips.length;
+  const chipClass =
+    "flex max-w-[12rem] items-center gap-1.5 rounded-full border border-neutral-200/80 bg-neutral-50/70 px-2.5 py-1 text-xs text-neutral-600 hover:bg-hover dark:border-white/10 dark:bg-white/[0.04] dark:text-neutral-300";
   return (
-    <div className="mt-2">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-      >
-        <span aria-hidden>🔗</span>
-        {open ? "参照元を隠す" : `参照元 ${citations.length}件`}
-      </button>
+    <div className="mt-3">
+      {/*
+        畳んだ状態では、ホストの名前をチップで横に並べる。どこを見た
+        応答かが本文の直下で分かる。番号付きの一覧は開いたときだけ。
+      */}
+      {!open && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {chips.map((c) => {
+            const host = hostOf(c.url);
+            return (
+              <a
+                key={c.url}
+                href={c.url}
+                target="_blank"
+                rel="noreferrer"
+                title={c.title || c.url}
+                className={chipClass}
+              >
+                <Favicon host={host} />
+                <span className="truncate">{host}</span>
+              </a>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-expanded={false}
+            className={chipClass}
+          >
+            <IconLink className="h-3.5 w-3.5" />
+            {rest > 0 ? `+${rest}` : "参照元"}
+          </button>
+        </div>
+      )}
       {open && (
-        <ol className="mt-1 space-y-1 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:border-neutral-800 dark:bg-neutral-900">
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-expanded={true}
+          className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"
+        >
+          <IconLink className="h-3.5 w-3.5" />
+          参照元 {citations.length}件
+          <IconChevronDown className="h-3 w-3 rotate-180" />
+        </button>
+      )}
+      {open && (
+        <ol className="mt-1 space-y-1 rounded-xl border border-line bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:bg-neutral-900">
           {citations.map((c, n) => (
             <li key={c.url} className="flex gap-2">
-              <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
+              <span className="shrink-0 text-ink-2">
                 {n + 1}.
+              </span>
+              <span className="mt-0.5">
+                <Favicon host={hostOf(c.url)} />
               </span>
               <a
                 href={c.url}
@@ -204,7 +295,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
                   {c.title || hostOf(c.url)}
                 </span>
                 {c.title && (
-                  <span className="block text-neutral-500 dark:text-neutral-400">
+                  <span className="block text-ink-2">
                     {hostOf(c.url)}
                   </span>
                 )}
@@ -224,7 +315,7 @@ export function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       aria-label="コピー"
-      title="コピー"
+      data-tip={copied ? "コピーしました" : "コピー"}
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
@@ -233,12 +324,12 @@ export function CopyButton({ text }: { text: string }) {
           // クリップボード不許可時は何もしない
         }
       }}
-      className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
+      className={`tip ${MSG_ICON_ACTION}`}
     >
       {copied ? (
-        <IconCheck className="h-3.5 w-3.5 text-green-500" />
+        <IconCheck className="h-4 w-4 text-green-500" />
       ) : (
-        <IconCopy className="h-3.5 w-3.5" />
+        <IconCopy className="h-4 w-4" />
       )}
     </button>
   );
@@ -333,10 +424,10 @@ export function MessageDetails({
         type="button"
         onClick={() => (open ? setOpen(false) : openPanel())}
         aria-label="詳細"
-        title="この応答の詳細"
-        className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
+        data-tip="この応答の詳細"
+        className={`tip ${MSG_ICON_ACTION}`}
       >
-        <IconInfo className="h-3.5 w-3.5" />
+        <IconInfo className="h-4 w-4" />
       </button>
       {open && pos && (
         <>
@@ -347,7 +438,7 @@ export function MessageDetails({
           >
             {rows.map(([k, v]) => (
               <span key={k} className="flex justify-between gap-3 py-0.5">
-                <span className="shrink-0 text-neutral-400 dark:text-neutral-500">{k}</span>
+                <span className="shrink-0 text-ink-3">{k}</span>
                 <span className="break-all text-right text-neutral-700 dark:text-neutral-200">{v}</span>
               </span>
             ))}
@@ -387,7 +478,7 @@ export function ContextBoundaryLine({
   );
   if (!selecting) {
     return (
-      <div className="flex items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
+      <div className="flex items-center gap-2 text-xs text-ink-3">
         {body}
       </div>
     );
@@ -397,7 +488,7 @@ export function ContextBoundaryLine({
       type="button"
       onClick={onToggle}
       title="選択して削除するとコンテキストクリアが外れ、すべてが文脈に戻ります"
-      className={`-mx-2 flex w-[calc(100%+1rem)] touch-manipulation items-center gap-2 rounded-xl px-2 py-1 text-xs text-neutral-400 dark:text-neutral-500 ${
+      className={`-mx-2 flex w-[calc(100%+1rem)] touch-manipulation items-center gap-2 rounded-xl px-2 py-1 text-xs text-ink-3 ${
         selected
           ? "bg-accent/10 ring-1 ring-accent/50"
           : "hover:bg-neutral-50 dark:hover:bg-neutral-900"
@@ -433,21 +524,20 @@ export function BranchPager({
   const { siblingIds, siblingIndex } = message;
   if (!siblingIds || siblingIds.length < 2 || siblingIndex == null) return null;
   const arrowClass =
-    "grid h-8 w-8 touch-manipulation place-items-center rounded-md text-base leading-none " +
+    "grid h-8 w-8 touch-manipulation place-items-center rounded-md touch:h-11 touch:w-11 " +
     "hover:bg-neutral-100 hover:text-neutral-600 active:scale-90 disabled:opacity-30 " +
     "dark:hover:bg-neutral-800 dark:hover:text-neutral-300";
   return (
     // -my-1: 当たり判定を広げても、操作の行そのものは高くしない
-    <span className="-my-1 inline-flex items-center text-xs text-neutral-400 dark:text-neutral-500">
+    <span className="-my-1 inline-flex items-center text-xs text-ink-3 touch:-my-3">
       <button
         type="button"
         disabled={siblingIndex === 0}
         onClick={() => onSwitch(siblingIds[siblingIndex - 1])}
         className={arrowClass}
         aria-label="前のブランチ"
-        title="前のブランチ"
       >
-        ‹
+        <IconChevronLeft className="h-3.5 w-3.5" />
       </button>
       <span className="tabular-nums" title="この位置の分岐">
         {siblingIndex + 1}/{siblingIds.length}
@@ -458,9 +548,8 @@ export function BranchPager({
         onClick={() => onSwitch(siblingIds[siblingIndex + 1])}
         className={arrowClass}
         aria-label="次のブランチ"
-        title="次のブランチ"
       >
-        ›
+        <IconChevronRight className="h-3.5 w-3.5" />
       </button>
     </span>
   );

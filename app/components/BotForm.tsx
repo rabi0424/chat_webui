@@ -1,12 +1,16 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useOutletContext } from "react-router";
 import type { BotRow } from "../lib/db.server";
 import type { ModelInfo } from "../lib/openrouter.server";
+import type { ShellContext } from "../routes/shell";
 import { parseParamsJson, type ParamsState } from "../lib/params";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
+import { FIELD, FIELD_AREA, Group, Row } from "./controls";
 import { PROSE_INPUT, TERSE_INPUT } from "../lib/ui";
+import { useConfirm } from "./ConfirmDialog";
+import { IconMenu } from "./icons";
 
 export function BotForm({
   models,
@@ -22,6 +26,10 @@ export function BotForm({
   newModelDays: number;
 }) {
   const navigate = useNavigate();
+  // シェルの外（テスト）でも描けるように、無ければドロワーの開閉だけ諦める
+  const shell = useOutletContext<ShellContext | undefined>();
+  const openSidebar = shell?.openSidebar;
+  const confirm = useConfirm();
   const [name, setName] = useState(initial?.name ?? "");
   const [icon, setIcon] = useState(initial?.icon ?? "🤖");
   const [modelId, setModelId] = useState(
@@ -43,14 +51,13 @@ export function BotForm({
    */
   const canRetry = model?.outputModalities.includes("image") ?? false;
 
-  function resetParams() {
-    if (
-      !confirm(
-        "生成パラメータを初期設定（すべて自動 = モデル既定値）に戻します。よろしいですか？",
-      )
-    ) {
-      return;
-    }
+  async function resetParams() {
+    const ok = await confirm({
+      title: "生成パラメータを初期設定に戻しますか？",
+      description: "すべて「自動」（モデル本来の既定値）に戻ります。",
+      confirmLabel: "戻す",
+    });
+    if (!ok) return;
     setParams({});
   }
 
@@ -90,118 +97,156 @@ export function BotForm({
     }
   }
 
+  const canSave = !!name.trim() && !!modelId && !saving;
+
   return (
-    <div className="mx-auto max-w-2xl space-y-6 px-4 pb-6 pt-[calc(1.5rem+env(safe-area-inset-top))]">
-      <div className="flex items-end gap-3">
-        <div>
-          <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
-            アイコン（絵文字）
-          </label>
-          <input
-            type="text"
-            value={icon}
-            onChange={(e) => setIcon(e.target.value)}
-            aria-label="アイコン（絵文字）"
-            {...TERSE_INPUT}
-            className="w-16 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-center text-xl outline-none focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
-          />
-        </div>
-        <div className="flex-1">
-          <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
-            名前 *
-          </label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            aria-label="名前"
-            {...TERSE_INPUT}
-            placeholder="例: 翻訳者、コードレビュアー"
-            className="w-full rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 outline-none placeholder:text-neutral-400 focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
-          />
-        </div>
-      </div>
-
-      <div>
-        <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
-          モデル *
-        </label>
-        <div className="rounded-xl border border-neutral-200 p-1 dark:border-neutral-700">
-          <ModelPicker
-            models={models}
-            value={modelId}
-            newModelDays={newModelDays}
-            onChange={setModelId}
-          />
-        </div>
-      </div>
-
-      <div>
-        <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
-          システムプロンプト
-        </label>
-        <textarea
-          value={systemPrompt}
-          onChange={(e) => setSystemPrompt(e.target.value)}
-          rows={8}
-          aria-label="システムプロンプト"
-          {...PROSE_INPUT}
-          placeholder="このボットの役割・口調・制約などを書きます"
-          className="w-full resize-y rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 outline-none placeholder:text-neutral-400 focus:border-accent/60 dark:border-neutral-700 dark:bg-neutral-900"
-        />
-      </div>
-
-      {canRetry && (
-        <div>
-          <label className="mb-2 block text-xs font-medium text-neutral-500 dark:text-neutral-400">
-            生成のしかた
-          </label>
-          <RetrySettings
-            value={params}
-            onChange={setParams}
-            ceiling={retryCeiling}
-          />
-        </div>
-      )}
-
-      <div>
-        <div className="mb-2 flex items-center justify-between">
-          <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
-            生成パラメータ（このモデルが対応するもの）
-          </span>
+    <div className="flex h-full flex-col">
+      {/* 他の画面と同じ帯。以前はこの画面だけヘッダーが無く、ラベルの上が空いていた */}
+      <header className="flex shrink-0 items-center gap-1 border-b border-black/[0.06] px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-white/[0.06]">
+        <div className="flex w-24 shrink-0 justify-start">
+          {openSidebar && (
+            <button
+              type="button"
+              onClick={openSidebar}
+              aria-label="メニュー"
+              className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
+            >
+              <IconMenu className="h-5 w-5" />
+            </button>
+          )}
           <button
             type="button"
-            onClick={resetParams}
-            className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            onClick={() => void navigate("/bots")}
+            className="hidden whitespace-nowrap rounded-lg px-2 py-1.5 text-sm text-ink-2 hover:bg-hover md:block"
           >
-            初期設定に戻す
+            キャンセル
           </button>
         </div>
-        <ParamsEditor model={model} value={params} onChange={setParams} />
-      </div>
+        <h1 className="font-display min-w-0 flex-1 truncate text-center text-[0.9375rem] font-bold tracking-tight">
+          {initial ? "ボットを編集" : "新しいボット"}
+        </h1>
+        <div className="flex w-24 shrink-0 justify-end">
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={!canSave}
+            className="rounded-lg bg-accent px-3.5 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent/85 disabled:opacity-30"
+          >
+            {saving ? "保存中…" : "保存"}
+          </button>
+        </div>
+      </header>
 
-      {error && (
-        <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-          {error}
-        </p>
-      )}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-2xl p-4 pb-[max(env(safe-area-inset-bottom),1.5rem)]">
+          {error && (
+            <p
+              role="status"
+              className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+            >
+              {error}
+            </p>
+          )}
 
-      <div className="flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={() => void navigate("/bots")}
-          className="rounded-xl px-4 py-2.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-        >
-          キャンセル
-        </button>
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={!name.trim() || !modelId || saving}
-          className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-accent-fg hover:bg-accent/85 disabled:opacity-30"
-        >
-          {saving ? "保存中…" : "保存"}
-        </button>
+          <Group title="ボット">
+            <Row label="名前" description="ホームのカードとツールバーに出ます" stack>
+              <div className="flex w-full items-center gap-2">
+                <input
+                  type="text"
+                  value={icon}
+                  onChange={(e) => setIcon(e.target.value)}
+                  aria-label="アイコン（絵文字）"
+                  {...TERSE_INPUT}
+                  className={`${FIELD} w-14 shrink-0 text-center text-xl`}
+                />
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  aria-label="名前"
+                  {...TERSE_INPUT}
+                  placeholder="例: 翻訳者、コードレビュアー"
+                  className={`${FIELD} min-w-0 flex-1`}
+                />
+              </div>
+            </Row>
+            <Row label="モデル" description="このボットで話すときに使うモデル">
+              <ModelPicker
+                models={models}
+                value={modelId}
+                newModelDays={newModelDays}
+                onChange={setModelId}
+                variant="field"
+              />
+            </Row>
+            <Row
+              label="システムプロンプト"
+              description="このボットの役割・口調・制約などを書きます"
+              stack
+            >
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                rows={8}
+                aria-label="システムプロンプト"
+                {...PROSE_INPUT}
+                placeholder="このボットの役割・口調・制約などを書きます"
+                className={FIELD_AREA}
+              />
+            </Row>
+          </Group>
+
+          {canRetry && (
+            <Group title="生成のしかた">
+              <div className="px-4 py-3">
+                <RetrySettings
+                  value={params}
+                  onChange={setParams}
+                  ceiling={retryCeiling}
+                />
+              </div>
+            </Group>
+          )}
+
+          <Group
+            title="生成パラメータ"
+            note="このモデルが対応するものだけを出します。自動のままならモデル本来の既定に任せます。"
+          >
+            <Row label="パラメータ" stack>
+              <div className="w-full">
+                <div className="mb-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void resetParams()}
+                    className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"
+                  >
+                    初期設定に戻す
+                  </button>
+                </div>
+                <ParamsEditor model={model} value={params} onChange={setParams} />
+              </div>
+            </Row>
+          </Group>
+
+          {/* iPhone ではヘッダーの「保存」が親指から遠いので、末尾にも置く */}
+          <div className="flex justify-end gap-2 md:hidden">
+            <button
+              type="button"
+              onClick={() => void navigate("/bots")}
+              className="rounded-xl px-4 py-2.5 text-sm text-ink-2 hover:bg-hover"
+            >
+              キャンセル
+            </button>
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={!canSave}
+              className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-accent-fg hover:bg-accent/85 disabled:opacity-30"
+            >
+              {saving ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

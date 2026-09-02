@@ -6,7 +6,7 @@ import { Chat, type BotContext } from "../components/Chat";
 import { HomeEmptyState } from "../components/HomeEmptyState";
 
 export function meta() {
-  return [{ title: "Chat WebUI" }];
+  return [{ title: "Chat" }];
 }
 
 export default function Home() {
@@ -35,7 +35,7 @@ export default function Home() {
   );
 
   const emptyState =
-    bots.length > 0 && !selected ? (
+    !selected ? (
       <HomeEmptyState
         bots={bots}
         modelNames={modelNames}
@@ -59,19 +59,10 @@ export default function Home() {
         <p className="mt-3 text-lg font-medium text-neutral-800 dark:text-neutral-100">
           {selected.name}
         </p>
-        <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+        <p className="mt-1 text-sm text-ink-2">
           メッセージを送って会話を開始
         </p>
-        <button
-          type="button"
-          onClick={() => {
-            setSelected(null);
-            setSelectedModel(null);
-          }}
-          className="mt-3 rounded-lg px-3 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-        >
-          選択を解除
-        </button>
+        {/* 選択の解除は入力欄のチップの × で（Chat の onClearBot） */}
       </div>
     ) : undefined;
 
@@ -100,6 +91,10 @@ export default function Home() {
        */
       systemPrompt={selected?.systemPrompt ?? (settings.defaultSystemPrompt || null)}
       emptyState={emptyState}
+      onClearBot={() => {
+        setSelected(null);
+        setSelectedModel(null);
+      }}
     />
   );
 }

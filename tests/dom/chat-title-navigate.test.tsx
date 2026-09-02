@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createRoutesStub, Outlet, useLocation } from "react-router";
+import { ConfirmProvider } from "../../app/components/ConfirmDialog";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Chat } from "../../app/components/Chat";
@@ -53,7 +54,11 @@ function renderChatHome() {
   const Stub = createRoutesStub([
     {
       path: "/",
-      Component: () => <Outlet context={shell} />,
+      Component: () => (
+        <ConfirmProvider>
+          <Outlet context={shell} />
+        </ConfirmProvider>
+      ),
       children: [
         {
           index: true,

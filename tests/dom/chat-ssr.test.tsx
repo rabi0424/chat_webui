@@ -22,6 +22,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoutesStub, Outlet } from "react-router";
+import { ConfirmProvider } from "../../app/components/ConfirmDialog";
 import { Chat } from "../../app/components/Chat";
 import { DEFAULT_APP_SETTINGS } from "../../app/lib/settings";
 import { LANGUAGE_SAMPLE_LIMIT } from "../../app/lib/content-language";
@@ -56,7 +57,11 @@ function serverHtml(messages: UiMessage[]): string {
   const Stub = createRoutesStub([
     {
       path: "/",
-      Component: () => <Outlet context={shell} />,
+      Component: () => (
+        <ConfirmProvider>
+          <Outlet context={shell} />
+        </ConfirmProvider>
+      ),
       children: [
         {
           index: true,

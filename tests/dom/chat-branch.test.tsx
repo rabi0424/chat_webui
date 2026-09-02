@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import {
-  acceptConfirm,
   installServer,
   msg,
   renderChat,
@@ -17,7 +16,6 @@ import {
 let server: ServerStub;
 beforeEach(() => {
   localStorage.clear();
-  acceptConfirm();
 });
 
 /** 同じ親に2つの応答がぶら下がっている状態。 */
@@ -77,9 +75,7 @@ describe("ここから分岐（フォーク）", () => {
         msg("assistant", "応答", { id: "a1" }),
       ],
     });
-    const forks = await screen.findAllByTitle(
-      "ここから分岐（独立した新しい会話を作成）",
-    );
+    const forks = await screen.findAllByLabelText("ここから分岐");
     await user.click(forks[0]);
 
     await waitFor(() => {
@@ -89,8 +85,12 @@ describe("ここから分岐（フォーク）", () => {
     });
   });
 
-  it("確認でやめたら作らない", async () => {
-    acceptConfirm(false);
+  /**
+   * 分岐に確認は要らない。会話が1つ増えるだけで元は何も変わらず、
+   * 遷移先の通知で何が起きたかは分かる。確認を挟むと、押すたびに
+   * 一度止められる。
+   */
+  it("確認を挟まずに作る", async () => {
     server = installServer();
     const { user } = renderChat({
       initialMessages: [
@@ -98,13 +98,12 @@ describe("ここから分岐（フォーク）", () => {
         msg("assistant", "応答", { id: "a1" }),
       ],
     });
-    const forks = await screen.findAllByTitle(
-      "ここから分岐（独立した新しい会話を作成）",
-    );
+    const forks = await screen.findAllByLabelText("ここから分岐");
     await user.click(forks[0]);
     await waitFor(() =>
-      expect(server.calls.some((c) => c.path.includes("/fork"))).toBe(false),
+      expect(server.calls.some((c) => c.path.includes("/fork"))).toBe(true),
     );
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 
@@ -247,7 +246,7 @@ describe("生成中の枝の行き来", () => {
     server = installServer(running());
     const { user } = renderChat({ initialMessages: running() });
     hangGeneration(server);
-    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await user.click(screen.getByRole("button", { name: "再生成" }));
     await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
 
     const next = screen.getByLabelText("次のブランチ");
@@ -286,7 +285,7 @@ describe("生成中の枝の行き来", () => {
       userMessageId: null,
       assistantMessageId: "a3",
     }));
-    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await user.click(screen.getByRole("button", { name: "再生成" }));
     await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
 
     await user.click(screen.getByLabelText("次のブランチ"));

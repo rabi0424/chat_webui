@@ -51,7 +51,7 @@ function ToolbarButton({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className="rounded p-1 text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+      className="rounded p-1 text-ink-3 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
     >
       {children}
     </button>
@@ -177,7 +177,7 @@ export function MermaidBlock({
       <>
         {fallback}
         {error && (
-          <p className="not-prose -mt-2 mb-4 text-xs text-neutral-400 dark:text-neutral-500">
+          <p className="not-prose -mt-2 mb-4 text-xs text-ink-3">
             図として解釈できませんでした（{error.split("\n")[0]}）
           </p>
         )}
@@ -186,12 +186,12 @@ export function MermaidBlock({
   }
 
   return (
-    <div className="not-prose my-4 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900">
-      <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-1 dark:border-neutral-800">
+    <div className="not-prose my-4 overflow-hidden rounded-xl border border-line bg-neutral-50 dark:bg-neutral-900">
+      <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-1">
         <button
           type="button"
           onClick={() => setShowSource((v) => !v)}
-          className="rounded px-1 text-xs text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100"
+          className="rounded px-1 text-xs text-ink-2 hover:text-neutral-800 dark:hover:text-neutral-100"
         >
           Mermaid{showSource ? "（ソース）" : ""}
         </button>

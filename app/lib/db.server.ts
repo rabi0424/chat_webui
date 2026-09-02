@@ -24,6 +24,7 @@ import {
   STALE_STREAMING_MS,
   STORAGE_STATS_SQL,
   USAGE_BY_MODEL_SQL,
+  USAGE_DAILY_SQL,
   USAGE_TOTALS_SQL,
   clearPendingDeletionsSql,
   generatedImagesSql,
@@ -1760,7 +1761,29 @@ export interface UsageOverview {
   totals: Record<UsageRange, UsageTotals>;
   /** 期間ごとのモデル別内訳。 */
   byModel: Record<UsageRange, UsageByModel[]>;
+  /** 今月の日別・モデル別（グラフ用）。 */
+  daily: UsageDaily[];
   storage: StorageStats;
+}
+
+/** 日別のグラフの1点。`day` は 1970-01-01 JST からの日数。 */
+export interface UsageDaily {
+  day: number;
+  modelId: string | null;
+  provider: string;
+  costUsd: number;
+  /** 額が取れなかった分のポイント（換算レートで見積もる）。 */
+  pointsWithoutCost: number;
+  events: number;
+}
+
+interface UsageDailyRow {
+  day: number;
+  model_id: string | null;
+  provider: string;
+  cost_usd: number;
+  points_without_cost: number;
+  events: number;
 }
 
 /**
@@ -1793,6 +1816,7 @@ export async function readUsageOverview(
         .bind(usageRangeStart(p.range, now)),
     ),
     d.prepare(STORAGE_STATS_SQL),
+    d.prepare(USAGE_DAILY_SQL).bind(usageRangeStart("month", now)),
   ]);
 
   const totals = {} as Record<UsageRange, UsageTotals>;
@@ -1812,6 +1836,16 @@ export async function readUsageOverview(
     totals,
     byModel,
     storage: toStorageStats(results[plan.length] as D1Result<StorageRow>),
+    daily: (results[plan.length + 1] as D1Result<UsageDailyRow>).results.map(
+      (r) => ({
+        day: r.day,
+        modelId: r.model_id,
+        provider: r.provider,
+        costUsd: r.cost_usd ?? 0,
+        pointsWithoutCost: r.points_without_cost ?? 0,
+        events: r.events ?? 0,
+      }),
+    ),
   };
 }
 

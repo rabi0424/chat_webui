@@ -45,7 +45,7 @@ export function RouteError() {
     <div className="grid h-full place-items-center p-6">
       <div className="max-w-sm text-center">
         <h1 className="text-lg font-semibold">{title}</h1>
-        <p className="mt-2 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
+        <p className="mt-2 text-sm leading-relaxed text-ink-2">
           {detail}
         </p>
         <div className="mt-5 flex items-center justify-center gap-2">
@@ -55,7 +55,7 @@ export function RouteError() {
               type="button"
               onClick={() => revalidator.revalidate()}
               disabled={revalidator.state !== "idle"}
-              className="rounded-xl border border-neutral-200 px-4 py-2 text-sm transition hover:bg-neutral-50 disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
+              className="rounded-xl border border-line px-4 py-2 text-sm transition hover:bg-neutral-50 disabled:opacity-40 dark:hover:bg-white/5"
             >
               {revalidator.state === "idle" ? "取り直す" : "取り直しています…"}
             </button>
@@ -70,7 +70,7 @@ export function RouteError() {
           </button>
         </div>
         {import.meta.env.DEV && error instanceof Error && (
-          <pre className="mt-6 max-h-60 overflow-auto rounded-lg bg-neutral-100 p-3 text-left text-xs dark:bg-neutral-900">
+          <pre className="mt-6 max-h-60 overflow-auto rounded-lg bg-sunken p-3 text-left text-xs">
             <code>{error.stack ?? error.message}</code>
           </pre>
         )}

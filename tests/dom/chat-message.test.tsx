@@ -61,11 +61,11 @@ describe("生成中の吹き出し", () => {
       ],
     });
     hangGeneration();
-    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await user.click(screen.getByRole("button", { name: "再生成" }));
     await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
 
     expect(screen.getAllByLabelText("編集して再送信").length).toBeGreaterThan(0);
-    expect(screen.getAllByTitle(/ここから分岐/).length).toBeGreaterThan(0);
+    expect(screen.getAllByLabelText("ここから分岐").length).toBeGreaterThan(0);
   });
 
   it("生成中は、削除の入口だけ伏せる", async () => {
@@ -79,7 +79,7 @@ describe("生成中の吹き出し", () => {
     expect(screen.getAllByLabelText("削除").length).toBeGreaterThan(0);
 
     hangGeneration();
-    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await user.click(screen.getByRole("button", { name: "再生成" }));
 
     // 走っている応答の親を消すと、書き込む先を失った生成が宙に浮く
     await waitFor(() => expect(screen.queryByLabelText("削除")).toBeNull());
@@ -93,7 +93,7 @@ describe("生成中の吹き出し", () => {
       ],
     });
     hangGeneration();
-    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await user.click(screen.getByRole("button", { name: "再生成" }));
     await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
 
     await user.click(screen.getAllByLabelText("編集して再送信")[0]);
@@ -113,7 +113,7 @@ describe("一覧の末尾に出る誘い", () => {
     const { user } = renderChat({
       initialMessages: [msg("user", "分岐した先の質問", { id: "u1" })],
     });
-    await user.click(screen.getByRole("button", { name: "↵ 応答を生成" }));
+    await user.click(screen.getByRole("button", { name: "応答を生成" }));
     await waitFor(() => expect(server.countOf("/generate")).toBe(1));
   });
 
@@ -125,7 +125,7 @@ describe("一覧の末尾に出る誘い", () => {
       ],
     });
     server.fail("/generate", 500);
-    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await user.click(screen.getByRole("button", { name: "再生成" }));
 
     const retry = await screen.findByRole("button", { name: "再試行" });
     expect(server.countOf("/generate")).toBe(1);
