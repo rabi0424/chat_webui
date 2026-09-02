@@ -437,6 +437,28 @@ export const USAGE_TOTALS_SQL = `SELECT
          COUNT(*) AS events
        FROM usage_events WHERE at >= ?`;
 
+/**
+ * 日別の内訳（使用量のグラフ）。バインドは1つ（この時刻以降）。
+ *
+ * 日は **JST** で切る。`at` は epoch ms なので、9時間ぶん進めてから日数に
+ * 落とす（`day` は 1970-01-01 JST からの日数）。画面側は月初の日数を
+ * 引いて「その月の何日目か」にする。タイムゾーンを SQLite の関数に
+ * 任せると D1 の設定に左右されるので、算術で切る。
+ *
+ * 額が取れなかった分のポイントを別に数えるのは合計（USAGE_TOTALS_SQL）と
+ * 同じ理由——上限の計算と同じ換算レートで、その日の額に足すため。
+ */
+export const USAGE_DAILY_SQL = `SELECT CAST((at + 32400000) / 86400000 AS INTEGER) AS day,
+              model_id,
+              provider,
+              COALESCE(SUM(cost_usd), 0) AS cost_usd,
+              COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN points ELSE 0 END), 0)
+                AS points_without_cost,
+              COUNT(*) AS events
+         FROM usage_events WHERE at >= ?
+        GROUP BY day, model_id, provider
+        ORDER BY day`;
+
 /** モデル別の内訳。バインドは1つ（この時刻以降）。 */
 export const USAGE_BY_MODEL_SQL = `SELECT model_id,
               provider,

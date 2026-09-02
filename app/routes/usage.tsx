@@ -20,6 +20,8 @@ import {
   type UsageTotals,
 } from "../lib/usage";
 import { IconMenu } from "../components/icons";
+import { providerColor } from "../components/ModelPicker";
+import { dailyChart, daysInMonthJst } from "../lib/usage-chart";
 
 export function meta() {
   return [{ title: "使用量 - Chat" }];
@@ -40,8 +42,10 @@ export async function loader() {
     totals: overview.totals,
     byModel: overview.byModel,
     storage: overview.storage,
+    daily: overview.daily,
     usdJpy,
     limitJpy: settings.monthlyLimitJpy,
+    pointsUsdRate: settings.poePointsUsdRate,
     verdict: checkLimit({
       limitJpy: settings.monthlyLimitJpy,
       usdJpy,
@@ -122,6 +126,154 @@ function Totals({
         {totals.points > 0 &&
           `・${Math.round(totals.points).toLocaleString()} pt`}
       </p>
+    </div>
+  );
+}
+
+/** ベンダーの見出し。綴りに癖のあるものだけ手で持ち、あとは頭を大文字に。 */
+const VENDOR_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  "x-ai": "xAI",
+  deepseek: "DeepSeek",
+  openrouter: "OpenRouter",
+  poe: "Poe",
+};
+function vendorLabel(vendor: string): string {
+  return VENDOR_LABELS[vendor] ?? vendor.charAt(0).toUpperCase() + vendor.slice(1);
+}
+
+/**
+ * 今月の日別グラフ（UI-8）。
+ *
+ * SVG ではなく flex の棒で描く。SVG だと viewBox に合わせて文字まで
+ * 伸び縮みし、iPhone の幅では日付が読めなくなる。高さは % で持ち、
+ * 上限の線も同じ % で置くので、棒と線の基準は必ず一致する。
+ */
+function DailyChart({
+  daily,
+  now,
+  usdJpy,
+  limitJpy,
+  pointsUsdRate,
+}: {
+  daily: Route.ComponentProps["loaderData"]["daily"];
+  now: number;
+  usdJpy: number | null;
+  limitJpy: number;
+  pointsUsdRate: number;
+}) {
+  const { bars, vendors } = dailyChart(daily, now, pointsUsdRate);
+  if (vendors.length === 0) return null;
+  const money = (v: number) => (usdJpy != null ? jpy(v * usdJpy) : usd(v));
+  const dayLabel = (b: (typeof bars)[number]) => {
+    const d = new Date(b.at + 9 * 60 * 60 * 1000);
+    return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`;
+  };
+  /*
+   * 上限は月の額なので、1日あたりに割った線を引く。毎日この線の下なら
+   * 月末に上限へ届かない、という目安。円のレートが無いと引けない
+   * （棒はドルで持ち、線は円で決まっているため）。
+   */
+  const daysInMonth = daysInMonthJst(now);
+  const limitPerDayUsd =
+    limitJpy > 0 && usdJpy != null ? limitJpy / daysInMonth / usdJpy : null;
+  /*
+   * 棒の並びは月の日数ぶんの幅に置く。今日までの日数で幅を割ると、
+   * 月初は棒が数本で画面いっぱいに太り、月末に向かって細っていく。
+   * 残りの日を空けておけば、月の中のどこにいるかも一目で分かる。
+   */
+  const elapsedWidth = `${(bars.length / daysInMonth) * 100}%`;
+  const peak = Math.max(...bars.map((b) => b.usd), limitPerDayUsd ?? 0);
+  // 天井に少し余白を取る（一番高い棒が上端に貼り付くと線と見分けにくい）
+  const top = peak > 0 ? peak * 1.15 : 1;
+  const pct = (v: number) => `${(v / top) * 100}%`;
+  const color = (vendor: string) =>
+    providerColor(vendors.find((v) => v.vendor === vendor)?.sample ?? vendor);
+  // 日付の目盛りは 1・10・20・今日。全部出すと iPhone の幅で潰れる
+  const last = bars[bars.length - 1].dayOfMonth;
+  const ticks = new Set([1, 10, 20, last].filter((d) => d <= last));
+
+  return (
+    <div className="mt-8">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h2 className="text-sm font-semibold">日別（今月）</h2>
+        {limitPerDayUsd != null && (
+          <span className="text-xs text-neutral-500 dark:text-neutral-400">
+            点線は上限を日割りした {money(limitPerDayUsd)}
+          </span>
+        )}
+      </div>
+      <div className="rounded-xl border border-neutral-200 px-3.5 pb-2 pt-4 dark:border-neutral-800">
+        <div className="relative h-32">
+          <ul
+            aria-label="日別の使用額"
+            className="absolute inset-y-0 left-0 flex items-end gap-px sm:gap-0.5"
+            style={{ width: elapsedWidth }}
+          >
+            {bars.map((b) => (
+              <li
+                key={b.dayOfMonth}
+                aria-label={`${dayLabel(b)} ${money(b.usd)}`}
+                className="group relative flex h-full flex-1 flex-col-reverse"
+              >
+                {b.parts.map(
+                  (p) =>
+                    p.usd > 0 && (
+                      <span
+                        key={p.vendor}
+                        aria-hidden
+                        className="block w-full first:rounded-t-sm"
+                        style={{
+                          height: pct(p.usd),
+                          backgroundColor: color(p.vendor),
+                        }}
+                      />
+                    ),
+                )}
+                {/* 棒が無い日も、指で触れる場所として最低限の高さを残す */}
+                {b.usd === 0 && (
+                  <span
+                    aria-hidden
+                    className="block h-px w-full bg-neutral-200 dark:bg-neutral-800"
+                  />
+                )}
+              </li>
+            ))}
+          </ul>
+          {/* 線は棒の上に重ねる（下に敷くと、線を越えた日ほど見えなくなる） */}
+          {limitPerDayUsd != null && (
+            <div
+              data-testid="limit-line"
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 border-t border-dashed border-neutral-500/70 dark:border-neutral-400/70"
+              style={{ bottom: pct(limitPerDayUsd) }}
+            />
+          )}
+        </div>
+        <div
+          className="mt-1.5 flex text-[0.625rem] tabular-nums text-neutral-400"
+          style={{ width: elapsedWidth }}
+        >
+          {bars.map((b) => (
+            <span key={b.dayOfMonth} className="flex-1 text-center">
+              {ticks.has(b.dayOfMonth) ? b.dayOfMonth : ""}
+            </span>
+          ))}
+        </div>
+      </div>
+      <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-600 dark:text-neutral-300">
+        {vendors.map((v) => (
+          <li key={v.vendor} className="flex items-center gap-1.5">
+            <span
+              aria-hidden
+              className="h-2 w-2 rounded-[3px]"
+              style={{ backgroundColor: providerColor(v.sample || v.vendor) }}
+            />
+            <span>{vendorLabel(v.vendor)}</span>
+            <span className="tabular-nums text-neutral-400">{money(v.usd)}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -211,11 +363,14 @@ function Cloudflare({ storage }: { storage: StorageStats }) {
   ];
   return (
     <div className="mt-8">
-      <h2 className="mb-2 text-sm font-semibold">Cloudflare</h2>
+      <h2 className="mb-2 text-sm font-semibold">保存しているもの</h2>
       <div className="space-y-3 rounded-xl border border-neutral-200 px-3.5 py-3 dark:border-neutral-800">
         <div>
           <div className="flex items-baseline justify-between gap-3 text-sm">
-            <span>D1（データベース）</span>
+            <span>
+              会話の保存
+              <span className="ml-1.5 text-xs text-neutral-400">D1</span>
+            </span>
             <span className="tabular-nums text-neutral-600 dark:text-neutral-300">
               {storage.d1Bytes != null ? formatBytes(storage.d1Bytes) : "—"}
             </span>
@@ -237,7 +392,10 @@ function Cloudflare({ storage }: { storage: StorageStats }) {
 
         <div>
           <div className="flex items-baseline justify-between gap-3 text-sm">
-            <span>R2（画像・添付）</span>
+            <span>
+              画像・添付の保存
+              <span className="ml-1.5 text-xs text-neutral-400">R2</span>
+            </span>
             <span className="tabular-nums text-neutral-600 dark:text-neutral-300">
               {formatBytes(storage.fileBytes)}
             </span>
@@ -280,7 +438,7 @@ function Cloudflare({ storage }: { storage: StorageStats }) {
 }
 
 export default function Usage({ loaderData }: Route.ComponentProps) {
-  const { totals, byModel, storage, usdJpy, verdict, now } = loaderData;
+  const { totals, byModel, storage, daily, usdJpy, verdict, now } = loaderData;
   const { openSidebar } = useOutletContext<ShellContext>();
   /**
    * 見ている期間。3つとも読んであるので、切り替えても通信は起きない
@@ -378,6 +536,14 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
             決めると加えられます）。
           </p>
         )}
+
+        <DailyChart
+          daily={daily}
+          now={now}
+          usdJpy={usdJpy}
+          limitJpy={verdict.limitJpy}
+          pointsUsdRate={loaderData.pointsUsdRate}
+        />
 
         <ByModel
           rows={byModel[range]}
