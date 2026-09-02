@@ -8,8 +8,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
-import { GLASS_PANEL } from "../../lib/ui";
-import { IconCheck, IconCopy, IconInfo } from "../icons";
+import { GLASS_PANEL, MSG_ICON_ACTION } from "../../lib/ui";
+import {
+  IconCheck,
+  IconChevronDown,
+  IconChevronLeft,
+  IconChevronRight,
+  IconCopy,
+  IconInfo,
+  IconLink,
+  IconThought,
+} from "../icons";
 import { Markdown } from "../Markdown";
 
 
@@ -136,10 +145,14 @@ export function ReasoningBlock({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        aria-expanded={show}
+        className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
       >
-        <span aria-hidden>💭</span>
+        <IconThought className="h-3.5 w-3.5" />
         {streaming ? "思考中…" : show ? "思考プロセスを隠す" : "思考プロセスを表示"}
+        <IconChevronDown
+          className={`h-3 w-3 transition-transform ${show ? "rotate-180" : ""}`}
+        />
       </button>
       {show && (
         // 思考プロセスにも数式やコードが混ざるので、本文と同じ描き方をする。
@@ -181,10 +194,14 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        aria-expanded={open}
+        className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
       >
-        <span aria-hidden>🔗</span>
+        <IconLink className="h-3.5 w-3.5" />
         {open ? "参照元を隠す" : `参照元 ${citations.length}件`}
+        <IconChevronDown
+          className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`}
+        />
       </button>
       {open && (
         <ol className="mt-1 space-y-1 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:border-neutral-800 dark:bg-neutral-900">
@@ -224,7 +241,7 @@ export function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       aria-label="コピー"
-      title="コピー"
+      data-tip={copied ? "コピーしました" : "コピー"}
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(text);
@@ -233,12 +250,12 @@ export function CopyButton({ text }: { text: string }) {
           // クリップボード不許可時は何もしない
         }
       }}
-      className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
+      className={`tip ${MSG_ICON_ACTION}`}
     >
       {copied ? (
-        <IconCheck className="h-3.5 w-3.5 text-green-500" />
+        <IconCheck className="h-4 w-4 text-green-500" />
       ) : (
-        <IconCopy className="h-3.5 w-3.5" />
+        <IconCopy className="h-4 w-4" />
       )}
     </button>
   );
@@ -333,10 +350,10 @@ export function MessageDetails({
         type="button"
         onClick={() => (open ? setOpen(false) : openPanel())}
         aria-label="詳細"
-        title="この応答の詳細"
-        className="rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-600 group-hover/msg:text-neutral-400 dark:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:group-hover/msg:text-neutral-500"
+        data-tip="この応答の詳細"
+        className={`tip ${MSG_ICON_ACTION}`}
       >
-        <IconInfo className="h-3.5 w-3.5" />
+        <IconInfo className="h-4 w-4" />
       </button>
       {open && pos && (
         <>
@@ -433,21 +450,20 @@ export function BranchPager({
   const { siblingIds, siblingIndex } = message;
   if (!siblingIds || siblingIds.length < 2 || siblingIndex == null) return null;
   const arrowClass =
-    "grid h-8 w-8 touch-manipulation place-items-center rounded-md text-base leading-none " +
+    "grid h-8 w-8 touch-manipulation place-items-center rounded-md touch:h-11 touch:w-11 " +
     "hover:bg-neutral-100 hover:text-neutral-600 active:scale-90 disabled:opacity-30 " +
     "dark:hover:bg-neutral-800 dark:hover:text-neutral-300";
   return (
     // -my-1: 当たり判定を広げても、操作の行そのものは高くしない
-    <span className="-my-1 inline-flex items-center text-xs text-neutral-400 dark:text-neutral-500">
+    <span className="-my-1 inline-flex items-center text-xs text-neutral-400 touch:-my-3 dark:text-neutral-500">
       <button
         type="button"
         disabled={siblingIndex === 0}
         onClick={() => onSwitch(siblingIds[siblingIndex - 1])}
         className={arrowClass}
         aria-label="前のブランチ"
-        title="前のブランチ"
       >
-        ‹
+        <IconChevronLeft className="h-3.5 w-3.5" />
       </button>
       <span className="tabular-nums" title="この位置の分岐">
         {siblingIndex + 1}/{siblingIds.length}
@@ -458,9 +474,8 @@ export function BranchPager({
         onClick={() => onSwitch(siblingIds[siblingIndex + 1])}
         className={arrowClass}
         aria-label="次のブランチ"
-        title="次のブランチ"
       >
-        ›
+        <IconChevronRight className="h-3.5 w-3.5" />
       </button>
     </span>
   );

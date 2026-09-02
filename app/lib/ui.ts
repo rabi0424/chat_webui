@@ -48,20 +48,28 @@ export const GLASS_ICON_BUTTON =
  * 押せる大きさも、指で使う端末でだけ広げる。
  */
 const MSG_ACTION_BASE =
-  "rounded text-neutral-300 group-hover/msg:text-neutral-400 " +
+  "rounded-md text-neutral-300 group-hover/msg:text-neutral-400 " +
   "dark:text-neutral-700 dark:group-hover/msg:text-neutral-500 " +
   "touch:text-neutral-500 touch:dark:text-neutral-400";
 
-/** アイコンだけの操作（編集・削除）。 */
+/**
+ * アイコンだけの操作（コピー・編集・分岐・詳細・再生成）。
+ *
+ * 当たり判定は指の端末で 44px（Apple の指針）。以前は 30px しかなく、
+ * 隣の削除を押してしまう距離だった。アイコンの大きさは変えず、箱だけを
+ * 広げる。行の高さが伸びないよう、縦は負のマージンで相殺する。
+ */
 export const MSG_ICON_ACTION =
   MSG_ACTION_BASE +
-  " p-1 touch:p-2 hover:bg-neutral-100 hover:text-neutral-600 " +
+  " grid h-7 w-7 place-items-center touch:h-11 touch:w-11 touch:-my-2 " +
+  "hover:bg-neutral-100 hover:text-neutral-600 " +
   "dark:hover:bg-neutral-800 dark:hover:text-neutral-300";
 
 /** 削除だけは、押したときに赤くする。 */
 export const MSG_DELETE_ACTION =
   MSG_ACTION_BASE +
-  " p-1 touch:p-2 hover:bg-neutral-100 hover:text-red-600 " +
+  " grid h-7 w-7 place-items-center touch:h-11 touch:w-11 touch:-my-2 " +
+  "hover:bg-neutral-100 hover:text-red-600 " +
   "dark:hover:bg-neutral-800 dark:hover:text-red-400";
 
 /** 文字の操作（「⑂ ここから分岐」「この画像を使う」）。 */

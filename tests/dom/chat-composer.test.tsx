@@ -45,7 +45,7 @@ describe("送信ボタン", () => {
     });
     expect(screen.queryByLabelText("停止")).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await user.click(screen.getByRole("button", { name: "再生成" }));
     await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
     expect(screen.queryByLabelText("送信")).toBeNull();
   });

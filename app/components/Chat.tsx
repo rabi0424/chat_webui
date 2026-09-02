@@ -39,6 +39,7 @@ import { Composer } from "./chat/Composer";
 import { LiveRegion } from "./chat/LiveRegion";
 import { SelectionBar } from "./chat/SelectionBar";
 import { type MessageActions } from "./chat/message-context";
+import { formatJpy } from "./chat/message-parts";
 import { useEscapeToClose } from "../lib/dismiss";
 import { useConfirm } from "./ConfirmDialog";
 import { readLastUsedModel, writeLastUsedModel } from "../lib/persisted";
@@ -100,10 +101,16 @@ export function Chat({
   initialParams = null,
   systemPrompt = null,
   emptyState,
+  title = null,
+  onClearBot,
 }: {
   conversationId: string | null;
   initialMessages: UiMessage[];
   bot?: BotContext | null;
+  /** ツールバーの中央に出す会話の名前。無ければ「新規チャット」。 */
+  title?: string | null;
+  /** ホームでボットを選んでいるとき、その選択を外す（チップの ×）。 */
+  onClearBot?: () => void;
   initialModel?: string | null;
   /** この会話の生成パラメータ（会話 or ボットのスナップショット）。 */
   initialParams?: ParamsState | null;
@@ -207,7 +214,7 @@ export function Chat({
   const location = useLocation();
   useEffect(() => {
     if ((location.state as { forked?: boolean } | null)?.forked) {
-      showNotice("⑂ 分岐を作成しました");
+      showNotice("分岐を作成しました");
     }
     // 分岐直後のマウント時のみ
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1504,6 +1511,22 @@ export function Chat({
   const lastMessage = messages[messages.length - 1];
   /** 表示中の枝にコンテキストの区切りがあるか（入力欄のアイコンの色）。 */
   const hasContextBoundary = messages.some((m) => m.contextBoundary);
+  /**
+   * ツールバーの副題（ターン数と、表示中の枝の累計）。各応答の下に並んで
+   * いた数字をここへ引き上げ、本文の脇には額と秒だけを残す。
+   */
+  const conversationSummary = (() => {
+    if (messages.length === 0) return null;
+    const turns = messages.filter((m) => m.role === "user").length;
+    const cost = messages.reduce((sum, m) => sum + (m.usage?.cost ?? 0), 0);
+    const parts = [`${turns}ターン`];
+    if (cost > 0) {
+      parts.push(
+        usdJpy != null ? formatJpy(cost * usdJpy) : `$${cost.toFixed(4)}`,
+      );
+    }
+    return parts.join(" · ");
+  })();
 
   return (
     <div
@@ -1535,42 +1558,50 @@ export function Chat({
             : "border-transparent"
         }`}
       >
-        <button
-          type="button"
-          onClick={openSidebar}
-          aria-label="メニュー"
-          className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
-        >
-          <IconMenu className="h-5 w-5" />
-        </button>
-        {bot && (
-          <span
-            className="flex min-w-0 shrink items-center gap-1.5 rounded-lg bg-neutral-100 px-2.5 py-1.5 text-sm font-medium dark:bg-neutral-800"
-            title={bot.systemPrompt ?? undefined}
+        {/*
+          3列。左＝サイドバーの開閉（iPhone だけ）、中央＝いまの会話、
+          右＝この会話の操作。左右を同じ幅にして中央を本当の中央に置く。
+          モデルの選択は入力欄の中のチップへ移した（Composer 参照）。
+        */}
+        <div className="flex w-9 shrink-0 justify-start">
+          <button
+            type="button"
+            onClick={openSidebar}
+            aria-label="メニュー"
+            className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
           >
-            <span aria-hidden>{bot.icon}</span>
-            <span className="truncate">{bot.name}</span>
-          </span>
-        )}
-        <ModelPicker
-          models={models}
-          value={model}
-          newModelDays={settings.newModelDays}
-          onChange={selectModel}
-        />
-        <div className="ml-auto">
+            <IconMenu className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="min-w-0 flex-1 text-center">
+          <p className="font-display truncate text-[0.9375rem] font-bold leading-tight tracking-tight">
+            {title ?? (bot ? bot.name : "新規チャット")}
+          </p>
+          {conversationSummary && (
+            <p className="truncate text-[11px] leading-tight text-neutral-500 tabular-nums dark:text-neutral-400">
+              {conversationSummary}
+            </p>
+          )}
+        </div>
+        <div className="flex w-9 shrink-0 justify-end">
           <button
             type="button"
             onClick={() => setParamsOpen((v) => !v)}
             aria-label="生成パラメータ"
             title="生成パラメータ（この会話にのみ適用）"
-            className={`rounded-lg p-2 ${
-              Object.keys(params).length > 0
-                ? "text-accent-ink hover:bg-accent/10"
-                : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-            }`}
+            className="relative rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
           >
             <IconSliders className="h-5 w-5" />
+            {/*
+              変更があることは色ではなく点で示す。色だと、アクセントが
+              グラファイトのときに既定と見分けが付かない
+            */}
+            {Object.keys(params).length > 0 && (
+              <span
+                aria-label="変更あり"
+                className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent ring-2 ring-white dark:ring-neutral-950"
+              />
+            )}
           </button>
         </div>
       </header>
@@ -1763,6 +1794,28 @@ export function Chat({
             onClearContext={() => {
               if (lastMessage?.id) void toggleBoundary(lastMessage.id, true);
             }}
+            modelPicker={
+              <ModelPicker
+                models={models}
+                value={model}
+                newModelDays={settings.newModelDays}
+                onChange={selectModel}
+                variant="chip"
+                leading={
+                  bot ? (
+                    <span
+                      aria-hidden
+                      title={bot.name}
+                      className="-ml-0.5 text-[15px] leading-none"
+                    >
+                      {bot.icon}
+                    </span>
+                  ) : undefined
+                }
+                onClear={bot && onClearBot ? onClearBot : undefined}
+                clearLabel="ボットの選択を解除"
+              />
+            }
           />
         )}
       </footer>

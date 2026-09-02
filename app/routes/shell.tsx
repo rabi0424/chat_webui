@@ -28,6 +28,7 @@ import type {
   UnreadResponse,
 } from "../lib/api-types";
 import { Sidebar } from "../components/Sidebar";
+import { IconX } from "../components/icons";
 import { ConfirmProvider } from "../components/ConfirmDialog";
 import { recordNavigation } from "../lib/perf";
 
@@ -491,7 +492,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
             aria-label="閉じる"
             className="shrink-0 rounded p-1 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-white/10"
           >
-            ✕
+            <IconX className="h-4 w-4" />
           </button>
         </div>
       )}

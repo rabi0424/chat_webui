@@ -17,6 +17,7 @@ import { AssistantMessage } from "./AssistantMessage";
 import { PlainMessages } from "./PlainMessages";
 import { type EditingState } from "./MessageEditor";
 import { conversationLanguage } from "../../lib/content-language";
+import { IconArrowTurnDownLeft } from "../icons";
 
 /**
  * 削除選択モードでコンテキストクリアを指す印。
@@ -170,20 +171,11 @@ export function MessageList({
           </div>
         )}
 
-        {!isStreaming &&
-          !error &&
-          lastMessage?.role === "assistant" &&
-          lastMessage.status !== "error" && (
-            <div className="mt-3">
-              <button
-                type="button"
-                onClick={onRegenerate}
-                className="rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-              >
-                ↻ 再生成
-              </button>
-            </div>
-          )}
+        {/*
+          末尾の応答の「再生成」は、その応答の操作列（AssistantMessage）に
+          入っている。ここに別の行として置いていたころは、専用の行が
+          1つぶん余計に伸びていた。
+        */}
 
         {/* 分岐直後・応答削除後など、最後尾がユーザーメッセージのとき */}
         {!isStreaming &&
@@ -195,9 +187,10 @@ export function MessageList({
               <button
                 type="button"
                 onClick={onGenerateFromLast}
-                className="rounded-lg border border-accent/40 px-3 py-1.5 text-xs font-medium text-accent-ink hover:bg-accent/10"
+                className="flex items-center gap-1.5 rounded-lg border border-accent/40 px-3 py-1.5 text-xs font-medium text-accent-ink hover:bg-accent/10"
               >
-                ↵ 応答を生成
+                <IconArrowTurnDownLeft className="h-3.5 w-3.5" />
+                応答を生成
               </button>
             </div>
           )}

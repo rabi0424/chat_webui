@@ -75,9 +75,7 @@ describe("ここから分岐（フォーク）", () => {
         msg("assistant", "応答", { id: "a1" }),
       ],
     });
-    const forks = await screen.findAllByTitle(
-      "ここから分岐（独立した新しい会話を作成）",
-    );
+    const forks = await screen.findAllByLabelText("ここから分岐");
     await user.click(forks[0]);
 
     await waitFor(() => {
@@ -100,9 +98,7 @@ describe("ここから分岐（フォーク）", () => {
         msg("assistant", "応答", { id: "a1" }),
       ],
     });
-    const forks = await screen.findAllByTitle(
-      "ここから分岐（独立した新しい会話を作成）",
-    );
+    const forks = await screen.findAllByLabelText("ここから分岐");
     await user.click(forks[0]);
     await waitFor(() =>
       expect(server.calls.some((c) => c.path.includes("/fork"))).toBe(true),
@@ -250,7 +246,7 @@ describe("生成中の枝の行き来", () => {
     server = installServer(running());
     const { user } = renderChat({ initialMessages: running() });
     hangGeneration(server);
-    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await user.click(screen.getByRole("button", { name: "再生成" }));
     await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
 
     const next = screen.getByLabelText("次のブランチ");
@@ -289,7 +285,7 @@ describe("生成中の枝の行き来", () => {
       userMessageId: null,
       assistantMessageId: "a3",
     }));
-    await user.click(screen.getByRole("button", { name: "↻ 再生成" }));
+    await user.click(screen.getByRole("button", { name: "再生成" }));
     await waitFor(() => expect(screen.getByLabelText("停止")).toBeTruthy());
 
     await user.click(screen.getByLabelText("次のブランチ"));
