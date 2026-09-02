@@ -1,4 +1,5 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { useShortcut } from "../lib/use-shortcut";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
@@ -210,6 +211,22 @@ export function Chat({
     },
     [],
   );
+  /**
+   * ⌘⇧C: 最後の応答をコピー。マウスで操作列のボタンを探さずに済む。
+   * 応答が無ければ何もしない（ホームなど）。
+   */
+  useShortcut("copy-last", () => {
+    const last = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.content);
+    if (!last) return;
+    navigator.clipboard
+      .writeText(last.content)
+      .then(() => showNotice("最後の応答をコピーしました"))
+      .catch(() => {
+        // クリップボード不許可時は何もしない
+      });
+  });
 
   const location = useLocation();
   useEffect(() => {

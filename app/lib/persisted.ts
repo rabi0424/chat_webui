@@ -193,3 +193,27 @@ export function clearLastUsedModel(): void {
 export function useLastUsedModel(): string | null {
   return usePersisted(MODEL_STORAGE_KEY, readLastUsedModel, null);
 }
+
+// --- サイドバーを畳む（デスクトップ） -------------------------------------
+
+const SIDEBAR_COLLAPSED_KEY = "chat-webui:sidebar-collapsed";
+
+/**
+ * デスクトップでサイドバーを畳んでいるか（UI-11。⌘\ と、サイドバー
+ * 右上のボタン）。端末ごとの好みなので localStorage に持つ。
+ * iPhone のドロワーには関係ない（開閉はその場の状態）。
+ */
+export function readSidebarCollapsed(): boolean {
+  return readRaw(SIDEBAR_COLLAPSED_KEY) === "1";
+}
+
+export function writeSidebarCollapsed(collapsed: boolean): void {
+  if (collapsed) writeRaw(SIDEBAR_COLLAPSED_KEY, "1");
+  else removeRaw(SIDEBAR_COLLAPSED_KEY);
+  notifyChanged(SIDEBAR_COLLAPSED_KEY);
+}
+
+/** サーバー側では「開いている」として描く（畳んだ状態で描くと、開いて見える端末で一瞬消える）。 */
+export function useSidebarCollapsed(): boolean {
+  return usePersisted(SIDEBAR_COLLAPSED_KEY, readSidebarCollapsed, false);
+}

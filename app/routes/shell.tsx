@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   Outlet,
+  useLocation,
+  useNavigate,
   useNavigation,
   useRevalidator,
   type ShouldRevalidateFunctionArgs,
@@ -28,9 +36,23 @@ import type {
   UnreadResponse,
 } from "../lib/api-types";
 import { Sidebar } from "../components/Sidebar";
-import { IconX } from "../components/icons";
+import { IconSidebar, IconX } from "../components/icons";
 import { ConfirmProvider } from "../components/ConfirmDialog";
+import { ShortcutsDialog } from "../components/ShortcutsDialog";
+import { useIsNarrow } from "../components/sidebar/shared";
 import { recordNavigation } from "../lib/perf";
+import {
+  conversationOrder,
+  matchShortcut,
+  neighborConversation,
+  withKeys,
+  type ShortcutId,
+} from "../lib/shortcuts";
+import { dispatchShortcut, isMacLike } from "../lib/use-shortcut";
+import { useSidebarCollapsed, writeSidebarCollapsed } from "../lib/persisted";
+
+/** 変わらない値の購読（useSyncExternalStore の形を借りるためだけ）。 */
+const subscribeNothing = () => () => {};
 
 /** 未読の印を引き直す間隔（表示中のみ）。 */
 const UNREAD_POLL_MS = 5_000;
@@ -286,6 +308,91 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   }, [sidebarClosing]);
   useEscapeToClose(sidebarOpen && !sidebarClosing, dismissSidebar);
 
+  // --- キーボードショートカット（UI-11） ---------------------------------
+  /** デスクトップでサイドバーを畳んでいるか（端末ごとに保存）。 */
+  const collapsed = useSidebarCollapsed();
+  const narrow = useIsNarrow();
+  const [helpOpen, setHelpOpen] = useState(false);
+  /**
+   * 表記を ⌘ にするか Ctrl にするか。サーバーは Mac として描き、
+   * ブラウザでは navigator から読む（useSyncExternalStore の server 値
+   * なので、ハイドレーションでは Mac として突き合わせ、その後 Windows なら
+   * 描き直す。描画中に直接 navigator を読むと突き合わせで食い違う）。
+   */
+  const mac = useSyncExternalStore(subscribeNothing, isMacLike, () => true);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const closeHelp = useCallback(() => setHelpOpen(false), []);
+
+  /**
+   * 押されたキーに応じて動かす。判定は lib/shortcuts.ts（表）で、ここは
+   * 行き先の振り分けだけ。相手が別の部品に居るもの（検索・モデル・コピー）
+   * は CustomEvent で配り、居る部品が受ける（lib/use-shortcut.ts）。
+   */
+  const handleShortcut = (id: ShortcutId) => {
+    switch (id) {
+      case "new-chat":
+        // ホームに居ても押した時点で作り直す（location.key が変わる）
+        void navigate("/");
+        return;
+      case "search":
+        // 検索欄はサイドバーの中。閉じて（畳んで）いれば先に出す
+        if (narrow) openSidebar();
+        else if (collapsed) writeSidebarCollapsed(false);
+        requestAnimationFrame(() => dispatchShortcut("search"));
+        return;
+      case "toggle-sidebar":
+        if (narrow) {
+          if (sidebarOpen) closeSidebar();
+          else openSidebar();
+        } else {
+          writeSidebarCollapsed(!collapsed);
+        }
+        return;
+      case "model":
+      case "copy-last":
+        dispatchShortcut(id);
+        return;
+      case "prev-conversation":
+      case "next-conversation": {
+        const current = location.pathname.match(/^\/chat\/([^/]+)/)?.[1] ?? null;
+        const to = neighborConversation(
+          conversationOrder(conversations),
+          current,
+          id === "prev-conversation" ? "prev" : "next",
+        );
+        if (to) void navigate(`/chat/${to}`);
+        return;
+      }
+      case "help":
+        setHelpOpen(true);
+        return;
+    }
+  };
+  // 購読は1回だけ貼り、中身は最新のものを呼ぶ（描画のたびに貼り替えない）
+  const shortcutRef = useRef(handleShortcut);
+  useEffect(() => {
+    shortcutRef.current = handleShortcut;
+  });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const id = matchShortcut(e);
+      if (!id) return;
+      // 入力欄の中では ⌘↑ / ⌘↓ は行頭・行末へ動かすためのキー。奪わない
+      const t = e.target as HTMLElement | null;
+      const typing =
+        !!t &&
+        (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.isContentEditable);
+      if (typing && (id === "prev-conversation" || id === "next-conversation")) {
+        return;
+      }
+      e.preventDefault();
+      shortcutRef.current(id);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
   /**
    * アプリの高さを visualViewport の実測値に同期する。
    * iOS Safari は読み込み直後に 100dvh が実際の表示領域より小さい値の
@@ -418,15 +525,35 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         ほうが素直で、判定の作りしだいでは効きうるから。見た目も操作も
         変わらないので、戻す理由も無い。
       */}
-      <div className="order-1 hidden w-72 shrink-0 border-r border-black/[0.06] md:block dark:border-white/[0.06]">
-        <Sidebar
-          conversations={conversations}
-          folders={folders}
-          unreadIds={unreadIds}
-          generatingIds={generatingIds}
-          now={now}
-        />
-      </div>
+      {/*
+        畳んだら外す（display:none で残すのではなく）。残すと、隠れた
+        サイドバーが ⌘K を受けて見えない検索欄を開く。
+      */}
+      {!collapsed && (
+        <div className="order-1 hidden w-72 shrink-0 border-r border-black/[0.06] md:block dark:border-white/[0.06]">
+          <Sidebar
+            conversations={conversations}
+            folders={folders}
+            unreadIds={unreadIds}
+            generatingIds={generatingIds}
+            now={now}
+            mac={mac}
+            onCollapse={() => writeSidebarCollapsed(true)}
+          />
+        </div>
+      )}
+      {/* 畳んでいるあいだの入口。各画面のヘッダーの左は iPhone 用のボタンしか無く、Mac では空いている */}
+      {collapsed && (
+        <button
+          type="button"
+          onClick={() => writeSidebarCollapsed(false)}
+          aria-label="サイドバーを開く"
+          title={withKeys("サイドバーを開く", "toggle-sidebar", mac)}
+          className="fixed left-3 top-[calc(0.5rem+env(safe-area-inset-top))] z-30 hidden h-9 w-9 place-items-center rounded-lg text-ink-2 hover:bg-hover md:grid"
+        >
+          <IconSidebar className="h-5 w-5" />
+        </button>
+      )}
 
       {/* モバイル: ドロワー。高さは fixed inset-0 に任せず、本体と同じ
           --app-height で決める。iOSのスタンドアロン（PWA）では fixed の
@@ -497,6 +624,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         </div>
       )}
 
+      {helpOpen && <ShortcutsDialog mac={mac} onClose={closeHelp} />}
     </div>
     </ConfirmProvider>
   );
