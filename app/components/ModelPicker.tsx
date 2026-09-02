@@ -309,10 +309,12 @@ export function ModelPicker({
   const close = useCallback(() => setOpen(false), []);
   useEscapeToClose(open, close);
 
-  const label =
-    variant === "chip"
-      ? shortModelName(selected, value ?? "モデルを選択")
-      : selected?.name ?? value ?? "モデルを選択";
+  // 一覧がまだ届いていない・値が空のときは、四角だけが残らないよう文言を出す
+  const label = !value
+    ? "モデルを選択"
+    : variant === "chip"
+      ? shortModelName(selected, value)
+      : selected?.name ?? value;
 
   const triggerClass =
     variant === "chip"

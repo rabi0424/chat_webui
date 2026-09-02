@@ -9,6 +9,7 @@
  * 受け取る形にした。
  */
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { NavLink } from "react-router";
 import type { ConversationListRow, FolderRow } from "../../lib/db.server";
 import { useSidebar, type MenuTarget } from "./context";
@@ -21,7 +22,7 @@ import {
   IconFolder,
   IconStarSolid,
 } from "../icons";
-import { FAVORITES_ID, usePrefetchOnVisible } from "./shared";
+import { FAVORITES_ID, useIsNarrow, usePrefetchOnVisible } from "./shared";
 import { GLASS_PANEL, TERSE_INPUT } from "../../lib/ui";
 
 /**
@@ -57,8 +58,12 @@ export function MenuButton({ target }: { target: MenuTarget }) {
  * 「…」の中身。
  *
  * Mac ではボタンの下に出るポップオーバー、iPhone では画面の下端から
- * 上がるシート。出し方の違いは幅（md）だけで、中身は同じ。シートのときは
+ * 上がるシート。中身は同じで、出し方だけ幅で変える。シートのときは
  * 行が指で押せる高さになり、何のメニューかが分かるよう名前を頭に置く。
+ *
+ * シートは body 直下へポータルで描く。ドロワーは transform で動かして
+ * いるので、その中で fixed を使うと基準がドロワーになり、幅 288px の
+ * 中に閉じ込められて下のドックに被る（実際にそうなっていた）。
  */
 function MenuPanel({
   title,
@@ -69,27 +74,33 @@ function MenuPanel({
   children: React.ReactNode;
   onClose: () => void;
 }) {
-  return (
-    <>
-      {/* シートの背景。押したらメニューだけ閉じる（ドロワーは閉じない） */}
-      <div
-        className="fixed inset-0 z-40 bg-black/30 animate-fade md:hidden"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-      />
+  const narrow = useIsNarrow();
+  if (!narrow) {
+    return (
       <div
         role="menu"
-        className={`fixed inset-x-2 bottom-[max(env(safe-area-inset-bottom),0.5rem)] z-50 rounded-2xl p-1.5 animate-sheet md:absolute md:inset-x-auto md:bottom-auto md:right-1 md:top-8 md:z-40 md:w-44 md:origin-top-right md:rounded-xl md:p-1 md:animate-pop ${GLASS_PANEL}`}
+        className={`absolute right-1 top-8 z-40 w-44 origin-top-right rounded-xl p-1 animate-pop ${GLASS_PANEL}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <p className="truncate px-3 pb-1 pt-2 text-xs text-neutral-500 md:hidden dark:text-neutral-400">
+        {children}
+      </div>
+    );
+  }
+  return createPortal(
+    <div className="fixed inset-0 z-50" onClick={(e) => e.stopPropagation()}>
+      {/* シートの背景。押したらメニューだけ閉じる（ドロワーは閉じない） */}
+      <div className="absolute inset-0 bg-black/30 animate-fade" onClick={onClose} />
+      <div
+        role="menu"
+        className={`absolute inset-x-2 bottom-[max(env(safe-area-inset-bottom),0.5rem)] rounded-2xl p-1.5 animate-sheet ${GLASS_PANEL}`}
+      >
+        <p className="truncate px-3 pb-1 pt-2 text-xs text-neutral-500 dark:text-neutral-400">
           {title}
         </p>
         {children}
       </div>
-    </>
+    </div>,
+    document.body,
   );
 }
 

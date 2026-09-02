@@ -103,7 +103,7 @@ export function BotForm({
     <div className="flex h-full flex-col">
       {/* 他の画面と同じ帯。以前はこの画面だけヘッダーが無く、ラベルの上が空いていた */}
       <header className="flex shrink-0 items-center gap-1 border-b border-black/[0.06] px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-white/[0.06]">
-        <div className="flex w-20 shrink-0 justify-start">
+        <div className="flex w-24 shrink-0 justify-start">
           {openSidebar && (
             <button
               type="button"
@@ -117,7 +117,7 @@ export function BotForm({
           <button
             type="button"
             onClick={() => void navigate("/bots")}
-            className="hidden rounded-lg px-2 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 md:block dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="hidden whitespace-nowrap rounded-lg px-2 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 md:block dark:text-neutral-400 dark:hover:bg-neutral-800"
           >
             キャンセル
           </button>
@@ -125,7 +125,7 @@ export function BotForm({
         <h1 className="font-display min-w-0 flex-1 truncate text-center text-[0.9375rem] font-bold tracking-tight">
           {initial ? "ボットを編集" : "新しいボット"}
         </h1>
-        <div className="flex w-20 shrink-0 justify-end">
+        <div className="flex w-24 shrink-0 justify-end">
           <button
             type="button"
             onClick={() => void save()}
