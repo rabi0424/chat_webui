@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { ModelInfo } from "../lib/openrouter.server";
 import { TERSE_INPUT } from "../lib/ui";
+import { isShapeChoice } from "../lib/aspect";
+import { ShapePicker, ShapePreview } from "./ShapePicker";
 import {
   paramsForModel,
   POE_EXTRA_KEY_PATTERN,
@@ -121,6 +123,8 @@ function ExtraParams({
             {...TERSE_INPUT}
             className="min-w-0 flex-1 rounded-lg border border-line bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
           />
+          {/* 手で "16:9" と打ったときも、縦横どちらになるかをその場で見せる */}
+          <ShapePreview value={row.value} />
           <button
             type="button"
             onClick={() => commit(rows.filter((_, j) => j !== i))}
@@ -228,17 +232,54 @@ export function ParamsEditor({
         </p>
         {defs.map((def) => {
           const manual = value[def.key] != null;
+          /*
+           * 形（アスペクト比・解像度）の選択肢は <select> にしない。
+           * "1536x1024" と "1024x1536" は並べても見分けが付かず、
+           * 縦長・横長は形を描いて初めて分かる。
+           */
+          const shapes =
+            def.kind === "select" &&
+            isShapeChoice(def.options.map((o) => o.value));
+          const head = (
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">{def.label}</p>
+              <p className="truncate text-xs text-ink-3">{def.description}</p>
+            </div>
+          );
+          const toAuto = (
+            <button
+              type="button"
+              onClick={() => setAuto(def.key)}
+              aria-label={`${def.label}を自動に戻す`}
+              className="shrink-0 rounded-lg border border-line px-2 py-1.5 text-xs text-ink-2 hover:bg-hover"
+            >
+              自動に戻す
+            </button>
+          );
+
+          if (manual && shapes && def.kind === "select") {
+            return (
+              <div key={def.key} className="rounded-lg px-1 py-1.5">
+                <div className="flex items-center gap-3">
+                  {head}
+                  {toAuto}
+                </div>
+                <ShapePicker
+                  label={def.label}
+                  options={def.options}
+                  value={String(value[def.key])}
+                  onChange={(next) => onChange({ ...value, [def.key]: next })}
+                />
+              </div>
+            );
+          }
+
           return (
             <div
               key={def.key}
               className="flex items-center gap-3 rounded-lg px-1 py-1.5"
             >
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium">{def.label}</p>
-                <p className="truncate text-xs text-ink-3">
-                  {def.description}
-                </p>
-              </div>
+              {head}
 
               {manual ? (
                 <>
@@ -289,14 +330,7 @@ export function ParamsEditor({
                       className="w-36 rounded-lg border border-line bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
                     />
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setAuto(def.key)}
-                    aria-label={`${def.label}を自動に戻す`}
-                    className="shrink-0 rounded-lg border border-line px-2 py-1.5 text-xs text-ink-2 hover:bg-hover"
-                  >
-                    自動に戻す
-                  </button>
+                  {toAuto}
                 </>
               ) : (
                 <button
