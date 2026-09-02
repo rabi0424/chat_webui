@@ -6,14 +6,22 @@ import {
   PULL_SLOP_PX,
   PULL_TRIGGER_PX,
 } from "../lib/pull-to-refresh";
-import { useNavigate, useOutletContext } from "react-router";
+import { Link, useNavigate, useOutletContext } from "react-router";
 import type { Route } from "./+types/images";
 import type { ShellContext } from "./shell";
 import { listGeneratedImages, type GeneratedImageRow } from "../lib/db.server";
 import { Lightbox } from "../components/Lightbox";
 import type { ImagesResponse } from "../lib/api-types";
 import { invalidateChat } from "../lib/chat-cache";
-import { IconEllipsis, IconMenu, IconSearch, IconX } from "../components/icons";
+import {
+  IconEllipsis,
+  IconMenu,
+  IconPencilSquare,
+  IconPhoto,
+  IconSearch,
+  IconX,
+} from "../components/icons";
+import { EMPTY_ACTION, EmptyState } from "../components/EmptyState";
 import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
 import { IMAGES_PAGE_SIZE } from "../lib/constants";
 import { useEscapeToClose } from "../lib/dismiss";
@@ -418,13 +426,29 @@ export default function Images({ loaderData }: Route.ComponentProps) {
           />
         </div>
         {images.length === 0 ? (
-          <p className="mt-16 text-center text-sm text-ink-3">
-            {loading
-              ? "読み込み中…"
-              : query || favoritesOnly
-                ? "該当する画像がありません"
-                : "生成された画像がここに並びます"}
-          </p>
+          <div className="mt-16">
+            {loading ? (
+              <p className="text-center text-sm text-ink-3">読み込み中…</p>
+            ) : query || favoritesOnly ? (
+              <EmptyState
+                icon={<IconPhoto />}
+                title="該当する画像がありません"
+                description="絞り込みを外すか、別の語で探してください。"
+              />
+            ) : (
+              <EmptyState
+                icon={<IconPhoto />}
+                title="生成された画像がここに並びます"
+                description="画像を作れるモデルで話すと、返ってきた画像が新しい順に集まります。"
+                action={
+                  <Link to="/" className={EMPTY_ACTION}>
+                    <IconPencilSquare className="h-4 w-4" />
+                    画像を作れるモデルで話す
+                  </Link>
+                }
+              />
+            )}
+          </div>
         ) : (
           <>
             {/*

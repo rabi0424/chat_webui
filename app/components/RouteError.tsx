@@ -44,7 +44,7 @@ export function RouteError() {
   return (
     <div className="grid h-full place-items-center p-6">
       <div className="max-w-sm text-center">
-        <h1 className="text-lg font-semibold">{title}</h1>
+        <h1 className="font-display text-lg font-bold">{title}</h1>
         <p className="mt-2 text-sm leading-relaxed text-ink-2">
           {detail}
         </p>
