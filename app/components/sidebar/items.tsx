@@ -94,7 +94,7 @@ function MenuPanel({
         role="menu"
         className={`absolute inset-x-2 bottom-[max(env(safe-area-inset-bottom),0.5rem)] rounded-2xl p-1.5 animate-sheet ${GLASS_PANEL}`}
       >
-        <p className="truncate px-3 pb-1 pt-2 text-xs text-neutral-500 dark:text-neutral-400">
+        <p className="truncate px-3 pb-1 pt-2 text-xs text-ink-2">
           {title}
         </p>
         {children}
@@ -249,7 +249,7 @@ export function RenameField({
       placeholder={placeholder}
       aria-label={label}
       {...TERSE_INPUT}
-      className="w-full rounded-lg border border-accent/60 bg-white px-2.5 py-1.5 text-[0.9375rem] outline-none ring-2 ring-accent/20 dark:bg-neutral-950"
+      className="w-full rounded-lg border border-accent/60 bg-surface px-2.5 py-1.5 text-[0.9375rem] outline-none ring-2 ring-accent/20"
     />
   );
 }
@@ -296,7 +296,7 @@ export function ConversationItem({ c, indent = false }: { c: ConversationListRow
             )}
             {/* ピン留めは見出しで分かるので、印ではなく会話のアイコンを添える */}
             {c.pinned === 1 && (
-              <IconChatBubble className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
+              <IconChatBubble className="h-4 w-4 shrink-0 text-ink-3" />
             )}
             {c.favorite === 1 && (
               <IconStarSolid
@@ -328,7 +328,7 @@ export function ConversationItem({ c, indent = false }: { c: ConversationListRow
 /** フォルダの行の中の件数。名前と同じ行に置く（別の flex 項目にすると上にずれて見える）。 */
 function Count({ n }: { n: number }) {
   return (
-    <span className="ml-1.5 text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
+    <span className="ml-1.5 text-xs tabular-nums text-ink-2">
       {n}
     </span>
   );
@@ -376,7 +376,7 @@ export function FavoritesFolderItem() {
       {isExpanded && (
         <ul className="mt-0.5 space-y-0.5">
           {children.length === 0 && (
-            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
+            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-ink-2">
               （まだありません）
             </li>
           )}
@@ -431,7 +431,7 @@ export function FolderItem({ f }: { f: FolderRow }) {
               onClick={() => setView(f.id)}
               className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-lg py-2 pl-1 pr-8 text-left text-[0.9375rem] ${ROW_IDLE}`}
             >
-              <IconFolder className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-400" />
+              <IconFolder className="h-4 w-4 shrink-0 text-ink-2" />
               <span className="min-w-0 flex-1 truncate">
                 {f.name}
                 <Count n={children.length} />
@@ -445,7 +445,7 @@ export function FolderItem({ f }: { f: FolderRow }) {
       {isExpanded && !editing && (
         <ul className="mt-0.5 space-y-0.5">
           {children.length === 0 && (
-            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
+            <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-ink-2">
               （空のフォルダ）
             </li>
           )}

@@ -14,10 +14,10 @@ import { IconCheck } from "./icons";
 
 /** 文字や数字の入力欄の見た目。設定・ボット編集・パラメータで共通。 */
 export const FIELD =
-  "rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5";
+  "rounded-lg border border-line bg-neutral-50 px-2.5 py-1.5 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:bg-white/5";
 
 export const FIELD_AREA =
-  "w-full resize-y rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5";
+  "w-full resize-y rounded-xl border border-line bg-neutral-50 px-3 py-2 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:bg-white/5";
 
 /**
  * セグメント。選択肢が2〜4つで、どれか1つを選ぶもの（テーマ・文字サイズ・
@@ -52,7 +52,7 @@ export function Segmented<T extends string>({
             className={`flex items-center gap-1.5 rounded-[6px] px-3 py-1.5 text-sm transition touch:py-2 ${
               on
                 ? "bg-white font-medium text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-50"
-                : "text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100"
+                : "text-ink-2 hover:text-neutral-800 dark:hover:text-neutral-100"
             }`}
           >
             {o.icon}
@@ -120,9 +120,9 @@ export function Stepper({
   const decimals = (String(step).split(".")[1] ?? "").length;
   const round = (n: number) => Number(n.toFixed(decimals));
   const btn =
-    "grid h-9 w-9 place-items-center text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 dark:text-neutral-400 dark:hover:bg-white/10";
+    "grid h-9 w-9 place-items-center text-ink-2 hover:bg-hover disabled:opacity-30";
   return (
-    <div className="inline-flex items-center overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50 dark:border-white/10 dark:bg-white/5">
+    <div className="inline-flex items-center overflow-hidden rounded-lg border border-line bg-neutral-50 dark:bg-white/5">
       <button
         type="button"
         onClick={() => onChange(clamp(round(value - step)))}
@@ -139,7 +139,7 @@ export function Stepper({
         max={max}
         step={step}
         onChange={(v) => onChange(clamp(v))}
-        className={`${width} border-x border-neutral-200 bg-transparent px-2 py-1.5 text-center text-base tabular-nums outline-none sm:text-sm dark:border-white/10`}
+        className={`${width} border-x border-line bg-transparent px-2 py-1.5 text-center text-base tabular-nums outline-none sm:text-sm`}
       />
       <button
         type="button"
@@ -189,7 +189,7 @@ export function Group({
         {title}
       </h2>
       {note && (
-        <p className="mb-2 mt-0.5 px-1 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+        <p className="mb-2 mt-0.5 px-1 text-xs leading-relaxed text-ink-2">
           {note}
         </p>
       )}
@@ -225,14 +225,18 @@ export function Row({
       <div className={`min-w-0 ${stack ? "" : "flex-1"}`}>
         <p className="text-sm font-medium">{label}</p>
         {description && (
-          <p className="text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+          <p className="text-xs leading-relaxed text-ink-2">
             {description}
           </p>
         )}
       </div>
       {children && (
         <div
-          className={`flex items-center gap-3 ${stack ? "mt-2" : "shrink-0"}`}
+          /*
+           * 横並びのときも、狭い画面では右側を6割までに抑える。抑えないと
+           * 長いモデル名の欄が幅を取り、左の見出しが1文字ずつ折れる。
+           */
+          className={`flex items-center gap-3 ${stack ? "mt-2" : "shrink-0 max-w-[60%] sm:max-w-none"}`}
         >
           <SavedMark shown={saved} />
           {children}

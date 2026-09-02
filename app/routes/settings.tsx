@@ -110,7 +110,7 @@ function DeltaBadge({ cur, prev }: { cur: number; prev: number | undefined }) {
           ? "text-emerald-600 dark:text-emerald-400"
           : d.ms > 0
             ? "text-red-600 dark:text-red-400"
-            : "text-neutral-400 dark:text-neutral-500"
+            : "text-ink-3"
       }`}
     >
       {sign}
@@ -148,7 +148,7 @@ function PerfPanel() {
 
   if (!comparison || (!comparison.current && !comparison.previous)) {
     return (
-      <p className="px-1 py-2 text-sm text-neutral-400 dark:text-neutral-500">
+      <p className="px-1 py-2 text-sm text-ink-3">
         まだ記録がありません。ページを行き来すると自動で貯まります。
       </p>
     );
@@ -158,7 +158,7 @@ function PerfPanel() {
 
   return (
     <div className="space-y-3">
-      <p className="px-1 text-xs font-medium text-neutral-400 dark:text-neutral-500">
+      <p className="px-1 text-xs font-medium text-ink-3">
         現行ビルド {currentBuildId()}
         {current && (
           <>
@@ -175,13 +175,13 @@ function PerfPanel() {
         )}
       </p>
       {!current ? (
-        <p className="px-1 text-sm text-neutral-400 dark:text-neutral-500">
+        <p className="px-1 text-sm text-ink-3">
           このビルドの記録はまだありません。ページを行き来すると貯まります。
         </p>
       ) : (
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-xs text-neutral-400 dark:text-neutral-500">
+            <tr className="text-left text-xs text-ink-3">
               <th className="px-1 py-0.5 font-normal">ページ</th>
               <th className="px-1 py-0.5 text-right font-normal">回数</th>
               <th className="px-1 py-0.5 text-right font-normal">中央値</th>
@@ -217,7 +217,7 @@ function PerfPanel() {
         <button
           type="button"
           onClick={() => void copy()}
-          className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-50 dark:border-white/10 dark:text-neutral-300 dark:hover:bg-white/5"
+          className="flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-white/5"
         >
           {copied ? (
             <IconCheck className="h-4 w-4" />
@@ -240,7 +240,7 @@ function PerfPanel() {
           }}
           aria-label="記録を消去"
           title="記録を消去"
-          className="rounded-lg border border-neutral-200 p-1.5 text-neutral-400 hover:bg-neutral-50 hover:text-neutral-600 dark:border-white/10 dark:hover:bg-white/5 dark:hover:text-neutral-300"
+          className="rounded-lg border border-line p-1.5 text-neutral-400 hover:bg-neutral-50 hover:text-neutral-600 dark:hover:bg-white/5 dark:hover:text-neutral-300"
         >
           <IconTrash className="h-4 w-4" />
         </button>
@@ -319,7 +319,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             type="button"
             onClick={openSidebar}
             aria-label="メニュー"
-            className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
           >
             <IconMenu className="h-5 w-5" />
           </button>
@@ -557,7 +557,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 onChange={(v) => saveChatFontSize(v)}
               />
             </Row>
-            <div className="px-4 pb-3 text-xs text-neutral-400 dark:text-neutral-500">
+            <div className="px-4 pb-3 text-xs text-ink-3">
               <span
                 className="chat-text"
                 style={{ display: "inline-block", lineHeight: 1.6 }}
@@ -588,7 +588,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
               開発者向け: ページ遷移の計測
             </summary>
             <div className="border-t border-black/[0.06] px-4 py-3 dark:border-white/[0.08]">
-              <p className="mb-3 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+              <p className="mb-3 text-xs leading-relaxed text-ink-2">
                 ページ遷移のたびに自動で記録されます（この端末のみ・最大1000件）。デプロイすると現行ビルドの集計に切り替わり、各数値に前回ビルドとの差が付きます。
               </p>
               <PerfPanel />

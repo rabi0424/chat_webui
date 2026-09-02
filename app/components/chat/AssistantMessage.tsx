@@ -202,7 +202,7 @@ export function AssistantMessage({
             </button>
           )}
           {meta && (
-            <span className="ml-auto shrink-0 pl-2 text-xs tabular-nums text-neutral-400 dark:text-neutral-500">
+            <span className="ml-auto shrink-0 pl-2 text-xs tabular-nums text-ink-3">
               {meta}
             </span>
           )}

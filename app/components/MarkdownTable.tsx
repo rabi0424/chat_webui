@@ -178,7 +178,7 @@ function CopyTableButton({ text }: { text: string }) {
           // クリップボード不許可時は何もしない
         }
       }}
-      className="rounded p-1 text-neutral-400 opacity-0 transition-opacity group-hover/table:opacity-100 focus-visible:opacity-100 hover:bg-neutral-200 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+      className="rounded p-1 text-ink-3 opacity-0 transition-opacity group-hover/table:opacity-100 focus-visible:opacity-100 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
     >
       {copied ? (
         <IconCheck className="h-3.5 w-3.5 text-green-500" />

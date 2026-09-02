@@ -59,7 +59,7 @@ export default function Home() {
         <p className="mt-3 text-lg font-medium text-neutral-800 dark:text-neutral-100">
           {selected.name}
         </p>
-        <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+        <p className="mt-1 text-sm text-ink-2">
           メッセージを送って会話を開始
         </p>
         {/* 選択の解除は入力欄のチップの × で（Chat の onClearBot） */}

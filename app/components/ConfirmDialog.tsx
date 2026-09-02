@@ -136,7 +136,7 @@ function ConfirmDialog({
           {title}
         </p>
         {description && (
-          <p className="mt-1 text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
+          <p className="mt-1 text-sm leading-relaxed text-ink-2">
             {description}
           </p>
         )}
@@ -145,7 +145,7 @@ function ConfirmDialog({
             type="button"
             onClick={cancel}
             data-testid="dialog-cancel"
-            className="rounded-xl border border-neutral-200 px-4 py-3 text-sm text-neutral-700 hover:bg-neutral-100 md:py-1.5 dark:border-white/15 dark:text-neutral-200 dark:hover:bg-white/10"
+            className="rounded-xl border border-neutral-200 px-4 py-3 text-sm text-neutral-700 hover:bg-hover md:py-1.5 dark:border-white/15 dark:text-neutral-200"
           >
             {cancelLabel}
           </button>

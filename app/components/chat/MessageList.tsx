@@ -107,7 +107,7 @@ export function MessageList({
         {messages.length === 0 && (
           <div className="flex min-h-[60vh] items-center justify-center">
             {emptyState ?? (
-              <p className="text-lg text-neutral-400 dark:text-neutral-500">
+              <p className="text-lg text-ink-3">
                 モデルを選んでメッセージを送信
               </p>
             )}

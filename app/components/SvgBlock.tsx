@@ -54,7 +54,7 @@ function ToolbarButton({
       className={`rounded p-1 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-200 ${
         active
           ? "text-neutral-700 dark:text-neutral-200"
-          : "text-neutral-400 dark:text-neutral-500"
+          : "text-ink-3"
       }`}
     >
       {children}
@@ -194,12 +194,12 @@ export function SvgBlock({
   if (!svg) return <>{fallback}</>;
 
   return (
-    <div className="not-prose my-4 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900">
-      <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-1 dark:border-neutral-800">
+    <div className="not-prose my-4 overflow-hidden rounded-xl border border-line bg-neutral-50 dark:bg-neutral-900">
+      <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-1">
         <button
           type="button"
           onClick={() => setShowSource((v) => !v)}
-          className="rounded px-1 text-xs text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100"
+          className="rounded px-1 text-xs text-ink-2 hover:text-neutral-800 dark:hover:text-neutral-100"
         >
           SVG{showSource ? "（ソース）" : ""}
         </button>

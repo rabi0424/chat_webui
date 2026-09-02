@@ -90,3 +90,39 @@ describe.skipIf(css == null)("吹き出しは hover のある端末だけ", () =
     expect(tipRulesOutsideHoverMedia(good)).toBe(0);
   });
 });
+
+/**
+ * 面と文字のトークン（UI-10）とフォーカスの輪。
+ *
+ * `@theme inline` で束ねた色は、綴りを違えても Tailwind は黙って
+ * 規則を出さない（`text-ink-2` が効かなければ文字は継承色になるだけで、
+ * 画面は一見ふつうに見える）。輪も、キーボードで辿らないと見ないので、
+ * 規則が出ていることをビルド結果で見る。
+ */
+describe.skipIf(css == null)("面と文字のトークン", () => {
+  it("トークンの utility が CSS 変数を引いている", () => {
+    for (const [cls, v] of [
+      ["text-ink-2", "--ink-2"],
+      ["text-ink-3", "--ink-3"],
+      ["bg-sunken", "--sunken"],
+      ["border-line", "--line"],
+      ["hover\\\\:bg-hover", "--hover"],
+    ]) {
+      expect(css, cls).toMatch(new RegExp(`\\.${cls}[^{]*\\{[^}]*var\\(${v}\\)`));
+    }
+  });
+
+  it("ダークでは値が入れ替わる", () => {
+    const dark = css!.match(/:root\.dark\{[^}]*\}/g)?.join("\n") ?? "";
+    expect(dark).toContain("--ink-2:#a3a3a3");
+    expect(dark).toContain("--surface:#0a0a0a");
+  });
+
+  it("押せるものにアクセント色の輪が出る", () => {
+    const rule = css!.match(/:where\(a,button[^{]*\):focus-visible\{[^}]*\}/)?.[0];
+    expect(rule).toBeDefined();
+    expect(rule).toContain("outline:2px solid var(--accent)");
+    // 入力欄は含めない（枠の色で示す）
+    expect(rule).not.toContain("input");
+  });
+});

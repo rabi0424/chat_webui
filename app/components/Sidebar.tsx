@@ -108,7 +108,7 @@ function SearchResultItem({
           <Highlight text={r.title} terms={terms} />
         </span>
         {r.snippet && (
-          <span className="mt-0.5 block truncate text-[0.8125rem] text-neutral-400 dark:text-neutral-500">
+          <span className="mt-0.5 block truncate text-[0.8125rem] text-ink-3">
             <Highlight text={r.snippet} terms={terms} />
           </span>
         )}
@@ -127,7 +127,7 @@ function SectionLabel({
 }) {
   return (
     <div className="flex items-center justify-between px-3 pb-1 pt-3">
-      <p className="text-[11px] font-medium tracking-wide text-neutral-500 dark:text-neutral-400">
+      <p className="text-[11px] font-medium tracking-wide text-ink-2">
         {children}
       </p>
       {action}
@@ -545,7 +545,7 @@ export function Sidebar({
         白い紙の本文と、その脇の一覧を面の差で分ける。境界線は要らない。
       */}
       <div
-        className="relative flex h-full flex-col bg-neutral-100 pt-[env(safe-area-inset-top)] dark:bg-neutral-900"
+        className="relative flex h-full flex-col bg-sunken pt-[env(safe-area-inset-top)]"
         onClick={() => menu && setMenu(null)}
       >
         {/* ヘッダー: アプリ名と検索。検索は押したときだけ入力欄に変わる */}
@@ -563,7 +563,7 @@ export function Sidebar({
                 placeholder="検索（-語 で除外）"
                 aria-label="会話を検索"
                 {...TERSE_INPUT}
-                className="w-full rounded-full border border-black/[0.08] bg-white py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-[0.9375rem] dark:border-white/10 dark:bg-neutral-950"
+                className="w-full rounded-full border border-black/[0.08] bg-surface py-2 pl-9 pr-9 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-[0.9375rem] dark:border-white/10"
               />
               <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
               <button
@@ -593,7 +593,7 @@ export function Sidebar({
                 onClick={openSearch}
                 aria-label="会話を検索"
                 title="会話を検索"
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-neutral-500 transition hover:bg-black/[0.06] active:scale-95 dark:text-neutral-400 dark:hover:bg-white/10"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-2 transition hover:bg-black/[0.06] active:scale-95 dark:hover:bg-white/10"
               >
                 <IconSearch className="h-5 w-5" />
               </button>
@@ -662,7 +662,7 @@ export function Sidebar({
                   />
                 ))}
                 {!searching && searchResults?.length === 0 && (
-                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
+                  <li className="px-3 py-6 text-center text-[0.8125rem] text-ink-2">
                     見つかりませんでした
                   </li>
                 )}
@@ -676,7 +676,7 @@ export function Sidebar({
                   type="button"
                   onClick={() => setView(null)}
                   aria-label="戻る"
-                  className="rounded-lg p-1.5 text-neutral-500 hover:bg-black/[0.06] dark:text-neutral-400 dark:hover:bg-white/10"
+                  className="rounded-lg p-1.5 text-ink-2 hover:bg-black/[0.06] dark:hover:bg-white/10"
                 >
                   <IconArrowLeft className="h-4 w-4" />
                 </button>
@@ -687,7 +687,7 @@ export function Sidebar({
               </div>
               <ul className="space-y-0.5">
                 {favoriteConversations.length === 0 && (
-                  <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-neutral-500 dark:text-neutral-400">
+                  <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-ink-2">
                     まだありません。
                     <br />
                     会話の「…」から
@@ -708,18 +708,18 @@ export function Sidebar({
                   type="button"
                   onClick={() => setView(null)}
                   aria-label="戻る"
-                  className="rounded-lg p-1.5 text-neutral-500 hover:bg-black/[0.06] dark:text-neutral-400 dark:hover:bg-white/10"
+                  className="rounded-lg p-1.5 text-ink-2 hover:bg-black/[0.06] dark:hover:bg-white/10"
                 >
                   <IconArrowLeft className="h-4 w-4" />
                 </button>
                 <span className="flex items-center gap-1.5 truncate text-[0.9375rem] font-medium">
-                  <IconFolder className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-400" />
+                  <IconFolder className="h-4 w-4 shrink-0 text-ink-2" />
                   {viewFolder.name}
                 </span>
               </div>
               <ul className="space-y-0.5">
                 {folderConversations(viewFolder.id).length === 0 && (
-                  <li className="px-3 py-6 text-center text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
+                  <li className="px-3 py-6 text-center text-[0.8125rem] text-ink-2">
                     このフォルダは空です
                   </li>
                 )}
@@ -786,7 +786,7 @@ export function Sidebar({
               {rootConversations.length === 0 && pinnedItems.length === 0 && (
                 <>
                   <SectionLabel>会話</SectionLabel>
-                  <p className="px-3 py-4 text-center text-[0.8125rem] text-neutral-500 dark:text-neutral-400">
+                  <p className="px-3 py-4 text-center text-[0.8125rem] text-ink-2">
                     まだ会話はありません
                   </p>
                 </>
@@ -953,7 +953,7 @@ export function Sidebar({
                 <button
                   type="button"
                   onClick={() => setMoveTarget(null)}
-                  className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-black/[0.05] dark:text-neutral-400 dark:hover:bg-white/10"
+                  className="rounded-lg px-3 py-1.5 text-sm text-ink-2 hover:bg-black/[0.05] dark:hover:bg-white/10"
                 >
                   キャンセル
                 </button>

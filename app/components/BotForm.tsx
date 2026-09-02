@@ -109,7 +109,7 @@ export function BotForm({
               type="button"
               onClick={openSidebar}
               aria-label="メニュー"
-              className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
+              className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
             >
               <IconMenu className="h-5 w-5" />
             </button>
@@ -117,7 +117,7 @@ export function BotForm({
           <button
             type="button"
             onClick={() => void navigate("/bots")}
-            className="hidden whitespace-nowrap rounded-lg px-2 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 md:block dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="hidden whitespace-nowrap rounded-lg px-2 py-1.5 text-sm text-ink-2 hover:bg-hover md:block"
           >
             キャンセル
           </button>
@@ -218,7 +218,7 @@ export function BotForm({
                   <button
                     type="button"
                     onClick={() => void resetParams()}
-                    className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                    className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"
                   >
                     初期設定に戻す
                   </button>
@@ -233,7 +233,7 @@ export function BotForm({
             <button
               type="button"
               onClick={() => void navigate("/bots")}
-              className="rounded-xl px-4 py-2.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              className="rounded-xl px-4 py-2.5 text-sm text-ink-2 hover:bg-hover"
             >
               キャンセル
             </button>

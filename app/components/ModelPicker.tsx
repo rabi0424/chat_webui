@@ -84,7 +84,7 @@ function ModelRow({
       <button
         type="button"
         onClick={() => onSelect(m.id)}
-        className={`relative w-full rounded-lg px-3 py-2 text-left hover:bg-neutral-100 dark:hover:bg-white/10 ${
+        className={`relative w-full rounded-lg px-3 py-2 text-left hover:bg-hover ${
           selected ? "bg-neutral-100 dark:bg-white/10" : ""
         } ${isNew ? "pl-4" : ""}`}
       >
@@ -113,7 +113,7 @@ function ModelRow({
               </span>
             )}
             {m.provider === "poe" && (
-              <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+              <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-2 dark:bg-neutral-800">
                 Poe
               </span>
             )}
@@ -124,10 +124,10 @@ function ModelRow({
             )}
           </span>
         </div>
-        <div className="mt-0.5 flex gap-3 text-xs text-neutral-400 dark:text-neutral-500">
+        <div className="mt-0.5 flex gap-3 text-xs text-ink-3">
           <span className="truncate">{m.id}</span>
         </div>
-        <div className="mt-0.5 flex gap-3 text-xs text-neutral-500 dark:text-neutral-400">
+        <div className="mt-0.5 flex gap-3 text-xs text-ink-2">
           {m.contextLength > 0 && (
             <span>{formatContext(m.contextLength)} ctx</span>
           )}
@@ -320,8 +320,8 @@ export function ModelPicker({
     variant === "chip"
       ? "flex h-8 max-w-full items-center gap-1.5 rounded-full bg-black/[0.05] pl-2.5 pr-2 text-[13px] font-medium text-neutral-700 transition-colors hover:bg-black/[0.08] active:scale-[0.98] dark:bg-white/10 dark:text-neutral-200 dark:hover:bg-white/15"
       : variant === "field"
-        ? "flex max-w-full items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 py-1.5 pl-2.5 pr-2 text-sm text-neutral-800 transition-colors hover:bg-neutral-100 active:scale-[0.98] dark:border-white/10 dark:bg-white/5 dark:text-neutral-100 dark:hover:bg-white/10"
-        : "flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-100 active:scale-[0.98] dark:text-neutral-200 dark:hover:bg-neutral-800";
+        ? "flex max-w-full items-center gap-2 rounded-lg border border-line bg-neutral-50 py-1.5 pl-2.5 pr-2 text-sm text-neutral-800 transition-colors hover:bg-hover active:scale-[0.98] dark:bg-white/5 dark:text-neutral-100"
+        : "flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-hover active:scale-[0.98] dark:text-neutral-200";
 
   return (
     <div ref={containerRef} className="relative flex min-w-0 items-center">
@@ -375,7 +375,7 @@ export function ModelPicker({
             pos.bottom != null ? "origin-bottom" : "origin-top"
           } ${GLASS_PANEL}`}
         >
-          <div className="border-b border-neutral-100 p-2 dark:border-white/10">
+          <div className="border-b border-line p-2">
             <input
               ref={searchRef}
               type="text"
@@ -407,7 +407,7 @@ export function ModelPicker({
             */}
             {recent.length > 0 && (
               <>
-                <li className="px-3 pb-1 pt-2 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+                <li className="px-3 pb-1 pt-2 text-[11px] font-medium text-ink-3">
                   最近よく使うモデル
                 </li>
                 {recent.map((m) => (
@@ -421,7 +421,7 @@ export function ModelPicker({
                 ))}
                 <li
                   role="separator"
-                  className="mx-3 my-1 border-t border-neutral-100 dark:border-white/10"
+                  className="mx-3 my-1 border-t border-line"
                 />
               </>
             )}

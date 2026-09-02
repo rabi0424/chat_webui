@@ -96,7 +96,7 @@ function LimitBar({
           style={{ width: `${ratio * 100}%` }}
         />
       </div>
-      <p className="mt-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="mt-1.5 text-xs text-ink-2">
         上限 {jpy(limitJpy)} の {Math.round(ratio * 100)}%
       </p>
     </div>
@@ -114,13 +114,13 @@ function Totals({
 }) {
   return (
     <div>
-      <p className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
+      <p className="text-xs font-medium text-ink-2">
         {title}
       </p>
       <p className="mt-0.5 text-2xl font-semibold tabular-nums">
         {usdJpy != null ? jpy(totals.costUsd * usdJpy) : usd(totals.costUsd)}
       </p>
-      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="text-xs text-ink-2">
         {usdJpy != null && `${usd(totals.costUsd)}・`}
         {totals.events}件
         {totals.points > 0 &&
@@ -198,12 +198,12 @@ function DailyChart({
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <h2 className="text-sm font-semibold">日別（今月）</h2>
         {limitPerDayUsd != null && (
-          <span className="text-xs text-neutral-500 dark:text-neutral-400">
+          <span className="text-xs text-ink-2">
             点線は上限を日割りした {money(limitPerDayUsd)}
           </span>
         )}
       </div>
-      <div className="rounded-xl border border-neutral-200 px-3.5 pb-2 pt-4 dark:border-neutral-800">
+      <div className="rounded-xl border border-line px-3.5 pb-2 pt-4">
         <div className="relative h-32">
           <ul
             aria-label="日別の使用額"
@@ -299,7 +299,7 @@ function ByModel({
             <div className="flex items-baseline justify-between gap-3">
               <span className="min-w-0 truncate">
                 {modelName(r.modelId)}
-                <span className="ml-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                <span className="ml-1.5 text-xs text-ink-2">
                   {r.events}件
                 </span>
               </span>
@@ -313,7 +313,7 @@ function ByModel({
               </span>
             </div>
             {/* 額の大小を目で追えるように、一番使ったモデルを基準にした帯を敷く */}
-            <div className="mt-1 h-1 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-900">
+            <div className="mt-1 h-1 overflow-hidden rounded-full bg-sunken">
               <div
                 className="h-full rounded-full bg-accent/60"
                 style={{ width: `${top > 0 ? (r.costUsd / top) * 100 : 0}%` }}
@@ -332,7 +332,7 @@ function QuotaBar({ used, limit }: { used: number; limit: number }) {
   const tone =
     ratio >= 1 ? "bg-red-500" : ratio >= 0.8 ? "bg-amber-500" : "bg-accent/60";
   return (
-    <div className="mt-1 h-1 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-900">
+    <div className="mt-1 h-1 overflow-hidden rounded-full bg-sunken">
       <div
         className={`h-full rounded-full ${tone}`}
         style={{ width: `${ratio * 100}%` }}
@@ -364,7 +364,7 @@ function Cloudflare({ storage }: { storage: StorageStats }) {
   return (
     <div className="mt-8">
       <h2 className="mb-2 text-sm font-semibold">保存しているもの</h2>
-      <div className="space-y-3 rounded-xl border border-neutral-200 px-3.5 py-3 dark:border-neutral-800">
+      <div className="space-y-3 rounded-xl border border-line px-3.5 py-3">
         <div>
           <div className="flex items-baseline justify-between gap-3 text-sm">
             <span>
@@ -378,13 +378,13 @@ function Cloudflare({ storage }: { storage: StorageStats }) {
           {storage.d1Bytes != null ? (
             <>
               <QuotaBar used={storage.d1Bytes} limit={FREE_TIER.d1Bytes} />
-              <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+              <p className="mt-1 text-xs text-ink-2">
                 無料枠の目安 {formatBytes(FREE_TIER.d1Bytes)} の{" "}
                 {Math.round((storage.d1Bytes / FREE_TIER.d1Bytes) * 1000) / 10}%
               </p>
             </>
           ) : (
-            <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="mt-1 text-xs text-ink-2">
               大きさを取得できませんでした。
             </p>
           )}
@@ -401,7 +401,7 @@ function Cloudflare({ storage }: { storage: StorageStats }) {
             </span>
           </div>
           <QuotaBar used={storage.fileBytes} limit={FREE_TIER.r2Bytes} />
-          <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+          <p className="mt-1 text-xs text-ink-2">
             {storage.files.toLocaleString()}個・無料枠の目安{" "}
             {formatBytes(FREE_TIER.r2Bytes)} の{" "}
             {Math.round((storage.fileBytes / FREE_TIER.r2Bytes) * 1000) / 10}%
@@ -410,10 +410,10 @@ function Cloudflare({ storage }: { storage: StorageStats }) {
           </p>
         </div>
 
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-1 border-t border-neutral-100 pt-3 text-sm dark:border-neutral-800">
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-1 border-t border-line pt-3 text-sm">
           {rows.map((r) => (
             <div key={r.label} className="flex items-baseline justify-between gap-2">
-              <dt className="text-neutral-500 dark:text-neutral-400">
+              <dt className="text-ink-2">
                 {r.label}
               </dt>
               <dd className="tabular-nums">
@@ -428,7 +428,7 @@ function Cloudflare({ storage }: { storage: StorageStats }) {
           ))}
         </dl>
       </div>
-      <p className="mt-2 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+      <p className="mt-2 text-xs leading-relaxed text-ink-2">
         R2 の大きさは、こちらが記録している添付の合計です（同じ実体を
         共有している分は1つとして数えます）。Cloudflare の請求額は API から
         取れないため出していません。無料枠の値は目安で、変わることがあります。
@@ -456,12 +456,12 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
             type="button"
             onClick={openSidebar}
             aria-label="メニュー"
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-neutral-500 transition hover:bg-neutral-100 active:scale-95 lg:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-2 transition hover:bg-hover active:scale-95 lg:hidden"
           >
             <IconMenu className="h-5 w-5" />
           </button>
           <h1 className="text-xl font-semibold tracking-tight">使用量</h1>
-          <span className="ml-auto text-xs text-neutral-500 dark:text-neutral-400">
+          <span className="ml-auto text-xs text-ink-2">
             {monthLabelJst(now)}（JST）
           </span>
         </header>
@@ -470,7 +470,7 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
         <div
           role="group"
           aria-label="期間"
-          className="mb-4 inline-flex rounded-xl border border-neutral-200 p-0.5 dark:border-neutral-800"
+          className="mb-4 inline-flex rounded-xl border border-line p-0.5"
         >
           {USAGE_RANGES.map((r) => (
             <button
@@ -481,7 +481,7 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
               className={`rounded-[0.625rem] px-3 py-1.5 text-xs font-medium ${
                 range === r
                   ? "bg-accent/10 text-accent-ink"
-                  : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                  : "text-ink-2 hover:bg-hover"
               }`}
             >
               {USAGE_RANGE_LABELS[r]}
@@ -525,12 +525,12 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
           </p>
         )}
         {verdict.estimated && (
-          <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-400">
+          <p className="mt-3 text-xs text-ink-2">
             Poe の消費のうち、額が取れなかった分はポイントから見積もっています。
           </p>
         )}
         {month.pointsWithoutCost > 0 && !verdict.estimated && (
-          <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-400">
+          <p className="mt-3 text-xs text-ink-2">
             Poe の {Math.round(month.pointsWithoutCost).toLocaleString()} pt は
             額が取れておらず、上限の計算に入っていません（設定で換算レートを
             決めると加えられます）。
@@ -552,14 +552,14 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
         />
 
         {shown.events === 0 && (
-          <p className="mt-10 text-center text-sm text-neutral-500 dark:text-neutral-400">
+          <p className="mt-10 text-center text-sm text-ink-2">
             {USAGE_RANGE_LABELS[range]}の記録はまだありません
           </p>
         )}
 
         <Cloudflare storage={storage} />
 
-        <p className="mt-10 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+        <p className="mt-10 text-xs leading-relaxed text-ink-2">
           会話やメッセージを削除しても、ここの記録は残ります。使った額は
           戻らないので、消すことで上限が緩まないようにしてあります。
         </p>

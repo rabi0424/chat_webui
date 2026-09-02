@@ -118,7 +118,7 @@ export function GenerationProgress({
   }, [startedAt]);
 
   return (
-    <p className="flex items-center gap-2 text-sm text-neutral-500 dark:text-neutral-400">
+    <p className="flex items-center gap-2 text-sm text-ink-2">
       <span
         aria-hidden
         className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-700 dark:border-t-accent"
@@ -154,7 +154,7 @@ export function ReasoningBlock({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={show}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-neutral-500 hover:bg-black/[0.03] dark:text-neutral-400 dark:hover:bg-white/[0.04]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-ink-2 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
       >
         {streaming ? (
           <span aria-hidden className="thinking-line h-0.5 w-6 shrink-0 rounded-full" />
@@ -171,7 +171,7 @@ export function ReasoningBlock({
       {show && (
         // 思考プロセスにも数式やコードが混ざるので、本文と同じ描き方をする。
         // 図まで描くと本文より目立ってしまうので、ここはソースのまま。
-        <div className="max-h-64 overflow-y-auto border-t border-neutral-200/80 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-white/10 dark:text-neutral-400">
+        <div className="max-h-64 overflow-y-auto border-t border-neutral-200/80 px-3 py-2 text-xs leading-relaxed text-ink-2 dark:border-white/10">
           <Markdown
             streaming={streaming}
             diagrams={false}
@@ -226,7 +226,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
   const chips = citations.slice(0, CITATION_CHIPS);
   const rest = citations.length - chips.length;
   const chipClass =
-    "flex max-w-[12rem] items-center gap-1.5 rounded-full border border-neutral-200/80 bg-neutral-50/70 px-2.5 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-neutral-300 dark:hover:bg-white/10";
+    "flex max-w-[12rem] items-center gap-1.5 rounded-full border border-neutral-200/80 bg-neutral-50/70 px-2.5 py-1 text-xs text-neutral-600 hover:bg-hover dark:border-white/10 dark:bg-white/[0.04] dark:text-neutral-300";
   return (
     <div className="mt-3">
       {/*
@@ -267,7 +267,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
           type="button"
           onClick={() => setOpen(false)}
           aria-expanded={true}
-          className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+          className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"
         >
           <IconLink className="h-3.5 w-3.5" />
           参照元 {citations.length}件
@@ -275,10 +275,10 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
         </button>
       )}
       {open && (
-        <ol className="mt-1 space-y-1 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:border-neutral-800 dark:bg-neutral-900">
+        <ol className="mt-1 space-y-1 rounded-xl border border-line bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:bg-neutral-900">
           {citations.map((c, n) => (
             <li key={c.url} className="flex gap-2">
-              <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
+              <span className="shrink-0 text-ink-2">
                 {n + 1}.
               </span>
               <span className="mt-0.5">
@@ -295,7 +295,7 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
                   {c.title || hostOf(c.url)}
                 </span>
                 {c.title && (
-                  <span className="block text-neutral-500 dark:text-neutral-400">
+                  <span className="block text-ink-2">
                     {hostOf(c.url)}
                   </span>
                 )}
@@ -438,7 +438,7 @@ export function MessageDetails({
           >
             {rows.map(([k, v]) => (
               <span key={k} className="flex justify-between gap-3 py-0.5">
-                <span className="shrink-0 text-neutral-400 dark:text-neutral-500">{k}</span>
+                <span className="shrink-0 text-ink-3">{k}</span>
                 <span className="break-all text-right text-neutral-700 dark:text-neutral-200">{v}</span>
               </span>
             ))}
@@ -478,7 +478,7 @@ export function ContextBoundaryLine({
   );
   if (!selecting) {
     return (
-      <div className="flex items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
+      <div className="flex items-center gap-2 text-xs text-ink-3">
         {body}
       </div>
     );
@@ -488,7 +488,7 @@ export function ContextBoundaryLine({
       type="button"
       onClick={onToggle}
       title="選択して削除するとコンテキストクリアが外れ、すべてが文脈に戻ります"
-      className={`-mx-2 flex w-[calc(100%+1rem)] touch-manipulation items-center gap-2 rounded-xl px-2 py-1 text-xs text-neutral-400 dark:text-neutral-500 ${
+      className={`-mx-2 flex w-[calc(100%+1rem)] touch-manipulation items-center gap-2 rounded-xl px-2 py-1 text-xs text-ink-3 ${
         selected
           ? "bg-accent/10 ring-1 ring-accent/50"
           : "hover:bg-neutral-50 dark:hover:bg-neutral-900"
@@ -529,7 +529,7 @@ export function BranchPager({
     "dark:hover:bg-neutral-800 dark:hover:text-neutral-300";
   return (
     // -my-1: 当たり判定を広げても、操作の行そのものは高くしない
-    <span className="-my-1 inline-flex items-center text-xs text-neutral-400 touch:-my-3 dark:text-neutral-500">
+    <span className="-my-1 inline-flex items-center text-xs text-ink-3 touch:-my-3">
       <button
         type="button"
         disabled={siblingIndex === 0}

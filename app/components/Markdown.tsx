@@ -107,7 +107,7 @@ function CopyCodeButton({ text }: { text: string }) {
           // クリップボード不許可時は何もしない
         }
       }}
-      className="rounded p-1 text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+      className="rounded p-1 text-ink-3 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
     >
       {copied ? (
         <IconCheck className="h-3.5 w-3.5 text-green-500" />
@@ -157,9 +157,9 @@ function CodeBlock({ node, children }: { node?: Element; children?: ReactNode })
   const { streaming, diagrams } = useContext(BlockContext);
 
   const frame = (
-    <div className="not-prose my-4 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900">
-      <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-1 dark:border-neutral-800">
-        <span className="text-xs text-neutral-500 dark:text-neutral-400">
+    <div className="not-prose my-4 overflow-hidden rounded-xl border border-line bg-neutral-50 dark:bg-neutral-900">
+      <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-1">
+        <span className="text-xs text-ink-2">
           {lang ? (LANGUAGE_LABELS[lang] ?? lang) : ""}
         </span>
         <CopyCodeButton text={text} />

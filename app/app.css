@@ -59,6 +59,16 @@
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
   --color-accent-ink: var(--accent-ink);
+  /* 面と文字（定義と説明は下の :root）。`bg-sunken` `text-ink-2` `border-line` */
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
 }
 
 /*
@@ -105,6 +115,53 @@
 
 :root[data-accent="graphite"] { --accent: #8e8e93; --accent-ink: #747479; }
 :root.dark[data-accent="graphite"] { --accent: #98989d; --accent-fg: #1c1c1e; --accent-ink: #98989d; }
+
+/*
+ * 面と文字の意味付きトークン（UI-10）。
+ *
+ * `text-neutral-500 dark:text-neutral-400` のような対を各所に書くと、
+ * 片方だけ直して他方が取り残される（実際、境界の色がダークだけ 3 通りに
+ * 割れていた）。意味で名前を付け、値はここ1か所で持つ。
+ *
+ * - surface : 画面の地
+ * - sunken  : 地より沈んだ面（サイドバー・入力欄の中・カードの地）
+ * - raised  : 地より浮いた面（ポップオーバー・ダイアログ）
+ * - hover   : 押せるものに指を載せたときの面
+ * - ink     : 本文の文字。ink-2 は補助（4.5:1 を保つ）、ink-3 は
+ *             さらに薄い印（プレースホルダ・飾り。文字の基準は満たさない
+ *             ので、読まないと困る文字には使わない）
+ * - line    : 境界。line-strong は入力欄など、面の中でも見せたい境界
+ *
+ * 値は Tailwind の neutral 系に合わせてある（tests/contrast.test.ts が
+ * ここから読んで比を見る）。
+ */
+:root {
+  --surface: #ffffff;
+  --sunken: #f5f5f5;
+  --raised: #ffffff;
+  --hover: #f5f5f5;
+  --ink: #171717;
+  /*
+   * neutral-500（#737373）だと、沈んだ面（#f5f5f5）の上で 4.35:1 と
+   * 本文の基準（4.5:1）にわずかに届かない——サイドバーの補助文字が
+   * まさにその組み合わせ。一段だけ濃くして両方の面で満たす。
+   */
+  --ink-2: #6b6b6b;
+  --ink-3: #a3a3a3;
+  --line: #e5e5e5;
+  --line-strong: #d4d4d4;
+}
+:root.dark {
+  --surface: #0a0a0a;
+  --sunken: #171717;
+  --raised: #171717;
+  --hover: rgb(255 255 255 / 0.1);
+  --ink: #f5f5f5;
+  --ink-2: #a3a3a3;
+  --ink-3: #737373;
+  --line: rgb(255 255 255 / 0.1);
+  --line-strong: rgb(255 255 255 / 0.2);
+}
 
 @keyframes pop {
   from {
@@ -253,14 +310,6 @@
   background-size: 250% 100%;
   animation: thinking-line 1.4s linear infinite;
 }
-@media (prefers-reduced-motion: reduce) {
-  .thinking-line {
-    animation: none !important;
-    background-image: none;
-    background-color: var(--accent);
-  }
-}
-
 @supports (background-clip: text) or (-webkit-background-clip: text) {
   .title-shimmer {
     color: transparent;
@@ -279,7 +328,20 @@
 }
 
 /* 動きを減らす設定の尊重: アニメーションは実質無効化しフェードのみに */
+/*
+ * 動きを控える設定の規則は**この1つのブロック**にまとめる。
+ * tests/touch-variant.test.ts は最初に現れたブロックを読むので、別の
+ * 場所に同じメディアクエリを書くと、そちらが先に来た時点で検査が
+ * 空振りする（思考中の線をここと別に書いて、実際にそうなった）。
+ */
 @media (prefers-reduced-motion: reduce) {
+  /* 思考中の流れる線は止め、アクセントの濃い線として置く */
+  .thinking-line {
+    animation: none !important;
+    background-image: none;
+    background-color: var(--accent);
+  }
+
   *,
   ::before,
   ::after {
@@ -357,9 +419,27 @@ html {
   font-size: inherit;
 }
 
+/*
+ * キーボードで辿ったときのフォーカスの輪（UI-10）。
+ *
+ * ブラウザ既定の輪は色も太さも端末ごとに違い、iOS Safari では出ない
+ * ことも多い。押せるものにはアクセント色の輪を1つの規則で当てる。
+ * :focus-visible なので、指やマウスで押したときには出ない（出ると
+ * ボタンを押すたびに輪が残る）。
+ *
+ * 入力欄は除く——枠の色が変わる（focus:border-accent）ほうが自然で、
+ * 輪を重ねると二重に見える。
+ */
+@layer base {
+  :where(a, button, [role="button"], [role="menuitem"], [role="tab"], summary):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
 html,
 body {
-  @apply bg-white dark:bg-neutral-950;
+  @apply bg-surface;
   /*
    * 内側の一覧をスクロールしたとき、行き止まりでページ全体が
    * 引っぱられる（ラバーバンド）のを止める。会話が短くて

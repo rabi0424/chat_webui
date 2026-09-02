@@ -348,12 +348,12 @@ export default function Images({ loaderData }: Route.ComponentProps) {
       className="flex h-full flex-col"
       onClick={() => menu && setMenu(null)}
     >
-      <header className="flex shrink-0 items-center gap-1 border-b border-neutral-100 px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-neutral-800">
+      <header className="flex shrink-0 items-center gap-1 border-b border-line px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
         <button
           type="button"
           onClick={openSidebar}
           aria-label="メニュー"
-          className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
+          className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
         >
           <IconMenu className="h-5 w-5" />
         </button>
@@ -366,14 +366,14 @@ export default function Images({ loaderData }: Route.ComponentProps) {
           className={`ml-auto rounded-lg px-2.5 py-1.5 text-xs font-medium ${
             favoritesOnly
               ? "bg-accent/10 text-accent-ink"
-              : "text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              : "text-ink-2 hover:bg-hover"
           }`}
         >
           ★ お気に入り
         </button>
       </header>
 
-      <div className="shrink-0 border-b border-neutral-100 p-3 dark:border-neutral-800">
+      <div className="shrink-0 border-b border-line p-3">
         <div className="relative">
           <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
           <input
@@ -390,7 +390,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
               type="button"
               onClick={() => setQuery("")}
               aria-label="検索をクリア"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-neutral-400 hover:bg-hover"
             >
               <IconX className="h-3.5 w-3.5" />
             </button>
@@ -409,7 +409,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
         <div
           ref={spacerRef}
           style={{ height: 0 }}
-          className="flex items-end justify-center overflow-hidden text-xs text-neutral-400 dark:text-neutral-500"
+          className="flex items-end justify-center overflow-hidden text-xs text-ink-3"
         >
           <span
             ref={pullLabelRef}
@@ -418,7 +418,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
           />
         </div>
         {images.length === 0 ? (
-          <p className="mt-16 text-center text-sm text-neutral-400 dark:text-neutral-500">
+          <p className="mt-16 text-center text-sm text-ink-3">
             {loading
               ? "読み込み中…"
               : query || favoritesOnly
@@ -454,7 +454,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                     type="button"
                     onClick={() => setLightbox(img.id)}
                     title={img.prompt ?? undefined}
-                    className="block h-full w-full overflow-hidden bg-neutral-100 dark:bg-neutral-900"
+                    className="block h-full w-full overflow-hidden bg-sunken"
                   >
                     <img
                       src={`/api/files/${img.id}`}
@@ -495,7 +495,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                       <button
                         type="button"
                         onClick={() => void toggleFavorite(img)}
-                        className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
+                        className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-hover dark:text-neutral-200"
                       >
                         {img.favorite === 1
                           ? "お気に入りを解除"
@@ -505,7 +505,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                         type="button"
                         disabled={!img.conversation_id}
                         onClick={() => void openConversation(img)}
-                        className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-white/10"
+                        className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-hover disabled:opacity-40 dark:text-neutral-200"
                       >
                         会話を開く
                       </button>
@@ -515,7 +515,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                           setMenu(null);
                           setLightbox(img.id);
                         }}
-                        className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-white/10"
+                        className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-hover dark:text-neutral-200"
                       >
                         原寸で表示
                       </button>
@@ -526,7 +526,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
             </div>
             <div
               ref={sentinelRef}
-              className="mt-4 flex justify-center py-2 text-xs text-neutral-400 dark:text-neutral-500"
+              className="mt-4 flex justify-center py-2 text-xs text-ink-3"
             >
               {exhausted ? (
                 images.length > PAGE_SIZE && "これで全部です"
@@ -536,7 +536,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
                 <button
                   type="button"
                   onClick={() => void loadMore()}
-                  className="rounded-lg px-3 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  className="rounded-lg px-3 py-1 hover:bg-hover"
                 >
                   もっと見る
                 </button>

@@ -176,7 +176,7 @@ export function Composer({
                 : "このモデルは画像入力に対応していません（添付は可能ですが無視されます）"
             }
             aria-label="画像を添付"
-            className={`${TOOL_BUTTON} text-neutral-500 dark:text-neutral-400`}
+            className={`${TOOL_BUTTON} text-ink-2`}
           >
             <IconPlus className="h-5 w-5" />
           </button>
@@ -197,7 +197,7 @@ export function Composer({
             className={`${TOOL_BUTTON} ${
               hasContextBoundary
                 ? "text-accent-ink"
-                : "text-neutral-500 dark:text-neutral-400"
+                : "text-ink-2"
             }`}
           >
             <IconBroom className="h-5 w-5" />

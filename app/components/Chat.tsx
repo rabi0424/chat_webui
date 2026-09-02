@@ -1568,7 +1568,7 @@ export function Chat({
             type="button"
             onClick={openSidebar}
             aria-label="メニュー"
-            className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
           >
             <IconMenu className="h-5 w-5" />
           </button>
@@ -1578,7 +1578,7 @@ export function Chat({
             {title ?? (bot ? bot.name : "新規チャット")}
           </p>
           {conversationSummary && (
-            <p className="truncate text-[11px] leading-tight text-neutral-500 tabular-nums dark:text-neutral-400">
+            <p className="truncate text-[11px] leading-tight text-ink-2 tabular-nums">
               {conversationSummary}
             </p>
           )}
@@ -1589,7 +1589,7 @@ export function Chat({
             onClick={() => setParamsOpen((v) => !v)}
             aria-label="生成パラメータ"
             title="生成パラメータ（この会話にのみ適用）"
-            className="relative rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="relative rounded-lg p-2 text-ink-2 hover:bg-hover"
           >
             <IconSliders className="h-5 w-5" />
             {/*
@@ -1622,7 +1622,7 @@ export function Chat({
                 <p className="text-sm font-semibold">生成パラメータ</p>
                 {/* 対応パラメータも送信形式もプロバイダで異なるため明示する */}
                 {selectedModel && (
-                  <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                  <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-2 dark:bg-neutral-800">
                     {selectedModel.provider === "poe" ? "Poe" : "OpenRouter"}
                   </span>
                 )}
@@ -1630,21 +1630,21 @@ export function Chat({
               <button
                 type="button"
                 onClick={() => void resetParams()}
-                className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                className="rounded-lg px-2 py-1 text-xs text-ink-2 hover:bg-hover"
               >
                 初期設定に戻す
               </button>
             </div>
-            <p className="mb-3 text-xs text-neutral-400 dark:text-neutral-500">
+            <p className="mb-3 text-xs text-ink-3">
               この会話にのみ適用されます
               {bot ? "（ボットの設定が初期状態です）" : ""}
             </p>
             {!isPoeModel(model) && (
               <div className="mb-3 flex items-center gap-3 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
-                <IconGlobe className="h-5 w-5 shrink-0 text-neutral-400 dark:text-neutral-500" />
+                <IconGlobe className="h-5 w-5 shrink-0 text-ink-3" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">Web検索</p>
-                  <p className="text-xs text-neutral-400 dark:text-neutral-500">
+                  <p className="text-xs text-ink-3">
                     最新情報を検索して回答（検索1回ごとに数円の追加料金）
                   </p>
                 </div>
@@ -1836,30 +1836,30 @@ export function Chat({
             onClick={(e) => e.stopPropagation()}
           >
             <p className="text-sm font-semibold">成功するまで生成します</p>
-            <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+            <p className="mt-1 text-xs text-ink-3">
               画像が返るまで同じ依頼を投げ直します。試行のたびに課金されます。
             </p>
             <dl className="mt-3 space-y-1.5 rounded-xl border border-neutral-200/80 p-3 text-sm dark:border-white/10">
               <div className="flex justify-between gap-3">
-                <dt className="text-neutral-500 dark:text-neutral-400">
+                <dt className="text-ink-2">
                   目標の成功数
                 </dt>
                 <dd className="font-medium">{retryConfig.target}件</dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-neutral-500 dark:text-neutral-400">
+                <dt className="text-ink-2">
                   上限の試行回数
                 </dt>
                 <dd className="font-medium">{retryConfig.maxAttempts}回</dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-neutral-500 dark:text-neutral-400">
+                <dt className="text-ink-2">
                   並列数
                 </dt>
                 <dd className="font-medium">{retryConfig.concurrency}</dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-neutral-500 dark:text-neutral-400">
+                <dt className="text-ink-2">
                   モデル
                 </dt>
                 <dd className="min-w-0 truncate font-medium">
@@ -1867,7 +1867,7 @@ export function Chat({
                 </dd>
               </div>
             </dl>
-            <p className="mt-2 text-xs text-neutral-400 dark:text-neutral-500">
+            <p className="mt-2 text-xs text-ink-3">
               最大 {retryConfig.maxAttempts}回ぶんの生成が行われます。並列数が
               目標を超える場合、成功が目標より多くなることがあります（受け取ります）。
             </p>
@@ -1875,7 +1875,7 @@ export function Chat({
               <button
                 type="button"
                 onClick={() => setPendingRun(null)}
-                className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                className="rounded-lg px-3 py-1.5 text-sm text-ink-2 hover:bg-hover"
               >
                 キャンセル
               </button>

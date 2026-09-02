@@ -147,7 +147,7 @@ export function MessageEditor({
           disabled={full}
           aria-label="画像を追加"
           title="画像を追加"
-          className="grid h-8 w-8 place-items-center rounded-full text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 dark:text-neutral-400 dark:hover:bg-neutral-800"
+          className="grid h-8 w-8 place-items-center rounded-full text-ink-2 hover:bg-hover disabled:opacity-30"
         >
           <IconPlus className="h-4.5 w-4.5" />
         </button>
@@ -155,7 +155,7 @@ export function MessageEditor({
           <button
             type="button"
             onClick={() => setEditing(null)}
-            className="rounded-lg px-3 py-1.5 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="rounded-lg px-3 py-1.5 text-ink-2 hover:bg-hover"
           >
             キャンセル
           </button>
@@ -168,7 +168,7 @@ export function MessageEditor({
                 ? "画像をアップロード中…"
                 : "送らずに枝として保存する（あとから送信できます）"
             }
-            className="rounded-lg border border-neutral-300 px-3 py-1.5 text-neutral-600 hover:bg-neutral-100 disabled:opacity-30 dark:border-neutral-600 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="rounded-lg border border-neutral-300 px-3 py-1.5 text-neutral-600 hover:bg-hover disabled:opacity-30 dark:border-neutral-600 dark:text-neutral-300"
           >
             保存
           </button>

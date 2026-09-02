@@ -378,7 +378,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         やり取り本文だけは MessageList が会話の言語で上書きする。
       */
       lang="ja"
-      className="flex overflow-x-hidden bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100"
+      className="flex overflow-x-hidden bg-surface text-ink"
       style={{ height: "var(--app-height, 100dvh)" }}
       onTouchStart={onTouchStart}
       onTouchMove={onTouchMove}
@@ -482,7 +482,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
           <button
             type="button"
             onClick={() => void loadUpstream()}
-            className="shrink-0 rounded-lg border border-neutral-300 px-2.5 py-1 text-xs hover:bg-neutral-100 dark:border-white/20 dark:hover:bg-white/10"
+            className="shrink-0 rounded-lg border border-neutral-300 px-2.5 py-1 text-xs hover:bg-hover dark:border-white/20"
           >
             再試行
           </button>
@@ -490,7 +490,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
             type="button"
             onClick={() => setDismissed(true)}
             aria-label="閉じる"
-            className="shrink-0 rounded p-1 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-white/10"
+            className="shrink-0 rounded p-1 text-neutral-500 hover:bg-hover"
           >
             <IconX className="h-4 w-4" />
           </button>

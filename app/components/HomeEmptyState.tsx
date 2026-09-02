@@ -72,7 +72,7 @@ export function HomeEmptyState({
               <h1 className="font-display bg-gradient-to-r from-accent-ink via-neutral-800 to-accent-ink bg-clip-text text-[26px] font-bold tracking-tight text-transparent dark:from-accent dark:via-white dark:to-accent">
                 {greeting}
               </h1>
-              <p className="mt-2 text-[13.5px] text-neutral-500 dark:text-neutral-400">
+              <p className="mt-2 text-[13.5px] text-ink-2">
                 {bots.length > 0
                   ? "ボットを選ぶか、そのままメッセージを送信"
                   : "そのままメッセージを送るか、ボットを作って始める"}
@@ -110,7 +110,7 @@ export function HomeEmptyState({
               <Link
                 to="/bots/new"
                 style={{ animationDelay: `${bots.length * 45}ms` }}
-                className="animate-pop flex min-h-[120px] flex-col items-center justify-center gap-1.5 rounded-[22px] border border-dashed border-black/[0.14] bg-white/25 text-[13px] text-neutral-500 backdrop-blur-xl transition hover:bg-white/50 active:scale-[0.97] dark:border-white/[0.16] dark:bg-white/[0.025] dark:text-neutral-400 dark:hover:bg-white/[0.06]"
+                className="animate-pop flex min-h-[120px] flex-col items-center justify-center gap-1.5 rounded-[22px] border border-dashed border-black/[0.14] bg-white/25 text-[13px] text-ink-2 backdrop-blur-xl transition hover:bg-white/50 active:scale-[0.97] dark:border-white/[0.16] dark:bg-white/[0.025] dark:hover:bg-white/[0.06]"
               >
                 {bots.length === 0 ? (
                   <IconBot className="h-6 w-6" />
@@ -135,7 +135,7 @@ export function HomeEmptyState({
         ) : (
           <>
             <h1 className="font-display mb-8 px-1 text-[28px] font-bold leading-[1.3] tracking-tight">
-              <span className="text-neutral-500 dark:text-neutral-400">
+              <span className="text-ink-2">
                 {greeting}。
               </span>
               <br />
@@ -160,11 +160,11 @@ export function HomeEmptyState({
                     <span className="block truncate text-[15px] font-semibold tracking-tight">
                       {b.name}
                     </span>
-                    <span className="mt-0.5 block truncate text-xs text-neutral-500 dark:text-neutral-400">
+                    <span className="mt-0.5 block truncate text-xs text-ink-2">
                       {subtitleOf(b)}
                     </span>
                   </span>
-                  <IconChevronRight className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" />
+                  <IconChevronRight className="h-4 w-4 shrink-0 text-ink-3" />
                 </button>
               ))}
               <div className="flex items-center justify-between border-b border-neutral-900/[0.08] px-1 py-3 dark:border-white/[0.08]">
@@ -183,7 +183,7 @@ export function HomeEmptyState({
                 {bots.length > 0 && (
                   <Link
                     to="/bots"
-                    className="py-1 text-xs text-neutral-500 underline-offset-2 transition hover:underline dark:text-neutral-400"
+                    className="py-1 text-xs text-ink-2 underline-offset-2 transition hover:underline"
                   >
                     管理
                   </Link>
