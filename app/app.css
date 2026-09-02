@@ -231,6 +231,36 @@
   color: var(--shimmer-glow);
 }
 
+/*
+ * 思考中の印（応答の前のカードの左端）。アクセント色の短い線の上を
+ * 光が流れる。文字ではなく線なので、切り抜きの心配は要らない。
+ */
+@keyframes thinking-line {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+.thinking-line {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 35%, transparent) 35%,
+    var(--accent) 50%,
+    color-mix(in srgb, var(--accent) 35%, transparent) 65%
+  );
+  background-size: 250% 100%;
+  animation: thinking-line 1.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking-line {
+    animation: none !important;
+    background-image: none;
+    background-color: var(--accent);
+  }
+}
+
 @supports (background-clip: text) or (-webkit-background-clip: text) {
   .title-shimmer {
     color: transparent;

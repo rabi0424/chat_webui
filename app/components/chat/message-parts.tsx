@@ -131,7 +131,14 @@ export function GenerationProgress({
   );
 }
 
-/** thinking対応モデルの思考内容の折りたたみ表示。 */
+/**
+ * thinking対応モデルの思考内容。本文の前に置く小さなカード。
+ *
+ * 以前は本文と同じ位置に「💭 思考プロセスを表示」の小さな文字があり、
+ * 開くと灰色の枠が出るだけで、思考中も文字が変わるだけだった。カードに
+ * して、思考中は左端の短い線をアクセント色で流す（サイドバーの
+ * 生成中の帯と同じ手法。動きを控える設定では静止する）。
+ */
 export function ReasoningBlock({
   reasoning,
   streaming,
@@ -142,23 +149,29 @@ export function ReasoningBlock({
   const [open, setOpen] = useState(streaming);
   const show = open || streaming;
   return (
-    <div className="mb-2">
+    <div className="mb-3 overflow-hidden rounded-xl border border-neutral-200/80 bg-neutral-50/70 dark:border-white/10 dark:bg-white/[0.04]">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={show}
-        className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-neutral-500 hover:bg-black/[0.03] dark:text-neutral-400 dark:hover:bg-white/[0.04]"
       >
-        <IconThought className="h-3.5 w-3.5" />
-        {streaming ? "思考中…" : show ? "思考プロセスを隠す" : "思考プロセスを表示"}
+        {streaming ? (
+          <span aria-hidden className="thinking-line h-0.5 w-6 shrink-0 rounded-full" />
+        ) : (
+          <IconThought className="h-3.5 w-3.5 shrink-0" />
+        )}
+        <span className="min-w-0 flex-1 truncate">
+          {streaming ? "思考中…" : "思考プロセス"}
+        </span>
         <IconChevronDown
-          className={`h-3 w-3 transition-transform ${show ? "rotate-180" : ""}`}
+          className={`h-3.5 w-3.5 shrink-0 transition-transform ${show ? "rotate-180" : ""}`}
         />
       </button>
       {show && (
         // 思考プロセスにも数式やコードが混ざるので、本文と同じ描き方をする。
         // 図まで描くと本文より目立ってしまうので、ここはソースのまま。
-        <div className="mt-1 max-h-64 overflow-y-auto rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+        <div className="max-h-64 overflow-y-auto border-t border-neutral-200/80 px-3 py-2 text-xs leading-relaxed text-neutral-500 dark:border-white/10 dark:text-neutral-400">
           <Markdown
             streaming={streaming}
             diagrams={false}
@@ -188,22 +201,79 @@ export function hostOf(url: string): string {
  * 手を入れない（コピーしても、次のターンでモデルへ送り返す履歴にも
  * 出典は混ざらない）。使わなかった応答には何も出ない。
  */
+/** 畳んだ状態で見せる出典の数。それ以上は「+N」にまとめる。 */
+const CITATION_CHIPS = 3;
+
+/** サイトの印。取れなければ何も出さない（壊れた画像の枠を残さない）。 */
+function Favicon({ host }: { host: string }) {
+  return (
+    <img
+      src={faviconUrl(host)}
+      alt=""
+      width={14}
+      height={14}
+      loading="lazy"
+      className="h-3.5 w-3.5 shrink-0 rounded-sm"
+      onError={(e) => {
+        e.currentTarget.style.display = "none";
+      }}
+    />
+  );
+}
+
 export function CitationList({ citations }: { citations: UiCitation[] }) {
   const [open, setOpen] = useState(false);
+  const chips = citations.slice(0, CITATION_CHIPS);
+  const rest = citations.length - chips.length;
+  const chipClass =
+    "flex max-w-[12rem] items-center gap-1.5 rounded-full border border-neutral-200/80 bg-neutral-50/70 px-2.5 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-neutral-300 dark:hover:bg-white/10";
   return (
-    <div className="mt-2">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
-      >
-        <IconLink className="h-3.5 w-3.5" />
-        {open ? "参照元を隠す" : `参照元 ${citations.length}件`}
-        <IconChevronDown
-          className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`}
-        />
-      </button>
+    <div className="mt-3">
+      {/*
+        畳んだ状態では、ホストの名前をチップで横に並べる。どこを見た
+        応答かが本文の直下で分かる。番号付きの一覧は開いたときだけ。
+      */}
+      {!open && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {chips.map((c) => {
+            const host = hostOf(c.url);
+            return (
+              <a
+                key={c.url}
+                href={c.url}
+                target="_blank"
+                rel="noreferrer"
+                title={c.title || c.url}
+                className={chipClass}
+              >
+                <Favicon host={host} />
+                <span className="truncate">{host}</span>
+              </a>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-expanded={false}
+            className={chipClass}
+          >
+            <IconLink className="h-3.5 w-3.5" />
+            {rest > 0 ? `+${rest}` : "参照元"}
+          </button>
+        </div>
+      )}
+      {open && (
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-expanded={true}
+          className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+        >
+          <IconLink className="h-3.5 w-3.5" />
+          参照元 {citations.length}件
+          <IconChevronDown className="h-3 w-3 rotate-180" />
+        </button>
+      )}
       {open && (
         <ol className="mt-1 space-y-1 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-xs leading-relaxed dark:border-neutral-800 dark:bg-neutral-900">
           {citations.map((c, n) => (
@@ -211,21 +281,9 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
               <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
                 {n + 1}.
               </span>
-              {/*
-                サイトの印。取れなければ何も出さない（壊れた画像の枠を
-                残さない）。送るのはホスト名だけ（lib/csp.ts の faviconUrl）
-              */}
-              <img
-                src={faviconUrl(hostOf(c.url))}
-                alt=""
-                width={14}
-                height={14}
-                loading="lazy"
-                className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm"
-                onError={(e) => {
-                  e.currentTarget.style.display = "none";
-                }}
-              />
+              <span className="mt-0.5">
+                <Favicon host={hostOf(c.url)} />
+              </span>
               <a
                 href={c.url}
                 target="_blank"
