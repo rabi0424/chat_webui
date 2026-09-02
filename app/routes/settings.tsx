@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 import { useCopied } from "../lib/use-copied";
 import { useOutletContext, useRevalidator } from "react-router";
 import type { Route } from "./+types/settings";
@@ -19,15 +19,32 @@ import {
   saveChatFontSize,
   useChatFontSize,
 } from "../lib/chat-font";
+import { HOME_STYLES, saveHomeStyle, useHomeStyle } from "../lib/home-style";
 import { AccentPicker } from "../components/ThemeToggle";
-import { NumberInput } from "../components/NumberInput";
 import { ModelPicker } from "../components/ModelPicker";
 import { ParamsEditor } from "../components/ParamsEditor";
+import {
+  FIELD_AREA,
+  Group,
+  Row,
+  Segmented,
+  Stepper,
+  Switch,
+} from "../components/controls";
 import { DEFAULT_MODEL } from "../lib/constants";
 import { clearLastUsedModel, useLastUsedModel } from "../lib/persisted";
 import { PROSE_INPUT } from "../lib/ui";
 import type { ParamsState } from "../lib/params";
-import { IconCheck, IconCopy, IconMenu, IconTrash } from "../components/icons";
+import {
+  IconAuto,
+  IconCheck,
+  IconChevronRight,
+  IconCopy,
+  IconMenu,
+  IconMoon,
+  IconSun,
+  IconTrash,
+} from "../components/icons";
 import { useConfirm } from "../components/ConfirmDialog";
 import {
   clearSamples,
@@ -40,7 +57,7 @@ import {
 } from "../lib/perf";
 
 export function meta() {
-  return [{ title: "設定 - Chat WebUI" }];
+  return [{ title: "設定 - Chat" }];
 }
 
 export async function loader() {
@@ -69,60 +86,11 @@ export async function clientLoader({
   return data;
 }
 
-const THEMES: { value: Theme; label: string }[] = [
-  { value: "light", label: "ライト" },
-  { value: "dark", label: "ダーク" },
-  { value: "system", label: "自動" },
+const THEMES: { value: Theme; label: string; icon: React.ReactNode }[] = [
+  { value: "light", label: "ライト", icon: <IconSun className="h-3.5 w-3.5" /> },
+  { value: "dark", label: "ダーク", icon: <IconMoon className="h-3.5 w-3.5" /> },
+  { value: "system", label: "自動", icon: <IconAuto className="h-3.5 w-3.5" /> },
 ];
-
-/** 設定の1項目。見出し・説明・操作を横並びにする。 */
-function Row({
-  label,
-  description,
-  children,
-}: {
-  label: string;
-  description: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center gap-4 px-1 py-2.5">
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-neutral-400 dark:text-neutral-500">
-          {description}
-        </p>
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
-  );
-}
-
-function Section({
-  title,
-  note,
-  children,
-}: {
-  title: string;
-  note?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="mb-6">
-      <h2 className="mb-1 px-1 text-xs font-semibold uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
-        {title}
-      </h2>
-      <div className="rounded-2xl border border-neutral-200/80 p-3 dark:border-white/10">
-        {children}
-      </div>
-      {note && (
-        <p className="mt-1.5 px-1 text-xs text-neutral-400 dark:text-neutral-500">
-          {note}
-        </p>
-      )}
-    </section>
-  );
-}
 
 /** 前回ビルド比の表示。速くなったら緑、遅くなったら赤。 */
 function DeltaBadge({ cur, prev }: { cur: number; prev: number | undefined }) {
@@ -287,19 +255,32 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const [settings, setSettings] = useState<AppSettings>(loaderData.settings);
   /** 一時解除の対象月。ローダーの時刻から作る（描画のたびに変わらない）。 */
   const thisMonth = monthLabelJst(loaderData.now);
-  const [saved, setSaved] = useState(false);
+  /**
+   * 保存したばかりの項目。その行の右端に印を出す（ヘッダーに「保存しました」
+   * と出すだけでは、どこが保存されたのか分からない）。
+   */
+  const [savedKeys, setSavedKeys] = useState<Set<keyof AppSettings>>(new Set());
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // 端末ごとの設定は localStorage。保存値を購読するので、
-  // サイドバーのトグルで変えた分もここに出る（SSRでは既定値）
+  // 別の場所で変えた分もここに出る（SSRでは既定値）
   const theme = useTheme();
   const chatFont = useChatFontSize();
+  const homeStyle = useHomeStyle();
 
   /*
    * この端末で最後に使ったモデル。設定の既定より優先されるので、
    * いま効いている値としてここに出す。
    */
   const lastUsedModel = useLastUsedModel();
+
+  useEffect(
+    () => () => {
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    },
+    [],
+  );
 
   async function save(patch: Partial<AppSettings>) {
     const next = { ...settings, ...patch };
@@ -318,56 +299,64 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
       settingsCache = { at: Date.now(), data: { settings: body.settings } };
       // シェル経由でChatが参照する設定も更新する（遷移では再読込しないため）
       revalidator.revalidate();
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1500);
+      setSavedKeys(new Set(Object.keys(patch) as (keyof AppSettings)[]));
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSavedKeys(new Set()), 1500);
     } catch {
       setError("設定を保存できませんでした");
       setSettings(settings);
     }
   }
+  const saved = (key: keyof AppSettings) => savedKeys.has(key);
+
+  const defaultModelId = settings.defaultModelId ?? DEFAULT_MODEL;
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-1 border-b border-neutral-100 px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-neutral-800">
-        <button
-          type="button"
-          onClick={openSidebar}
-          aria-label="メニュー"
-          className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
-        >
-          <IconMenu className="h-5 w-5" />
-        </button>
-        <h1 className="px-1 text-sm font-semibold tracking-tight">設定</h1>
-        {saved && (
-          <span className="ml-2 text-xs text-neutral-400 dark:text-neutral-500">
-            保存しました
-          </span>
-        )}
-        {error && (
-          <span className="ml-2 text-xs text-red-600 dark:text-red-400">
-            {error}
-          </span>
-        )}
+      <header className="flex shrink-0 items-center gap-1 border-b border-black/[0.06] px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-white/[0.06]">
+        <div className="flex w-9 shrink-0 justify-start">
+          <button
+            type="button"
+            onClick={openSidebar}
+            aria-label="メニュー"
+            className="rounded-lg p-2 text-neutral-500 hover:bg-neutral-100 md:hidden dark:text-neutral-400 dark:hover:bg-neutral-800"
+          >
+            <IconMenu className="h-5 w-5" />
+          </button>
+        </div>
+        <h1 className="font-display min-w-0 flex-1 truncate text-center text-[0.9375rem] font-bold tracking-tight">
+          設定
+        </h1>
+        <div className="flex w-9 shrink-0 justify-end" />
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl p-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
-          <Section
+        <div className="mx-auto max-w-2xl p-4 pb-[max(env(safe-area-inset-bottom),1.5rem)]">
+          {error && (
+            <p
+              role="status"
+              className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+            >
+              {error}
+            </p>
+          )}
+
+          <Group
             title="新規チャットの既定"
             note="ここで決めた内容は、会話を作った時点で写し取られます。あとで変えても、既にある会話は変わりません。ボットを選んで始めたときは、ボットの設定が優先されます。"
           >
             <Row
               label="既定のモデル"
               description="新しいチャットで最初に選ばれるモデル"
+              saved={saved("defaultModelId")}
             >
-              <div className="w-56 rounded-xl border border-neutral-200 p-1 dark:border-neutral-700">
-                <ModelPicker
-                  models={models}
-                  value={settings.defaultModelId ?? DEFAULT_MODEL}
-                  newModelDays={settings.newModelDays}
-                  onChange={(id) => void save({ defaultModelId: id })}
-                />
-              </div>
+              <ModelPicker
+                models={models}
+                value={defaultModelId}
+                newModelDays={settings.newModelDays}
+                onChange={(id) => void save({ defaultModelId: id })}
+                variant="field"
+              />
             </Row>
             {settings.defaultModelId !== null &&
               models.length > 0 &&
@@ -376,7 +365,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                  * 指定したモデルが一覧から消えた（提供終了・名前変更）。
                  * 黙って別のモデルで始めると、意図と違う額がかかる
                  */
-                <p className="mt-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                <p className="bg-amber-50 px-4 py-2.5 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
                   「{settings.defaultModelId}
                   」はいまのモデル一覧にありません。新しいチャットは一覧の先頭のモデルで始まります。
                 </p>
@@ -387,8 +376,8 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                * 変えても画面が変わらないと壊れて見えるので、いま効いて
                * いる値と、戻す手立てをここに出す
                */
-              <div className="mt-1 flex items-center justify-between gap-3 rounded-lg bg-neutral-100 px-3 py-2 text-xs dark:bg-white/5">
-                <span className="min-w-0">
+              <div className="flex items-center justify-between gap-3 bg-black/[0.03] px-4 py-2.5 text-xs dark:bg-white/[0.04]">
+                <span className="min-w-0 text-neutral-600 dark:text-neutral-300">
                   この端末では、最後に使った「
                   {models.find((m) => m.id === lastUsedModel)?.name ??
                     lastUsedModel}
@@ -407,153 +396,149 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             <Row
               label="システムプロンプト"
               description="ボットを使わないチャットに入れる指示。空なら入れません"
+              saved={saved("defaultSystemPrompt")}
+              stack
             >
-              <span className="text-xs text-neutral-400">
-                {settings.defaultSystemPrompt.length} / {DEFAULT_SYSTEM_PROMPT_MAX}
-              </span>
+              <div className="w-full">
+                <textarea
+                  value={settings.defaultSystemPrompt}
+                  onChange={(e) =>
+                    void save({
+                      defaultSystemPrompt: e.target.value.slice(
+                        0,
+                        DEFAULT_SYSTEM_PROMPT_MAX,
+                      ),
+                    })
+                  }
+                  rows={4}
+                  aria-label="既定のシステムプロンプト"
+                  placeholder="例: 回答は日本語で、結論から先に書いてください。"
+                  {...PROSE_INPUT}
+                  className={FIELD_AREA}
+                />
+                <p className="mt-1 text-right text-xs tabular-nums text-neutral-400">
+                  {settings.defaultSystemPrompt.length} / {DEFAULT_SYSTEM_PROMPT_MAX}
+                </p>
+              </div>
             </Row>
-            <textarea
-              value={settings.defaultSystemPrompt}
-              onChange={(e) =>
-                void save({
-                  defaultSystemPrompt: e.target.value.slice(
-                    0,
-                    DEFAULT_SYSTEM_PROMPT_MAX,
-                  ),
-                })
-              }
-              rows={4}
-              aria-label="既定のシステムプロンプト"
-              placeholder="例: 回答は日本語で、結論から先に書いてください。"
-              {...PROSE_INPUT}
-              className="mb-2 w-full resize-y rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
-            />
 
             <Row
               label="生成パラメータ"
               description="ボットを使わないチャットの初期値。自動のままならモデル本来の既定に任せます"
+              saved={saved("defaultParams")}
+              stack
             >
-              <span />
+              <div className="w-full">
+                <ParamsEditor
+                  model={models.find((m) => m.id === defaultModelId)}
+                  value={settings.defaultParams as ParamsState}
+                  onChange={(v) => void save({ defaultParams: v })}
+                />
+              </div>
             </Row>
-            <ParamsEditor
-              model={models.find(
-                (m) => m.id === (settings.defaultModelId ?? DEFAULT_MODEL),
-              )}
-              value={settings.defaultParams as ParamsState}
-              onChange={(v) => void save({ defaultParams: v })}
-            />
-          </Section>
+          </Group>
 
-          <Section
+          <Group
             title="生成"
             note="上流のAPIに繰り返し要求を出す機能の歯止め。会話ごとの設定はこの値を超えられません。"
           >
             <Row
               label="リトライの上限回数"
               description={`1回の依頼で許可する最大試行回数（${RETRY_CEILING_RANGE.min}〜${RETRY_CEILING_RANGE.max}）`}
+              saved={saved("retryAttemptCeiling")}
             >
-              <NumberInput
+              <Stepper
                 label="リトライの上限回数"
                 value={settings.retryAttemptCeiling}
                 min={RETRY_CEILING_RANGE.min}
                 max={RETRY_CEILING_RANGE.max}
                 step={1}
                 onChange={(v) => void save({ retryAttemptCeiling: v })}
-                className="w-24 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+                width="w-14"
               />
             </Row>
-          </Section>
+          </Group>
 
-          <Section
+          <Group
             title="コスト"
             note="使った額は「使用量」で見られます。会話を消しても記録は残るので、消すことで上限が緩むことはありません。"
           >
             <Row
               label="月間の上限"
               description={`超えると生成を止めます（0 で上限なし・JSTの暦月・最大${MONTHLY_LIMIT_RANGE.max.toLocaleString()}円）`}
+              saved={saved("monthlyLimitJpy")}
             >
-              <NumberInput
+              <Stepper
                 label="月間の上限"
                 value={settings.monthlyLimitJpy}
                 min={MONTHLY_LIMIT_RANGE.min}
                 max={MONTHLY_LIMIT_RANGE.max}
                 step={100}
                 onChange={(v) => void save({ monthlyLimitJpy: v })}
-                className="w-28 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+                width="w-20"
               />
             </Row>
             {settings.monthlyLimitJpy > 0 && (
               <Row
                 label="今月だけ上限を解除"
                 description="翌月には自動で戻ります（解除したまま忘れないため、恒久の設定にはしていません）"
+                saved={saved("monthlyLimitOverride")}
               >
-                <input
-                  type="checkbox"
-                  aria-label="今月だけ上限を解除"
-                  checked={
-                    settings.monthlyLimitOverride === thisMonth
+                <Switch
+                  label="今月だけ上限を解除"
+                  checked={settings.monthlyLimitOverride === thisMonth}
+                  onChange={(on) =>
+                    void save({ monthlyLimitOverride: on ? thisMonth : null })
                   }
-                  onChange={(e) =>
-                    void save({
-                      monthlyLimitOverride: e.target.checked
-                        ? thisMonth
-                        : null,
-                    })
-                  }
-                  className="h-5 w-5 accent-[var(--accent)]"
                 />
               </Row>
             )}
             <Row
               label="Poe のポイント換算"
               description="1ポイントあたりのドル。Poe が額を返さなかった分を上限の計算に入れます（0 で入れない）"
+              saved={saved("poePointsUsdRate")}
             >
-              <NumberInput
+              <Stepper
                 label="Poe のポイント換算"
                 value={settings.poePointsUsdRate}
                 min={POE_RATE_RANGE.min}
                 max={POE_RATE_RANGE.max}
                 step={0.0001}
                 onChange={(v) => void save({ poePointsUsdRate: v })}
-                className="w-28 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+                width="w-20"
               />
             </Row>
-          </Section>
+          </Group>
 
-          <Section
+          <Group
             title="モデル一覧"
             note="公開日はモデル一覧APIが申告する値。日付を返さないモデルには印を付けません。"
           >
             <Row
               label="新着として出す日数"
               description={`公開からこの日数だけ NEW を表示（0 で表示しない・最大${NEW_MODEL_DAYS_RANGE.max}）`}
+              saved={saved("newModelDays")}
             >
-              <NumberInput
+              <Stepper
                 label="新着として出す日数"
                 value={settings.newModelDays}
                 min={NEW_MODEL_DAYS_RANGE.min}
                 max={NEW_MODEL_DAYS_RANGE.max}
                 step={1}
                 onChange={(v) => void save({ newModelDays: v })}
-                className="w-24 rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
+                width="w-14"
               />
             </Row>
-          </Section>
+          </Group>
 
-          <Section title="外観" note="この端末にのみ適用されます。">
-            <Row label="テーマ" description="ライト / ダーク / 端末設定に追従">
-              <select
+          <Group title="外観" note="この端末にのみ適用されます。">
+            <Row label="テーマ" description="端末の設定に追従するときは「自動」">
+              <Segmented
+                label="テーマ"
                 value={theme}
-                onChange={(e) => saveTheme(e.target.value as Theme)}
-                aria-label="テーマ"
-                className="rounded-lg border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:border-white/10 dark:bg-white/5"
-              >
-                {THEMES.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
-                  </option>
-                ))}
-              </select>
+                options={THEMES}
+                onChange={(t) => saveTheme(t)}
+              />
             </Row>
             <Row label="アクセント色" description="ボタンや強調表示の色">
               <AccentPicker />
@@ -562,40 +547,53 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
               label="チャットの文字サイズ"
               description="会話画面の本文と入力欄の大きさ"
             >
-              <div className="flex overflow-hidden rounded-lg border border-neutral-200 dark:border-white/10">
-                {CHAT_FONT_SIZES.map((f) => (
-                  <button
-                    key={f.value}
-                    type="button"
-                    aria-pressed={chatFont === f.value}
-                    onClick={() => saveChatFontSize(f.value)}
-                    className={`px-3 py-1.5 text-sm transition-colors ${
-                      chatFont === f.value
-                        ? "bg-accent text-accent-fg"
-                        : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-white/5"
-                    }`}
-                  >
-                    {f.label}
-                  </button>
-                ))}
-              </div>
+              <Segmented
+                label="チャットの文字サイズ"
+                value={chatFont}
+                options={CHAT_FONT_SIZES.map((f) => ({
+                  value: f.value,
+                  label: f.label,
+                }))}
+                onChange={(v) => saveChatFontSize(v)}
+              />
             </Row>
-            <p className="px-1 pb-1 text-xs text-neutral-400 dark:text-neutral-500">
+            <div className="px-4 pb-3 text-xs text-neutral-400 dark:text-neutral-500">
               <span
                 className="chat-text"
                 style={{ display: "inline-block", lineHeight: 1.6 }}
               >
                 この大きさで表示されます。
               </span>
-            </p>
-          </Section>
+            </div>
+            <Row
+              label="ホームの様式"
+              description="新規チャットの画面。グラスは光の上にカード、ミニマルは大きな挨拶と罫線の一覧"
+            >
+              <Segmented
+                label="ホームの様式"
+                value={homeStyle}
+                options={HOME_STYLES.map((s) => ({ value: s.value, label: s.label }))}
+                onChange={(v) => saveHomeStyle(v)}
+              />
+            </Row>
+          </Group>
 
-          <Section
-            title="パフォーマンス"
-            note="ページ遷移のたびに自動で記録されます（この端末のみ・最大1000件）。デプロイすると現行ビルドの集計に切り替わり、各数値に前回ビルドとの差が付きます。"
-          >
-            <PerfPanel />
-          </Section>
+          {/*
+            開発者向けの計測は畳んでおく。利用者の設定と同じ重さで並べると、
+            ビルドIDと p90 の表が「設定」の一部に見える。
+          */}
+          <details className="group mb-7 rounded-2xl border border-black/[0.06] bg-white dark:border-white/[0.08] dark:bg-white/[0.04]">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-medium text-neutral-600 dark:text-neutral-300 [&::-webkit-details-marker]:hidden">
+              <IconChevronRight className="h-4 w-4 text-neutral-400 transition-transform group-open:rotate-90" />
+              開発者向け: ページ遷移の計測
+            </summary>
+            <div className="border-t border-black/[0.06] px-4 py-3 dark:border-white/[0.08]">
+              <p className="mb-3 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+                ページ遷移のたびに自動で記録されます（この端末のみ・最大1000件）。デプロイすると現行ビルドの集計に切り替わり、各数値に前回ビルドとの差が付きます。
+              </p>
+              <PerfPanel />
+            </div>
+          </details>
         </div>
       </div>
     </div>

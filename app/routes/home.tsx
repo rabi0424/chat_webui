@@ -35,7 +35,7 @@ export default function Home() {
   );
 
   const emptyState =
-    bots.length > 0 && !selected ? (
+    !selected ? (
       <HomeEmptyState
         bots={bots}
         modelNames={modelNames}

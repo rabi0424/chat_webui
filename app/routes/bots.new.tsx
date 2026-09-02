@@ -3,13 +3,13 @@ import type { ShellContext } from "./shell";
 import { BotForm } from "../components/BotForm";
 
 export function meta() {
-  return [{ title: "新しいボット - Chat WebUI" }];
+  return [{ title: "新しいボット - Chat" }];
 }
 
 export default function BotNew() {
   const { models, settings } = useOutletContext<ShellContext>();
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full">
       <BotForm
         models={models}
         retryCeiling={settings.retryAttemptCeiling}
