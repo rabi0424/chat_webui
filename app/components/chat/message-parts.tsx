@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
 import { GLASS_PANEL, MSG_ICON_ACTION } from "../../lib/ui";
+import { faviconUrl } from "../../lib/csp";
 import {
   IconCheck,
   IconChevronDown,
@@ -210,6 +211,21 @@ export function CitationList({ citations }: { citations: UiCitation[] }) {
               <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
                 {n + 1}.
               </span>
+              {/*
+                サイトの印。取れなければ何も出さない（壊れた画像の枠を
+                残さない）。送るのはホスト名だけ（lib/csp.ts の faviconUrl）
+              */}
+              <img
+                src={faviconUrl(hostOf(c.url))}
+                alt=""
+                width={14}
+                height={14}
+                loading="lazy"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
               <a
                 href={c.url}
                 target="_blank"

@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   contentSecurityPolicy,
+  FAVICON_ORIGIN,
+  faviconUrl,
   makeNonce,
   sha256Base64,
 } from "../app/lib/csp";
@@ -29,13 +31,34 @@ const prod = () =>
   parse(contentSecurityPolicy({ nonce: "N0NCE", scriptHash: "HASH" }));
 
 describe("Content-Security-Policy", () => {
-  it("外部の画像を読ませない", () => {
+  it("外部の画像は出典のファビコンの取得先だけ", () => {
     const img = prod().get("img-src")!;
-    expect(img).toEqual(["'self'", "data:", "blob:"]);
+    expect(img).toEqual(["'self'", "data:", "blob:", FAVICON_ORIGIN]);
     // ここが緩むと流出経路が開く。ワイルドカードや https: が
     // 紛れ込んでいないことまで見る
     expect(img).not.toContain("*");
     expect(img).not.toContain("https:");
+  });
+
+  /**
+   * ファビコンの URL に乗るのはホスト名だけ。パスやクエリを乗せる形に
+   * すると、出典の URL に会話の中身が入っていたときにそのまま外へ出る。
+   */
+  it("ファビコンの取得先へ送るのはホスト名だけ", () => {
+    const url = faviconUrl("example.com");
+    expect(url.startsWith(`${FAVICON_ORIGIN}/`)).toBe(true);
+    expect(url).toBe(`${FAVICON_ORIGIN}/ip3/example.com.ico`);
+    // ホスト名以外が混ざっても、パスとして解釈されない
+    expect(faviconUrl("a/b?q=秘密")).not.toContain("/b");
+    expect(faviconUrl("a/b?q=秘密")).not.toContain("?");
+  });
+
+  it("見出しの書体の取得先を許す", () => {
+    const p = prod();
+    expect(p.get("font-src")).toContain("https://fonts.gstatic.com");
+    expect(p.get("style-src")).toContain("https://fonts.googleapis.com");
+    // 通信（connect-src）は緩めない。フォントは読み込むだけ
+    expect(p.get("connect-src")).toEqual(["'self'"]);
   });
 
   it("外部への通信も遮る", () => {
@@ -78,7 +101,7 @@ describe("Content-Security-Policy", () => {
     const p = parse(
       contentSecurityPolicy({ nonce: "N0NCE", scriptHash: "HASH", dev: true }),
     );
-    expect(p.get("img-src")).toEqual(["'self'", "data:", "blob:"]);
+    expect(p.get("img-src")).toEqual(["'self'", "data:", "blob:", FAVICON_ORIGIN]);
   });
 
   it("nonce は要求ごとに変わる", () => {

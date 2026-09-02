@@ -22,7 +22,7 @@ import {
 import { IconMenu } from "../components/icons";
 
 export function meta() {
-  return [{ title: "使用量 - Chat WebUI" }];
+  return [{ title: "使用量 - Chat" }];
 }
 
 export async function loader() {

@@ -19,7 +19,7 @@ import { IMAGES_PAGE_SIZE } from "../lib/constants";
 import { useEscapeToClose } from "../lib/dismiss";
 
 export function meta() {
-  return [{ title: "画像 - Chat WebUI" }];
+  return [{ title: "画像 - Chat" }];
 }
 
 /**

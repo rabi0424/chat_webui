@@ -5,6 +5,7 @@ import { useEscapeToClose } from "../lib/dismiss";
 import { IconChevronDown, IconX } from "./icons";
 import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
 import { rankedModelIds } from "../lib/recent-models";
+import { isPoeModel, POE_PREFIX } from "../lib/constants";
 
 function formatPricePerMillion(perToken: string): string {
   const n = Number(perToken) * 1_000_000;
@@ -45,7 +46,8 @@ function isNewModel(m: ModelInfo, now: number, windowDays: number): boolean {
  * プロバイダは灰。
  */
 export function providerColor(modelId: string): string {
-  const vendor = modelId.replace(/^poe:/, "").split("/")[0]?.toLowerCase() ?? "";
+  const bare = isPoeModel(modelId) ? modelId.slice(POE_PREFIX.length) : modelId;
+  const vendor = bare.split("/")[0]?.toLowerCase() ?? "";
   if (vendor.startsWith("anthropic")) return "#d97757";
   if (vendor.startsWith("openai")) return "#10a37f";
   if (vendor.startsWith("google")) return "#4285f4";
@@ -53,7 +55,7 @@ export function providerColor(modelId: string): string {
   if (vendor.startsWith("meta")) return "#0668e1";
   if (vendor.startsWith("mistral")) return "#ff7000";
   if (vendor.startsWith("deepseek")) return "#4d6bfe";
-  if (modelId.startsWith("poe:")) return "#7c3aed";
+  if (isPoeModel(modelId)) return "#7c3aed";
   return "#8e8e93";
 }
 

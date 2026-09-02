@@ -5,7 +5,7 @@ import { useConfirm } from "../components/ConfirmDialog";
 import { MAX_TITLE_LENGTH } from "../lib/constants";
 
 export function meta() {
-  return [{ title: "ボット管理 - Chat WebUI" }];
+  return [{ title: "ボット管理 - Chat" }];
 }
 
 export default function Bots() {

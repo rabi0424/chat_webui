@@ -1,5 +1,5 @@
 {
-  "name": "Chat WebUI",
+  "name": "Chat",
   "short_name": "Chat",
   "description": "OpenRouter経由で複数プロバイダのモデルを使う個人用AIチャット",
   "id": "/",

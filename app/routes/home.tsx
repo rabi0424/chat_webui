@@ -6,7 +6,7 @@ import { Chat, type BotContext } from "../components/Chat";
 import { HomeEmptyState } from "../components/HomeEmptyState";
 
 export function meta() {
-  return [{ title: "Chat WebUI" }];
+  return [{ title: "Chat" }];
 }
 
 export default function Home() {

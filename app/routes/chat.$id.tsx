@@ -9,8 +9,8 @@ export function meta({ loaderData }: Route.MetaArgs) {
   return [
     {
       title: loaderData
-        ? `${loaderData.conversation.title} - Chat WebUI`
-        : "Chat WebUI",
+        ? `${loaderData.conversation.title} - Chat`
+        : "Chat",
     },
   ];
 }
