@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import {
-  answerConfirm,
-  answerPrompt,
+  answerDialog,
+  answerRename,
   conv,
   folder,
   installSidebarServer,
@@ -97,6 +97,27 @@ describe("一覧の表示", () => {
     );
   });
 
+  it("会話は今日・昨日の見出しで区切られる", () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const now = Date.UTC(2026, 8, 2, 3, 0, 0); // 2026-09-02 12:00 JST
+    renderSidebar({
+      conversations: [
+        conv("c1", "けさの会話", { updated_at: now - 60_000 }),
+        conv("c2", "きのうの会話", { updated_at: now - DAY }),
+        conv("c3", "先月の会話", { updated_at: now - 40 * DAY }),
+      ],
+      now,
+    });
+    const labels = screen
+      .getAllByText(/^(今日|昨日|過去7日|過去30日|それ以前)$/)
+      .map((el) => el.textContent);
+    expect(labels).toEqual(["今日", "昨日", "それ以前"]);
+    // 見出しと行の対応。「今日」の直後の一覧に「けさの会話」が居る
+    const today = screen.getByText("今日").closest("div")!.parentElement!;
+    expect(within(today).getByText("けさの会話")).toBeTruthy();
+    expect(within(today).queryByText("きのうの会話")).toBeNull();
+  });
+
   it("フォルダが並ぶ", () => {
     renderSidebar({
       conversations: [],
@@ -108,10 +129,12 @@ describe("一覧の表示", () => {
 
 describe("会話の操作", () => {
   it("名前を変えるとサーバーへ送る", async () => {
-    answerPrompt("新しい名前");
     const { user } = renderSidebar({ conversations: [conv("c1", "元の名前")] });
     await openMenu(user, "元の名前");
-    await user.click(screen.getByRole("button", { name: "名前を変更" }));
+    await user.click(screen.getByRole("menuitem", { name: "名前を変更" }));
+    // 行そのものが入力欄に変わる（ブラウザの prompt は出ない）
+    expect(screen.queryByText("元の名前")).toBeNull();
+    await answerRename(user, "新しい名前");
 
     await waitFor(() => {
       expect(server.lastBody("/api/conversations/c1")).toEqual({
@@ -120,18 +143,27 @@ describe("会話の操作", () => {
     });
   });
 
-  it("名前の入力をやめたら何も送らない", async () => {
-    answerPrompt(null);
+  it("名前の入力をやめたら何も送らず、元の名前に戻る", async () => {
     const { user } = renderSidebar({ conversations: [conv("c1", "元の名前")] });
     await openMenu(user, "元の名前");
-    await user.click(screen.getByRole("button", { name: "名前を変更" }));
+    await user.click(screen.getByRole("menuitem", { name: "名前を変更" }));
+    await answerRename(user, null);
+    expect(server.countOf("/api/conversations/c1")).toBe(0);
+    expect(screen.getByText("元の名前")).toBeTruthy();
+  });
+
+  it("同じ名前で確定しても送らない", async () => {
+    const { user } = renderSidebar({ conversations: [conv("c1", "元の名前")] });
+    await openMenu(user, "元の名前");
+    await user.click(screen.getByRole("menuitem", { name: "名前を変更" }));
+    await answerRename(user, "元の名前");
     expect(server.countOf("/api/conversations/c1")).toBe(0);
   });
 
   it("お気に入りを付け外しできる", async () => {
     const { user } = renderSidebar({ conversations: [conv("c1", "対象の会話")] });
     await openMenu(user, "対象の会話");
-    await user.click(screen.getByRole("button", { name: "お気に入りに追加" }));
+    await user.click(screen.getByRole("menuitem", { name: "お気に入りに追加" }));
     await waitFor(() =>
       expect(server.lastBody("/api/conversations/c1")).toEqual({ favorite: true }),
     );
@@ -142,7 +174,7 @@ describe("会話の操作", () => {
       conversations: [conv("c1", "対象の会話", { favorite: 1 })],
     });
     await openMenu(user, "対象の会話");
-    await user.click(screen.getByRole("button", { name: "お気に入りから外す" }));
+    await user.click(screen.getByRole("menuitem", { name: "お気に入りから外す" }));
     await waitFor(() =>
       expect(server.lastBody("/api/conversations/c1")).toEqual({ favorite: false }),
     );
@@ -151,17 +183,19 @@ describe("会話の操作", () => {
   it("ピン留めできる", async () => {
     const { user } = renderSidebar({ conversations: [conv("c1", "対象の会話")] });
     await openMenu(user, "対象の会話");
-    await user.click(screen.getByRole("button", { name: "ピン留め" }));
+    await user.click(screen.getByRole("menuitem", { name: "ピン留め" }));
     await waitFor(() =>
       expect(server.lastBody("/api/conversations/c1")).toEqual({ pinned: true }),
     );
   });
 
   it("削除は確認してから送る", async () => {
-    answerConfirm(true);
     const { user } = renderSidebar({ conversations: [conv("c1", "消す会話")] });
     await openMenu(user, "消す会話");
-    await user.click(screen.getByRole("button", { name: "削除" }));
+    await user.click(screen.getByRole("menuitem", { name: "削除" }));
+    // 確認が出るまでは送らない
+    expect(server.calls.some((c) => c.method === "DELETE")).toBe(false);
+    await answerDialog(user, true);
     await waitFor(() => {
       const call = server.calls.find(
         (c) => c.path.includes("/api/conversations/c1") && c.method === "DELETE",
@@ -171,34 +205,46 @@ describe("会話の操作", () => {
   });
 
   it("確認でやめたら消さない", async () => {
-    answerConfirm(false);
     const { user } = renderSidebar({ conversations: [conv("c1", "消さない会話")] });
     await openMenu(user, "消さない会話");
-    await user.click(screen.getByRole("button", { name: "削除" }));
+    await user.click(screen.getByRole("menuitem", { name: "削除" }));
+    await answerDialog(user, false);
     expect(
       server.calls.some((c) => c.method === "DELETE"),
     ).toBe(false);
+    // ダイアログは閉じ、行は残る
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("消さない会話")).toBeTruthy();
+  });
+
+  it("ブラウザの confirm は使わない", async () => {
+    const spy = vi.spyOn(window, "confirm");
+    const { user } = renderSidebar({ conversations: [conv("c1", "消す会話")] });
+    await openMenu(user, "消す会話");
+    await user.click(screen.getByRole("menuitem", { name: "削除" }));
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 
 describe("フォルダの操作", () => {
   it("作成するとサーバーへ送る", async () => {
-    answerPrompt("新しいフォルダ");
     const { user } = renderSidebar({ conversations: [] });
     await user.click(screen.getByLabelText("フォルダを作成"));
+    await answerRename(user, "新しいフォルダ");
     await waitFor(() =>
       expect(server.lastBody("/api/folders")).toEqual({ name: "新しいフォルダ" }),
     );
   });
 
   it("名前を変えられる", async () => {
-    answerPrompt("経理");
     const { user } = renderSidebar({
       conversations: [],
       folders: [folder("f1", "仕事")],
     });
     await openMenu(user, "仕事");
-    await user.click(screen.getByRole("button", { name: "名前を変更" }));
+    await user.click(screen.getByRole("menuitem", { name: "名前を変更" }));
+    await answerRename(user, "経理");
     await waitFor(() =>
       expect(server.lastBody("/api/folders/f1")).toEqual({ name: "経理" }),
     );
@@ -364,9 +410,9 @@ describe("操作の失敗", () => {
       conversations: [conv("c1", "対象の会話")],
     });
     server.failAll(500);
-    answerPrompt("新しい名前");
     await openMenu(user, "対象の会話");
     await user.click(screen.getByText("名前を変更"));
+    await answerRename(user, "新しい名前");
 
     expect(await screen.findByRole("status")).toHaveTextContent(/失敗/);
   });
@@ -376,9 +422,9 @@ describe("操作の失敗", () => {
       conversations: [conv("c1", "対象の会話")],
     });
     server.failAll(500);
-    answerConfirm(true);
     await openMenu(user, "対象の会話");
-    await user.click(screen.getByText("削除"));
+    await user.click(screen.getByRole("menuitem", { name: "削除" }));
+    await answerDialog(user, true);
 
     expect(await screen.findByRole("status")).toHaveTextContent(/失敗/);
   });
@@ -387,9 +433,9 @@ describe("操作の失敗", () => {
     const { user } = renderSidebar({
       conversations: [conv("c1", "対象の会話")],
     });
-    answerPrompt("新しい名前");
     await openMenu(user, "対象の会話");
     await user.click(screen.getByText("名前を変更"));
+    await answerRename(user, "新しい名前");
 
     await waitFor(() => expect(server.countOf("/conversations/c1")).toBe(1));
     expect(screen.queryByRole("status")).toBeNull();
@@ -400,9 +446,9 @@ describe("操作の失敗", () => {
       conversations: [conv("c1", "対象の会話")],
     });
     server.failAll(500);
-    answerPrompt("新しい名前");
     await openMenu(user, "対象の会話");
     await user.click(screen.getByText("名前を変更"));
+    await answerRename(user, "新しい名前");
 
     await screen.findByRole("status");
     await user.click(screen.getByLabelText("閉じる"));
@@ -416,9 +462,9 @@ describe("操作の失敗（続き）", () => {
       conversations: [conv("c1", "対象の会話")],
     });
     server.throwAll();
-    answerPrompt("新しい名前");
     await openMenu(user, "対象の会話");
     await user.click(screen.getByText("名前を変更"));
+    await answerRename(user, "新しい名前");
 
     expect(await screen.findByRole("status")).toHaveTextContent(/失敗/);
   });
@@ -428,15 +474,15 @@ describe("操作の失敗（続き）", () => {
       conversations: [conv("c1", "対象の会話")],
     });
     server.failAll(500);
-    answerPrompt("一度目");
     await openMenu(user, "対象の会話");
     await user.click(screen.getByText("名前を変更"));
+    await answerRename(user, "一度目");
     await screen.findByRole("status");
 
     server.succeed();
-    answerPrompt("二度目");
     await openMenu(user, "対象の会話");
     await user.click(screen.getByText("名前を変更"));
+    await answerRename(user, "二度目");
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
   });
 
@@ -449,9 +495,9 @@ describe("操作の失敗（続き）", () => {
     expect(screen.getByTestId("here").textContent).toBe("/chat/c1");
 
     server.failAll(500);
-    answerConfirm(true);
     await openMenu(user, "対象の会話");
-    await user.click(screen.getByText("削除"));
+    await user.click(screen.getByRole("menuitem", { name: "削除" }));
+    await answerDialog(user, true);
 
     await screen.findByRole("status");
     expect(screen.getByTestId("here").textContent).toBe("/chat/c1");
@@ -462,9 +508,9 @@ describe("操作の失敗（続き）", () => {
       conversations: [conv("c1", "対象の会話")],
       current: "c1",
     });
-    answerConfirm(true);
     await openMenu(user, "対象の会話");
-    await user.click(screen.getByText("削除"));
+    await user.click(screen.getByRole("menuitem", { name: "削除" }));
+    await answerDialog(user, true);
 
     await waitFor(() =>
       expect(screen.getByTestId("here").textContent).toBe("/"),
@@ -478,9 +524,9 @@ describe("操作の失敗（続き）", () => {
         folders: [folder("f1", "仕事")],
       });
       server.failAll(500);
-      answerConfirm(true);
       await openMenu(user, "仕事");
-      await user.click(screen.getByText("削除"));
+      await user.click(screen.getByRole("menuitem", { name: "削除" }));
+      await answerDialog(user, true);
 
       await screen.findByRole("status");
       expect(screen.getByText("仕事")).toBeTruthy();

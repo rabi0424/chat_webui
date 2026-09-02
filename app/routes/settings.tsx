@@ -28,6 +28,7 @@ import { clearLastUsedModel, useLastUsedModel } from "../lib/persisted";
 import { PROSE_INPUT } from "../lib/ui";
 import type { ParamsState } from "../lib/params";
 import { IconCheck, IconCopy, IconMenu, IconTrash } from "../components/icons";
+import { useConfirm } from "../components/ConfirmDialog";
 import {
   clearSamples,
   compareLatest,
@@ -159,6 +160,7 @@ function DeltaBadge({ cur, prev }: { cur: number; prev: number | undefined }) {
 function PerfPanel() {
   const [comparison, setComparison] = useState<BuildComparison | null>(null);
   const [copied, flashCopied] = useCopied();
+  const confirm = useConfirm();
 
   // localStorageはSSRで読めないので描画後に読む。集計は画面表示を
   // 待たせないよう低優先度で行う
@@ -258,8 +260,13 @@ function PerfPanel() {
         </button>
         <button
           type="button"
-          onClick={() => {
-            if (!confirm("遷移の記録をすべて消しますか？")) return;
+          onClick={async () => {
+            const ok = await confirm({
+              title: "遷移の記録をすべて消しますか？",
+              confirmLabel: "消去",
+              destructive: true,
+            });
+            if (!ok) return;
             clearSamples();
             setComparison(compareLatest([]));
           }}

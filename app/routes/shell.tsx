@@ -28,6 +28,7 @@ import type {
   UnreadResponse,
 } from "../lib/api-types";
 import { Sidebar } from "../components/Sidebar";
+import { ConfirmProvider } from "../components/ConfirmDialog";
 import { recordNavigation } from "../lib/perf";
 
 /** 未読の印を引き直す間隔（表示中のみ）。 */
@@ -56,7 +57,10 @@ export async function loader() {
   ]);
   // 初回表示・コールドスタートの重さを数字で追うための実測
   console.log(`[perf] shell loader ${Date.now() - started}ms`);
-  return { conversations, bots, folders, settings };
+  // サイドバーの「今日・昨日」の基準。サーバーとブラウザで同じ値を使う
+  // ためにここで決める（描画のたびに時計を読むと、日付の境でハイドレー
+  // ションが失敗する）。一覧を取り直すたびに新しくなる
+  return { conversations, bots, folders, settings, now: Date.now() };
 }
 
 /**
@@ -82,7 +86,7 @@ export function shouldRevalidate({
 let startupRecorded = false;
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { conversations, bots, folders, settings } = loaderData;
+  const { conversations, bots, folders, settings, now } = loaderData;
   // 一覧が持っている更新時刻を先読みキャッシュへ伝える。別の端末で
   // 進んだ会話の、古いスナップショットを見せないため
   noteConversations(conversations);
@@ -361,6 +365,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   };
 
   return (
+    <ConfirmProvider>
     <div
       /*
         画面まわり（サイドバー・ボタン・入力欄の案内）は会話の言語に関わらず
@@ -412,12 +417,13 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         ほうが素直で、判定の作りしだいでは効きうるから。見た目も操作も
         変わらないので、戻す理由も無い。
       */}
-      <div className="order-1 hidden w-72 shrink-0 border-r border-neutral-100 md:block dark:border-neutral-800">
+      <div className="order-1 hidden w-72 shrink-0 border-r border-black/[0.06] md:block dark:border-white/[0.06]">
         <Sidebar
           conversations={conversations}
           folders={folders}
           unreadIds={unreadIds}
           generatingIds={generatingIds}
+          now={now}
         />
       </div>
 
@@ -438,7 +444,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
           {/* 遷移先の描画と重なってもコマ落ちしないよう、
               変形はあらかじめ合成レイヤに載せておく */}
           <div
-            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] bg-white shadow-xl will-change-transform dark:bg-neutral-950 ${
+            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] shadow-xl will-change-transform ${
               sidebarClosing ? "animate-drawer-out" : "animate-drawer"
             }`}
             onAnimationEnd={(e) => {
@@ -450,6 +456,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
               folders={folders}
               unreadIds={unreadIds}
               generatingIds={generatingIds}
+              now={now}
               onNavigate={closeSidebar}
             />
           </div>
@@ -490,5 +497,6 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       )}
 
     </div>
+    </ConfirmProvider>
   );
 }

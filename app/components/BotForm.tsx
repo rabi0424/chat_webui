@@ -7,6 +7,7 @@ import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
 import { PROSE_INPUT, TERSE_INPUT } from "../lib/ui";
+import { useConfirm } from "./ConfirmDialog";
 
 export function BotForm({
   models,
@@ -22,6 +23,7 @@ export function BotForm({
   newModelDays: number;
 }) {
   const navigate = useNavigate();
+  const confirm = useConfirm();
   const [name, setName] = useState(initial?.name ?? "");
   const [icon, setIcon] = useState(initial?.icon ?? "🤖");
   const [modelId, setModelId] = useState(
@@ -43,14 +45,13 @@ export function BotForm({
    */
   const canRetry = model?.outputModalities.includes("image") ?? false;
 
-  function resetParams() {
-    if (
-      !confirm(
-        "生成パラメータを初期設定（すべて自動 = モデル既定値）に戻します。よろしいですか？",
-      )
-    ) {
-      return;
-    }
+  async function resetParams() {
+    const ok = await confirm({
+      title: "生成パラメータを初期設定に戻しますか？",
+      description: "すべて「自動」（モデル本来の既定値）に戻ります。",
+      confirmLabel: "戻す",
+    });
+    if (!ok) return;
     setParams({});
   }
 
@@ -171,7 +172,7 @@ export function BotForm({
           </span>
           <button
             type="button"
-            onClick={resetParams}
+            onClick={() => void resetParams()}
             className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
           >
             初期設定に戻す

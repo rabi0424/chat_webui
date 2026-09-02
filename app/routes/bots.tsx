@@ -1,6 +1,7 @@
 import { Link, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "./shell";
 import { IconMenu } from "../components/icons";
+import { useConfirm } from "../components/ConfirmDialog";
 import { MAX_TITLE_LENGTH } from "../lib/constants";
 
 export function meta() {
@@ -11,11 +12,16 @@ export default function Bots() {
   const { bots, models, openSidebar } = useOutletContext<ShellContext>();
   const revalidator = useRevalidator();
   const navigate = useNavigate();
+  const confirm = useConfirm();
 
   async function remove(id: string, name: string) {
-    if (!confirm(`ボット「${name}」を削除しますか？既存の会話には影響しません。`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: `ボット「${name}」を削除しますか？`,
+      description: "このボットで始めた会話はそのまま残ります。",
+      confirmLabel: "削除",
+      destructive: true,
+    });
+    if (!ok) return;
     await fetch(`/api/bots/${id}`, { method: "DELETE" });
     revalidator.revalidate();
   }

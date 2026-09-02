@@ -8,11 +8,11 @@
  * 差し替えるのは通信だけで、Chat 自身のロジック（楽観表示・IDの
  * 貼り付け・追跡・分岐の組み立て）は本物をそのまま動かす。
  */
-import { vi } from "vitest";
 import { createRoutesStub, Outlet } from "react-router";
-import { render, type RenderResult } from "@testing-library/react";
+import { render, screen, within, type RenderResult } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Chat } from "../../../app/components/Chat";
+import { ConfirmProvider } from "../../../app/components/ConfirmDialog";
 import { DEFAULT_APP_SETTINGS } from "../../../app/lib/settings";
 import type { ModelInfo } from "../../../app/lib/openrouter.server";
 import type { UiMessage } from "../../../app/lib/types";
@@ -214,14 +214,20 @@ export function installServer(initial: UiMessage[] = []): ServerStub {
 }
 
 /**
- * 確認ダイアログの返事を決める。
+ * アプリ内の確認ダイアログに答える。
  *
- * 削除と分岐は confirm() で一度確認を取る。jsdom には実装が無いので
- * ここで差し替える。既定は「はい」——確認を押した先の挙動を見たい
- * テストが大半なので。押さずにやめる場合の確認は accept(false) で。
+ * 削除は一度確認を取る。以前は confirm() を差し替えていたが、いまは
+ * アプリ内のダイアログなので、出てきたボタンを押す。出てこなければ
+ * 失敗する（確認なしに消える作りに戻っていないか）。
  */
-export function acceptConfirm(answer = true): void {
-  vi.spyOn(window, "confirm").mockImplementation(() => answer);
+export async function answerDialog(
+  user: ReturnType<typeof userEvent.setup>,
+  accept: boolean,
+): Promise<void> {
+  const dialog = await screen.findByRole("dialog");
+  await user.click(
+    within(dialog).getByTestId(accept ? "dialog-confirm" : "dialog-cancel"),
+  );
 }
 
 /**
@@ -286,8 +292,13 @@ export function renderChat(props: {
   const Stub = createRoutesStub([
     {
       path: "/",
-      // シェル役。Chat は useOutletContext でここの値を受け取る
-      Component: () => <Outlet context={shell} />,
+      // シェル役。Chat は useOutletContext でここの値を受け取る。
+      // 確認のダイアログもシェルが持つ
+      Component: () => (
+        <ConfirmProvider>
+          <Outlet context={shell} />
+        </ConfirmProvider>
+      ),
       children: [
         {
           index: true,

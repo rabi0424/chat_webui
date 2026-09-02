@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import {
-  acceptConfirm,
   installServer,
   msg,
   renderChat,
@@ -17,7 +16,6 @@ import {
 let server: ServerStub;
 beforeEach(() => {
   localStorage.clear();
-  acceptConfirm();
 });
 
 /** 同じ親に2つの応答がぶら下がっている状態。 */
@@ -89,8 +87,12 @@ describe("ここから分岐（フォーク）", () => {
     });
   });
 
-  it("確認でやめたら作らない", async () => {
-    acceptConfirm(false);
+  /**
+   * 分岐に確認は要らない。会話が1つ増えるだけで元は何も変わらず、
+   * 遷移先の通知で何が起きたかは分かる。確認を挟むと、押すたびに
+   * 一度止められる。
+   */
+  it("確認を挟まずに作る", async () => {
     server = installServer();
     const { user } = renderChat({
       initialMessages: [
@@ -103,8 +105,9 @@ describe("ここから分岐（フォーク）", () => {
     );
     await user.click(forks[0]);
     await waitFor(() =>
-      expect(server.calls.some((c) => c.path.includes("/fork"))).toBe(false),
+      expect(server.calls.some((c) => c.path.includes("/fork"))).toBe(true),
     );
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 

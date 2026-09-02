@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import {
-  acceptConfirm,
+  answerDialog,
   installServer,
   msg,
   renderChat,
@@ -23,7 +23,6 @@ const conversation = () => [
 beforeEach(() => {
   server = installServer(conversation());
   localStorage.clear();
-  acceptConfirm();
 });
 
 const deleteButton = () =>
@@ -43,6 +42,9 @@ describe("削除", () => {
     await user.click((await screen.findAllByLabelText("削除"))[0]);
     await screen.findByText(/1件選択中/);
     await user.click(deleteButton());
+    // 確認が出るまでは送らない
+    expect(server.calls.some((c) => c.path.includes("/delete-messages"))).toBe(false);
+    await answerDialog(user, true);
 
     await waitFor(() => {
       const body = server.lastBody("/delete-messages") as { ids: string[] };
@@ -65,11 +67,11 @@ describe("削除", () => {
   });
 
   it("確認でやめたら消えない", async () => {
-    acceptConfirm(false);
     const { user } = renderChat({ initialMessages: conversation() });
     await user.click((await screen.findAllByLabelText("削除"))[0]);
     await screen.findByText(/1件選択中/);
     await user.click(deleteButton());
+    await answerDialog(user, false);
     await waitFor(() =>
       expect(server.calls.some((c) => c.path.includes("/delete-messages"))).toBe(
         false,
@@ -87,6 +89,7 @@ describe("削除", () => {
     expect(await screen.findByText(/2件選択中/)).toBeTruthy();
 
     await user.click(deleteButton());
+    await answerDialog(user, true);
     await waitFor(() => {
       const body = server.lastBody("/delete-messages") as { ids: string[] };
       expect(new Set(body.ids)).toEqual(new Set(["u1", "a1"]));

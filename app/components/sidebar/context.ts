@@ -10,7 +10,7 @@
 import { createContext, useContext } from "react";
 import type { ConversationListRow, FolderRow } from "../../lib/db.server";
 
-/** いま「…」メニューを開いている対象。 */
+/** いま「…」メニューを開いている対象。名前の変更中の対象も同じ形。 */
 export type MenuTarget =
   | { type: "conversation"; id: string }
   | { type: "folder"; id: string };
@@ -43,10 +43,17 @@ export interface SidebarActions {
   /** お気に入りの会話。 */
   favorites: ConversationListRow[];
 
-  renameConversation: (c: ConversationListRow) => void;
+  /**
+   * 名前をその場で書き換えている行。行はこれを見て、名前の代わりに
+   * 入力欄を出す（Finder と同じ。ブラウザの prompt() は使わない）。
+   */
+  renaming: MenuTarget | null;
+  startRename: (target: MenuTarget) => void;
+  /** 確定（name）または取りやめ（null）。 */
+  finishRename: (target: MenuTarget, name: string | null) => void;
+
   removeConversation: (c: ConversationListRow) => void;
   patchConversation: (id: string, body: Record<string, unknown>) => void;
-  renameFolder: (f: FolderRow) => void;
   removeFolder: (f: FolderRow) => void;
   patchFolder: (id: string, body: Record<string, unknown>) => void;
   movePinned: (

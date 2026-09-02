@@ -4,11 +4,11 @@
  * Sidebar は React Router の中に居ることを前提にしている（現在の会話を
  * URL から読み、リンクで移動する）。通信は差し替え可能な fetch で受ける。
  */
-import { vi } from "vitest";
 import { createRoutesStub, useLocation } from "react-router";
-import { render, type RenderResult } from "@testing-library/react";
+import { render, screen, within, type RenderResult } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Sidebar } from "../../../app/components/Sidebar";
+import { ConfirmProvider } from "../../../app/components/ConfirmDialog";
 import type {
   ConversationListRow,
   FolderRow,
@@ -85,14 +85,41 @@ export function installSidebarServer(): SidebarServer {
   };
 }
 
-/** 名前の入力（リネーム・フォルダ作成）の返事を決める。 */
-export function answerPrompt(value: string | null): void {
-  vi.spyOn(window, "prompt").mockImplementation(() => value);
+type User = ReturnType<typeof userEvent.setup>;
+
+/**
+ * その場の名前の入力欄（リネーム・フォルダ作成）に答える。
+ *
+ * 以前は prompt() を差し替えていた。いまは行そのものが入力欄に変わるので、
+ * 欄を見つけて打ち、Enter で確定する。null は Escape（取りやめ）。
+ */
+export async function answerRename(
+  user: User,
+  value: string | null,
+): Promise<void> {
+  const box = await screen.findByRole("textbox", {
+    name: /新しい名前|新しいフォルダの名前|フォルダの新しい名前/,
+  });
+  if (value == null) {
+    await user.keyboard("{Escape}");
+    return;
+  }
+  await user.clear(box);
+  await user.type(box, value);
+  await user.keyboard("{Enter}");
 }
 
-/** 確認ダイアログの返事を決める。 */
-export function answerConfirm(answer = true): void {
-  vi.spyOn(window, "confirm").mockImplementation(() => answer);
+/**
+ * アプリ内の確認ダイアログに答える。
+ *
+ * confirm() は使わなくなったので、出てきたダイアログのボタンを押す。
+ * ダイアログが出ないなら失敗する（黙って進む作りに戻っていないか）。
+ */
+export async function answerDialog(user: User, accept: boolean): Promise<void> {
+  const dialog = await screen.findByRole("dialog");
+  await user.click(
+    within(dialog).getByTestId(accept ? "dialog-confirm" : "dialog-cancel"),
+  );
 }
 
 export function conv(
@@ -146,12 +173,14 @@ export function renderSidebar(props: {
   generatingIds?: Set<string> | null;
   /** いま開いている会話（URLから読まれる）。 */
   current?: string;
+  /** 「今日・昨日」の基準時刻。 */
+  now?: number;
 }): RenderResult & { user: ReturnType<typeof userEvent.setup> } {
   const Stub = createRoutesStub([
     {
       path: "/chat/:id",
       Component: () => (
-        <>
+        <ConfirmProvider>
           {/* 移動したかどうかを見るための現在地 */}
           <Location />
           <Sidebar
@@ -159,8 +188,9 @@ export function renderSidebar(props: {
             folders={props.folders ?? []}
             unreadIds={props.unreadIds ?? null}
             generatingIds={props.generatingIds ?? null}
+            now={props.now ?? 1_700_000_000_000}
           />
-        </>
+        </ConfirmProvider>
       ),
     },
     { path: "/", Component: () => <Location /> },

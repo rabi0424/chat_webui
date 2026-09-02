@@ -40,6 +40,7 @@ import { LiveRegion } from "./chat/LiveRegion";
 import { SelectionBar } from "./chat/SelectionBar";
 import { type MessageActions } from "./chat/message-context";
 import { useEscapeToClose } from "../lib/dismiss";
+import { useConfirm } from "./ConfirmDialog";
 import { readLastUsedModel, writeLastUsedModel } from "../lib/persisted";
 import type {
   CreateConversationResponse,
@@ -120,6 +121,7 @@ export function Chat({
     useOutletContext<ShellContext>();
   const navigate = useNavigate();
   const revalidator = useRevalidator();
+  const confirm = useConfirm();
 
   const [model, setModel] = useState(
     initialModel ?? settings.defaultModelId ?? DEFAULT_MODEL,
@@ -407,14 +409,13 @@ export function Chat({
     }, 600);
   };
 
-  const resetParams = () => {
-    if (
-      !confirm(
-        "生成パラメータを初期設定（すべて自動 = モデル既定値）に戻します。よろしいですか？",
-      )
-    ) {
-      return;
-    }
+  const resetParams = async () => {
+    const ok = await confirm({
+      title: "生成パラメータを初期設定に戻しますか？",
+      description: "すべて「自動」（モデル本来の既定値）に戻ります。",
+      confirmLabel: "戻す",
+    });
+    if (!ok) return;
     changeParams({});
   };
 
@@ -1324,17 +1325,16 @@ export function Chat({
     ]
       .filter(Boolean)
       .join("と");
-    if (
-      !confirm(
-        `${what}を削除します。` +
-          (messageIds.length > 0
-            ? "メッセージの削除は取り消せません。"
-            : "履歴はそのままで、すべてが再びコンテキストになります。") +
-          "よろしいですか？",
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm({
+      title: `${what}を削除しますか？`,
+      description:
+        messageIds.length > 0
+          ? "メッセージの削除は取り消せません。"
+          : "履歴はそのままで、すべてが再びコンテキストになります。",
+      confirmLabel: "削除",
+      destructive: messageIds.length > 0,
+    });
+    if (!ok) return;
 
     try {
       let fresh: UiMessage[] | null = null;
@@ -1441,19 +1441,17 @@ export function Chat({
     }
   }
 
-  /** ここから分岐: この地点までの履歴で独立した新会話を作る。 */
+  /**
+   * ここから分岐: この地点までの履歴で独立した新会話を作る。
+   *
+   * 確認は取らない。会話が1つ増えるだけで元は何も変わらず、遷移先の
+   * 通知（「分岐を作成しました」）で何が起きたかは分かる。
+   */
   async function fork(messageId: string) {
     const convId = convIdRef.current;
     // 生成中でも通す。ここまでの履歴を新しい会話へ写すだけで、
     // 走っている生成には触れない（写した先で続きを生成もしない）
     if (!convId) return;
-    if (
-      !confirm(
-        "ここまでの履歴をコピーして、独立した新しい会話を作成します。よろしいですか？",
-      )
-    ) {
-      return;
-    }
     try {
       const res = await fetch(`/api/conversations/${convId}/fork`, {
         method: "POST",
@@ -1600,7 +1598,7 @@ export function Chat({
               </div>
               <button
                 type="button"
-                onClick={resetParams}
+                onClick={() => void resetParams()}
                 className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
               >
                 初期設定に戻す
