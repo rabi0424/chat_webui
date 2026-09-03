@@ -215,6 +215,33 @@ describe("日別のグラフ", () => {
     expect(screen.queryByText(/点線は/)).toBeNull();
   });
 
+  /*
+   * 角丸の付け先。段ごとに丸めていた頃は、DOM の先頭＝一番下の段だけが
+   * 丸くなり、別のベンダーが上に乗ると四角い肩が飛び出して見えていた。
+   * 丸いのは「積み上げた棒の頂上」であって段ではない、という結び付きを
+   * 見張る（段の高さの基準も、棒の中の割合に変わっている）。
+   */
+  it("角丸は段ではなく積み上げた棒に付き、段の高さは棒の中の割合になる", () => {
+    renderUsage({ daily: true });
+    const bars = within(
+      screen.getByRole("list", { name: "日別の使用額" }),
+    ).getAllByRole("listitem");
+    // 8/3 は 2 ベンダー（$2 と $1）が積み上がる日
+    const rounded = bars[2].querySelectorAll('[class*="rounded"]');
+    expect(rounded).toHaveLength(1);
+    const stack = rounded[0] as HTMLElement;
+    // 頂上をはみ出させないための切り抜き（これが無いと段の四角い角が出る）
+    expect(stack.className).toContain("overflow-hidden");
+    // 段はすべてこの中にある＝丸いのは棒の頂上だけ
+    expect(stack.children).toHaveLength(2);
+    // 棒の高さは天井（一番高い $3 に 15% の余白）に対する割合
+    expect(stack.style.height).toBe(`${(3 / (3 * 1.15)) * 100}%`);
+    // 段の高さは棒（$3）の中の割合。上に乗る段ほど後ろに来る
+    expect(
+      [...stack.children].map((el) => (el as HTMLElement).style.height),
+    ).toEqual([`${(2 / 3) * 100}%`, `${(1 / 3) * 100}%`]);
+  });
+
   it("ベンダーごとの凡例に今月の額を添える", () => {
     renderUsage({ daily: true });
     expect(screen.getByText("OpenAI").nextElementSibling?.textContent).toBe("$4.00");

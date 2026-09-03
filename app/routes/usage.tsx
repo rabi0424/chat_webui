@@ -214,24 +214,38 @@ function DailyChart({
               <li
                 key={b.dayOfMonth}
                 aria-label={`${dayLabel(b)} ${money(b.usd)}`}
-                className="group relative flex h-full flex-1 flex-col-reverse"
+                className="group relative flex h-full flex-1 flex-col justify-end"
               >
-                {b.parts.map(
-                  (p) =>
-                    p.usd > 0 && (
-                      <span
-                        key={p.vendor}
-                        aria-hidden
-                        className="block w-full first:rounded-t-sm"
-                        style={{
-                          height: pct(p.usd),
-                          backgroundColor: color(p.vendor),
-                        }}
-                      />
-                    ),
-                )}
-                {/* 棒が無い日も、指で触れる場所として最低限の高さを残す */}
-                {b.usd === 0 && (
+                {b.usd > 0 ? (
+                  /*
+                   * 角丸を持つのは段ではなく、積み上げた棒のほう。
+                   * 段ごとに丸めると、一番下の段だけが丸くて上に乗った
+                   * 段は四角いままになる（flex-col-reverse では DOM の先頭が
+                   * 一番下に来るため、`first:` は最上段ではなく最下段に
+                   * 当たっていた）。棒ごと切り抜けば、どのベンダーが最上段に
+                   * 来ても頂上だけが丸い。段の高さは棒の中の割合になる。
+                   */
+                  <div
+                    className="flex w-full flex-col-reverse overflow-hidden rounded-t-sm"
+                    style={{ height: pct(b.usd) }}
+                  >
+                    {b.parts.map(
+                      (p) =>
+                        p.usd > 0 && (
+                          <span
+                            key={p.vendor}
+                            aria-hidden
+                            className="block w-full"
+                            style={{
+                              height: `${(p.usd / b.usd) * 100}%`,
+                              backgroundColor: color(p.vendor),
+                            }}
+                          />
+                        ),
+                    )}
+                  </div>
+                ) : (
+                  /* 棒が無い日も、指で触れる場所として最低限の高さを残す */
                   <span
                     aria-hidden
                     className="block h-px w-full bg-neutral-200 dark:bg-neutral-800"
