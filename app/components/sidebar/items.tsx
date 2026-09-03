@@ -65,7 +65,11 @@ export function MenuButton({ target }: { target: MenuTarget }) {
  * いるので、その中で fixed を使うと基準がドロワーになり、幅 288px の
  * 中に閉じ込められて下のドックに被る（実際にそうなっていた）。
  */
-function MenuPanel({
+/**
+ * 「…」の中身の器。サイドバーの行と、ボット一覧の行が同じものを使う
+ * （出し方が2通りあると、同じ「…」なのに画面で振る舞いが変わる）。
+ */
+export function MenuPanel({
   title,
   children,
   onClose,
@@ -104,7 +108,7 @@ function MenuPanel({
   );
 }
 
-const ITEM =
+export const MENU_ITEM =
   "flex w-full items-center gap-2 rounded-lg px-3 py-3 text-left text-[0.9375rem] text-neutral-700 hover:bg-black/[0.05] md:py-2 dark:text-neutral-200 dark:hover:bg-white/10";
 const ITEM_DANGER =
   "flex w-full items-center gap-2 rounded-lg px-3 py-3 text-left text-[0.9375rem] text-red-600 hover:bg-red-50 md:py-2 dark:text-red-400 dark:hover:bg-red-500/15";
@@ -131,28 +135,28 @@ export function MenuItems({ target }: { target: MenuTarget }) {
     if (!c) return null;
     return (
       <MenuPanel title={c.title} onClose={close}>
-        <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); startRename(target); }}>
+        <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); startRename(target); }}>
           名前を変更
         </button>
-        <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); void patchConversation(c.id, { favorite: c.favorite !== 1 }); }}>
+        <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); void patchConversation(c.id, { favorite: c.favorite !== 1 }); }}>
           {c.favorite === 1 ? "お気に入りから外す" : "お気に入りに追加"}
         </button>
-        <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); void patchConversation(c.id, { pinned: !c.pinned }); }}>
+        <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); void patchConversation(c.id, { pinned: !c.pinned }); }}>
           {c.pinned ? "ピン留めを解除" : "ピン留め"}
         </button>
         {c.pinned === 1 && (
           <>
-            <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); void movePinned("conversation", c.id, "up"); }}>
+            <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); void movePinned("conversation", c.id, "up"); }}>
               <IconArrowUp className="h-4 w-4 text-neutral-400" />
               上へ移動
             </button>
-            <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); void movePinned("conversation", c.id, "down"); }}>
+            <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); void movePinned("conversation", c.id, "down"); }}>
               <IconArrowDown className="h-4 w-4 text-neutral-400" />
               下へ移動
             </button>
           </>
         )}
-        <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); openMoveDialog(c.id); }}>
+        <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); openMoveDialog(c.id); }}>
           フォルダへ移動…
         </button>
         <button type="button" role="menuitem" className={ITEM_DANGER} onClick={() => { close(); void removeConversation(c); }}>
@@ -166,19 +170,19 @@ export function MenuItems({ target }: { target: MenuTarget }) {
   if (!f) return null;
   return (
     <MenuPanel title={f.name} onClose={close}>
-      <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); startRename(target); }}>
+      <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); startRename(target); }}>
         名前を変更
       </button>
-      <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); void patchFolder(f.id, { pinned: !f.pinned }); }}>
+      <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); void patchFolder(f.id, { pinned: !f.pinned }); }}>
         {f.pinned ? "ピン留めを解除" : "ピン留め"}
       </button>
       {f.pinned === 1 && (
         <>
-          <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); void movePinned("folder", f.id, "up"); }}>
+          <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); void movePinned("folder", f.id, "up"); }}>
             <IconArrowUp className="h-4 w-4 text-neutral-400" />
             上へ移動
           </button>
-          <button type="button" role="menuitem" className={ITEM} onClick={() => { close(); void movePinned("folder", f.id, "down"); }}>
+          <button type="button" role="menuitem" className={MENU_ITEM} onClick={() => { close(); void movePinned("folder", f.id, "down"); }}>
             <IconArrowDown className="h-4 w-4 text-neutral-400" />
             下へ移動
           </button>

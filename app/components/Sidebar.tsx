@@ -43,10 +43,13 @@ import {
   IconPhoto,
   IconPlus,
   IconSearch,
+  IconSidebar,
   IconStar,
   IconStarSolid,
   IconX,
 } from "./icons";
+import { withKeys } from "../lib/shortcuts";
+import { useShortcut } from "../lib/use-shortcut";
 import {
   GLASS_ACCENT_BUTTON,
   GLASS_ICON_BUTTON,
@@ -166,6 +169,8 @@ export function Sidebar({
   generatingIds,
   now,
   onNavigate,
+  onCollapse,
+  mac,
 }: {
   conversations: ConversationListRow[];
   folders: FolderRow[];
@@ -180,6 +185,10 @@ export function Sidebar({
    */
   now: number;
   onNavigate?: () => void;
+  /** 畳むボタンを出す（デスクトップの常設サイドバーだけ）。 */
+  onCollapse?: () => void;
+  /** ショートカットの表記（⌘ か Ctrl か）。 */
+  mac?: boolean;
 }) {
   const navigate = useNavigate();
   const revalidator = useRevalidator();
@@ -246,6 +255,8 @@ export function Sidebar({
     setSearchOpen(false);
     setSearchQuery("");
   };
+  // ⌘K。開いていても押し直せば検索欄へ戻る
+  useShortcut("search", openSearch);
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -592,11 +603,22 @@ export function Sidebar({
                 type="button"
                 onClick={openSearch}
                 aria-label="会話を検索"
-                title="会話を検索"
+                title={withKeys("会話を検索", "search", mac ?? true)}
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-2 transition hover:bg-black/[0.06] active:scale-95 dark:hover:bg-white/10"
               >
                 <IconSearch className="h-5 w-5" />
               </button>
+              {onCollapse && (
+                <button
+                  type="button"
+                  onClick={onCollapse}
+                  aria-label="サイドバーを畳む"
+                  title={withKeys("サイドバーを畳む", "toggle-sidebar", mac ?? true)}
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-2 transition hover:bg-black/[0.06] active:scale-95 dark:hover:bg-white/10"
+                >
+                  <IconSidebar className="h-5 w-5" />
+                </button>
+              )}
             </>
           )}
         </div>
@@ -821,7 +843,7 @@ export function Sidebar({
             to="/"
             prefetch="intent"
             onClick={onNavigate}
-            title="新規チャット"
+            title={withKeys("新規チャット", "new-chat", mac ?? true)}
             className={`flex min-w-0 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-3 text-[0.9375rem] font-semibold transition active:scale-95 ${GLASS_ACCENT_BUTTON}`}
           >
             <IconPencilSquare className="h-4.5 w-4.5 shrink-0" />

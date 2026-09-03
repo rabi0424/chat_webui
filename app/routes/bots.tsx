@@ -1,11 +1,107 @@
+import { useCallback, useState } from "react";
 import { Link, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "./shell";
-import { IconMenu } from "../components/icons";
+import type { BotRow } from "../lib/db.server";
+import { IconBot, IconEllipsis, IconMenu, IconPlus, IconTrash, IconCopy } from "../components/icons";
 import { useConfirm } from "../components/ConfirmDialog";
+import { EMPTY_ACTION, EmptyState } from "../components/EmptyState";
+import { MENU_ITEM, MenuPanel } from "../components/sidebar/items";
+import { useEscapeToClose } from "../lib/dismiss";
 import { MAX_TITLE_LENGTH } from "../lib/constants";
 
 export function meta() {
   return [{ title: "ボット管理 - Chat" }];
+}
+
+/**
+ * ボットの1行（UI-9）。
+ *
+ * 行そのものを押すと編集へ。複製と削除は「…」の中——3つの文字ボタンを
+ * 毎行に並べると、赤い「削除」が行の数だけ並んで、一覧が操作盤に見える。
+ * 「…」の出し方はサイドバーの行と同じ部品（Mac はポップオーバー、
+ * iPhone はシート）。
+ */
+function BotItem({
+  bot,
+  modelName,
+  menuOpen,
+  onOpenMenu,
+  onCloseMenu,
+  onDuplicate,
+  onRemove,
+}: {
+  bot: BotRow;
+  modelName: string;
+  menuOpen: boolean;
+  onOpenMenu: () => void;
+  onCloseMenu: () => void;
+  onDuplicate: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <li className="group relative">
+      <Link
+        to={`/bots/${bot.id}/edit`}
+        prefetch="intent"
+        className="flex items-center gap-3.5 px-4 py-3 transition-colors hover:bg-hover"
+      >
+        <span
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] bg-sunken text-[22px]"
+          aria-hidden
+        >
+          {bot.icon}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium">{bot.name}</span>
+          <span className="mt-0.5 block truncate text-xs text-ink-2">{modelName}</span>
+        </span>
+        {/* 「…」の場所を空けておく（下のボタンが重なる） */}
+        <span className="w-9 shrink-0" aria-hidden />
+      </Link>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (menuOpen) onCloseMenu();
+          else onOpenMenu();
+        }}
+        aria-label={`${bot.name} のメニュー`}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        className="absolute right-3 top-1/2 grid h-9 w-9 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:bg-black/[0.06] hover:text-ink-2 dark:hover:bg-white/10"
+      >
+        <IconEllipsis className="h-5 w-5" />
+      </button>
+      {menuOpen && (
+        <MenuPanel title={bot.name} onClose={onCloseMenu}>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onCloseMenu();
+              onDuplicate();
+            }}
+            className={MENU_ITEM}
+          >
+            <IconCopy className="h-4 w-4 text-ink-3" />
+            複製
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onCloseMenu();
+              onRemove();
+            }}
+            className={`${MENU_ITEM} text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/50`}
+          >
+            <IconTrash className="h-4 w-4" />
+            削除
+          </button>
+        </MenuPanel>
+      )}
+    </li>
+  );
 }
 
 export default function Bots() {
@@ -13,6 +109,10 @@ export default function Bots() {
   const revalidator = useRevalidator();
   const navigate = useNavigate();
   const confirm = useConfirm();
+  /** 「…」を開いている行。 */
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const closeMenu = useCallback(() => setMenuFor(null), []);
+  useEscapeToClose(menuFor != null, closeMenu);
 
   async function remove(id: string, name: string) {
     const ok = await confirm({
@@ -44,7 +144,7 @@ export default function Bots() {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col" onClick={() => menuFor && setMenuFor(null)}>
       <header className="flex shrink-0 items-center gap-1 border-b border-line px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
         <button
           type="button"
@@ -54,73 +154,55 @@ export default function Bots() {
         >
           <IconMenu className="h-5 w-5" />
         </button>
-        <h1 className="px-1 text-sm font-semibold tracking-tight">ボット管理</h1>
+        <h1 className="font-display px-1 text-sm font-bold tracking-tight">ボット管理</h1>
         <div className="ml-auto">
-          <Link
-            to="/bots/new"
-            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent/85"
+          <button
+            type="button"
+            onClick={() => void navigate("/bots/new")}
+            className="flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent/85"
           >
-            + 新しいボット
-          </Link>
+            <IconPlus className="h-4 w-4" />
+            新しいボット
+          </button>
         </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-6">
-          {bots.length === 0 && (
-            <div className="rounded-3xl border border-dashed border-line px-6 py-14 text-center">
-              <p className="text-sm leading-relaxed text-ink-3">
-                ボットはまだありません。
-                <br />
-                「モデル + システムプロンプト」の組み合わせを登録すると、
-                新規チャット画面から1タップで会話を始められます。
-              </p>
+          {bots.length === 0 ? (
+            <div className="py-14">
+              <EmptyState
+                icon={<IconBot />}
+                title="ボットはまだありません"
+                description="モデルとシステムプロンプトの組み合わせを登録すると、新規チャットから1タップで始められます。"
+                action={
+                  <Link to="/bots/new" className={EMPTY_ACTION}>
+                    <IconPlus className="h-4 w-4" />
+                    ボットを作る
+                  </Link>
+                }
+              />
             </div>
+          ) : (
+            /*
+              グループ化された一覧（設定画面と同じ形）。行は境界線で
+              区切り、押せる面をカードの縁ではなく行そのものにする。
+            */
+            <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-raised">
+              {bots.map((b) => (
+                <BotItem
+                  key={b.id}
+                  bot={b}
+                  modelName={models.find((m) => m.id === b.model_id)?.name ?? b.model_id}
+                  menuOpen={menuFor === b.id}
+                  onOpenMenu={() => setMenuFor(b.id)}
+                  onCloseMenu={closeMenu}
+                  onDuplicate={() => void duplicate(b.id)}
+                  onRemove={() => void remove(b.id, b.name)}
+                />
+              ))}
+            </ul>
           )}
-          <ul className="space-y-2.5">
-            {bots.map((b) => (
-              <li
-                key={b.id}
-                className="flex items-center gap-3.5 rounded-2xl border border-black/[0.06] bg-white px-4 py-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-16px_rgba(0,0,0,0.12)] dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
-              >
-                <span
-                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] bg-neutral-100 text-[22px] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:bg-[#1c1c1e] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]"
-                  aria-hidden
-                >
-                  {b.icon}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-semibold tracking-tight">{b.name}</p>
-                  <p className="mt-0.5 truncate text-xs text-ink-3">
-                    {models.find((m) => m.id === b.model_id)?.name ?? b.model_id}
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-1 text-sm">
-                  <button
-                    type="button"
-                    onClick={() => void navigate(`/bots/${b.id}/edit`)}
-                    className="rounded-lg px-2.5 py-1.5 text-ink-2 hover:bg-hover"
-                  >
-                    編集
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void duplicate(b.id)}
-                    className="rounded-lg px-2.5 py-1.5 text-ink-2 hover:bg-hover"
-                  >
-                    複製
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void remove(b.id, b.name)}
-                    className="rounded-lg px-2.5 py-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950"
-                  >
-                    削除
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
         </div>
       </div>
     </div>

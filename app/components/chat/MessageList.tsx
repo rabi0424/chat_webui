@@ -9,6 +9,8 @@
  * 最後のメッセージが隠れる。
  */
 import { Fragment, type ReactNode, type RefObject, type Dispatch, type SetStateAction } from "react";
+import { EmptyState } from "../EmptyState";
+import { IconChatBubble } from "../icons";
 import type { UiMessage } from "../../lib/types";
 import { ContextBoundaryLine } from "./message-parts";
 import { MessageProvider, type MessageActions } from "./message-context";
@@ -107,9 +109,11 @@ export function MessageList({
         {messages.length === 0 && (
           <div className="flex min-h-[60vh] items-center justify-center">
             {emptyState ?? (
-              <p className="text-lg text-ink-3">
-                モデルを選んでメッセージを送信
-              </p>
+              <EmptyState
+                icon={<IconChatBubble />}
+                title="まだやり取りはありません"
+                description="下の入力欄からメッセージを送ると、ここに並びます。"
+              />
             )}
           </div>
         )}

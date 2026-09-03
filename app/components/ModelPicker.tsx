@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShortcut } from "../lib/use-shortcut";
 import { createPortal } from "react-dom";
 import type { ModelInfo } from "../lib/openrouter.server";
 import { useEscapeToClose } from "../lib/dismiss";
@@ -234,6 +235,9 @@ export function ModelPicker({
     setRecentIds(rankedModelIds());
     setOpen(true);
   };
+  // ⌘⇧M。入力欄のチップ（会話の中のもの）だけが受ける——設定画面の
+  // 既定モデルの欄まで開くと、どちらが開いたのか分からない
+  useShortcut("model", () => { if (!open) openPicker(); }, variant === "chip");
 
   const select = (id: string) => {
     onChange(id);
