@@ -343,7 +343,6 @@ export function Composer({
           <MentionSuggest
             anchorRef={pillRef}
             panelRef={panelRef}
-            textareaRef={textareaRef}
             bots={mention.candidates}
             models={models}
             activeIndex={activeIndex}

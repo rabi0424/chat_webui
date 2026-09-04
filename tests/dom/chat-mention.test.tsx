@@ -129,6 +129,27 @@ describe("候補の出し方", () => {
     expect(box().value).toBe("@検索係 ");
   });
 
+  it("一覧を指で送っても、入力欄のフォーカスは外れない", async () => {
+    /*
+      モデル選択の一覧を真似て touchmove で blur していたころは、
+      候補をスワイプするとキーボードが畳まれて画面が動いた。あちらが
+      外すのはパネルの中の検索欄で、ここで外れるのは本文の入力欄
+      ——眺めているだけなのに書きかけの場所を見失う。
+    */
+    const { user } = renderChat(options);
+    await user.type(box(), "@");
+    const panel = await screen.findByRole("listbox", { name: "宛先のボット" });
+    expect(document.activeElement).toBe(box());
+
+    fireEvent.touchStart(panel);
+    fireEvent.touchMove(panel);
+    fireEvent.touchEnd(panel);
+    expect(document.activeElement).toBe(box());
+    // 一覧の中でスクロールを閉じる指定も外れていない
+    expect(panel.className).toContain("overscroll-contain");
+    expect(panel.className).toContain("touch-pan-y");
+  });
+
   it("本文を打ち始めたら候補は引っ込む", async () => {
     const { user } = renderChat(options);
     await user.type(box(), "@翻訳");

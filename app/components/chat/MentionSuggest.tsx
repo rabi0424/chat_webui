@@ -21,7 +21,6 @@ const PANEL_MAX_RATIO = 0.5;
 export function MentionSuggest({
   anchorRef,
   panelRef,
-  textareaRef,
   bots,
   models,
   activeIndex,
@@ -31,8 +30,6 @@ export function MentionSuggest({
   anchorRef: RefObject<HTMLElement | null>;
   /** 外側を押したかの判定にも使う（Composer が持つ）。 */
   panelRef: RefObject<HTMLDivElement | null>;
-  /** 一覧を送り始めたときにキーボードを閉じるため。 */
-  textareaRef: RefObject<HTMLTextAreaElement | null>;
   bots: BotRow[];
   models: ModelInfo[];
   /** ↑↓ で選んでいる位置。-1 はどれも選んでいない。 */
@@ -71,15 +68,21 @@ export function MentionSuggest({
         宛先のボット（↑↓ と Tab で選択）
       </p>
       {/*
-        一覧を送り始めたらキーボードを閉じる（モデル選択と同じ）。
-        開いたままだと、iOS が「入力欄を見せるためのページのパン」を
-        優先し、一覧の中のスクロールがそちらへ取られる。
+        指で送るあいだも入力欄のフォーカスは外さない。
+
+        モデル選択の一覧は touchmove で自分の検索欄を blur している
+        （iOS が「入力欄を見せるためのページのパン」を優先し、一覧の
+        中のスクロールが取られるのを防ぐため）が、ここで同じことを
+        すると外れるのは**本文の入力欄**になる。キーボードが畳まれて
+        画面が動き、候補を眺めているだけなのに書きかけの場所を
+        見失う。パンに取られないようにするのは、スクロールを一覧の
+        中で閉じる指定（overscroll-contain）と、縦送りだとブラウザに
+        先に伝える指定（touch-pan-y）で足りる。
       */}
       <ul
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1"
+        className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain p-1"
         role="listbox"
         aria-label="宛先のボット"
-        onTouchMove={() => textareaRef.current?.blur()}
       >
         {bots.map((b, i) => {
           const model = models.find((m) => m.id === b.model_id);
