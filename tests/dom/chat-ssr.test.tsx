@@ -116,8 +116,16 @@ describe("会話の画面のサーバー描画", () => {
     expect(html.slice(0, body)).toMatch(/<p[^>]*>$/);
     // 本文を囲む枠は、本物の描画と同じ prose
     expect(html.slice(0, body)).toMatch(/class="prose[^"]*"><p[^>]*>$/);
-    // 整形済みテキストとして扱われる掛け方をしていない
-    expect(html).not.toContain("whitespace-pre-wrap");
+    /*
+      整形済みテキストとして扱われる掛け方をしていない。
+      見張るのは**本文の入れ物**なので、フッター（入力欄）より前だけを
+      見る——入力欄には、宛先メンションの色分け用に textarea と同じ
+      字送りで敷く板があり、そちらは pre-wrap で正しい（textarea の
+      描き方をなぞる板なので、ここを外すと色の帯が文字からずれる）。
+    */
+    const feed = html.slice(0, html.indexOf("<footer"));
+    expect(feed).toContain(`${BODY_MARK}0`);
+    expect(feed).not.toContain("whitespace-pre-wrap");
   });
 
   it("長い会話でも、載せる本文は判定に要るぶんで頭打ちになる", () => {

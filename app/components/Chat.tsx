@@ -1,4 +1,11 @@
-import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useShortcut } from "../lib/use-shortcut";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
@@ -16,10 +23,12 @@ import {
   PULL_SLOP_PX,
   PULL_TRIGGER_PX,
 } from "../lib/pull-to-refresh";
-import { type ParamsState } from "../lib/params";
+import { parseParamsJson, type ParamsState } from "../lib/params";
+import { applyMention, parseMention, stripMention } from "../lib/mention";
+import type { BotRow } from "../lib/db.server";
 import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
-import { readRetryConfig } from "../lib/retry";
+import { readRetryConfig, type RetryConfig } from "../lib/retry";
 import { isAcceptedImage } from "../lib/image";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
@@ -125,7 +134,7 @@ export function Chat({
   systemPrompt?: string | null;
   emptyState?: React.ReactNode;
 }) {
-  const { models, usdJpy, settings, openSidebar } =
+  const { models, bots, usdJpy, settings, openSidebar } =
     useOutletContext<ShellContext>();
   const navigate = useNavigate();
   const revalidator = useRevalidator();
@@ -195,8 +204,16 @@ export function Chat({
   /**
    * 「成功するまで生成」の実行確認待ち。
    * 何度も生成する＝そのぶん課金されるので、走り出す前にパラメータを見せる。
+   *
+   * 見せる値も一緒に持つ。宛先（`@ボット名`）を付けた1通は会話とは別の
+   * モデル・パラメータで走るので、画面の状態から引き直すと**確認の
+   * 数字と実際に走るものが食い違う**。
    */
-  const [pendingRun, setPendingRun] = useState<(() => void) | null>(null);
+  const [pendingRun, setPendingRun] = useState<{
+    run: () => void;
+    config: RetryConfig;
+    modelLabel: string;
+  } | null>(null);
 
   /** 数秒で消えるトーストを出す（続けて出しても前のタイマーは畳む）。 */
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -538,6 +555,27 @@ export function Chat({
     }
   };
 
+  /**
+   * 冒頭の宛先メンション（`@ボット名`）。
+   *
+   * 打つたびに読み直すが、見ているのは本文の頭だけで、突き合わせる
+   * 相手もボットの数（せいぜい数十）なので軽い。
+   */
+  const mention = useMemo(() => parseMention(input, bots), [input, bots]);
+
+  /** 候補を選んだ。本文を書き換え、続きを打てる位置へキャレットを置く。 */
+  const pickMention = (b: BotRow) => {
+    const next = applyMention(input, mention, b);
+    changeInput(next.text);
+    const el = textareaRef.current;
+    if (!el) return;
+    // 値が反映されてからでないと選択位置を動かせない
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
   /** 表示が伸びたときの追従（最下部に貼り付いているときだけ）。 */
   const followBottom = () => {
     const el = scrollRef.current;
@@ -746,6 +784,57 @@ export function Chat({
   const retryConfig = canRetry
     ? readRetryConfig(params, settings.retryAttemptCeiling)
     : null;
+
+  /**
+   * この1通をどの設定で生成するか。
+   *
+   * 宛先（`@ボット名`）が付いていれば、そのボットのモデル・システム
+   * プロンプト・パラメータを使う。パラメータまで差し替えるのは、
+   * 生成パラメータがプロバイダごとに別物だから——会話が Poe のときの
+   * `thinking_budget` を OpenRouter のボットへ持ち込んでも意味が無い。
+   */
+  const generationSettings = (addressee: BotRow | null) => {
+    const genParams = addressee
+      ? parseParamsJson(addressee.params_json)
+      : params;
+    return {
+      model: addressee?.model_id ?? model,
+      params: genParams,
+      systemPrompt: addressee ? addressee.system_prompt || null : systemPrompt,
+      // Web検索の既定はオン。オフにしたときだけ params に "off" が入る
+      web: genParams[WEB_PARAM_KEY] !== "off",
+    };
+  };
+
+  /**
+   * 「成功するまで生成」の確認を出す。走らせる中身と、確認に見せる値を
+   * 一緒に預ける（画面の状態から引き直すと、宛先付きの1通で食い違う）。
+   */
+  const askRetry = (
+    run: () => void,
+    config: RetryConfig,
+    modelId: string = model,
+  ) =>
+    setPendingRun({
+      run,
+      config,
+      modelLabel: models.find((m) => m.id === modelId)?.name ?? modelId,
+    });
+
+  /**
+   * 「成功するまで生成」の確認を出すか。宛先が付いていればそのボットの
+   * 設定で判断する（会話側がオフでも、宛先のボットがオンなら何度も
+   * 投げることになる——課金される以上、そこは宛先に合わせて見せる）。
+   */
+  const retryConfigFor = (addressee: BotRow | null) => {
+    if (!addressee) return retryConfig;
+    const info = models.find((m) => m.id === addressee.model_id);
+    if (!info?.outputModalities.includes("image")) return null;
+    return readRetryConfig(
+      parseParamsJson(addressee.params_json),
+      settings.retryAttemptCeiling,
+    );
+  };
   /**
    * この応答が画像を出しにいくか。生成中に経過秒を出すかの判断に使う。
    *
@@ -844,7 +933,17 @@ export function Chat({
       /** 新しいユーザーメッセージに添付する画像（アップロード済みの添付ID）。 */
       userAttachmentIds?: string[];
     },
+    /**
+     * 冒頭の `@ボット名` で指定された宛先。この1通だけ、そのボットの
+     * モデル・システムプロンプト・パラメータで生成する。
+     */
+    addressee: BotRow | null = null,
   ) {
+    // 宛先が指定されていれば、この生成のあいだだけ差し替える。会話に
+    // 保存された設定（モデル・システムプロンプト）は動かさない——
+    // 動かすと、次の1通が黙って別のボットのものになる
+    const gen = generationSettings(addressee);
+    const genInfo = models.find((m) => m.id === gen.model);
     setError(null);
     setIsStreaming(true);
     // 前の生成で押された停止を持ち越さない（押した直後に始まった
@@ -855,7 +954,7 @@ export function Chat({
     const track = startTracking();
     // モデルピッカーの「最近よく使うモデル」の材料。選択ではなく実際に
     // 生成へ使ったときだけ数える
-    recordModelUse(model);
+    recordModelUse(gen.model);
 
     try {
       // 新規チャットなら先に会話を作る
@@ -867,9 +966,16 @@ export function Chat({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            modelId: model,
-            botId: bot?.id ?? undefined,
-            params: Object.keys(params).length > 0 ? params : undefined,
+            /*
+              まだ担当ボットが居ない会話なので、宛先をそのまま会話の
+              ボットとして採る（ホームのランチャーで選んだのと同じ）。
+              ここで拾わないと、会話は素のモデルのまま作られ、2通目から
+              黙って別のボットが答えることになる
+            */
+            modelId: gen.model,
+            botId: addressee?.id ?? bot?.id ?? undefined,
+            params:
+              Object.keys(gen.params).length > 0 ? gen.params : undefined,
             title: (firstUser?.content?.trim() || "新しいチャット").slice(0, MAX_TITLE_LENGTH),
           }),
         });
@@ -894,29 +1000,34 @@ export function Chat({
         // いたので、表示は「いま選んでいるモデル」に落ちて解釈されていた
         // ——生成中にモデルを切り替えると、流れている応答の見た目が
         // 「画像を生成中…」と本文とで入れ替わっていた（監査 C-6）
-        { role: "assistant", content: "", status: "streaming", modelId: model },
+        {
+          role: "assistant",
+          content: "",
+          status: "streaming",
+          modelId: gen.model,
+        },
       ]);
 
       const res = await fetch(`/api/conversations/${convId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model,
-          web: webSearch && !isPoeModel(model),
+          model: gen.model,
+          web: gen.web && !isPoeModel(gen.model),
           // サーバーツールは tool calling 対応モデルだけ。非対応なら
           // web だけが立ち、サーバー側で :online へ落ちる
           webTools:
-            webSearch &&
-            !isPoeModel(model) &&
-            (selectedModel?.supportedParameters.includes("tools") ?? false),
-          imageOutput: selectedModel?.outputModalities.includes("image") ?? false,
-          params,
+            gen.web &&
+            !isPoeModel(gen.model) &&
+            (genInfo?.supportedParameters.includes("tools") ?? false),
+          imageOutput: genInfo?.outputModalities.includes("image") ?? false,
+          params: gen.params,
           parentId: persistInfo.parentId,
           userContent: persistInfo.userContent,
           userAttachmentIds: persistInfo.userAttachmentIds ?? [],
           messages: [
-            ...(systemPrompt
-              ? [{ role: "system", content: systemPrompt }]
+            ...(gen.systemPrompt
+              ? [{ role: "system", content: gen.systemPrompt }]
               : []),
             // 画像を送るのはユーザーの発言だけ。生成画像もアシスタントの
             // メッセージに紐づくが、応答に画像を差し戻す形式は
@@ -1033,8 +1144,11 @@ export function Chat({
   }
 
   function send(confirmed = false) {
-    if (retryConfig && !confirmed) {
-      setPendingRun(() => () => send(true));
+    // 宛先は送信の時点の本文から読む（打っている最中の解析と同じ規則）
+    const addressee = mention.bot;
+    const willRetry = retryConfigFor(addressee);
+    if (willRetry && !confirmed) {
+      askRetry(() => send(true), willRetry, addressee?.model_id ?? model);
       return;
     }
     const text = input.trim();
@@ -1071,6 +1185,7 @@ export function Chat({
         },
       ],
       { parentId, userContent: text, userAttachmentIds: attachmentIds },
+      addressee,
     );
   }
 
@@ -1166,7 +1281,7 @@ export function Chat({
   function generateFromLast(confirmed = false) {
     if (isStreaming) return;
     if (retryConfig && !confirmed) {
-      setPendingRun(() => () => generateFromLast(true));
+      askRetry(() => generateFromLast(true), retryConfig);
       return;
     }
     const last = messages[messages.length - 1];
@@ -1177,7 +1292,7 @@ export function Chat({
   function regenerate(confirmed = false) {
     if (isStreaming) return;
     if (retryConfig && !confirmed) {
-      setPendingRun(() => () => regenerate(true));
+      askRetry(() => regenerate(true), retryConfig);
       return;
     }
     const history = [...messages];
@@ -1286,7 +1401,7 @@ export function Chat({
   function submitEdit(confirmed = false) {
     if (!editing || isStreaming || editing.uploads > 0) return;
     if (retryConfig && !confirmed) {
-      setPendingRun(() => () => submitEdit(true));
+      askRetry(() => submitEdit(true), retryConfig);
       return;
     }
     const text = editing.text.trim();
@@ -1833,6 +1948,10 @@ export function Chat({
                 clearLabel="ボットの選択を解除"
               />
             }
+            mention={mention}
+            models={models}
+            onPickMention={pickMention}
+            onClearMention={() => changeInput(stripMention(input, mention))}
           />
         )}
       </footer>
@@ -1843,7 +1962,7 @@ export function Chat({
         </div>
       )}
 
-      {pendingRun && retryConfig && (
+      {pendingRun && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4"
           onClick={() => setPendingRun(null)}
@@ -1861,31 +1980,35 @@ export function Chat({
                 <dt className="text-ink-2">
                   目標の成功数
                 </dt>
-                <dd className="font-medium">{retryConfig.target}件</dd>
+                <dd className="font-medium">{pendingRun.config.target}件</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-ink-2">
                   上限の試行回数
                 </dt>
-                <dd className="font-medium">{retryConfig.maxAttempts}回</dd>
+                <dd className="font-medium">
+                  {pendingRun.config.maxAttempts}回
+                </dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-ink-2">
                   並列数
                 </dt>
-                <dd className="font-medium">{retryConfig.concurrency}</dd>
+                <dd className="font-medium">
+                  {pendingRun.config.concurrency}
+                </dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-ink-2">
                   モデル
                 </dt>
                 <dd className="min-w-0 truncate font-medium">
-                  {selectedModel?.name ?? model}
+                  {pendingRun.modelLabel}
                 </dd>
               </div>
             </dl>
             <p className="mt-2 text-xs text-ink-3">
-              最大 {retryConfig.maxAttempts}回ぶんの生成が行われます。並列数が
+              最大 {pendingRun.config.maxAttempts}回ぶんの生成が行われます。並列数が
               目標を超える場合、成功が目標より多くなることがあります（受け取ります）。
             </p>
             <div className="mt-3 flex justify-end gap-2">
@@ -1899,7 +2022,7 @@ export function Chat({
               <button
                 type="button"
                 onClick={() => {
-                  const run = pendingRun;
+                  const { run } = pendingRun;
                   setPendingRun(null);
                   run();
                 }}

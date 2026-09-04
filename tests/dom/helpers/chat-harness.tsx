@@ -11,11 +11,13 @@
 import { createRoutesStub, Outlet } from "react-router";
 import { render, screen, within, type RenderResult } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Chat } from "../../../app/components/Chat";
+import { Chat, type BotContext } from "../../../app/components/Chat";
+import type { BotRow } from "../../../app/lib/db.server";
 import { ConfirmProvider } from "../../../app/components/ConfirmDialog";
 import { DEFAULT_APP_SETTINGS } from "../../../app/lib/settings";
 import type { ModelInfo } from "../../../app/lib/openrouter.server";
 import type { UiMessage } from "../../../app/lib/types";
+import type { ParamsState } from "../../../app/lib/params";
 import { contentPayload } from "../../../app/lib/polling";
 import { isRetryProgress } from "../../../app/lib/retry";
 
@@ -280,10 +282,18 @@ export function renderChat(props: {
   conversationId?: string | null;
   initialMessages?: UiMessage[];
   models?: ModelInfo[];
+  /** シェルが持っているボット（宛先メンションの候補になる）。 */
+  bots?: BotRow[];
+  /** この会話の担当ボット（ホームで選んだ／会話に記録されているもの）。 */
+  bot?: BotContext | null;
+  initialModel?: string | null;
+  systemPrompt?: string | null;
+  /** この会話に保存されている生成パラメータ。 */
+  initialParams?: ParamsState | null;
 }): RenderResult & { user: ReturnType<typeof userEvent.setup> } {
   const shell = {
     models: props.models ?? [TEST_MODEL],
-    bots: [],
+    bots: props.bots ?? [],
     usdJpy: 150,
     settings: DEFAULT_APP_SETTINGS,
     openSidebar: () => {},
@@ -301,11 +311,28 @@ export function renderChat(props: {
       ),
       children: [
         {
+          /*
+            新規チャット（conversationId: null）は、1通目のあとに
+            会話ページへ合わせ直す遷移を出す。行き先が無いと
+            404 の画面に差し替わり、そのあとの検査ができない
+          */
+          path: "chat/:id",
+          Component: () => <div data-testid="chat-page" />,
+        },
+        {
           index: true,
           Component: () => (
             <Chat
-              conversationId={props.conversationId ?? "conv-1"}
+              conversationId={
+                props.conversationId === undefined
+                  ? "conv-1"
+                  : props.conversationId
+              }
               initialMessages={props.initialMessages ?? []}
+              bot={props.bot ?? null}
+              initialModel={props.initialModel ?? null}
+              initialParams={props.initialParams ?? null}
+              systemPrompt={props.systemPrompt ?? null}
             />
           ),
         },
