@@ -21,6 +21,7 @@ const PANEL_MAX_RATIO = 0.5;
 export function MentionSuggest({
   anchorRef,
   panelRef,
+  textareaRef,
   bots,
   models,
   activeIndex,
@@ -30,6 +31,8 @@ export function MentionSuggest({
   anchorRef: RefObject<HTMLElement | null>;
   /** 外側を押したかの判定にも使う（Composer が持つ）。 */
   panelRef: RefObject<HTMLDivElement | null>;
+  /** 一覧を送り始めたときにキーボードを閉じるため。 */
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
   bots: BotRow[];
   models: ModelInfo[];
   /** ↑↓ で選んでいる位置。-1 はどれも選んでいない。 */
@@ -67,10 +70,16 @@ export function MentionSuggest({
       <p className="border-b border-line px-3 py-1.5 text-[11px] font-medium text-ink-3">
         宛先のボット（↑↓ と Tab で選択）
       </p>
+      {/*
+        一覧を送り始めたらキーボードを閉じる（モデル選択と同じ）。
+        開いたままだと、iOS が「入力欄を見せるためのページのパン」を
+        優先し、一覧の中のスクロールがそちらへ取られる。
+      */}
       <ul
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1"
         role="listbox"
         aria-label="宛先のボット"
+        onTouchMove={() => textareaRef.current?.blur()}
       >
         {bots.map((b, i) => {
           const model = models.find((m) => m.id === b.model_id);
@@ -81,13 +90,17 @@ export function MentionSuggest({
                 role="option"
                 aria-selected={i === activeIndex}
                 /*
-                  pointerdown で拾う。button の click は入力欄の blur より
-                  後なので、blur で閉じる作りと組み合わせると押せなくなる
+                  確定は click（タップ）で。pointerdown で拾っていたころは、
+                  一覧をスクロールしようと指を置いた**その瞬間に**選ばれて
+                  しまい、指の端末では一覧を送れなかった。
+
+                  mousedown だけは既定を止める。ポインタの端末で押した
+                  ときに入力欄からフォーカスが外れるのを防ぐためで、
+                  タップでは（スクロールにならなかったときにしか
+                  mousedown が来ないので）スクロールを妨げない。
                 */
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  onPick(b);
-                }}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => onPick(b)}
                 className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-hover ${
                   i === activeIndex ? "bg-neutral-100 dark:bg-white/10" : ""
                 }`}

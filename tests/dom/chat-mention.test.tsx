@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import {
   installServer,
   renderChat,
@@ -108,6 +108,25 @@ describe("候補の出し方", () => {
     const panel = await screen.findByRole("listbox", { name: "宛先のボット" });
     await user.click(within(panel).getByText("翻訳", { exact: true }));
     expect(box().value).toBe("@翻訳 これを訳して");
+  });
+
+  it("指を置いただけでは確定しない（一覧を送れる）", async () => {
+    /*
+      確定を pointerdown で拾っていたころは、一覧をスクロールしようと
+      指を置いた**その瞬間に**選ばれ、指の端末では一覧を送れなかった。
+      押し込みではなくタップ（click）で確定する。
+    */
+    const { user } = renderChat(options);
+    await user.type(box(), "@");
+    const panel = await screen.findByRole("listbox", { name: "宛先のボット" });
+    const row = within(panel).getByText("検索係");
+
+    fireEvent.pointerDown(row);
+    fireEvent.touchMove(panel);
+    expect(box().value).toBe("@");
+
+    await user.click(row);
+    expect(box().value).toBe("@検索係 ");
   });
 
   it("本文を打ち始めたら候補は引っ込む", async () => {
