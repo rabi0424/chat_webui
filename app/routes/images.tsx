@@ -22,7 +22,8 @@ import {
   IconX,
 } from "../components/icons";
 import { EMPTY_ACTION, EmptyState } from "../components/EmptyState";
-import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
+import { TERSE_INPUT } from "../lib/ui";
+import { MENU_ITEM, MenuPanel } from "../components/sidebar/items";
 import { IMAGES_PAGE_SIZE } from "../lib/constants";
 import { useEscapeToClose } from "../lib/dismiss";
 
@@ -56,6 +57,141 @@ function formatDate(ms: number): string {
 function modelName(id: string | null): string {
   if (!id) return "";
   return id.replace(/^poe:/, "").split("/").pop() ?? id;
+}
+
+/**
+ * 一覧の1マス。
+ *
+ * 「…」の中身はマスの中に置かない。マスには画面外を飛ばす指定
+ * （content-visibility）が付いており、これは paint containment を
+ * 伴う——**はみ出したぶんが描かれずに消える**。マスはスマホで画面の
+ * 1/3、デスクトップでは1/6の幅しかないので、メニュー（176px）は必ず
+ * はみ出す。「…」に右を揃えているぶん食み出すのは左側で、文字の頭が
+ * 切り落とされた読めない板になっていた。器の外（body 直下）へ出し、
+ * ボタンの位置に合わせて置く。
+ *
+ * ここを関数の内側ではなく外に置くのは、描画のたびに別のコンポーネント
+ * として扱われてマスの DOM が作り直されるのを避けるため（数百枚並ぶ）。
+ */
+function ImageTile({
+  img,
+  menuOpen,
+  onOpenMenu,
+  onCloseMenu,
+  onView,
+  onToggleFavorite,
+  onOpenConversation,
+}: {
+  img: GeneratedImageRow;
+  menuOpen: boolean;
+  onOpenMenu: () => void;
+  onCloseMenu: () => void;
+  onView: () => void;
+  onToggleFavorite: () => void;
+  onOpenConversation: () => void;
+}) {
+  /* メニューを置く基準。ポータルで body 直下に描くので、位置はここから測る */
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  return (
+    /*
+      画面の外に出たマスは中身の組み立てを飛ばす
+      （content-visibility）。スクロールで足していく一覧なので
+      枚数は数百に達し、画面外のぶんも毎回レイアウトと描画の
+      対象になっていた。
+
+      そのために **マスの大きさをマスの側で決める**。
+      content-visibility が効いている間、中身は大きさの
+      計算から外れる（size containment）ので、高さを中の
+      画像から取っていると畳まれた瞬間に潰れる。正方形は
+      ここで宣言し、画像はその中いっぱいに敷く。
+    */
+    <div className="group/img relative aspect-square [content-visibility:auto]">
+      <button
+        type="button"
+        onClick={onView}
+        title={img.prompt ?? undefined}
+        className="block h-full w-full overflow-hidden bg-sunken"
+      >
+        <img
+          src={`/api/files/${img.id}`}
+          alt={img.prompt ?? "生成画像"}
+          loading="lazy"
+          // 復号を本筋から外す。原寸を並べるので1枚が重い
+          decoding="async"
+          className="h-full w-full object-cover transition-opacity group-hover/img:opacity-90"
+        />
+      </button>
+
+      {img.favorite === 1 && (
+        <span
+          aria-label="お気に入り"
+          className="pointer-events-none absolute left-1 top-1 rounded-full bg-black/45 px-1.5 py-0.5 text-xs text-white"
+        >
+          ★
+        </span>
+      )}
+
+      <button
+        ref={menuButtonRef}
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (menuOpen) onCloseMenu();
+          else onOpenMenu();
+        }}
+        aria-label="この画像の操作"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        /*
+          開いているあいだは出したままにする。メニューはマスの外
+          （ポータル）に居るので、そちらへポインタを移すとマスの
+          ホバーが外れ、押したボタンだけが消える
+        */
+        className={`absolute right-1 top-1 rounded-lg bg-black/45 p-1 text-white focus:opacity-100 touch:opacity-100 ${
+          menuOpen ? "opacity-100" : "opacity-0 group-hover/img:opacity-100"
+        }`}
+      >
+        <IconEllipsis className="h-4 w-4" />
+      </button>
+
+      {menuOpen && (
+        <MenuPanel
+          title={img.prompt ?? "画像"}
+          onClose={onCloseMenu}
+          anchorRef={menuButtonRef}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={onToggleFavorite}
+            className={MENU_ITEM}
+          >
+            {img.favorite === 1 ? "お気に入りを解除" : "お気に入りに追加"}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!img.conversation_id}
+            onClick={onOpenConversation}
+            className={`${MENU_ITEM} disabled:opacity-40`}
+          >
+            会話を開く
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onCloseMenu();
+              onView();
+            }}
+            className={MENU_ITEM}
+          >
+            原寸で表示
+          </button>
+        </MenuPanel>
+      )}
+    </div>
+  );
 }
 
 export default function Images({ loaderData }: Route.ComponentProps) {
@@ -458,94 +594,16 @@ export default function Images({ loaderData }: Route.ComponentProps) {
             */}
             <div className="grid grid-cols-3 gap-0.5 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
               {images.map((img) => (
-                /*
-                  画面の外に出たマスは中身の組み立てを飛ばす
-                  （content-visibility）。スクロールで足していく一覧なので
-                  枚数は数百に達し、画面外のぶんも毎回レイアウトと描画の
-                  対象になっていた。
-
-                  そのために **マスの大きさをマスの側で決める**。
-                  content-visibility が効いている間、中身は大きさの
-                  計算から外れる（size containment）ので、高さを中の
-                  画像から取っていると畳まれた瞬間に潰れる。正方形は
-                  ここで宣言し、画像はその中いっぱいに敷く。
-                */
-                <div
+                <ImageTile
                   key={img.id}
-                  className="group/img relative aspect-square [content-visibility:auto]"
-                >
-                  <button
-                    type="button"
-                    onClick={() => setLightbox(img.id)}
-                    title={img.prompt ?? undefined}
-                    className="block h-full w-full overflow-hidden bg-sunken"
-                  >
-                    <img
-                      src={`/api/files/${img.id}`}
-                      alt={img.prompt ?? "生成画像"}
-                      loading="lazy"
-                      // 復号を本筋から外す。原寸を並べるので1枚が重い
-                      decoding="async"
-                      className="h-full w-full object-cover transition-opacity group-hover/img:opacity-90"
-                    />
-                  </button>
-
-                  {img.favorite === 1 && (
-                    <span
-                      aria-label="お気に入り"
-                      className="pointer-events-none absolute left-1 top-1 rounded-full bg-black/45 px-1.5 py-0.5 text-xs text-white"
-                    >
-                      ★
-                    </span>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenu(menu === img.id ? null : img.id);
-                    }}
-                    aria-label="この画像の操作"
-                    className="absolute right-1 top-1 rounded-lg bg-black/45 p-1 text-white opacity-0 group-hover/img:opacity-100 focus:opacity-100 touch:opacity-100"
-                  >
-                    <IconEllipsis className="h-4 w-4" />
-                  </button>
-
-                  {menu === img.id && (
-                    <div
-                      onClick={(e) => e.stopPropagation()}
-                      className={`absolute right-1 top-8 z-10 w-44 rounded-xl p-1 animate-pop ${GLASS_PANEL}`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => void toggleFavorite(img)}
-                        className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-hover dark:text-neutral-200"
-                      >
-                        {img.favorite === 1
-                          ? "お気に入りを解除"
-                          : "お気に入りに追加"}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={!img.conversation_id}
-                        onClick={() => void openConversation(img)}
-                        className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-hover disabled:opacity-40 dark:text-neutral-200"
-                      >
-                        会話を開く
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setMenu(null);
-                          setLightbox(img.id);
-                        }}
-                        className="block w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-700 hover:bg-hover dark:text-neutral-200"
-                      >
-                        原寸で表示
-                      </button>
-                    </div>
-                  )}
-                </div>
+                  img={img}
+                  menuOpen={menu === img.id}
+                  onOpenMenu={() => setMenu(img.id)}
+                  onCloseMenu={closeMenu}
+                  onView={() => setLightbox(img.id)}
+                  onToggleFavorite={() => void toggleFavorite(img)}
+                  onOpenConversation={() => void openConversation(img)}
+                />
               ))}
             </div>
             <div

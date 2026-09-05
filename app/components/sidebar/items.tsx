@@ -8,7 +8,7 @@
  * （先読みの監視も貼り直しになる）。外に出し、必要な操作は文脈から
  * 受け取る形にした。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { NavLink } from "react-router";
 import type { ConversationListRow, FolderRow } from "../../lib/db.server";
@@ -24,6 +24,7 @@ import {
 } from "../icons";
 import { FAVORITES_ID, useIsNarrow, usePrefetchOnVisible } from "./shared";
 import { GLASS_PANEL, TERSE_INPUT } from "../../lib/ui";
+import { anchorIsOffscreen, placeAnchoredMenu } from "../../lib/anchored-menu";
 
 /**
  * 行の見た目。地は1段沈んだ面（Sidebar 側）なので、ホバーと選択は
@@ -54,6 +55,70 @@ export function MenuButton({ target }: { target: MenuTarget }) {
   );
 }
 
+/** ポップオーバーの幅（w-44）。まだ測れないときの当て。 */
+const MENU_WIDTH_PX = 176;
+
+/**
+ * 「…」ボタンに合わせて、画面座標で置くポップオーバー。
+ *
+ * 位置は state に持たず、描画のたびに測って DOM へ直接書く（測る→描く→
+ * また測る、の連鎖にしないため）。useLayoutEffect なので、ずれた位置が
+ * 一度でも画面に出ることはない。座標の決め方は lib/anchored-menu.ts。
+ *
+ * 一覧をスクロールしたらボタンに追わせ、ボタンごと画面の外へ出たら
+ * 閉じる——追うだけだと、行き場を失ったメニューが縁に貼り付いたまま残る。
+ */
+function AnchoredMenu({
+  anchorRef,
+  onClose,
+  children,
+}: {
+  anchorRef: React.RefObject<HTMLElement | null>;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const place = () => {
+      const anchor = anchorRef.current;
+      const panel = panelRef.current;
+      if (!anchor || !panel) return;
+      const r = anchor.getBoundingClientRect();
+      if (anchorIsOffscreen(r, window.innerHeight)) {
+        onClose();
+        return;
+      }
+      const { left, top } = placeAnchoredMenu(
+        r,
+        { width: panel.offsetWidth || MENU_WIDTH_PX, height: panel.offsetHeight },
+        { width: window.innerWidth, height: window.innerHeight },
+      );
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+    };
+    place();
+    window.addEventListener("resize", place);
+    // 一覧のスクロールは window には来ないので capture で拾う
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [anchorRef, onClose]);
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      role="menu"
+      className={`fixed left-0 top-0 z-40 w-44 origin-top-right rounded-xl p-1 animate-pop ${GLASS_PANEL}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 /**
  * 「…」の中身。
  *
@@ -73,12 +138,33 @@ export function MenuPanel({
   title,
   children,
   onClose,
+  anchorRef,
 }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
+  /**
+   * 「…」ボタン。渡すと、ポップオーバーを body 直下へポータルで描き、
+   * このボタンの画面上の位置に合わせて置く。
+   *
+   * 行が画面の幅いっぱいに広がるサイドバーやボット一覧では要らない
+   * （器の中に絶対配置すれば収まる）。要るのは、**器がメニューより
+   * 小さい**か、**器が中身を切り取る**場所——画像一覧のタイルが
+   * その両方で、幅は狭く（スマホでは画面の1/3）、画面外のマスを
+   * 飛ばす指定（content-visibility）が paint containment を伴うため、
+   * タイルからはみ出したぶんは描かれずに消えていた（Chromium で
+   * 確かめた: content-visibility を外すと隣のマスの上に描かれる）。
+   */
+  anchorRef?: React.RefObject<HTMLElement | null>;
 }) {
   const narrow = useIsNarrow();
+  if (!narrow && anchorRef) {
+    return (
+      <AnchoredMenu anchorRef={anchorRef} onClose={onClose}>
+        {children}
+      </AnchoredMenu>
+    );
+  }
   if (!narrow) {
     return (
       <div

@@ -94,6 +94,18 @@ async function openLightbox(user: ReturnType<typeof userEvent.setup>, id: string
   await user.click(screen.getByAltText(`${id} の依頼文`));
 }
 
+/** そのタイル（画面外を飛ばす指定が付いた器）。 */
+function tileOf(id: string): HTMLElement {
+  return screen
+    .getByAltText(`${id} の依頼文`)
+    .closest("[class*='content-visibility']") as HTMLElement;
+}
+
+/** そのタイルの「…」を開く。 */
+async function openMenu(user: ReturnType<typeof userEvent.setup>, id: string) {
+  await user.click(within(tileOf(id)).getByLabelText("この画像の操作"));
+}
+
 describe("タイルの並び", () => {
   it("説明はタイルに書かず、開いたときに出す", async () => {
     const { user } = renderImages([image("i1")]);
@@ -143,6 +155,81 @@ describe("画面外のマスを飛ばす指定", () => {
   });
 });
 
+/**
+ * 「…」のメニューは、マスの中に置いてはいけない。
+ *
+ * マスには画面外を飛ばす指定（content-visibility）が付いており、これは
+ * paint containment を伴う——**はみ出したぶんは描かれずに消える**。
+ * しかもマスはスマホで画面の1/3、デスクトップで1/6の幅しかないので、
+ * 176px のメニューは必ずはみ出す。実際、右側が切り取られて読めない板に
+ * なっていた。器の外（body 直下）へ出し、ボタンの位置に合わせて置く。
+ *
+ * 「切り取られている」ことは jsdom には映らない（レイアウトが無い）ので、
+ * **どこに置かれているか**を見張る。
+ */
+describe("「…」のメニュー", () => {
+  it("メニューはマスの外に描く（マスは中身を切り取るため）", async () => {
+    const { user } = renderImages([image("i1")]);
+    await openMenu(user, "i1");
+
+    const item = screen.getByRole("menuitem", { name: "原寸で表示" });
+    expect(tileOf("i1").contains(item)).toBe(false);
+    // 「マスの中に無い」だけでは、開いていないときも通ってしまう
+    expect(document.body.contains(item)).toBe(true);
+    expect(item.closest("[role='menu']")).not.toBeNull();
+  });
+
+  it("画面の座標で置く（器に合わせた絶対配置にしない）", async () => {
+    const { user } = renderImages([image("i1")]);
+    await openMenu(user, "i1");
+
+    const panel = screen
+      .getByRole("menuitem", { name: "原寸で表示" })
+      .closest("[role='menu']") as HTMLElement;
+    expect(panel.className).toMatch(/\bfixed\b/);
+    // 置き場所が決まっていること（決めそこねると画面の左上に貼り付く）
+    expect(panel.style.left).not.toBe("");
+    expect(panel.style.top).not.toBe("");
+  });
+
+  it("開いているあいだ、「…」は消えない", async () => {
+    const { user } = renderImages([image("i1")]);
+    const button = within(tileOf("i1")).getByLabelText("この画像の操作");
+    // ふだんはマスにポインタを載せたときだけ出る
+    expect(button.className).toMatch(/\bopacity-0\b/);
+
+    await user.click(button);
+    // メニューはマスの外に居るので、そちらへポインタを移すとマスの
+    // ホバーが外れる。開いているあいだは出したままにしておく
+    expect(button.className).not.toMatch(/\bopacity-0\b/);
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("メニューからお気に入りを付け外しできる", async () => {
+    const { user } = renderImages([image("i1")]);
+    await openMenu(user, "i1");
+    await user.click(screen.getByRole("menuitem", { name: "お気に入りに追加" }));
+
+    expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({
+      favorite: true,
+    });
+    // 押したらメニューは閉じ、マスには★が付く
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(within(tileOf("i1")).getByLabelText("お気に入り")).toBeTruthy();
+  });
+
+  it("メニューから原寸表示を開ける", async () => {
+    const { user } = renderImages([image("i1")]);
+    await openMenu(user, "i1");
+    await user.click(screen.getByRole("menuitem", { name: "原寸で表示" }));
+
+    expect(screen.getByAltText("添付画像")).toBeTruthy();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+});
+
 describe("会話へ戻る", () => {
   it("拡大表示から、その画像を作った枝を開く", async () => {
     const { user } = renderImages([image("i1")]);
@@ -160,11 +247,8 @@ describe("会話へ戻る", () => {
 
   it("一覧の「…」からでも、同じ枝を開く", async () => {
     const { user } = renderImages([image("i1"), image("i2")]);
-    const tile = screen
-      .getByAltText("i2 の依頼文")
-      .closest("div") as HTMLElement;
-    await user.click(within(tile).getByLabelText("この画像の操作"));
-    await user.click(screen.getByRole("button", { name: "会話を開く" }));
+    await openMenu(user, "i2");
+    await user.click(screen.getByRole("menuitem", { name: "会話を開く" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("here").textContent).toBe("/chat/c1");
