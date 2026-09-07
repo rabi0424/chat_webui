@@ -241,6 +241,15 @@ describe("DO の振り分けと単発の生成", () => {
     expect(alarm.slice(attemptAt, attemptAt + 200)).toContain("await this.clearJob()");
   });
 
+  it("「成功するまで生成」は、途中経過が無いアラームでも確定させず再入する", () => {
+    const alarm = worker.slice(worker.indexOf("override async alarm()"));
+    // 旧方式の番人（!state && content !== ""）は、いまは生きている実行を殺す
+    expect(alarm).not.toContain('!state && row.content !== ""');
+    expect(alarm).toContain("shouldFinalizeLostRun({");
+    expect(alarm).toContain("retry: job.retry != null");
+    expect(alarm).toContain("hasState: state != null");
+  });
+
   it("司令役は続きがあれば途中経過を保存して次のアラームを入れる", () => {
     const alarm = worker.slice(worker.indexOf("override async alarm()"));
     expect(alarm).toContain("runRetryGenerationJob(job, job.retry, state)");

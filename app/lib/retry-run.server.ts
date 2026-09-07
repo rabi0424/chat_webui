@@ -223,11 +223,14 @@ export async function runRetryGenerationJob(
   state.lastSeq = snapshot.lastSeq;
   state.firstRefusal = state.firstRefusal ?? snapshot.firstRefusal;
   if (snapshot.counts.fatal > 0) state.fatal = true;
+  // 開始時刻は記録が持つ。アラームが再送されて途中経過が無いまま再入
+  // したときも、Poe の消費を同じ時間帯で数えられる
+  if (snapshot.startedAt != null) state.startedAt = snapshot.startedAt;
   // 空の応答と拒否文は集計では分けられない（detail の有無で分ける）ので、
   // 続きの実行では refusals にまとめて数える
 
   // Poe: 続きの実行では、ここまでの消費を月間上限の判定に足せるよう取る
-  if (isPoe && previous && state.attempts > 0) {
+  if (isPoe && state.attempts > 0) {
     const soFar = await fetchPoeRunPoints(modelName, state.startedAt);
     if (soFar) {
       state.provisional = { points: soFar.points, costUsd: soFar.costUsd ?? null };

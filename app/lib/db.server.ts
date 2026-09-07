@@ -39,6 +39,7 @@ import {
   RETRY_ATTEMPT_FINISH_SQL,
   RETRY_ATTEMPT_INSERT_SQL,
   RETRY_RUN_INSERT_SQL,
+  RETRY_RUN_STARTED_SQL,
   SWEEP_STALE_STREAMING_SQL,
   appendRetrySuccessStatements,
   markRetryAttemptsProcessedSql,
@@ -2357,13 +2358,16 @@ export async function retryRunSnapshot(statusId: string): Promise<{
   launched: number;
   lastSeq: number;
   firstRefusal: string | null;
+  /** 実行の開始時刻。再入しても同じ時間帯で Poe の消費を数えるため。 */
+  startedAt: number | null;
 }> {
   const d = await db();
-  const [counts, launched, refusal] = await d.batch([
+  const [counts, launched, refusal, , started] = await d.batch([
     d.prepare(RETRY_ATTEMPTS_COUNTS_SQL).bind(statusId),
     d.prepare(RETRY_ATTEMPTS_LAUNCHED_SQL).bind(statusId),
     d.prepare(RETRY_ATTEMPTS_FIRST_REFUSAL_SQL).bind(statusId),
     d.prepare(RETRY_ATTEMPTS_MARK_ALL_SQL).bind(statusId),
+    d.prepare(RETRY_RUN_STARTED_SQL).bind(statusId),
   ]);
   const out: Record<RetryAttemptKind, number> = {
     success: 0,
@@ -2378,11 +2382,13 @@ export async function retryRunSnapshot(statusId: string): Promise<{
     | { launched?: number; last_seq?: number }
     | undefined;
   const r = refusal.results[0] as { detail?: string } | undefined;
+  const s = started.results[0] as { created_at?: number } | undefined;
   return {
     counts: out,
     launched: Number(l?.launched ?? 0),
     lastSeq: Number(l?.last_seq ?? 0),
     firstRefusal: r?.detail ?? null,
+    startedAt: s?.created_at != null ? Number(s.created_at) : null,
   };
 }
 

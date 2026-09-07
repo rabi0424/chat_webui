@@ -274,6 +274,9 @@ export const RETRY_ATTEMPTS_COUNTS_SQL =
   "SELECT kind, COUNT(*) AS n FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL GROUP BY kind";
 export const RETRY_ATTEMPTS_LAUNCHED_SQL =
   "SELECT COUNT(*) AS launched, COALESCE(MAX(seq), 0) AS last_seq FROM retry_attempts WHERE status_id = ?";
+/** 実行の開始時刻。再入しても Poe の消費を同じ時間帯で数えるため。 */
+export const RETRY_RUN_STARTED_SQL =
+  "SELECT created_at FROM retry_runs WHERE status_id = ?";
 export const RETRY_ATTEMPTS_FIRST_REFUSAL_SQL =
   "SELECT detail FROM retry_attempts WHERE status_id = ? AND kind = 'refused' AND detail IS NOT NULL AND detail != '' ORDER BY finished_at, seq LIMIT 1";
 

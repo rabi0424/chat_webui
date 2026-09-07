@@ -19,6 +19,7 @@ import {
   RETRY_ATTEMPT_FINISH_SQL,
   RETRY_ATTEMPT_INSERT_SQL,
   RETRY_RUN_INSERT_SQL,
+  RETRY_RUN_STARTED_SQL,
   STALE_STREAMING_MS,
   SWEEP_STALE_STREAMING_SQL,
   STORAGE_STATS_SQL,
@@ -1149,11 +1150,16 @@ describe("成功するまで生成の記録", () => {
   const leaf = () =>
     (db.prepare("SELECT current_leaf_message_id AS leaf FROM conversations WHERE id = 'c1'").get() as { leaf: string }).leaf;
 
-  it("実行の記録は二重に作らず、繋ぐ先は最初は見出し", () => {
+  it("実行の記録は二重に作らず、繋ぐ先と開始時刻は最初のまま", () => {
     db.prepare(RETRY_RUN_INSERT_SQL).run(S, "c1", "other", 9);
     const row = db.prepare("SELECT tail_message_id AS tail, created_at FROM retry_runs WHERE status_id = ?").get(S) as { tail: string; created_at: number };
     expect(row.tail).toBe(S);
     expect(row.created_at).toBe(2);
+    // 再入しても同じ時間帯で Poe の消費を数えられる
+    expect(
+      (db.prepare(RETRY_RUN_STARTED_SQL).get(S) as { created_at: number }).created_at,
+    ).toBe(2);
+    expect(db.prepare(RETRY_RUN_STARTED_SQL).get("nope")).toBeUndefined();
   });
 
   it("成功は見出しの下へ直列に繋がり、繋ぐ先が進む", () => {

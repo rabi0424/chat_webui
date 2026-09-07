@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { createRequestHandler, RouterContextProvider } from "react-router";
 import { cloudflareContext } from "../app/lib/cloudflare-context";
 import { finalizeGeneration, getMessage } from "../app/lib/db.server";
-import { isRetryProgress } from "../app/lib/retry";
+import { isRetryProgress, shouldFinalizeLostRun } from "../app/lib/retry";
 import { crossSiteReason } from "../app/lib/same-origin";
 import {
   accessDenialReason,
@@ -145,16 +145,20 @@ export class GenerationRunner extends DurableObject {
     try {
       const row = await getMessage(job.conversationId, job.assistantMessageId);
       if (row && row.status === "streaming") {
-        // 続きの実行では見出しに進捗が入っているので、中断とは見なさない
-        if (!state && row.content !== "") {
-          // 前回の実行が途中で失われた後の再試行。二重課金を避けるため、
-          // ここまでの部分内容で確定させる。
-          //
-          // ただし本文が進捗の見出し（「生成中… 成功 x/y」）のときは、
-          // それは応答ではなく実行の途中経過なので、そのまま done に
-          // すると偽の「生成中…」が会話に残り続ける。リトライ生成では
-          // 見出しの下に成功した応答が既に積まれているので、見出しは
-          // 中断として確定させて、利用者が再試行できるようにする
+        // 前回の実行が途中で失われた後の再送か（shouldFinalizeLostRun）。
+        // 「成功するまで生成」は D1 から組み直せるので、ここでは確定させず
+        // 再入して続ける——確定させると走っている担当を残したまま実行が
+        // 終わり、「生成が中断されました」だけが残る
+        if (
+          shouldFinalizeLostRun({
+            retry: job.retry != null,
+            hasState: state != null,
+            content: row.content,
+          })
+        ) {
+          // 二重課金を避けるため、ここまでの部分内容で確定させる。
+          // 本文が進捗の見出しなら、それは応答ではなく途中経過なので
+          // done にはせず中断として確定させる（偽の「生成中…」を残さない）
           const interrupted = isRetryProgress(row.content);
           await finalizeGeneration(job.assistantMessageId, {
             content: interrupted ? "" : row.content,

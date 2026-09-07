@@ -12,6 +12,7 @@ import {
   createPendingTally,
   formatRetryProgress,
   interruptedGenerationRow,
+  shouldFinalizeLostRun,
   isRetryProgress,
   parseRetryProgress,
   retryRequestCap,
@@ -489,5 +490,45 @@ describe("interruptedGenerationRow", () => {
     const out = interruptedGenerationRow("");
     expect(out.status).toBe("error");
     expect(out.error).toBe("生成が中断されました。再試行してください。");
+  });
+});
+
+/**
+ * 途中経過が残っていないアラームで、行を確定させるか。
+ *
+ * 旧方式では再入＝投げ直しだったので確定させていた。「成功するまで生成」
+ * は D1 から組み直せるので再入して続ける。ここを取り違えると、走り出した
+ * 直後の実行が「生成が中断されました」で終わる（実際に起きた）。
+ */
+describe("shouldFinalizeLostRun", () => {
+  const progress = "生成中… 成功 0/3・投げた 0/1000・待ち 4本・枠 4本";
+
+  it("「成功するまで生成」は、途中経過が無くても確定させない（再入して続ける）", () => {
+    expect(
+      shouldFinalizeLostRun({ retry: true, hasState: false, content: progress }),
+    ).toBe(false);
+    expect(
+      shouldFinalizeLostRun({ retry: true, hasState: false, content: "" }),
+    ).toBe(false);
+  });
+
+  it("単発の生成は、本文が書かれていたら確定させる（再入すると二重課金）", () => {
+    expect(
+      shouldFinalizeLostRun({ retry: false, hasState: false, content: "猫の絵" }),
+    ).toBe(true);
+  });
+
+  it("本文が空なら、まだ何も受け取っていないのでそのまま走らせる", () => {
+    expect(
+      shouldFinalizeLostRun({ retry: false, hasState: false, content: "" }),
+    ).toBe(false);
+  });
+
+  it("途中経過があるなら、どちらでも続きを走らせる", () => {
+    for (const retry of [true, false]) {
+      expect(
+        shouldFinalizeLostRun({ retry, hasState: true, content: "猫の絵" }),
+      ).toBe(false);
+    }
   });
 });
