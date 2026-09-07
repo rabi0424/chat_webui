@@ -30,6 +30,7 @@ import {
   RETRY_STALLED_CHUNK_LIMIT,
   RETRY_TICK_FAILURE_LIMIT,
   RETRY_WORKER_LAUNCH_WINDOW_MS,
+  RETRY_FREE_DO_SECONDS_PER_DAY,
   retryWorkerPlan,
   afterAttemptSettled,
   createChunkBudget,
@@ -48,6 +49,7 @@ import {
   finishRetryAttempt,
   insertRetryAttempts,
   markRetryAttemptsProcessed,
+  retryRunDurations,
   retryRunSnapshot,
   rewriteMessageContent,
   sweepLostRetryAttempts,
@@ -81,6 +83,8 @@ export interface AttemptJob {
   web: boolean;
   webTools?: boolean;
   imageOutput?: boolean;
+  /** 担当1つが同時に投げる本数の上書き（0/未指定で自動）。 */
+  workerConcurrency?: number;
   paramsState: ParamsState | null;
   messages: ChatMessage[];
 }
@@ -175,6 +179,7 @@ async function spawnAttempt(
     web: job.web,
     webTools: job.webTools,
     imageOutput: job.imageOutput,
+    workerConcurrency: job.workerConcurrency,
     paramsState: job.paramsState,
     messages: job.messages,
   };
@@ -202,7 +207,7 @@ export async function runRetryGenerationJob(
   const state: RetryRunState = { ...initialState(), ...(previous ?? {}) };
   const requestCap = retryRequestCap(retry.maxAttempts);
   /** 担当1つの持ち分。上流によって同時に投げられる数が違う。 */
-  const plan = retryWorkerPlan(job.model);
+  const plan = retryWorkerPlan(job.model, job.workerConcurrency);
   const chunkStartedAt = Date.now();
   /**
    * この続きの実行で使った内部サービス（D1）と担当の起こし。使い切ると
@@ -569,6 +574,27 @@ export async function runRetryGenerationJob(
       `目標に届きませんでした（上限${state.attempts >= retry.maxAttempts ? "の試行回数" : ""}に達しました）。`,
     );
   }
+  /*
+   * 実測。依頼1本あたりの実行体の時間は「かかった時間 ÷ 担当1つの
+   * 同時数」で、それがそのまま無料枠（1日 13,000 GB秒＝128MB 換算で
+   * 約104,000秒）の消費になる。同時数をいくつにすべきかを、憶測では
+   * なくここの数字から決められるようにする。
+   */
+  try {
+    const d = await retryRunDurations(statusId);
+    if (d.count > 0) {
+      const perAttempt = d.totalMs / d.count / 1000;
+      const doSeconds = d.totalMs / 1000 / plan.concurrency;
+      const share = (doSeconds / RETRY_FREE_DO_SECONDS_PER_DAY) * 100;
+      lines.push(
+        `\n1本あたり ${perAttempt.toFixed(1)}秒（同時 ${plan.concurrency}本）` +
+          `・実行体の時間の目安 ${Math.round(doSeconds).toLocaleString()}秒` +
+          `＝1日の無料枠の ${share.toFixed(1)}%`,
+      );
+    }
+  } catch {
+    // 実測が取れなくても要約は出す
+  }
   const breakdown: string[] = [];
   if (state.refusals > 0) breakdown.push(`画像が返らなかった応答 ${state.refusals}回`);
   if (state.emptyResponses > 0) breakdown.push(`空の応答 ${state.emptyResponses}回`);
@@ -625,7 +651,7 @@ export async function runRetryGenerationJob(
  */
 export async function runAttemptJob(job: AttemptJob): Promise<void> {
   const isPoe = job.model.startsWith(POE_PREFIX);
-  const plan = retryWorkerPlan(job.model);
+  const plan = retryWorkerPlan(job.model, job.workerConcurrency);
   // 外部の通信の枠（1回の呼び出しで50件）は担当の中で共有する。
   // 成功すると画像の取り込みにも使うので、投げる側は手前で切り上げる
   const budget = createBudget();

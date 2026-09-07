@@ -275,6 +275,15 @@ export const RETRY_ATTEMPTS_COUNTS_SQL =
 export const RETRY_ATTEMPTS_LAUNCHED_SQL =
   "SELECT COUNT(*) AS launched, COALESCE(MAX(seq), 0) AS last_seq FROM retry_attempts WHERE status_id = ?";
 /** 実行の開始時刻。再入しても Poe の消費を同じ時間帯で数えるため。 */
+/**
+ * 決着した依頼の本数と、かかった時間の合計。
+ *
+ * 依頼1本あたりの実行体の時間は「かかった時間 ÷ 担当1つの同時数」で
+ * 決まり、それがそのまま無料枠の消費になる。要約に出して、同時数を
+ * いくつにすべきかを実測から決められるようにする。
+ */
+export const RETRY_ATTEMPTS_DURATION_SQL =
+  "SELECT COUNT(*) AS n, COALESCE(SUM(finished_at - launched_at), 0) AS total FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND finished_at > launched_at";
 export const RETRY_RUN_STARTED_SQL =
   "SELECT created_at FROM retry_runs WHERE status_id = ?";
 export const RETRY_ATTEMPTS_FIRST_REFUSAL_SQL =

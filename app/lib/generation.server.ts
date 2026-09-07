@@ -568,6 +568,11 @@ export interface GenerationJob {
   imageOutput?: boolean;
   /** 成功するまで生成するモード。無効なら undefined。 */
   retry?: RetryConfig;
+  /**
+   * 担当1つが同時に投げる本数の上書き（アプリ設定。0/未指定で自動）。
+   * ここが依頼1本あたりの実行体の時間＝無料枠の消費を決める。
+   */
+  workerConcurrency?: number;
   paramsState: ParamsState | null;
   messages: ChatMessage[];
 }

@@ -9,6 +9,7 @@ import {
   NEW_MODEL_DAYS_RANGE,
   POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
+  RETRY_WORKER_CONCURRENCY_RANGE,
   type AppSettings,
 } from "./settings";
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
@@ -30,6 +31,7 @@ import {
   FLUSH_GENERATION_SQL,
   FLUSH_STOP_CHECK_SQL,
   RETRY_ATTEMPTS_COUNTS_SQL,
+  RETRY_ATTEMPTS_DURATION_SQL,
   RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
   RETRY_ATTEMPTS_LAUNCHED_SQL,
   RETRY_ATTEMPTS_MARK_ALL_SQL,
@@ -223,6 +225,14 @@ export async function updateAppSettings(
     next.retryAttemptCeiling = Math.min(
       Math.max(Math.round(ceiling), RETRY_CEILING_RANGE.min),
       RETRY_CEILING_RANGE.max,
+    );
+  }
+
+  const workerConcurrency = Number(patch.retryWorkerConcurrency);
+  if (Number.isFinite(workerConcurrency)) {
+    next.retryWorkerConcurrency = Math.min(
+      Math.max(Math.round(workerConcurrency), RETRY_WORKER_CONCURRENCY_RANGE.min),
+      RETRY_WORKER_CONCURRENCY_RANGE.max,
     );
   }
 
@@ -2389,6 +2399,21 @@ export async function retryRunSnapshot(statusId: string): Promise<{
     lastSeq: Number(l?.last_seq ?? 0),
     firstRefusal: r?.detail ?? null,
     startedAt: s?.created_at != null ? Number(s.created_at) : null,
+  };
+}
+
+/** 決着した依頼の本数と、かかった時間の合計（ミリ秒）。 */
+export async function retryRunDurations(
+  statusId: string,
+): Promise<{ count: number; totalMs: number }> {
+  const d = await db();
+  const row = await d
+    .prepare(RETRY_ATTEMPTS_DURATION_SQL)
+    .bind(statusId)
+    .first<{ n: number; total: number }>();
+  return {
+    count: Number(row?.n ?? 0),
+    totalMs: Number(row?.total ?? 0),
   };
 }
 

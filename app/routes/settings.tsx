@@ -10,6 +10,7 @@ import {
   NEW_MODEL_DAYS_RANGE,
   POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
+  RETRY_WORKER_CONCURRENCY_RANGE,
   type AppSettings,
 } from "../lib/settings";
 import { monthLabelJst } from "../lib/usage";
@@ -454,6 +455,21 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 max={RETRY_CEILING_RANGE.max}
                 step={1}
                 onChange={(v) => void save({ retryAttemptCeiling: v })}
+                width="w-14"
+              />
+            </Row>
+            <Row
+              label="担当1つの同時数"
+              description={`0 で自動（Poe は6・それ以外は24）。1本あたりの実行体の時間は「生成時間 ÷ この数」で、無料枠の消費がそのまま決まります（最大${RETRY_WORKER_CONCURRENCY_RANGE.max}）`}
+              saved={saved("retryWorkerConcurrency")}
+            >
+              <Stepper
+                label="担当1つの同時数"
+                value={settings.retryWorkerConcurrency}
+                min={RETRY_WORKER_CONCURRENCY_RANGE.min}
+                max={RETRY_WORKER_CONCURRENCY_RANGE.max}
+                step={1}
+                onChange={(v) => void save({ retryWorkerConcurrency: v })}
                 width="w-14"
               />
             </Row>

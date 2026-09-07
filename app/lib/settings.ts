@@ -13,6 +13,17 @@ export interface AppSettings {
    */
   retryAttemptCeiling: number;
   /**
+   * 「成功するまで生成」で、担当1つが同時に投げる本数。0 なら自動。
+   *
+   * ここが費用をそのまま決める。Durable Object は「実行体1つが起きて
+   * いる時間」で課金されるので、依頼1本あたりの費用は
+   * 「生成にかかる時間 ÷ この数」になる。自動は Poe が6本
+   * （画像ができるまで応答ヘッダを返さないなら、同時に待てる接続の
+   * 上限がここ）、それ以外が24本。**Poe が実はヘッダをすぐ返すなら
+   * 上げられる**ので、実測（要約に出る1本あたりの秒数）を見て決める。
+   */
+  retryWorkerConcurrency: number;
+  /**
    * モデル一覧で「NEW」を出す日数（公開日からの経過日数）。
    * 0 にすると新着の強調をしない。
    */
@@ -67,6 +78,7 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   retryAttemptCeiling: 100,
+  retryWorkerConcurrency: 0,
   newModelDays: 3,
   // 既定は上限なし。実際に使う額を見てから決められるよう、
   // こちらで勝手な数字を入れて生成を止めることはしない
@@ -83,6 +95,14 @@ export const DEFAULT_SYSTEM_PROMPT_MAX = 8_000;
 
 /** 天井として受け付ける範囲。 */
 export const RETRY_CEILING_RANGE = { min: 1, max: 1000 };
+
+/**
+ * 担当1つの同時数として受け付ける範囲（0 = 自動）。
+ *
+ * 上は30。1回の呼び出しで出せる外部の通信が無料プランで50件までで、
+ * 成功したときの画像の取り込みにも使うため。
+ */
+export const RETRY_WORKER_CONCURRENCY_RANGE = { min: 0, max: 30 };
 
 /** 新着表示の日数として受け付ける範囲（0 = 表示しない）。 */
 export const NEW_MODEL_DAYS_RANGE = { min: 0, max: 90 };

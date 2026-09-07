@@ -147,6 +147,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         webTools: body.webTools === true,
         imageOutput: body.imageOutput === true,
         retry: retry ?? undefined,
+        workerConcurrency: settings.retryWorkerConcurrency,
         paramsState: body.params ?? null,
         messages: body.messages.map((m) => ({
           role: m.role,

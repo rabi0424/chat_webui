@@ -20,8 +20,8 @@ import {
   RETRY_ALARM_WALL_MS,
   RETRY_ATTEMPT_DEADLINE_MS,
   RETRY_CHUNK_INTERNAL_LIMIT,
-  RETRY_WORKER_ATTEMPTS,
   RETRY_WORKER_CONCURRENCY,
+  RETRY_WORKER_MAX_ATTEMPTS,
   RETRY_WORKER_LAUNCH_WINDOW_MS,
   RETRY_WORKER_STREAMING_CONCURRENCY,
   RETRY_MAX_SPAWNS_PER_TICK,
@@ -418,7 +418,8 @@ describe("上流への本数の柵", () => {
       RETRY_ALARM_WALL_MS - 60_000,
     );
     // 引き受けた数を同時数で割った波の数ぶん、窓の中に収まる
-    const waves = Math.ceil(RETRY_WORKER_ATTEMPTS / RETRY_WORKER_CONCURRENCY);
+    const plan = retryWorkerPlan("poe:Imagen");
+    const waves = Math.ceil(plan.attempts / plan.concurrency);
     expect(waves).toBe(2);
     expect((waves - 1) * RETRY_ATTEMPT_DEADLINE_MS).toBeLessThanOrEqual(
       RETRY_WORKER_LAUNCH_WINDOW_MS,
@@ -433,9 +434,10 @@ describe("上流への本数の柵", () => {
    */
   it("担当は複数の依頼を引き受け、同時数は接続の上限に合わせる", () => {
     expect(RETRY_WORKER_CONCURRENCY).toBe(6);
-    expect(RETRY_WORKER_ATTEMPTS).toBeGreaterThan(RETRY_WORKER_CONCURRENCY);
+    const plan = retryWorkerPlan("poe:Imagen");
+    expect(plan.attempts).toBeGreaterThan(plan.concurrency);
     // 依頼1本あたりの実行体の時間が、分けたときの何分の1になるか
-    expect(RETRY_WORKER_ATTEMPTS / RETRY_WORKER_CONCURRENCY).toBeGreaterThanOrEqual(2);
+    expect(plan.attempts / plan.concurrency).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -570,10 +572,38 @@ describe("shouldFinalizeLostRun", () => {
 describe("retryWorkerPlan", () => {
   it("Poe は6本まで（画像ができるまでヘッダを返さない）", () => {
     expect(retryWorkerPlan("poe:Imagen")).toEqual({
-      attempts: RETRY_WORKER_ATTEMPTS,
+      attempts: 12,
       concurrency: RETRY_WORKER_CONCURRENCY,
     });
     expect(RETRY_WORKER_CONCURRENCY).toBe(6);
+  });
+
+  /**
+   * Poe が実はヘッダをすぐ返すなら、同時数を上げられる（1本あたりの
+   * 費用がそのぶん下がる）。憶測で決め打ちせず、設定で変えられるように
+   * して実測から決める。
+   */
+  it("設定で上書きできる（0 と負の数は自動のまま）", () => {
+    expect(retryWorkerPlan("poe:Imagen", 24)).toEqual({
+      attempts: RETRY_WORKER_MAX_ATTEMPTS,
+      concurrency: 24,
+    });
+    expect(retryWorkerPlan("poe:Imagen", 3)).toEqual({
+      attempts: 6,
+      concurrency: 3,
+    });
+    for (const bad of [0, -1, null, undefined]) {
+      expect(retryWorkerPlan("poe:Imagen", bad).concurrency).toBe(
+        RETRY_WORKER_CONCURRENCY,
+      );
+    }
+  });
+
+  it("引き受ける数は上限で頭打ち（担当が失われたとき失う数を抑える）", () => {
+    expect(retryWorkerPlan("poe:Imagen", 30).attempts).toBe(
+      RETRY_WORKER_MAX_ATTEMPTS,
+    );
+    expect(RETRY_WORKER_MAX_ATTEMPTS).toBe(24);
   });
 
   it("OpenRouter はヘッダがすぐ返るので、もっと同時に投げられる", () => {

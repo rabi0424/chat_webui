@@ -376,7 +376,8 @@ export const RETRY_ATTEMPT_DEADLINE_MS = 6 * 60_000;
  * 50件までで、成功すると画像の取り込みにも使うこと。
  */
 export const RETRY_WORKER_CONCURRENCY = 6;
-export const RETRY_WORKER_ATTEMPTS = 12;
+/** 担当1つが引き受ける依頼の数の上限。 */
+export const RETRY_WORKER_MAX_ATTEMPTS = 24;
 
 /**
  * ヘッダがすぐ返る上流での同時数。
@@ -392,6 +393,12 @@ export const RETRY_WORKER_ATTEMPTS = 12;
  */
 export const RETRY_WORKER_STREAMING_CONCURRENCY = 24;
 
+/**
+ * Durable Object の無料枠（1日 13,000 GB秒）を、128MB 換算の秒数にした値。
+ * 要約に「今回どれだけ使ったか」を出して、同時数の決め方の目安にする。
+ */
+export const RETRY_FREE_DO_SECONDS_PER_DAY = 104_000;
+
 export interface RetryWorkerPlan {
   /** 担当1つが引き受ける依頼の数。 */
   attempts: number;
@@ -406,16 +413,21 @@ export interface RetryWorkerPlan {
  * 12本（6本ずつ2波）。同時数を超えて引き受けても費用は変わらないが、
  * 担当が失われたときに決着しないまま残る数が増えるので、2波までにする。
  */
-export function retryWorkerPlan(model: string): RetryWorkerPlan {
-  if (isPoeModel(model)) {
-    return {
-      attempts: RETRY_WORKER_ATTEMPTS,
-      concurrency: RETRY_WORKER_CONCURRENCY,
-    };
-  }
+export function retryWorkerPlan(
+  model: string,
+  /** 設定の上書き（0 か未指定なら自動）。 */
+  override?: number | null,
+): RetryWorkerPlan {
+  const auto = isPoeModel(model)
+    ? RETRY_WORKER_CONCURRENCY
+    : RETRY_WORKER_STREAMING_CONCURRENCY;
+  const concurrency =
+    override != null && override > 0 ? Math.round(override) : auto;
+  // 引き受けるのは同時数の2波ぶんまで。多く持たせても費用は変わらないが、
+  // 担当が失われたときに決着しないまま残る数が増える
   return {
-    attempts: RETRY_WORKER_STREAMING_CONCURRENCY,
-    concurrency: RETRY_WORKER_STREAMING_CONCURRENCY,
+    attempts: Math.min(concurrency * 2, RETRY_WORKER_MAX_ATTEMPTS),
+    concurrency,
   };
 }
 

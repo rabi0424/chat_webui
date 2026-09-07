@@ -13,6 +13,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 /** 起こした担当ごとの、引き受けた依頼の id。 */
 const spawned: string[][] = [];
+/** 起こした担当へ渡した仕事（同時数の上書きが届いているか）。 */
+const spawnedJobs: { attemptIds: string[]; workerConcurrency?: number }[] = [];
 const inserted: { id: string; seq: number }[] = [];
 const failed: string[] = [];
 /** 担当が書いた結果。 */
@@ -35,6 +37,8 @@ let finalized: { status: string; content: string; error?: string | null } | null
   null;
 /** 何回目の往復で何を返すか。 */
 let onTick: ((n: number) => void) | null = null;
+/** 決着した依頼の本数と、かかった時間の合計。 */
+let durations = { count: 0, totalMs: 0 };
 /** 続きの実行の頭で D1 から取り直す値。 */
 let snapshot = {
   counts: { success: 0, refused: 0, transient: 0, fatal: 0 },
@@ -50,7 +54,12 @@ vi.mock("cloudflare:workers", () => ({
       idFromName: (name: string) => ({ name }),
       get: () => ({
         fetch: async (_url: string, init: { body: string }) => {
-          spawned.push((JSON.parse(init.body) as { attemptIds: string[] }).attemptIds);
+          const body = JSON.parse(init.body) as {
+            attemptIds: string[];
+            workerConcurrency?: number;
+          };
+          spawnedJobs.push(body);
+          spawned.push(body.attemptIds);
           return new Response("{}", { status: 202 });
         },
       }),
@@ -76,6 +85,7 @@ vi.mock("../../app/lib/db.server", () => ({
     failed.push(...p.ids);
   }),
   markRetryAttemptsProcessed: vi.fn(async () => {}),
+  retryRunDurations: vi.fn(async () => durations),
   sweepLostRetryAttempts: vi.fn(async () => 0),
   finishRetryAttempt: vi.fn(
     async (p: { id: string; kind: string; detail: string | null }) => {
@@ -168,6 +178,7 @@ const idle = {
 
 beforeEach(() => {
   spawned.length = 0;
+  spawnedJobs.length = 0;
   inserted.length = 0;
   failed.length = 0;
   finished.length = 0;
@@ -183,6 +194,7 @@ beforeEach(() => {
   poePoints.mockClear();
   poePoints.mockResolvedValue(null);
   monthlyLimit.mockClear();
+  durations = { count: 0, totalMs: 0 };
   snapshot = {
     counts: { success: 0, refused: 0, transient: 0, fatal: 0 },
     launched: 0,
@@ -291,6 +303,34 @@ describe("司令役を回す", () => {
         null,
       );
       expect(spawned[0]).toHaveLength(24);
+    },
+    20_000,
+  );
+
+  it(
+    "設定の同時数を担当へ渡す（渡さないと自動のまま走って費用が変わらない）",
+    async () => {
+      onTick = (n) => {
+        if (n >= 2) {
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 0,
+            finished: [
+              { id: "a1", kind: "success", detail: null, wait_ml: null, message_id: "m1" },
+              { id: "a2", kind: "success", detail: null, wait_ms: null, message_id: "m2" },
+            ] as never,
+          };
+        }
+      };
+      await runRetryGenerationJob(
+        { ...(job as unknown as Record<string, unknown>), workerConcurrency: 10 } as never,
+        { ...retry, concurrency: 100 },
+        null,
+      );
+      expect(spawnedJobs[0]?.workerConcurrency).toBe(10);
+      // 同時10本なら2波ぶん＝20本を引き受ける
+      expect(spawned[0]).toHaveLength(20);
     },
     20_000,
   );
@@ -589,5 +629,63 @@ describe("上流への本数の柵", () => {
       expect(finalized?.error).toContain("柵");
     },
     60_000,
+  );
+});
+
+/**
+ * 実測を要約に出す。依頼1本あたりの実行体の時間は
+ * 「かかった時間 ÷ 担当1つの同時数」で、無料枠（1日 約104,000秒）の
+ * 消費がこれで決まる。同時数をいくつにすべきかを、憶測ではなく
+ * ここの数字から決められるようにする。
+ */
+describe("使った時間の実測", () => {
+  it(
+    "1本あたりの秒数と、無料枠に対する割合を要約に出す",
+    async () => {
+      // 20本・合計3600秒 → 1本180秒。同時6本なら実行体の時間は600秒
+      durations = { count: 20, totalMs: 3_600_000 };
+      onTick = (n) => {
+        if (n >= 2) {
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 0,
+            finished: [
+              { id: "a1", kind: "success", detail: null, wait_ms: null, message_id: "m1" },
+              { id: "a2", kind: "success", detail: null, wait_ms: null, message_id: "m2" },
+            ],
+          };
+        }
+      };
+      await runRetryGenerationJob(job, retry, null);
+      expect(finalized?.content).toContain("1本あたり 180.0秒（同時 6本）");
+      expect(finalized?.content).toContain("実行体の時間の目安 600秒");
+      expect(finalized?.content).toContain("1日の無料枠の 0.6%");
+    },
+    20_000,
+  );
+
+  it(
+    "実測が取れなくても要約は出す",
+    async () => {
+      durations = { count: 0, totalMs: 0 };
+      onTick = (n) => {
+        if (n >= 2) {
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 0,
+            finished: [
+              { id: "a1", kind: "success", detail: null, wait_ms: null, message_id: "m1" },
+              { id: "a2", kind: "success", detail: null, wait_ms: null, message_id: "m2" },
+            ],
+          };
+        }
+      };
+      await runRetryGenerationJob(job, retry, null);
+      expect(finalized?.content).toContain("成功 2件");
+      expect(finalized?.content).not.toContain("1本あたり");
+    },
+    20_000,
   );
 });

@@ -156,10 +156,11 @@ describe("枠の勘定", () => {
     const cond = burst.slice(0, burst.indexOf("const group:"));
     expect(cond).toContain("groups.length < RETRY_MAX_SPAWNS_PER_TICK");
     expect(cond).toContain("budget.room(groups.length + 2)");
+    // 上流と設定で同時数が変わる（費用がそのまま変わる）
+    expect(job).toContain("retryWorkerPlan(job.model, job.workerConcurrency)");
     // 担当1つは依頼をまとめて引き受ける（実行体を分けると課金が倍になる）。
     // 何本まとめるかは上流で違う（ヘッダがすぐ返るなら同時数を増やせる）
     expect(burst).toContain("group.length < plan.attempts");
-    expect(job).toContain("retryWorkerPlan(job.model)");
     // 作ったが起こさなかった行は、まとめて不調として決着させる
     expect(burst).toContain("failRetryAttempts({");
     expect(burst).toContain("if (stopped || !budget.room(1))");
@@ -200,7 +201,7 @@ describe("1本担当", () => {
 
   it("引き受けた依頼を、同時数を守って回し、投げなかった分は決着させる", () => {
     expect(w).toContain("inflight.size < plan.concurrency");
-    expect(w).toContain("retryWorkerPlan(job.model)");
+    expect(w).toContain("retryWorkerPlan(job.model, job.workerConcurrency)");
     expect(w).toContain("await Promise.race(inflight)");
     expect(w).toContain("await Promise.all(inflight)");
     // 窓を過ぎたら新しく投げない。引き受けたまま放置しない

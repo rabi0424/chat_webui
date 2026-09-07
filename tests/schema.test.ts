@@ -10,6 +10,7 @@ import {
   PENDING_DELETION_GRACE_MS,
   QUEUE_PENDING_DELETION_SQL,
   RETRY_ATTEMPTS_COUNTS_SQL,
+  RETRY_ATTEMPTS_DURATION_SQL,
   RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
   RETRY_ATTEMPTS_LAUNCHED_SQL,
   RETRY_ATTEMPTS_MARK_ALL_SQL,
@@ -1233,6 +1234,33 @@ describe("成功するまで生成の記録", () => {
     expect(unprocessed()).toEqual([]);
     // 走っているものは残る
     expect(running()).toBe(1);
+  });
+
+  /**
+   * かかった時間の実測。依頼1本あたりの実行体の時間は
+   * 「かかった時間 ÷ 担当1つの同時数」で、無料枠の消費がこれで決まる。
+   * 決着していない行や、時計が巻き戻った行を混ぜると数字が狂う。
+   */
+  it("かかった時間は、決着した行だけを足す", () => {
+    launch("a1", 1, 1_000);
+    launch("a2", 2, 1_000);
+    launch("a3", 3, 1_000);
+    finish("a1", "refused", null, null, 4_000); // 3秒
+    finish("a2", "success", null, null, 6_000); // 5秒
+    // a3 は走ったまま
+    const row = db.prepare(RETRY_ATTEMPTS_DURATION_SQL).get(S) as {
+      n: number;
+      total: number;
+    };
+    expect(row).toEqual({ n: 2, total: 8_000 });
+  });
+
+  it("行が無ければ 0（null を返さない）", () => {
+    const row = db.prepare(RETRY_ATTEMPTS_DURATION_SQL).get("nope") as {
+      n: number;
+      total: number;
+    };
+    expect(row).toEqual({ n: 0, total: 0 });
   });
 
   it("他の実行の行は読まない", () => {
