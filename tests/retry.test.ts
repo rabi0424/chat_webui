@@ -12,6 +12,9 @@ import {
   formatRetryProgress,
   isRetryProgress,
   isSafetyRejection,
+  retryRequestCap,
+  RETRY_REQUEST_CAP_FACTOR,
+  RETRY_STALLED_CHUNK_LIMIT,
   onRateLimited,
   readRetryConfig,
 } from "../app/lib/retry";
@@ -375,5 +378,24 @@ describe("isSafetyRejection", () => {
     expect(isSafetyRejection(401, "rejected by the safety system")).toBe(false);
     expect(isSafetyRejection(402, "content policy: insufficient credits")).toBe(false);
     expect(isSafetyRejection(429, "moderation rate limit")).toBe(false);
+  });
+});
+
+/**
+ * いちばん外側の柵。試行回数・待ち直し・並列数をどう組み合わせても、
+ * 上流へ投げる本数がこれを越えないことを、発射ループの配線と合わせて
+ * 保証する（retry-stop-wiring.test.ts）。数そのものはここで固定する。
+ */
+describe("上流への本数の柵", () => {
+  it("上限試行回数の3倍で、上限が壊れていても1本は投げられる", () => {
+    expect(RETRY_REQUEST_CAP_FACTOR).toBe(3);
+    expect(retryRequestCap(5)).toBe(15);
+    expect(retryRequestCap(100)).toBe(300);
+    expect(retryRequestCap(0)).toBe(3);
+    expect(retryRequestCap(-1)).toBe(3);
+  });
+
+  it("進まないチャンクは3回で終える", () => {
+    expect(RETRY_STALLED_CHUNK_LIMIT).toBe(3);
   });
 });

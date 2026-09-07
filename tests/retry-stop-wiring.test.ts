@@ -28,7 +28,7 @@ function fn(name: string): string {
 }
 
 describe("リトライ生成の続行判定", () => {
-  it("打ち切りの理由が4つとも続行判定に入っている", () => {
+  it("打ち切りの理由が5つとも続行判定に入っている", () => {
     const m = source.match(/const moreAttempts =[\s\S]*?;/);
     expect(m).not.toBeNull();
     const expr = m![0];
@@ -36,6 +36,53 @@ describe("リトライ生成の続行判定", () => {
     expect(expr).toContain("!rateLimitExhausted");
     expect(expr).toContain("!errorsExhausted");
     expect(expr).toContain("!budgetStopped");
+    expect(expr).toContain("!requestsExhausted");
+  });
+
+  it("進まないチャンクが続いたら、続きを頼まずに終える", () => {
+    const job = fn("runRetryGenerationJob");
+    expect(job).toContain(
+      "state.stalledChunks = progressed ? 0 : state.stalledChunks + 1",
+    );
+    expect(job).toContain(
+      "const stalled = state.stalledChunks >= RETRY_STALLED_CHUNK_LIMIT",
+    );
+    expect(job).toContain(
+      "if (!stalled && (moreAttempts || state.pendingCapture.length > 0))",
+    );
+    // 進捗は試行・待ち直し・持ち越した画像の取り込みのどれか
+    const progressed = job.match(/const progressed =[\s\S]*?;/)![0];
+    expect(progressed).toContain("state.attempts > atStart.attempts");
+    expect(progressed).toContain("state.rateLimitRounds > atStart.rounds");
+    expect(progressed).toContain("state.pendingCapture.length < atStart.pending");
+  });
+});
+
+describe("上流への本数の柵", () => {
+  const job = fn("runRetryGenerationJob");
+
+  it("投げるたびに数え、発射の条件と続行判定の両方で見る", () => {
+    // 数えるのは requestUpstream が実際に投げる直前（429 も、やり直しも）
+    const launch = job.match(/const launch = \(\) => \{[\s\S]*?\n {2}};/)![0];
+    expect(launch).toContain("state.upstreamRequests++");
+    const loop = job.match(
+      /\/\/ 目標に届くまで、上限と並列数の範囲で発射し続ける[\s\S]*?\{/,
+    )![0];
+    expect(loop).toContain("state.upstreamRequests < requestCap");
+    expect(job).toContain(
+      "const requestsExhausted = state.upstreamRequests >= requestCap",
+    );
+    expect(job).toContain("retryRequestCap(retry.maxAttempts)");
+  });
+
+  it("数はチャンクをまたいで持ち越す", () => {
+    const restore = source.slice(source.indexOf("function restoreRetryState"));
+    expect(restore.slice(0, restore.indexOf("\n}"))).toContain(
+      "upstreamRequests: previous.upstreamRequests ?? 0",
+    );
+    expect(restore.slice(0, restore.indexOf("\n}"))).toContain(
+      "stalledChunks: previous.stalledChunks ?? 0",
+    );
   });
 });
 

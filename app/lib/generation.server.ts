@@ -9,11 +9,13 @@ import {
 import { buildGenerationPayload, type ParamsState } from "./params";
 import {
   RETRY_CONSECUTIVE_ERROR_LIMIT,
+  RETRY_STALLED_CHUNK_LIMIT,
   afterAttemptSettled,
   createPendingTally,
   formatRetryProgress,
   isSafetyRejection,
   onRateLimited,
+  retryRequestCap,
   type RetryConfig,
 } from "./retry";
 import { planRetrySlots } from "./retry-slots";
@@ -1190,7 +1192,8 @@ type AttemptOutcome =
 async function runAttempt(
   job: GenerationJob,
   messages: OutgoingMessage[],
-  budget: ExternalBudget,
+  /** 上流へ1件投げる直前に呼ばれる（枠と、実行全体の本数を数える）。 */
+  onRequest: () => void,
   gate: RateLimitGate,
 ): Promise<AttemptOutcome> {
   const isPoe = job.model.startsWith(POE_PREFIX);
@@ -1198,7 +1201,7 @@ async function runAttempt(
   try {
     // 枠は requestUpstream の中で、投げるたびに数える
     // （サーバーツールが弾かれると2件投げるため）
-    upstream = await requestUpstream(job, messages, budget.spend);
+    upstream = await requestUpstream(job, messages, onRequest);
   } catch (e) {
     return {
       kind: "error",
@@ -1300,6 +1303,10 @@ export interface RetryRunState {
    * 実行の最後にまとめて載るので、途中の月間上限の判定にだけ足す。
    */
   provisional: { points: number; costUsd: number | null } | null;
+  /** 上流へ投げた本数。429 も、サーバーツールのやり直しも含める。 */
+  upstreamRequests: number;
+  /** 何も進まなかったチャンクが続いた数。 */
+  stalledChunks: number;
 }
 
 /** ジョブ1回ぶんの実行結果。done でなければ続きが残っている。 */
@@ -1323,6 +1330,8 @@ function initialRetryState(statusId: string): RetryRunState {
     consecutiveErrors: 0,
     pauseUntil: 0,
     provisional: null,
+    upstreamRequests: 0,
+    stalledChunks: 0,
   };
 }
 
@@ -1347,6 +1356,8 @@ function restoreRetryState(
     consecutiveErrors: previous.consecutiveErrors ?? 0,
     pauseUntil: previous.pauseUntil ?? 0,
     provisional: previous.provisional ?? null,
+    upstreamRequests: previous.upstreamRequests ?? 0,
+    stalledChunks: previous.stalledChunks ?? 0,
   };
 }
 
@@ -1440,6 +1451,17 @@ async function runRetryGenerationJob(
   const statusId = job.assistantMessageId;
   const budget = createBudget();
   const state = restoreRetryState(previous, statusId);
+  /**
+   * 429 を含めた上流への本数の柵（retryRequestCap の注記）。
+   * 試行回数と待ち直しの回数をどう組み合わせても、ここは越えられない。
+   */
+  const requestCap = retryRequestCap(retry.maxAttempts);
+  /** このチャンクで何かが進んだかを測るための、開始時の値。 */
+  const atStart = {
+    attempts: state.attempts,
+    rounds: state.rateLimitRounds,
+    pending: state.pendingCapture.length,
+  };
 
   let finished = false;
   let wakeHeartbeat = () => {};
@@ -1715,7 +1737,15 @@ async function runRetryGenerationJob(
       : retry.concurrency;
 
   const launch = () => {
-    const p = runAttempt(job, messages, budget, gate)
+    const p = runAttempt(
+      job,
+      messages,
+      () => {
+        budget.spend();
+        state.upstreamRequests++;
+      },
+      gate,
+    )
       .then(accept)
       .catch(() => {
         // 取り込みに失敗しても実行自体は続ける
@@ -1754,6 +1784,9 @@ async function runRetryGenerationJob(
       !touchFailed &&
       knownSuccesses() < retry.target &&
       state.attempts + inflight.size < retry.maxAttempts &&
+      // 429 を含めた本数の柵。走っている分も1本ずつ数えてあるので、
+      // ここで見るのは「これから投げる1本」が入るか
+      state.upstreamRequests < requestCap &&
       running() < slots() &&
       Date.now() >= waitUntil() &&
       // 外部リクエストの枠を使い切る手前で切り上げ、続きは次の実行へ
@@ -1801,14 +1834,36 @@ async function runRetryGenerationJob(
    * 無限ループで、止める手立ては停止ボタンだけだった
    * （tests/retry-stop-wiring.test.ts が見張る）。
    */
+  const requestsExhausted = state.upstreamRequests >= requestCap;
+  if (requestsExhausted) {
+    state.lastError = `上流へ投げた本数が柵（${requestCap}本、レート制限を含む）に達したため打ち切りました`;
+  }
   const moreAttempts =
     !stopped &&
     !rateLimitExhausted &&
     !errorsExhausted &&
     !budgetStopped &&
+    !requestsExhausted &&
     state.successes < retry.target &&
     state.attempts < retry.maxAttempts;
-  if (moreAttempts || state.pendingCapture.length > 0) {
+
+  /**
+   * このチャンクで何かが進んだか。進まないまま続きを頼み続けると、
+   * アラームが 50ms 間隔で回り続ける（RETRY_STALLED_CHUNK_LIMIT の注記）
+   */
+  const progressed =
+    state.attempts > atStart.attempts ||
+    state.rateLimitRounds > atStart.rounds ||
+    state.pendingCapture.length < atStart.pending;
+  state.stalledChunks = progressed ? 0 : state.stalledChunks + 1;
+  const stalled = state.stalledChunks >= RETRY_STALLED_CHUNK_LIMIT;
+  if (stalled) {
+    state.lastError = `進まないまま${state.stalledChunks}回続いたため打ち切りました${
+      touchFailed ? "（進捗を保存できませんでした）" : ""
+    }`;
+  }
+
+  if (!stalled && (moreAttempts || state.pendingCapture.length > 0)) {
     await touch();
     // 枠の使い方を追えるように残す。wrangler tail かダッシュボードのログで見る
     console.log(
@@ -1854,7 +1909,9 @@ async function runRetryGenerationJob(
     lines.push(
       errorsExhausted
         ? "目標に届きませんでした（同じ失敗が続いたため打ち切りました）。"
-        : `目標に届きませんでした（上限${state.attempts >= retry.maxAttempts ? "の試行回数" : ""}に達しました）。`,
+        : requestsExhausted || stalled
+          ? "目標に届きませんでした（打ち切りました。理由は下の「最後のエラー」）。"
+          : `目標に届きませんでした（上限${state.attempts >= retry.maxAttempts ? "の試行回数" : ""}に達しました）。`,
     );
   }
   // 試行の内訳。成功と合わせた合計が試行回数に一致する

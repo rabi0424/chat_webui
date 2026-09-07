@@ -274,3 +274,30 @@ export function isSafetyRejection(status: number, text: string): boolean {
   if (!SAFETY_REJECTION_STATUSES.includes(status)) return false;
   return SAFETY_REJECTION_PATTERN.test(text);
 }
+
+/**
+ * 1回の実行で上流へ投げてよい本数の、いちばん外側の柵。
+ *
+ * 試行回数の上限はレート制限（429）を数えない。待ち直しの回数にも
+ * 上限はあるが、何か1つ通れば数え直すので、429 だけを数えると理屈の
+ * 上では「試行回数 × 3 × 並列数」まで膨らみうる。実際には待ちを挟む
+ * ので時間が先に尽きるが、どんな経路でも越えられない数を1つ置く。
+ * 429 を含めた上流への本数が「上限試行回数 × この倍率」に達したら
+ * 打ち切る。
+ */
+export const RETRY_REQUEST_CAP_FACTOR = 3;
+
+export function retryRequestCap(maxAttempts: number): number {
+  return Math.max(1, maxAttempts) * RETRY_REQUEST_CAP_FACTOR;
+}
+
+/**
+ * 進捗の無いチャンクをこの回数続けたら実行を終える。
+ *
+ * チャンクは「続きがある」と言えば 50ms 後にまた走る。生存確認が
+ * D1 の失敗で書けないあいだは発射しないので、その状態が続くと何も
+ * 進まないままアラームが回り続ける（Poe では途中経過の取得で外部
+ * リクエストを1件ずつ使う）。進捗は試行・待ち直し・持ち越した画像の
+ * 取り込みのどれかが動いたことで測る。
+ */
+export const RETRY_STALLED_CHUNK_LIMIT = 3;
