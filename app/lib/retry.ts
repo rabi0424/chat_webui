@@ -17,11 +17,18 @@
  * buildGenerationPayload からは読まれない）。
  */
 
+import {
+  RETRY_SMART_DEFAULT_PERCENT,
+  RETRY_SMART_MAX_PERCENT,
+  RETRY_SMART_MIN_PERCENT,
+} from "./retry-slots";
+
 export const RETRY_ENABLED_KEY = "retry";
 export const RETRY_TARGET_KEY = "retryTarget";
 export const RETRY_MAX_KEY = "retryMax";
 export const RETRY_CONCURRENCY_KEY = "retryConcurrency";
 export const RETRY_SMART_KEY = "retrySmart";
+export const RETRY_SMART_PERCENT_KEY = "retrySmartPercent";
 
 export interface RetryConfig {
   /** ほしい成功応答の数。 */
@@ -30,16 +37,17 @@ export interface RetryConfig {
   maxAttempts: number;
   /**
    * 同時に走らせる数。目標数を超えてもよい（超過分の成功も残す）。
-   * smart のときは上限で、実際の本数は実行中の成功率から決め直す
+   * スマート生成のときは上限で、実際の本数は実行中の成功率から決め直す
    * （`app/lib/retry-slots.ts`）。
    */
   concurrency: number;
   /**
-   * スマート連続生成。枠の数を固定せず、その実行の成功率から決め直す。
+   * スマート生成。枠の数を固定せず、その実行の成功率から決め直す。
    * 失敗続きに反応して枠を増やしたとたん成功が一斉に届き、超過分が
-   * 課金されるのを抑えるため。
+   * 課金されるのを抑えるため。値は「はずれ／あたりと見なす割合（%）」。
+   * null なら固定の並列数。
    */
-  smart: boolean;
+  smartPercent: number | null;
 }
 
 export const RETRY_DEFAULT_TARGET = 1;
@@ -74,6 +82,15 @@ export function readRetryConfig(
     toInt(state[RETRY_TARGET_KEY], RETRY_DEFAULT_TARGET),
   );
   const smart = state[RETRY_SMART_KEY] === "on";
+  const smartPercent = smart
+    ? Math.min(
+        Math.max(
+          toInt(state[RETRY_SMART_PERCENT_KEY], RETRY_SMART_DEFAULT_PERCENT),
+          RETRY_SMART_MIN_PERCENT,
+        ),
+        RETRY_SMART_MAX_PERCENT,
+      )
+    : null;
   // 試行回数は、未入力なら目標数と同じとみなす
   const maxAttempts = Math.min(
     Math.max(1, toInt(state[RETRY_MAX_KEY], target)),
@@ -87,7 +104,7 @@ export function readRetryConfig(
     maxAttempts,
   );
 
-  return { target, maxAttempts, concurrency, smart };
+  return { target, maxAttempts, concurrency, smartPercent };
 }
 
 /**

@@ -1491,13 +1491,14 @@ async function runRetryGenerationJob(
    * あとも縮む前の枠のまま投げ足してしまう。
    */
   const slots = (): number =>
-    retry.smart
+    retry.smartPercent != null
       ? planRetrySlots({
           target: retry.target,
           successes: state.successes,
           attempts: state.attempts,
           maxAttempts: retry.maxAttempts,
           cap: retry.concurrency,
+          percent: retry.smartPercent,
         })
       : retry.concurrency;
 

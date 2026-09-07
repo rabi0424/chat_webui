@@ -5,6 +5,7 @@ import {
   RETRY_ENABLED_KEY,
   RETRY_MAX_KEY,
   RETRY_SMART_KEY,
+  RETRY_SMART_PERCENT_KEY,
   RETRY_TARGET_KEY,
   formatRetryProgress,
   isRetryProgress,
@@ -38,7 +39,7 @@ describe("readRetryConfig", () => {
       target: 3,
       maxAttempts: 3,
       concurrency: 3,
-      smart: false,
+      smartPercent: null,
     });
   });
 
@@ -86,7 +87,7 @@ describe("readRetryConfig", () => {
       target: 3,
       maxAttempts: 4,
       concurrency: 3,
-      smart: false,
+      smartPercent: null,
     });
   });
 
@@ -101,26 +102,47 @@ describe("readRetryConfig", () => {
   it("文字列で送られた数値も読む（フォームからの値）", () => {
     expect(
       readRetryConfig(on({ [RETRY_TARGET_KEY]: "4", [RETRY_MAX_KEY]: "8" }), 100),
-    ).toEqual({ target: 4, maxAttempts: 8, concurrency: 4, smart: false });
+    ).toEqual({ target: 4, maxAttempts: 8, concurrency: 4, smartPercent: null });
   });
 
   /**
-   * スマート連続生成。並列数は「上限」になる。未入力の既定を目標数の
+   * スマート生成。並列数は「上限」になる。未入力の既定を目標数の
    * ままにすると、目標1のとき枠が1本から増やせず、失敗が続いても何も
    * しない「スマート」になるので、既定は上限の試行回数に置く。
    */
-  describe("スマート連続生成", () => {
-    it("\"on\" のときだけ有効", () => {
-      expect(readRetryConfig(on({ [RETRY_SMART_KEY]: "on" }), 100)?.smart).toBe(
-        true,
-      );
-      expect(readRetryConfig(on({ [RETRY_SMART_KEY]: "off" }), 100)?.smart).toBe(
-        false,
-      );
-      expect(readRetryConfig(on({ [RETRY_SMART_KEY]: true }), 100)?.smart).toBe(
-        false,
-      );
-      expect(readRetryConfig(on(), 100)?.smart).toBe(false);
+  describe("スマート生成", () => {
+    it('"on" のときだけ有効で、割合の既定は 10%', () => {
+      expect(
+        readRetryConfig(on({ [RETRY_SMART_KEY]: "on" }), 100)?.smartPercent,
+      ).toBe(10);
+      expect(
+        readRetryConfig(on({ [RETRY_SMART_KEY]: "off" }), 100)?.smartPercent,
+      ).toBeNull();
+      expect(
+        readRetryConfig(on({ [RETRY_SMART_KEY]: true }), 100)?.smartPercent,
+      ).toBeNull();
+      expect(readRetryConfig(on(), 100)?.smartPercent).toBeNull();
+      // スイッチが切れていれば割合だけ残っていても効かない
+      expect(
+        readRetryConfig(on({ [RETRY_SMART_PERCENT_KEY]: 30 }), 100)
+          ?.smartPercent,
+      ).toBeNull();
+    });
+
+    it("割合は 1〜50 に収める（0 や 100 は統計として意味を持たない）", () => {
+      const at = (v: unknown) =>
+        readRetryConfig(
+          on({ [RETRY_SMART_KEY]: "on", [RETRY_SMART_PERCENT_KEY]: v as never }),
+          100,
+        )?.smartPercent;
+      expect(at(30)).toBe(30);
+      expect(at("25")).toBe(25);
+      expect(at(0)).toBe(10);
+      expect(at(-5)).toBe(10);
+      // 1未満は丸めて0になり、最小の1へ引き上げる（他の欄と同じ扱い）
+      expect(at(0.4)).toBe(1);
+      expect(at(100)).toBe(50);
+      expect(at("abc")).toBe(10);
     });
 
     it("並列数が未入力なら上限を試行回数に合わせる（目標数ではない）", () => {
@@ -129,7 +151,7 @@ describe("readRetryConfig", () => {
           on({ [RETRY_SMART_KEY]: "on", [RETRY_TARGET_KEY]: 1, [RETRY_MAX_KEY]: 8 }),
           100,
         ),
-      ).toEqual({ target: 1, maxAttempts: 8, concurrency: 8, smart: true });
+      ).toEqual({ target: 1, maxAttempts: 8, concurrency: 8, smartPercent: 10 });
     });
 
     it("入力した並列数はそのまま上限になり、試行回数は超えない", () => {

@@ -1,82 +1,154 @@
 import { describe, expect, it } from "vitest";
 import {
-  RETRY_SLOT_OPTIMISM,
-  estimateSuccessRate,
+  RETRY_SMART_WARMUP_ATTEMPTS,
+  binomialCdf,
   planRetrySlots,
+  upperSuccessRate,
 } from "../app/lib/retry-slots";
 
 /**
- * スマート連続生成の枠の決め方。
+ * スマート生成の枠の決め方。
  *
  * ここで決める数は「何本ぶん課金されうるか」に直結する。枠を1本
  * 読み違えると、成功が一斉に届いたときの超過がそのまま増える。
  */
-const base = { target: 1, successes: 0, attempts: 0, maxAttempts: 40, cap: 8 };
+const base = {
+  target: 1,
+  successes: 0,
+  attempts: 0,
+  maxAttempts: 60,
+  cap: 12,
+  percent: 10,
+};
 
-describe("planRetrySlots", () => {
-  it("最初は残りの目標と同じ本数だけ開ける（率は1とみなす）", () => {
-    expect(planRetrySlots({ ...base, target: 1 })).toBe(1);
-    expect(planRetrySlots({ ...base, target: 3 })).toBe(3);
-    expect(estimateSuccessRate({ successes: 0, attempts: 0 })).toBe(1);
+describe("二項分布", () => {
+  it("累積確率が手計算と合う", () => {
+    // Bin(4, 0.5): P(X ≤ 1) = (1 + 4) / 16
+    expect(binomialCdf(1, 4, 0.5)).toBeCloseTo(5 / 16, 10);
+    // Bin(10, 0.3): P(X ≤ 2) = 0.3828…
+    expect(binomialCdf(2, 10, 0.3)).toBeCloseTo(0.38278, 4);
+    // Bin(3, 0.2): P(X ≤ 0) = 0.8^3
+    expect(binomialCdf(0, 3, 0.2)).toBeCloseTo(0.512, 10);
   });
 
-  it("失敗が続くと少しずつ広がる。失敗の数ほど速くは広げない", () => {
-    // 見えている成功に上乗せする本数（2）ぶんだけ、失敗を疑って見る。
-    // 失敗 n 本のあと、見込みは 2/(n+2)、枠は ceil((n+2)/2)
-    const seen = [1, 2, 3, 4, 5, 6, 8, 10].map((n) =>
-      planRetrySlots({ ...base, attempts: n }),
+  it("端では確率の定義どおり", () => {
+    expect(binomialCdf(-1, 5, 0.5)).toBe(0);
+    expect(binomialCdf(5, 5, 0.5)).toBe(1);
+    expect(binomialCdf(9, 5, 0.5)).toBe(1);
+    expect(binomialCdf(0, 5, 0)).toBe(1);
+    expect(binomialCdf(4, 5, 1)).toBe(0);
+  });
+
+  it("大きな試行数でも桁あふれしない", () => {
+    expect(binomialCdf(500, 1000, 0.5)).toBeCloseTo(0.5126, 3);
+    expect(Number.isFinite(binomialCdf(10, 2000, 0.9))).toBe(true);
+  });
+});
+
+describe("upperSuccessRate（下位 n% のはずれだったとしたときの率）", () => {
+  it("全部失敗なら 1 − (n/100)^(1/a)", () => {
+    expect(upperSuccessRate({ successes: 0, attempts: 4, percent: 10 })).toBeCloseTo(
+      1 - 0.1 ** (1 / 4),
+      6,
     );
-    expect(seen).toEqual([2, 2, 3, 3, 4, 4, 5, 6]);
-    // 単調に増える（減ると、失敗が届くたびに枠が揺れて読めなくなる）
-    for (let i = 1; i < seen.length; i++) {
-      expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1]);
+    expect(upperSuccessRate({ successes: 0, attempts: 10, percent: 30 })).toBeCloseTo(
+      1 - 0.3 ** (1 / 10),
+      6,
+    );
+  });
+
+  it("求めた率のもとで、観測以下になる確率がちょうど n%", () => {
+    for (const [s, a, n] of [
+      [2, 10, 10],
+      [1, 12, 25],
+      [5, 20, 5],
+    ]) {
+      const p = upperSuccessRate({ successes: s, attempts: a, percent: n });
+      expect(binomialCdf(s, a, p)).toBeCloseTo(n / 100, 6);
     }
   });
 
-  it("観測した率をそのまま使うより枠を絞る（下振れの最中を見越す）", () => {
-    // 目標2で、5本投げて1本成功。観測率は 0.2 で、素直に割れば残り1に
-    // 5本開ける。上乗せ後の見込みは 3/7 ≈ 0.43 なので3本で止める
-    expect(
-      planRetrySlots({ ...base, target: 2, successes: 1, attempts: 5 }),
-    ).toBe(3);
-    expect(Math.ceil(1 / (1 / 5))).toBe(5);
+  it("観測が無い・全部成功なら 1", () => {
+    expect(upperSuccessRate({ successes: 0, attempts: 0, percent: 10 })).toBe(1);
+    expect(upperSuccessRate({ successes: 3, attempts: 3, percent: 10 })).toBe(1);
   });
 
-  it("上乗せは失敗が積もるほど薄れ、観測した率へ近づく", () => {
-    const observed = 0.25;
-    const gap = (n: number) =>
-      Math.abs(
-        estimateSuccessRate({ successes: n * observed, attempts: n }) -
-          observed,
-      );
-    expect(gap(4)).toBeGreaterThan(gap(40));
-    expect(gap(40)).toBeGreaterThan(gap(400));
-    expect(gap(400)).toBeLessThan(0.01);
+  it("n が大きいほど、はずれを軽く見るので率は低くなる", () => {
+    const at = (n: number) =>
+      upperSuccessRate({ successes: 2, attempts: 10, percent: n });
+    expect(at(5)).toBeGreaterThan(at(10));
+    expect(at(10)).toBeGreaterThan(at(30));
+    expect(at(30)).toBeGreaterThan(at(50));
+  });
+});
+
+describe("planRetrySlots", () => {
+  it("溜まるまでは残りの目標を超える枠を開けない", () => {
+    // 境界は定数ではなく数で書く。定数だけを見て回すと、定数が 0 に
+    // なったとき（＝溜める前に統計へ入る）ループが回らず何も見ない
+    expect(RETRY_SMART_WARMUP_ATTEMPTS).toBe(10);
+    expect(planRetrySlots({ ...base, attempts: 9, percent: 50 })).toBe(1);
+    expect(planRetrySlots({ ...base, attempts: 10, percent: 50 })).toBeGreaterThan(1);
+    for (let a = 0; a < 10; a++) {
+      expect(planRetrySlots({ ...base, attempts: a })).toBe(1);
+      expect(planRetrySlots({ ...base, target: 3, attempts: a })).toBe(3);
+      // 失敗ばかりでも、割合を大きくしても、同じ
+      expect(planRetrySlots({ ...base, attempts: a, percent: 50 })).toBe(1);
+    }
+    // 残りは成功を引いた数
+    expect(
+      planRetrySlots({ ...base, target: 3, successes: 2, attempts: 5 }),
+    ).toBe(1);
   });
 
-  it("成功が届くと残りの目標に合わせて縮む", () => {
-    // 目標3で、4本投げて2本成功。残り1、見込み 4/6 → 2本
+  it("溜まったら、上位 n% のあたりでも残りを超えない最大の枠を開ける", () => {
+    // 10本全部失敗・n=10: 率は 1 − 0.1^0.1 ≈ 0.206。
+    // 2本で2本とも通る確率 0.042 ≤ 0.1、3本で2本以上は 0.11 > 0.1
+    expect(planRetrySlots({ ...base, attempts: 10 })).toBe(2);
+    const p = upperSuccessRate({ successes: 0, attempts: 10, percent: 10 });
+    expect(1 - binomialCdf(1, 2, p)).toBeLessThanOrEqual(0.1);
+    expect(1 - binomialCdf(1, 3, p)).toBeGreaterThan(0.1);
+    // n=30 なら、はずれを軽く見るぶん率が下がり、枠は大きく広がる
+    expect(planRetrySlots({ ...base, attempts: 10, percent: 30 })).toBe(9);
+  });
+
+  it("失敗が積もるほど広がり、途中で減らない", () => {
+    let prev = 0;
+    for (let a = RETRY_SMART_WARMUP_ATTEMPTS; a <= 40; a++) {
+      const k = planRetrySlots({ ...base, attempts: a, cap: 100 });
+      expect(k).toBeGreaterThanOrEqual(prev);
+      prev = k;
+    }
+    expect(prev).toBeGreaterThan(planRetrySlots({ ...base, attempts: 10 }));
+  });
+
+  it("成功が届くと残りの目標に合わせて縮み、届いたら 0", () => {
+    // 目標3、12本中2本成功。率の上限は高めなので、残り1に対して枠は控えめ
+    const k = planRetrySlots({ ...base, target: 3, successes: 2, attempts: 12 });
+    expect(k).toBeGreaterThanOrEqual(1);
+    expect(k).toBeLessThan(planRetrySlots({ ...base, target: 3, attempts: 12 }));
     expect(
-      planRetrySlots({ ...base, target: 3, successes: 2, attempts: 4 }),
-    ).toBe(2);
-    // 目標に届いたら0
-    expect(
-      planRetrySlots({ ...base, target: 3, successes: 3, attempts: 4 }),
+      planRetrySlots({ ...base, target: 3, successes: 3, attempts: 12 }),
     ).toBe(0);
     expect(
-      planRetrySlots({ ...base, target: 3, successes: 5, attempts: 6 }),
+      planRetrySlots({ ...base, target: 3, successes: 5, attempts: 12 }),
     ).toBe(0);
   });
 
   it("利用者の上限と、試行回数の残りを超えない", () => {
-    // 失敗20本なら見込みは 2/22、素直に割れば11本
-    expect(planRetrySlots({ ...base, attempts: 20, cap: 4 })).toBe(4);
+    // 30本全部失敗・n=30 なら、素直に広げれば cap 12 を超える
     expect(
-      planRetrySlots({ ...base, attempts: 20, cap: 100, maxAttempts: 23 }),
+      planRetrySlots({ ...base, attempts: 30, percent: 30, cap: 100 }),
+    ).toBeGreaterThan(12);
+    expect(planRetrySlots({ ...base, attempts: 30, percent: 30 })).toBe(12);
+    expect(
+      planRetrySlots({ ...base, attempts: 30, percent: 30, cap: 100, maxAttempts: 33 }),
     ).toBe(3);
     expect(
-      planRetrySlots({ ...base, attempts: 40, cap: 100, maxAttempts: 40 }),
+      planRetrySlots({ ...base, attempts: 60, percent: 30, cap: 100 }),
     ).toBe(0);
+    // 溜まる前も同じ締めが効く
+    expect(planRetrySlots({ ...base, target: 5, attempts: 2, cap: 2 })).toBe(2);
   });
 });
 
@@ -125,35 +197,38 @@ function average(
   target: number,
   slotsOf: (t: Trial) => number,
   seed: number,
-): { overshoot: number; attempts: number; reached: number } {
+): { overshoot: number; overshootRuns: number; attempts: number; reached: number } {
   const runs = 2000;
   const rand = lcg(seed);
   let overshoot = 0;
+  let overshootRuns = 0;
   let attempts = 0;
   let reached = 0;
   for (let i = 0; i < runs; i++) {
-    const t = simulate(p, target, slotsOf, { maxAttempts: 40, rand });
+    const t = simulate(p, target, slotsOf, { maxAttempts: 60, rand });
     overshoot += Math.max(0, t.successes - target);
+    if (t.successes > target) overshootRuns++;
     attempts += t.attempts;
     if (t.successes >= target) reached++;
   }
   return {
     overshoot: overshoot / runs,
+    overshootRuns: overshootRuns / runs,
     attempts: attempts / runs,
     reached: reached / runs,
   };
 }
 
 describe("固定の並列数との比較（模擬）", () => {
-  const cap = 8;
-  const smart = (target: number) => (t: Trial) =>
-    planRetrySlots({ ...t, target, maxAttempts: 40, cap });
+  const cap = 12;
+  const smart = (target: number, percent: number) => (t: Trial) =>
+    planRetrySlots({ ...t, target, maxAttempts: 60, cap, percent });
   const fixed = () => cap;
 
-  for (const p of [0.2, 0.5, 0.8]) {
+  for (const p of [0.1, 0.3, 0.6]) {
     for (const target of [1, 3]) {
       it(`成功率 ${p}・目標 ${target}: 超過も試行も減り、届く率は落ちない`, () => {
-        const a = average(p, target, smart(target), 12345);
+        const a = average(p, target, smart(target, 10), 12345);
         const b = average(p, target, fixed, 12345);
         expect(a.overshoot).toBeLessThan(b.overshoot);
         expect(a.attempts).toBeLessThan(b.attempts);
@@ -163,12 +238,19 @@ describe("固定の並列数との比較（模擬）", () => {
     }
   }
 
-  it("上乗せの本数を変えると枠の増え方が変わる（定数が効いているか）", () => {
-    // 定数そのものは 2。これが 0 になると最初の見込みが 0/0 になり、
-    // 大きすぎると失敗が続いても枠が広がらない
-    expect(RETRY_SLOT_OPTIMISM).toBe(2);
-    expect(estimateSuccessRate({ successes: 0, attempts: 1 })).toBe(
-      RETRY_SLOT_OPTIMISM / (1 + RETRY_SLOT_OPTIMISM),
-    );
+  it("n=10 なら、目標を超える実行はおおむね n% に収まる", () => {
+    // 1束ごとの超過は n% 以下、束は何度か続くので少し積む。
+    // それでも固定並列（超過がほぼ毎回）とは桁が違う
+    for (const p of [0.1, 0.3]) {
+      const a = average(p, 1, smart(1, 10), 777);
+      expect(a.overshootRuns).toBeLessThan(0.2);
+    }
+  });
+
+  it("n を大きくすると、速さと引き換えに超過が増える（つまみが効いている）", () => {
+    const cautious = average(0.1, 1, smart(1, 5), 4242);
+    const bold = average(0.1, 1, smart(1, 40), 4242);
+    expect(bold.overshoot).toBeGreaterThan(cautious.overshoot);
+    expect(bold.attempts).toBeGreaterThan(cautious.attempts);
   });
 });
