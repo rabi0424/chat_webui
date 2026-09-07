@@ -12,6 +12,7 @@ import {
   onRateLimited,
   type RetryConfig,
 } from "./retry";
+import { planRetrySlots } from "./retry-slots";
 import { checkMonthlyLimit } from "./limit.server";
 import { isFetchableImageUrl, looksLikeImageUrl } from "./image-url";
 import { sniffImageFormat } from "./image-signature";
@@ -1481,6 +1482,25 @@ async function runRetryGenerationJob(
     }
   };
 
+  /**
+   * いま開けておく枠の数。固定なら並列数そのもの、スマートなら実行中の
+   * 成功率から決め直す（`planRetrySlots`）。
+   *
+   * 発射のたびに呼ぶ。ずらしの待ちや停止確認のあいだに結果が届いて
+   * state が動くことがあり、burst の頭で1回だけ数えると、成功が届いた
+   * あとも縮む前の枠のまま投げ足してしまう。
+   */
+  const slots = (): number =>
+    retry.smart
+      ? planRetrySlots({
+          target: retry.target,
+          successes: state.successes,
+          attempts: state.attempts,
+          maxAttempts: retry.maxAttempts,
+          cap: retry.concurrency,
+        })
+      : retry.concurrency;
+
   const launch = () => {
     const p = runAttempt(job, messages, budget, gate)
       .then(accept)
@@ -1529,7 +1549,7 @@ async function runRetryGenerationJob(
       !stopped &&
       state.successes < retry.target &&
       state.attempts + inflight.size < retry.maxAttempts &&
-      inflight.size < retry.concurrency &&
+      inflight.size < slots() &&
       Date.now() >= waitUntil() &&
       // 外部リクエストの枠を使い切る手前で切り上げ、続きは次の実行へ
       budget.canLaunch()

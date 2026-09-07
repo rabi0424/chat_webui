@@ -1,0 +1,32 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+
+/**
+ * スマート連続生成の配線。
+ *
+ * 枠を決める関数（planRetrySlots）は純粋で、tests/retry-slots.test.ts が
+ * 細かく見ている。ただし発射ループがそれを呼ばず `retry.concurrency` を
+ * 直接見ていても、画面にはスマートの表示が出て、走るのは固定の並列数
+ * ——という壊れ方をする。誰も気づけないので、配線を見張る
+ * （retry-stop-wiring.test.ts と同じ形）。
+ */
+describe("スマート連続生成の配線", () => {
+  const source = readFileSync("app/lib/generation.server.ts", "utf8");
+
+  it("発射ループは並列数を直接見ず、枠の計算を通す", () => {
+    const loop = source.match(
+      /\/\/ 目標に届くまで、上限と並列数の範囲で発射し続ける[\s\S]*?\{/,
+    );
+    expect(loop).not.toBeNull();
+    expect(loop![0]).toContain("inflight.size < slots()");
+    expect(loop![0]).not.toContain("retry.concurrency");
+  });
+
+  it("枠の計算はスマートのときだけ planRetrySlots に任せる", () => {
+    const slots = source.match(/const slots = \(\): number =>[\s\S]*?;/);
+    expect(slots).not.toBeNull();
+    expect(slots![0]).toContain("retry.smart");
+    expect(slots![0]).toContain("planRetrySlots(");
+    expect(slots![0]).toContain("cap: retry.concurrency");
+  });
+});

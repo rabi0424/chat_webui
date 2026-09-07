@@ -4,6 +4,7 @@ import {
   RETRY_CONCURRENCY_KEY,
   RETRY_ENABLED_KEY,
   RETRY_MAX_KEY,
+  RETRY_SMART_KEY,
   RETRY_TARGET_KEY,
   formatRetryProgress,
   isRetryProgress,
@@ -37,6 +38,7 @@ describe("readRetryConfig", () => {
       target: 3,
       maxAttempts: 3,
       concurrency: 3,
+      smart: false,
     });
   });
 
@@ -80,7 +82,12 @@ describe("readRetryConfig", () => {
       on({ [RETRY_TARGET_KEY]: 2.7, [RETRY_MAX_KEY]: 4.2 }),
       100,
     );
-    expect(c).toEqual({ target: 3, maxAttempts: 4, concurrency: 3 });
+    expect(c).toEqual({
+      target: 3,
+      maxAttempts: 4,
+      concurrency: 3,
+      smart: false,
+    });
   });
 
   it("天井が0や負でも、必ず1回は試せる形にする", () => {
@@ -94,7 +101,58 @@ describe("readRetryConfig", () => {
   it("文字列で送られた数値も読む（フォームからの値）", () => {
     expect(
       readRetryConfig(on({ [RETRY_TARGET_KEY]: "4", [RETRY_MAX_KEY]: "8" }), 100),
-    ).toEqual({ target: 4, maxAttempts: 8, concurrency: 4 });
+    ).toEqual({ target: 4, maxAttempts: 8, concurrency: 4, smart: false });
+  });
+
+  /**
+   * スマート連続生成。並列数は「上限」になる。未入力の既定を目標数の
+   * ままにすると、目標1のとき枠が1本から増やせず、失敗が続いても何も
+   * しない「スマート」になるので、既定は上限の試行回数に置く。
+   */
+  describe("スマート連続生成", () => {
+    it("\"on\" のときだけ有効", () => {
+      expect(readRetryConfig(on({ [RETRY_SMART_KEY]: "on" }), 100)?.smart).toBe(
+        true,
+      );
+      expect(readRetryConfig(on({ [RETRY_SMART_KEY]: "off" }), 100)?.smart).toBe(
+        false,
+      );
+      expect(readRetryConfig(on({ [RETRY_SMART_KEY]: true }), 100)?.smart).toBe(
+        false,
+      );
+      expect(readRetryConfig(on(), 100)?.smart).toBe(false);
+    });
+
+    it("並列数が未入力なら上限を試行回数に合わせる（目標数ではない）", () => {
+      expect(
+        readRetryConfig(
+          on({ [RETRY_SMART_KEY]: "on", [RETRY_TARGET_KEY]: 1, [RETRY_MAX_KEY]: 8 }),
+          100,
+        ),
+      ).toEqual({ target: 1, maxAttempts: 8, concurrency: 8, smart: true });
+    });
+
+    it("入力した並列数はそのまま上限になり、試行回数は超えない", () => {
+      const c = readRetryConfig(
+        on({
+          [RETRY_SMART_KEY]: "on",
+          [RETRY_TARGET_KEY]: 1,
+          [RETRY_MAX_KEY]: 8,
+          [RETRY_CONCURRENCY_KEY]: 3,
+        }),
+        100,
+      );
+      expect(c?.concurrency).toBe(3);
+      const over = readRetryConfig(
+        on({
+          [RETRY_SMART_KEY]: "on",
+          [RETRY_MAX_KEY]: 8,
+          [RETRY_CONCURRENCY_KEY]: 50,
+        }),
+        100,
+      );
+      expect(over?.concurrency).toBe(8);
+    });
   });
 });
 
