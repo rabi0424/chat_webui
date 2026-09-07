@@ -152,6 +152,15 @@ describe("台帳と課金", () => {
     expect(job).toContain("state.provisional = { points: soFar.points");
   });
 
+  it("エラー応答で返る拒否は、エラーではなく拒否として扱う", () => {
+    const attempt = fn("runAttempt");
+    const branch = attempt.slice(attempt.indexOf("if (!upstream.ok || !upstream.body)"));
+    expect(branch).toContain("isSafetyRejection(upstream.status, body.raw)");
+    // 本文は一度しか読めないので、読んだものを文言の組み立てにも渡す
+    expect(branch).toContain("upstreamErrorMessage(upstream, isPoe, body)");
+    expect(branch).toContain('kind: "refused", text: message');
+  });
+
   it("画像を出すモデルは、無音の待ちを長くする", () => {
     const attempt = fn("runAttempt");
     expect(attempt).toContain(

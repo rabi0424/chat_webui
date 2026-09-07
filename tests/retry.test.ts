@@ -11,6 +11,7 @@ import {
   createPendingTally,
   formatRetryProgress,
   isRetryProgress,
+  isSafetyRejection,
   onRateLimited,
   readRetryConfig,
 } from "../app/lib/retry";
@@ -340,5 +341,39 @@ describe("createPendingTally", () => {
     expect(t.successes()).toBe(0);
     t.counted("rate_limited");
     expect(t.settled()).toBe(0);
+  });
+});
+
+/**
+ * 上流のエラー応答のうち、セーフティ判定による拒否を見分ける。
+ * エラーとして扱うと「同じ失敗が続いたら打ち切る」に掛かり、
+ * 乗り越えるための機能が5回の拒否で止まる。
+ */
+describe("isSafetyRejection", () => {
+  it("API の定型文と code を拒否と読む", () => {
+    expect(
+      isSafetyRejection(
+        400,
+        "Your request was rejected by the safety system. If you believe this is an error, contact us at help.openai.com and include the request ID",
+      ),
+    ).toBe(true);
+    expect(isSafetyRejection(400, "content_policy_violation")).toBe(true);
+    expect(isSafetyRejection(400, "moderation_blocked")).toBe(true);
+    expect(
+      isSafetyRejection(403, "This request violates our usage policy."),
+    ).toBe(true);
+    expect(isSafetyRejection(422, "Content Policy Violation")).toBe(true);
+  });
+
+  it("直らないエラーを拒否と読まない", () => {
+    expect(isSafetyRejection(400, "Unknown parameter: 'foo'")).toBe(false);
+    expect(isSafetyRejection(400, "Invalid JSON body")).toBe(false);
+    expect(isSafetyRejection(500, "internal error")).toBe(false);
+  });
+
+  it("認証・残高・レート制限は文言に何があっても拒否ではない", () => {
+    expect(isSafetyRejection(401, "rejected by the safety system")).toBe(false);
+    expect(isSafetyRejection(402, "content policy: insufficient credits")).toBe(false);
+    expect(isSafetyRejection(429, "moderation rate limit")).toBe(false);
   });
 });

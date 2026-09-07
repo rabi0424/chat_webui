@@ -247,3 +247,30 @@ export function createPendingTally(): PendingTally {
     settled: () => settled,
   };
 }
+
+/**
+ * 上流のエラー応答が、セーフティ判定による拒否か。
+ *
+ * 拒否を本文ではなく HTTP のエラーで返すモデルがある（400 と
+ * "Your request was rejected by the safety system…" のような API の
+ * 定型文）。エラーとして扱うと「同じ失敗が続いたら打ち切る」に掛かり、
+ * 乗り越えるための機能が5回の拒否で止まる。拒否として扱えば、投げ直す
+ * 対象になり、打ち切りの数え上げも戻る。
+ *
+ * 「拒否文の文言は見ない」という決まりの例外。ここで見るのはモデルの
+ * 出力ではなく API 側の固定の文言と code で、言語も表現も揺れない。
+ * 見誤ったときの害も有限で、拒否をエラーと読めば打ち切りが早まる
+ * （直す前の状態）、エラーを拒否と読めば上限まで投げる（打ち切りを
+ * 足す前の状態）。成功の判定（画像があるか）には触れない。
+ *
+ * 認証（401）・残高（402）・レート制限（429）は文言に何が書いてあっても
+ * 拒否ではない。
+ */
+export const SAFETY_REJECTION_STATUSES = [400, 403, 422];
+const SAFETY_REJECTION_PATTERN =
+  /safety|moderation|content[ _-]?policy|usage[ _-]?policy|policy[ _-]?violation/i;
+
+export function isSafetyRejection(status: number, text: string): boolean {
+  if (!SAFETY_REJECTION_STATUSES.includes(status)) return false;
+  return SAFETY_REJECTION_PATTERN.test(text);
+}

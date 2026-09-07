@@ -12,6 +12,7 @@ import {
   afterAttemptSettled,
   createPendingTally,
   formatRetryProgress,
+  isSafetyRejection,
   onRateLimited,
   type RetryConfig,
 } from "./retry";
@@ -657,17 +658,49 @@ export async function requestUpstream(
 }
 
 /** 上流のエラー応答から、利用者に見せる文言を組み立てる。 */
+/**
+ * 上流のエラー応答の本文を読む。本文は一度しか読めないので、
+ * 文言の組み立てと拒否の判定の両方で使うときはここで読んで渡す。
+ *
+ * detail は利用者に見せる文言。raw は判定用で、OpenRouter が
+ * 挟んでくる元プロバイダの生のエラー（metadata.raw）と code も含める
+ * （OpenRouter 側の message が汎用的で、拒否の手がかりが raw にしか
+ * 無いことがある）。
+ */
+async function readUpstreamError(
+  upstream: Response,
+): Promise<{ detail: string; raw: string }> {
+  try {
+    const err = (await upstream.json()) as {
+      error?: {
+        message?: string;
+        code?: unknown;
+        type?: unknown;
+        metadata?: { raw?: unknown };
+      };
+    };
+    const detail = err.error?.message ?? "";
+    const raw = [
+      detail,
+      String(err.error?.code ?? ""),
+      String(err.error?.type ?? ""),
+      typeof err.error?.metadata?.raw === "string"
+        ? err.error.metadata.raw
+        : JSON.stringify(err.error?.metadata?.raw ?? ""),
+    ].join("\n");
+    return { detail, raw };
+  } catch {
+    // ステータスコードだけで十分
+    return { detail: "", raw: "" };
+  }
+}
+
 async function upstreamErrorMessage(
   upstream: Response,
   isPoe: boolean,
+  body?: { detail: string },
 ): Promise<string> {
-  let detail = "";
-  try {
-    const err = (await upstream.json()) as { error?: { message?: string } };
-    detail = err.error?.message ?? "";
-  } catch {
-    // ステータスコードだけで十分
-  }
+  const detail = (body ?? (await readUpstreamError(upstream))).detail;
   // 上流が知らないパラメータを弾いたときは、英語のメッセージだけでは
   // 何を直せばいいか分からないので、設定パネルへ誘導する
   const hint = /unknown parameter|unsupported parameter/i.test(detail)
@@ -1185,7 +1218,15 @@ async function runAttempt(
     return { kind: "rate_limited", waitMs };
   }
   if (!upstream.ok || !upstream.body) {
-    return { kind: "error", error: await upstreamErrorMessage(upstream, isPoe) };
+    const body = await readUpstreamError(upstream);
+    const message = await upstreamErrorMessage(upstream, isPoe, body);
+    // 拒否を本文ではなくエラー応答で返すモデルがある。エラーにすると
+    // 「同じ失敗が続いたら打ち切る」に掛かるので、拒否として扱う
+    // （isSafetyRejection の注記）
+    if (isSafetyRejection(upstream.status, body.raw)) {
+      return { kind: "refused", text: message, usageJson: null };
+    }
+    return { kind: "error", error: message };
   }
 
   const result = await readUpstreamStream(
