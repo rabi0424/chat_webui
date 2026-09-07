@@ -259,14 +259,13 @@ describe("進捗の見出し", () => {
  * 待ち直しの上限（3回）を使い切り、一度も待たずに打ち切っていた。
  * 課金は済んでいるのに成果は無い、という終わり方になる。
  */
-describe("レート制限の待ち直し", () => {
-  const fresh = () => ({ pauseUntil: 0, rounds: 0, exhausted: false });
+describe("一時的な不調の待ち直し", () => {
+  const fresh = () => ({ pauseUntil: 0, rounds: 0 });
 
   it("最初の1件で待ちに入り、1回と数える", () => {
     const s = onTransientFailure(fresh(), { now: 1000 });
     expect(s.rounds).toBe(1);
     expect(s.pauseUntil).toBe(1000 + RATE_LIMIT_BACKOFF_MS[0]);
-    expect(s.exhausted).toBe(false);
   });
 
   /** これが直したかったところ。 */
@@ -277,22 +276,23 @@ describe("レート制限の待ち直し", () => {
     s = onTransientFailure(s, { now: 1002 });
     s = onTransientFailure(s, { now: 1003 });
     expect(s.rounds).toBe(1);
-    expect(s.exhausted).toBe(false);
   });
 
-  it("並列4でも、待ち直しの上限まで3回ぶん粘れる", () => {
+  it("何回続いても打ち切らず、待ちは60秒で頭打ち", () => {
     let s = fresh();
     let now = 1000;
-    for (let round = 0; round < 3; round++) {
-      // 1回の制限で4件返る
+    for (let round = 0; round < 20; round++) {
       for (let i = 0; i < 4; i++) s = onTransientFailure(s, { now: now + i });
-      expect(s.exhausted).toBe(false);
       now = s.pauseUntil + 1; // 待ち終わって投げ直す
     }
-    expect(s.rounds).toBe(3);
-    // 4回目でようやく打ち切る
-    s = onTransientFailure(s, { now });
-    expect(s.exhausted).toBe(true);
+    expect(s.rounds).toBe(20);
+    // 20回目の待ちも最後の値で、打ち切りの印はどこにも無い
+    expect(s.pauseUntil).toBe(now - 1);
+    expect(s.pauseUntil - (now - 1 - RATE_LIMIT_BACKOFF_MS.at(-1)!)).toBe(
+      RATE_LIMIT_BACKOFF_MS.at(-1),
+    );
+    expect(RATE_LIMIT_BACKOFF_MS.at(-1)).toBe(60_000);
+    expect("exhausted" in s).toBe(false);
   });
 
   it("待ちは回を追うごとに伸びる", () => {
@@ -302,6 +302,9 @@ describe("レート制限の待ち直し", () => {
     expect(s.pauseUntil - RATE_LIMIT_BACKOFF_MS[0]).toBe(
       RATE_LIMIT_BACKOFF_MS[1],
     );
+    for (let i = 1; i < RATE_LIMIT_BACKOFF_MS.length; i++) {
+      expect(RATE_LIMIT_BACKOFF_MS[i]).toBeGreaterThan(RATE_LIMIT_BACKOFF_MS[i - 1]);
+    }
   });
 
   it("上流が待ち時間を言えばそれに従う", () => {
@@ -332,23 +335,17 @@ describe("レート制限の待ち直し", () => {
 });
 
 describe("待ち直しの回数の戻し", () => {
-  it("レート制限以外の結果が返ったら回数を 0 に戻し、待ちの時刻は保つ", () => {
-    const next = afterAttemptSettled({ pauseUntil: 9_000, rounds: 2, exhausted: false });
+  it("成功か拒否が返ったら回数を 0 に戻し、待ちの時刻は保つ", () => {
+    const next = afterAttemptSettled({ pauseUntil: 9_000, rounds: 2 });
     expect(next.rounds).toBe(0);
     expect(next.pauseUntil).toBe(9_000);
   });
 
-  it("戻したあとは、また上限まで待ち直せる", () => {
-    // 2回待ったあとに1本通り、そのあと制限が続いても3回ぶん粘れる
-    let st = { pauseUntil: 0, rounds: 2, exhausted: false };
+  it("戻したあとは、待ちが短いところから始まる", () => {
+    let st = { pauseUntil: 0, rounds: 5 };
     st = afterAttemptSettled(st);
-    let now = 100_000;
-    for (let i = 0; i < 3; i++) {
-      st = onTransientFailure(st, { now });
-      expect(st.exhausted).toBe(false);
-      now = st.pauseUntil + 1;
-    }
-    expect(onTransientFailure(st, { now }).exhausted).toBe(true);
+    st = onTransientFailure(st, { now: 100_000 });
+    expect(st.pauseUntil).toBe(100_000 + RATE_LIMIT_BACKOFF_MS[0]);
   });
 });
 

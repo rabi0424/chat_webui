@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 /**
  * リトライ生成の発射ループの配線。
  *
- * 打ち切りの理由はローカル変数（stopped / transientExhausted /
- * fatalStopped / budgetStopped / requestsExhausted）に散っていて、続行判定（moreAttempts）
+ * 打ち切りの理由はローカル変数（stopped / fatalStopped /
+ * budgetStopped / requestsExhausted）に散っていて、続行判定（moreAttempts）
  * への追記を1つ忘れても画面には何も出ない。実際に budgetStopped が
  * 抜けていて、月間上限に達した実行が「枠切れで中断しただけ」と解釈され、
  * DO が 50ms 間隔でアラームを打ち直し続けた——毎周 R2 と D1 を読む無限
@@ -28,12 +28,13 @@ function fn(name: string): string {
 }
 
 describe("リトライ生成の続行判定", () => {
-  it("打ち切りの理由が5つとも続行判定に入っている", () => {
+  it("打ち切りの理由が4つとも続行判定に入っていて、不調の連続は入っていない", () => {
     const m = source.match(/const moreAttempts =[\s\S]*?;/);
     expect(m).not.toBeNull();
     const expr = m![0];
     expect(expr).toContain("!stopped");
-    expect(expr).toContain("!transientExhausted");
+    // 一時的な不調は何回続いても打ち切らない
+    expect(source).not.toContain("transientExhausted");
     expect(expr).toContain("!fatalStopped");
     expect(expr).toContain("!budgetStopped");
     expect(expr).toContain("!requestsExhausted");

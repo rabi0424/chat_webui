@@ -20,9 +20,11 @@
  *   1. 200 の中身に画像があるか（断りの文章も 200 で返る）。ここでは
  *      扱わず、呼ぶ側が中身を見る。
  *   2. 400/403/422 がセーフティ判定か、それ以外の誤りか。窓口が同じ
- *      コードを両方に使う。Poe は error.type、OpenRouter は 403 と
- *      metadata（reasons / flagged_input）で分かるが、元プロバイダの
- *      エラーが包まれて届く場合は決まり文句で補う。
+ *      コードを両方に使う。**文言では見分けない**——窓口やモデルが返す
+ *      文言の一覧を知らないので、知っている語に当たったかどうかは根拠に
+ *      ならない。区別できないものは投げ直す側に倒す。誤って止めると
+ *      この機能そのものが使えず、誤って投げ直しても失うのは試行回数
+ *      だけ（4xx は課金されずに即座に返る）。
  */
 
 export type UpstreamProvider = "poe" | "openrouter";
@@ -40,25 +42,13 @@ export interface UpstreamFailure {
    * こちらで切った、のように状態そのものが無ければ null。
    */
   status: number | null;
-  /** Poe の error.type / OpenRouter の error.metadata.error_type。 */
+  /**
+   * Poe の error.type / OpenRouter の error.metadata.error_type と文言。
+   * 判定には使わない（上の注記）。要約に出すために運ぶだけ。
+   */
   type?: string | null;
   message?: string | null;
-  /** OpenRouter が包む元プロバイダのエラー（metadata を文字列にしたもの）。 */
   raw?: string | null;
-}
-
-/**
- * セーフティ判定の手がかり。窓口の文書にある語（moderation / flagged /
- * guardrail）と、元プロバイダが使う語（safety / content policy）。
- * モデルの出力ではなく API の定型文に対して見る。
- */
-const MODERATION_PATTERN =
-  /moderat|flagged|guardrail|safety|content[ _-]?policy|usage[ _-]?policy|policy[ _-]?violation/i;
-
-function looksModerated(f: UpstreamFailure): boolean {
-  return MODERATION_PATTERN.test(
-    [f.type ?? "", f.message ?? "", f.raw ?? ""].join("\n"),
-  );
 }
 
 export function classifyUpstreamFailure(f: UpstreamFailure): UpstreamVerdict {
@@ -75,21 +65,17 @@ export function classifyUpstreamFailure(f: UpstreamFailure): UpstreamVerdict {
     return { kind: "transient" };
   }
 
-  if (status === 403) {
-    // OpenRouter: 「insufficient permissions, guardrail block, or moderation
-    // flag」。判定に掛かったときは metadata に reasons / flagged_input。
-    // Poe: type が moderation_error。どちらも手がかりの語に含まれるので
-    // 同じ検査で拾える（Poe だけの分岐を置いても結果は変わらなかった）
-    return looksModerated(f) ? { kind: "refused" } : { kind: "fatal" };
+  // 403: OpenRouter は「insufficient permissions, guardrail block, or
+  // moderation flag」、Poe は moderation_error。400/422: 文書上は「不正な
+  // 依頼」だが、元プロバイダのセーフティ判定がこのコードで包まれて届く
+  // （"rejected by the safety system" が 400 で来た実例がある）。
+  // どれもセーフティ判定と区別できないので、投げ直す側に倒す
+  if (status === 400 || status === 403 || status === 422) {
+    return { kind: "refused" };
   }
 
-  if (status === 400 || status === 422) {
-    // 文書上は「不正な依頼」だが、元プロバイダのセーフティ判定が
-    // このコードで包まれて届くことがある（"rejected by the safety system"）
-    return looksModerated(f) ? { kind: "refused" } : { kind: "fatal" };
-  }
-
-  // 401 認証・402 残高・404 モデル無し・413 大きすぎる、その他の 4xx
+  // 401 認証・402 残高・404 モデル無し・413 大きすぎる、その他の 4xx。
+  // セーフティ判定がこれらで届くことは文書に無い
   if (status >= 400) return { kind: "fatal" };
 
   // 4xx でも 5xx でもない失敗は分からないので、待って投げ直す側に倒す

@@ -41,11 +41,8 @@ describe("一時的な不調（待ってから投げ直す。試行に数えな�
 
 describe("直らない（その場で止める）", () => {
   it.each([
-    ["OpenRouter 400 bad request", or({ status: 400, message: "Bad Request" })],
     ["OpenRouter 401 invalid credentials", or({ status: 401 })],
     ["OpenRouter 402 insufficient credits", or({ status: 402 })],
-    ["OpenRouter 403 insufficient permissions", or({ status: 403, message: "Forbidden" })],
-    ["Poe 400 invalid_request_error", poe({ status: 400, type: "invalid_request_error" })],
     ["Poe 401 authentication_error", poe({ status: 401, type: "authentication_error" })],
     ["Poe 402 insufficient_credits", poe({ status: 402, type: "insufficient_credits" })],
     ["Poe 404 not_found_error", poe({ status: 404, type: "not_found_error" })],
@@ -55,67 +52,38 @@ describe("直らない（その場で止める）", () => {
     expect(classifyUpstreamFailure(f).kind).toBe("fatal");
   });
 
-  it("残高不足や認証切れは、文言に何が書いてあっても直らない", () => {
+  it("文言は見ない。残高不足や認証切れは、何が書いてあっても直らない", () => {
     expect(
       classifyUpstreamFailure(or({ status: 402, message: "flagged by moderation" })).kind,
     ).toBe("fatal");
     expect(
-      classifyUpstreamFailure(poe({ status: 401, message: "safety" })).kind,
+      classifyUpstreamFailure(poe({ status: 401, type: "moderation_error", message: "safety" })).kind,
     ).toBe("fatal");
   });
 });
 
+/**
+ * セーフティ判定と「不正な依頼」は同じコードで届き、文言でしか区別
+ * できない。文言の一覧は知らないので見ない。区別できないものは投げ直す
+ * 側に倒す（誤って止めるとこの機能が使えない。誤って投げ直しても
+ * 失うのは試行回数だけ）。
+ */
 describe("断られた（投げ直す。試行に数える）", () => {
-  it("OpenRouter の 403 で、判定の理由（metadata.reasons / flagged_input）がある", () => {
-    expect(
-      classifyUpstreamFailure(
-        or({
-          status: 403,
-          message: "Input flagged",
-          raw: JSON.stringify({ reasons: ["sexual"], flagged_input: "…", provider_name: "OpenAI" }),
-        }),
-      ).kind,
-    ).toBe("refused");
-    expect(
-      classifyUpstreamFailure(or({ status: 403, message: "guardrail block" })).kind,
-    ).toBe("refused");
+  it.each([
+    ["OpenRouter 403（moderation flag / guardrail / permissions のどれでも）", or({ status: 403 })],
+    ["OpenRouter 403 に判定の理由が付いている", or({ status: 403, raw: JSON.stringify({ reasons: ["x"], flagged_input: "…" }) })],
+    ["Poe 403 moderation_error", poe({ status: 403, type: "moderation_error" })],
+    ["Poe 403 で型が無い", poe({ status: 403 })],
+    ["OpenRouter 400（文言が何であれ）", or({ status: 400, message: "Bad Request" })],
+    ["元プロバイダのセーフティ判定が 400 で包まれて届く", or({ status: 400, message: "Your request was rejected by the safety system." })],
+    ["Poe 400 invalid_request_error", poe({ status: 400, type: "invalid_request_error" })],
+    ["422", or({ status: 422 })],
+    ["200 のあとに本文の中で届いた 400（OpenRouter は元プロバイダの状態を code に入れる）", or({ status: 400, type: "provider_error" })],
+  ])("%s", (_name, f) => {
+    expect(classifyUpstreamFailure(f).kind).toBe("refused");
   });
 
-  it("Poe の 403 moderation_error", () => {
-    expect(
-      classifyUpstreamFailure(poe({ status: 403, type: "moderation_error" })).kind,
-    ).toBe("refused");
-    // 型が無く、文言にも手がかりが無い 403 は権限の問題とみなす
-    expect(classifyUpstreamFailure(poe({ status: 403 })).kind).toBe("fatal");
-  });
-
-  it("元プロバイダのセーフティ判定が 400 で包まれて届く", () => {
-    expect(
-      classifyUpstreamFailure(
-        or({
-          status: 400,
-          message:
-            "Your request was rejected by the safety system. If you believe this is an error, contact us at help.openai.com and include the request ID",
-        }),
-      ).kind,
-    ).toBe("refused");
-    expect(
-      classifyUpstreamFailure(
-        or({ status: 400, raw: JSON.stringify({ raw: '{"error":{"code":"content_policy_violation"}}' }) }),
-      ).kind,
-    ).toBe("refused");
-    expect(
-      classifyUpstreamFailure(or({ status: 422, message: "moderation_blocked" })).kind,
-    ).toBe("refused");
-  });
-
-  it("200 のあとに本文の中で届いたエラーも、code があれば同じ分け方", () => {
-    // OpenRouter は元プロバイダの状態を code に入れてくる
-    expect(
-      classifyUpstreamFailure(
-        or({ status: 400, type: "provider_error", message: "rejected by the safety system" }),
-      ).kind,
-    ).toBe("refused");
+  it("本文の中で届いた 5xx は一時的な不調", () => {
     expect(classifyUpstreamFailure(or({ status: 502, type: "provider_error" })).kind).toBe(
       "transient",
     );

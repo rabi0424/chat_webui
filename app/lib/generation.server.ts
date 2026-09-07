@@ -1599,8 +1599,6 @@ async function runRetryGenerationJob(
   let lost = false;
   /** 直近の生存確認が D1 の失敗で書けなかった。書けるまで発射しない。 */
   let touchFailed = false;
-  /** 一時的な不調が続き、待っても何も通らないので打ち切った。 */
-  let transientExhausted = false;
   /** 直らないエラーを受けたので、その場で打ち切った。 */
   let fatalStopped = false;
   const inflight = new Set<Promise<void>>();
@@ -1790,20 +1788,13 @@ async function runRetryGenerationJob(
         // 上流が待ち時間を言っていればそれに従う
         state.errors++;
         state.lastError = r.reason;
+        // 不調が続いても打ち切らない。待ちを伸ばしながら投げ直す
         const next = onTransientFailure(
-          {
-            pauseUntil: state.pauseUntil,
-            rounds: state.rateLimitRounds,
-            exhausted: transientExhausted,
-          },
+          { pauseUntil: state.pauseUntil, rounds: state.rateLimitRounds },
           { now: Date.now(), waitMs: r.waitMs ?? undefined },
         );
         state.pauseUntil = next.pauseUntil;
         state.rateLimitRounds = next.rounds;
-        if (next.exhausted) {
-          state.lastError = `一時的な不調が続いたため打ち切りました: ${r.reason}`;
-          transientExhausted = true;
-        }
         return;
       }
 
@@ -1812,7 +1803,6 @@ async function runRetryGenerationJob(
       state.rateLimitRounds = afterAttemptSettled({
         pauseUntil: state.pauseUntil,
         rounds: state.rateLimitRounds,
-        exhausted: transientExhausted,
       }).rounds;
 
       // 試行に数えた以上、必ずどれか1つの内訳にも数える
@@ -1922,7 +1912,7 @@ async function runRetryGenerationJob(
    * 空いた枠にすぐ次を発射し、1本終わるたびに取り込む。
    * バッチ単位で待つと、先に終わった成功が最も遅い1本に足を引っぱられる。
    */
-  while (!stopped && !transientExhausted && !fatalStopped) {
+  while (!stopped && !fatalStopped) {
     if (Date.now() < waitUntil()) {
       await sleep(waitUntil() - Date.now());
       continue;
@@ -2004,7 +1994,6 @@ async function runRetryGenerationJob(
   }
   const moreAttempts =
     !stopped &&
-    !transientExhausted &&
     !fatalStopped &&
     !budgetStopped &&
     !requestsExhausted &&
@@ -2053,11 +2042,7 @@ async function runRetryGenerationJob(
 
   const lines: string[] = [];
   const cutShort =
-    budgetStopped ||
-    fatalStopped ||
-    transientExhausted ||
-    requestsExhausted ||
-    stalled;
+    budgetStopped || fatalStopped || requestsExhausted || stalled;
   lines.push(
     cutShort
       ? `**打ち切りました** — 成功 ${state.successes}件（目標 ${retry.target}件）・試行 ${state.attempts}回`
@@ -2071,8 +2056,6 @@ async function runRetryGenerationJob(
     );
   } else if (fatalStopped) {
     lines.push("直らないエラーを受けたので、その場で止めました。");
-  } else if (transientExhausted) {
-    lines.push("一時的な不調が続き、待っても何も通らなかったので止めました。");
   }
   if (state.successes > retry.target) {
     lines.push(

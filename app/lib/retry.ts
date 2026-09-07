@@ -53,9 +53,6 @@ export interface RetryConfig {
 export const RETRY_DEFAULT_TARGET = 1;
 export const RETRY_DEFAULT_MAX_ATTEMPTS = 5;
 
-/** レート制限で待ち直す回数の上限（試行回数とは別勘定）。 */
-export const RETRY_RATE_LIMIT_ROUNDS = 3;
-
 function toInt(value: unknown, fallback: number): number {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
@@ -207,16 +204,22 @@ export function isRetryProgress(content: string): boolean {
   return content.startsWith(RETRY_PROGRESS_PREFIX);
 }
 
-/** 一時的な不調に当たったときの待ち時間（ミリ秒）。回を追うごとに伸ばす。 */
-export const RATE_LIMIT_BACKOFF_MS = [2_000, 4_000, 8_000];
+/**
+ * 一時的な不調に当たったときの待ち時間（ミリ秒）。回を追うごとに伸ばし、
+ * 最後の値で頭打ち。
+ *
+ * 不調が続いても打ち切らない（打ち切るのは直らないエラーだけ）。
+ * その代わり、落ちている上流を短い間隔で叩き続けないよう、待ちを
+ * 60秒まで伸ばす。終わりは、投げた本数の柵（retryRequestCap）か、
+ * 利用者の停止。
+ */
+export const RATE_LIMIT_BACKOFF_MS = [2_000, 4_000, 8_000, 16_000, 32_000, 60_000];
 
 export interface RateLimitState {
   /** この時刻まで新しい発射を控える。 */
   pauseUntil: number;
-  /** 待ち直した回数。 */
+  /** 続けて待ち直した回数。成功か拒否が返れば 0 に戻る。 */
   rounds: number;
-  /** 上限に達したので打ち切る。 */
-  exhausted: boolean;
 }
 
 /**
@@ -224,20 +227,16 @@ export interface RateLimitState {
  * 待ちと回数の更新。
  *
  * **並列で走っている本数ぶんの応答が、ほぼ同時に 429 で返る。**
- * 1つ受けるたびに回数を増やしていたので、並列4なら1回の制限で
- * 待ち直しの上限（3回）を使い切り、**一度も待たずに打ち切って**いた。
- * 課金は済んでいるのに成果は無い、という一番もったいない終わり方になる。
- *
- * 待っている最中に届いたものは同じ回の余波とみなし、回数は増やさない。
- * 待ち時間だけは長いほうへ伸ばす（上流が Retry-After で長めを指示して
- * きた場合に、短いほうで先に投げ直さないため）。
+ * 1つ受けるたびに回数を増やすと、並列4なら1回の制限で待ちが一気に
+ * 長くなる。待っている最中に届いたものは同じ回の余波とみなし、回数は
+ * 増やさない。待ち時間だけは長いほうへ伸ばす（上流が Retry-After で
+ * 長めを指示してきた場合に、短いほうで先に投げ直さないため）。
  */
 export function onTransientFailure(
   state: RateLimitState,
-  opts: { now: number; waitMs?: number; maxRounds?: number },
+  opts: { now: number; waitMs?: number },
 ): RateLimitState {
   const { now, waitMs } = opts;
-  const maxRounds = opts.maxRounds ?? RETRY_RATE_LIMIT_ROUNDS;
   const backoff =
     RATE_LIMIT_BACKOFF_MS[
       Math.min(state.rounds, RATE_LIMIT_BACKOFF_MS.length - 1)
@@ -248,19 +247,14 @@ export function onTransientFailure(
   if (now < state.pauseUntil) {
     return { ...state, pauseUntil: Math.max(state.pauseUntil, now + wait) };
   }
-  if (state.rounds >= maxRounds) {
-    return { ...state, exhausted: true };
-  }
-  return { pauseUntil: now + wait, rounds: state.rounds + 1, exhausted: false };
+  return { pauseUntil: now + wait, rounds: state.rounds + 1 };
 }
 
 /**
  * 成功か拒否が1つ返ったときの、待ち直し回数の扱い。
  *
- * 回数は増える一方だったので、長い実行で分単位の制限に3回触れると、
- * 毎回きちんと待てていても試行を残して打ち切っていた。数えたいのは
- * 「待っても何も通らない」が続いた回数なので、何か1つでも通ったら
- * 数え直す。
+ * 回数は待ち時間の長さを決める。「待っても何も通らない」が続いた回数
+ * なので、何か1つでも通ったら数え直し、待ちを短いところから始める。
  */
 export function afterAttemptSettled(state: RateLimitState): RateLimitState {
   return { ...state, rounds: 0 };
@@ -311,11 +305,10 @@ export function createPendingTally(): PendingTally {
 /**
  * 1回の実行で上流へ投げてよい本数の、いちばん外側の柵。
  *
- * 試行回数の上限はレート制限（429）を数えない。待ち直しの回数にも
- * 上限はあるが、何か1つ通れば数え直すので、429 だけを数えると理屈の
- * 上では「試行回数 × 3 × 並列数」まで膨らみうる。実際には待ちを挟む
- * ので時間が先に尽きるが、どんな経路でも越えられない数を1つ置く。
- * 429 を含めた上流への本数が「上限試行回数 × この倍率」に達したら
+ * 試行回数の上限は一時的な不調（429・5xx・切断）を数えず、不調は
+ * 何回続いても打ち切らない。上流が落ちているあいだは待ちを伸ばし
+ * ながら投げ続けるので、どんな経路でも越えられない数を1つ置く。
+ * 不調を含めた上流への本数が「上限試行回数 × この倍率」に達したら
  * 打ち切る。
  */
 export const RETRY_REQUEST_CAP_FACTOR = 3;
