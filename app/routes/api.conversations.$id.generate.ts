@@ -103,7 +103,19 @@ export async function action({ request, params, context }: Route.ActionArgs) {
 
   // 開始に失敗したら、保存した発言とプレースホルダを取り消してから返す。
   // 保存だけが残ると、送り直すたびに同じ発言が木へ積まれる
-  const undoAndFail = async () => {
+  /**
+   * 実行体を起こせなかったときの後始末。
+   *
+   * **理由を必ず添える。** 握り潰していたので、利用者からは
+   * 「生成の開始に失敗しました」としか見えず、ストレージが一杯なのか
+   * 実行体が落ちているのか、こちらから確かめる手立てが無かった。
+   */
+  const undoAndFail = async (reason: string) => {
+    console.error("[gen] 生成の開始に失敗しました", {
+      conversationId: params.id,
+      assistantMessageId,
+      reason,
+    });
     await undoGeneration({
       conversationId: params.id,
       userMessageId,
@@ -117,7 +129,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         assistantMessageId,
       });
     });
-    return apiError("生成の開始に失敗しました", 502);
+    return apiError(`生成の開始に失敗しました: ${reason}`, 502);
   };
 
   // 生成ジョブをDurable Objectのアラームに登録（ブラウザ切断後も完了まで継続）
@@ -145,15 +157,20 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         })),
       }),
     });
-  } catch {
+  } catch (e) {
     // DO の起動失敗・ストレージ書き込み失敗は**非ok応答ではなく例外**として
     // 現れる。下の !ok 分岐だけでは、この経路で発言と「生成中」の応答が
     // 永久に残っていた
-    return undoAndFail();
+    return undoAndFail(
+      `実行体を起こせませんでした: ${(e as Error).message ?? e}`,
+    );
   }
 
   if (!doResponse.ok) {
-    return undoAndFail();
+    const detail = await doResponse.text().catch(() => "");
+    return undoAndFail(
+      `実行体が ${doResponse.status} を返しました${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+    );
   }
 
   return apiJson<GenerateResponse>({ userMessageId, assistantMessageId });

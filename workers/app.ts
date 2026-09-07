@@ -120,15 +120,28 @@ export class GenerationRunner extends DurableObject {
     await this.ctx.storage.delete("job");
   }
 
+  /**
+   * ジョブを受け取ってアラームに載せる。
+   *
+   * **失敗の理由を返す。** 例外のまま外へ出すと、呼ぶ側（生成の入口）
+   * には「起動に失敗した」ことしか分からず、ストレージが一杯なのか
+   * 別の理由なのかを確かめる手立てが無かった。
+   */
   override async fetch(request: Request): Promise<Response> {
     // /attempt は「成功するまで生成」の1本担当。/start は生成の開始
     // （見出しを持つ司令役、または単発の生成）。形は job.kind で見分ける
-    const job = (await request.json()) as GenerationJob | AttemptJob;
-    await this.putJob(job as GenerationJob);
-    // 新しいジョブなので、前のジョブの残骸が居たら捨てる
-    await this.ctx.storage.delete(STATE_KEY);
-    await this.ctx.storage.setAlarm(Date.now() + 50);
-    return Response.json({ ok: true }, { status: 202 });
+    try {
+      const job = (await request.json()) as GenerationJob | AttemptJob;
+      await this.putJob(job as GenerationJob);
+      // 新しいジョブなので、前のジョブの残骸が居たら捨てる
+      await this.ctx.storage.delete(STATE_KEY);
+      await this.ctx.storage.setAlarm(Date.now() + 50);
+      return Response.json({ ok: true }, { status: 202 });
+    } catch (e) {
+      const reason = (e as Error).message ?? String(e);
+      console.error("[gen] 実行体がジョブを受け取れませんでした", reason);
+      return Response.json({ error: reason }, { status: 500 });
+    }
   }
 
   override async alarm(): Promise<void> {
@@ -138,7 +151,10 @@ export class GenerationRunner extends DurableObject {
       // 1本担当。結果は D1 に書き、例外は外へ出さない（出すとアラームが
       // 再送され、同じ依頼をもう一度投げて二重に課金される）
       await runAttemptJob(job);
-      await this.clearJob();
+      // 担当は使い捨て。**置き場を丸ごと空にする**——1本ごとに別の実行を
+      // 起こすので、依頼文の写しが積もるとアカウント全体のストレージを
+      // 食い、やがてどの生成も始められなくなる
+      await this.ctx.storage.deleteAll();
       return;
     }
     const state = (await this.ctx.storage.get<RetryRunState>(STATE_KEY)) ?? null;

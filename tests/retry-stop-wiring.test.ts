@@ -238,7 +238,22 @@ describe("DO の振り分けと単発の生成", () => {
     const attemptAt = alarm.indexOf("await runAttemptJob(job)");
     expect(attemptAt).toBeGreaterThan(-1);
     expect(attemptAt).toBeLessThan(alarm.indexOf("await getMessage("));
-    expect(alarm.slice(attemptAt, attemptAt + 200)).toContain("await this.clearJob()");
+    // 担当は使い捨て。置き場を丸ごと空にする（依頼文の写しが積もると
+    // アカウント全体のストレージを食い、どの生成も始められなくなる）
+    expect(alarm.slice(attemptAt, attemptAt + 300)).toContain(
+      "await this.ctx.storage.deleteAll()",
+    );
+  });
+
+  it("ジョブを受け取れなければ、理由を返す（例外のまま外へ出さない）", () => {
+    const fetchBody = worker.slice(
+      worker.indexOf("override async fetch(request: Request)"),
+    );
+    const body = fetchBody.slice(0, fetchBody.indexOf("\n  override async alarm"));
+    expect(body).toContain("try {");
+    expect(body).toContain("} catch (e) {");
+    expect(body).toContain("status: 500");
+    expect(body).toContain("error: reason");
   });
 
   it("「成功するまで生成」は、途中経過が無いアラームでも確定させず再入する", () => {

@@ -11,6 +11,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   startOk: true,
   limitBlocked: false,
+  /** 実行体が例外を投げる（起動そのものに失敗した）。 */
+  startThrows: null as string | null,
+  /** 実行体が返す本文（失敗の理由）。 */
+  startBody: "ng",
   undoCalls: [] as unknown[],
 }));
 
@@ -42,10 +46,12 @@ const context = {
       GENERATOR: {
         idFromName: () => "id",
         get: () => ({
-          fetch: async () =>
-            new Response(state.startOk ? "ok" : "ng", {
+          fetch: async () => {
+            if (state.startThrows) throw new Error(state.startThrows);
+            return new Response(state.startOk ? "ok" : state.startBody, {
               status: state.startOk ? 200 : 500,
-            }),
+            });
+          },
         }),
       },
     },
@@ -69,8 +75,13 @@ const send = () =>
 beforeEach(() => {
   state.startOk = true;
   state.limitBlocked = false;
+  state.startThrows = null;
+  state.startBody = "ng";
   state.undoCalls = [];
 });
+
+const message = async (res: Response) =>
+  ((await res.json()) as { error?: string }).error ?? "";
 
 describe("生成の開始", () => {
   it("うまくいけば、取り消さない", async () => {
@@ -96,6 +107,28 @@ describe("生成の開始", () => {
       assistantMessageId: "a1",
       previousLeafId: "old-leaf",
     });
+  });
+
+  /**
+   * 理由を握り潰していたので、利用者からは「生成の開始に失敗しました」と
+   * しか見えず、ストレージが一杯なのか実行体が落ちているのかを確かめる
+   * 手立てが無かった。実際にこれで、原因の切り分けに丸一往復かかった。
+   */
+  it("実行体が返した理由を、そのまま利用者へ伝える", async () => {
+    state.startOk = false;
+    state.startBody = '{"error":"database or disk is full"}';
+    const text = await message(await send());
+    expect(text).toContain("生成の開始に失敗しました");
+    expect(text).toContain("500");
+    expect(text).toContain("database or disk is full");
+  });
+
+  it("実行体を起こせなかったときも、例外の中身を伝える", async () => {
+    state.startThrows = "Durable Object is overloaded";
+    const res = await send();
+    expect(res.status).toBe(502);
+    expect(await message(res)).toContain("Durable Object is overloaded");
+    expect(state.undoCalls).toHaveLength(1);
   });
 
   it("上限で止めるときは、そもそも保存しない", async () => {
