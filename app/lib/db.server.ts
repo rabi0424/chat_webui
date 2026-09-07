@@ -26,6 +26,8 @@ import {
   USAGE_BY_MODEL_SQL,
   USAGE_DAILY_SQL,
   USAGE_TOTALS_SQL,
+  FLUSH_GENERATION_SQL,
+  FLUSH_STOP_CHECK_SQL,
   clearPendingDeletionsSql,
   generatedImagesSql,
   searchConversationsSql,
@@ -1528,28 +1530,31 @@ export async function undoGeneration(params: {
 }
 
 /**
- * 生成中の部分保存。停止要求が入っていれば true を返す。
+ * 生成中の部分保存。停止要求が入っていれば stopRequested を返す。
  *
  * 保存と停止要求の確認は1回のbatchにまとめる。D1への呼び出しも
  * サブリクエストとして数えられ、生成中はこれが最も高い頻度で走るため
  * （1回の実行あたりの上限に一番近づくのがここ）。
+ *
+ * applied は保存が「生成中の行」に当たったか。当たらなければ行が消えたか
+ * 確定済みで、成果を受け取る先が無い。呼ぶ側は停止と同じに扱う
+ * （FLUSH_GENERATION_SQL の注記）。
  */
 export async function flushGeneration(
   messageId: string,
   partial: { content: string; reasoning: string | null },
-): Promise<{ stopRequested: boolean }> {
+): Promise<{ stopRequested: boolean; applied: boolean }> {
   const d = await db();
-  const [, check] = await d.batch<{ stop_requested: number }>([
+  const [update, check] = await d.batch<{ stop_requested: number }>([
     d
-      .prepare(
-        "UPDATE messages SET content = ?, reasoning = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'",
-      )
+      .prepare(FLUSH_GENERATION_SQL)
       .bind(partial.content, partial.reasoning, Date.now(), messageId),
-    d
-      .prepare("SELECT stop_requested FROM messages WHERE id = ?")
-      .bind(messageId),
+    d.prepare(FLUSH_STOP_CHECK_SQL).bind(messageId),
   ]);
-  return { stopRequested: (check.results[0]?.stop_requested ?? 0) === 1 };
+  return {
+    stopRequested: (check.results[0]?.stop_requested ?? 0) === 1,
+    applied: (update.meta.changes ?? 0) > 0,
+  };
 }
 
 /**

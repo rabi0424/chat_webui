@@ -18,7 +18,8 @@ describe("スマート生成の配線", () => {
       /\/\/ 目標に届くまで、上限と並列数の範囲で発射し続ける[\s\S]*?\{/,
     );
     expect(loop).not.toBeNull();
-    expect(loop![0]).toContain("inflight.size < slots()");
+    // 走っている本数は、取り込み中の分を除いた running() で数える
+    expect(loop![0]).toContain("running() < slots()");
     expect(loop![0]).not.toContain("retry.concurrency");
   });
 

@@ -486,6 +486,20 @@ export const USAGE_BY_MODEL_SQL = `SELECT model_id,
  * 依頼で何十枚も生成する、最も高額になりうるモードの支出だけが抜けていた。
  * message_id の一意索引があるので、二度流しても二重には数えない。
  */
+/**
+ * 生成中の部分保存と、停止要求の確認。
+ *
+ * 保存は「まだ生成中の行」にだけ当てる。当たらなかった（changes = 0）と
+ * いうことは、行が消えたか、中断とみなされて確定済みになったかで、
+ * どちらにせよこの実行の成果を受け取る先が無い。呼ぶ側はそれを
+ * 停止要求と同じに扱う——扱わないと、会話を消しても発射ループが
+ * チャンクの終わりまで投げ続け、課金だけが残る。
+ */
+export const FLUSH_GENERATION_SQL =
+  "UPDATE messages SET content = ?, reasoning = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'";
+export const FLUSH_STOP_CHECK_SQL =
+  "SELECT stop_requested FROM messages WHERE id = ?";
+
 export function appendAssistantMessageStatements(params: {
   id: string;
   conversationId: string;

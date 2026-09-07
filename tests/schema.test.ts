@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   CONVERSATIONS_SIDEBAR_SQL,
   DUE_PENDING_DELETIONS_SQL,
+  FLUSH_GENERATION_SQL,
+  FLUSH_STOP_CHECK_SQL,
   GENERATING_CONVERSATIONS_SQL,
   MIGRATIONS,
   PENDING_DELETION_GRACE_MS,
@@ -1026,5 +1028,59 @@ describe("索引が効いている", () => {
   it("生成中の会話（5秒ごと）は全表走査にならない", () => {
     const p = plan(GENERATING_CONVERSATIONS_SQL.replace("?", "0"));
     expect(p).toContain("idx_messages_streaming");
+  });
+});
+
+/**
+ * 生成中の部分保存が「生成中の行」にだけ当たるか。
+ *
+ * 当たったかどうかを発射ループが停止の判断に使う。会話を消した・
+ * 中断とみなされて確定済み、のどちらでも changes が 0 にならないと、
+ * 受け取る先の無い生成をチャンクの終わりまで投げ続ける。
+ */
+describe("生成中の部分保存", () => {
+  beforeEach(() => {
+    migrate(db);
+    db.prepare(
+      "INSERT INTO conversations (id, title, unread, created_at, updated_at) VALUES ('c1', 't', 0, 1, 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, status, stop_requested, created_at) VALUES ('s1', 'c1', 'assistant', '', 'streaming', 0, 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, status, stop_requested, created_at) VALUES ('d1', 'c1', 'assistant', 'x', 'done', 1, 1)",
+    ).run();
+  });
+
+  const flush = (id: string) =>
+    db.prepare(FLUSH_GENERATION_SQL).run("進捗", null, 5, id).changes;
+
+  it("生成中の行には当たり、本文と時刻が書かれる", () => {
+    expect(flush("s1")).toBe(1);
+    const row = db.prepare("SELECT content, flushed_at FROM messages WHERE id = 's1'").get() as {
+      content: string;
+      flushed_at: number;
+    };
+    expect(row.content).toBe("進捗");
+    expect(row.flushed_at).toBe(5);
+  });
+
+  it("確定済みの行と、消えた行には当たらない", () => {
+    expect(flush("d1")).toBe(0);
+    expect(flush("nope")).toBe(0);
+    // 確定済みの本文は書き換わっていない
+    expect(
+      (db.prepare("SELECT content FROM messages WHERE id = 'd1'").get() as { content: string })
+        .content,
+    ).toBe("x");
+  });
+
+  it("停止要求の確認は行の状態に関係なく読める", () => {
+    const check = (id: string) =>
+      (db.prepare(FLUSH_STOP_CHECK_SQL).get(id) as { stop_requested: number } | undefined)
+        ?.stop_requested;
+    expect(check("s1")).toBe(0);
+    expect(check("d1")).toBe(1);
+    expect(check("nope")).toBeUndefined();
   });
 });

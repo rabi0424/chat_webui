@@ -184,3 +184,66 @@ export function onRateLimited(
   }
   return { pauseUntil: now + wait, rounds: state.rounds + 1, exhausted: false };
 }
+
+/**
+ * レート制限以外の結果が1つ返ったときの、待ち直し回数の扱い。
+ *
+ * 回数は増える一方だったので、長い実行で分単位の制限に3回触れると、
+ * 毎回きちんと待てていても試行を残して打ち切っていた。数えたいのは
+ * 「待っても何も通らない」が続いた回数なので、何か1つでも決着したら
+ * 数え直す。
+ */
+export function afterAttemptSettled(state: RateLimitState): RateLimitState {
+  return { ...state, rounds: 0 };
+}
+
+/**
+ * 同じ失敗が続いたら打ち切る本数。
+ *
+ * 認証・残高・パラメータのような直らないエラーは、投げるたびに同じ
+ * 結果で返る。試行を消費しながら上限まで投げ続けるのは無駄で、
+ * 「画像が揃う前に接続が切れた」型のエラーは上流側で課金されている
+ * ことがある。拒否（画像の無い応答）は数えない——それを乗り越える
+ * ための機能なので。
+ */
+export const RETRY_CONSECUTIVE_ERROR_LIMIT = 5;
+
+/**
+ * 結果は分かっているが、まだ数え上げに載っていない本数。
+ *
+ * 成功の数え上げ（state.successes++）は保存と画像の取り込みの後なので、
+ * 上流の応答を読み切ってから1秒前後、その1本は「まだ結果の分からない
+ * 1本」として枠に居座る。その窓で別の1本が決着すると、発射ループは
+ * 古い成功数で枠を数え直し、必要より多く投げる——スマート生成が
+ * 抑えたい超過そのもの。結果が届いた瞬間にここへ足し、数え上げが
+ * 済んだら引く。
+ */
+export interface PendingTally {
+  /** 結果が届いた（レート制限を除く）。 */
+  known(kind: "success" | "refused" | "error" | "rate_limited"): void;
+  /** 数え上げが済んだ。known と対で呼ぶ。 */
+  counted(kind: "success" | "refused" | "error" | "rate_limited"): void;
+  /** 届いているがまだ数えていない成功。 */
+  successes(): number;
+  /** 届いているがまだ数えていない試行（レート制限は含まない）。 */
+  settled(): number;
+}
+
+export function createPendingTally(): PendingTally {
+  let successes = 0;
+  let settled = 0;
+  return {
+    known(kind) {
+      if (kind === "rate_limited") return;
+      settled++;
+      if (kind === "success") successes++;
+    },
+    counted(kind) {
+      if (kind === "rate_limited") return;
+      settled--;
+      if (kind === "success") successes--;
+    },
+    successes: () => successes,
+    settled: () => settled,
+  };
+}

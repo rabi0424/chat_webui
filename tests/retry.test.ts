@@ -7,6 +7,8 @@ import {
   RETRY_SMART_KEY,
   RETRY_SMART_PERCENT_KEY,
   RETRY_TARGET_KEY,
+  afterAttemptSettled,
+  createPendingTally,
   formatRetryProgress,
   isRetryProgress,
   onRateLimited,
@@ -287,5 +289,56 @@ describe("レート制限の待ち直し", () => {
   it("待ち時間が0以下なら、既定の待ちを使う", () => {
     const s = onRateLimited(fresh(), { now: 1000, waitMs: 0 });
     expect(s.pauseUntil).toBe(1000 + RATE_LIMIT_BACKOFF_MS[0]);
+  });
+});
+
+describe("待ち直しの回数の戻し", () => {
+  it("レート制限以外の結果が返ったら回数を 0 に戻し、待ちの時刻は保つ", () => {
+    const next = afterAttemptSettled({ pauseUntil: 9_000, rounds: 2, exhausted: false });
+    expect(next.rounds).toBe(0);
+    expect(next.pauseUntil).toBe(9_000);
+  });
+
+  it("戻したあとは、また上限まで待ち直せる", () => {
+    // 2回待ったあとに1本通り、そのあと制限が続いても3回ぶん粘れる
+    let st = { pauseUntil: 0, rounds: 2, exhausted: false };
+    st = afterAttemptSettled(st);
+    let now = 100_000;
+    for (let i = 0; i < 3; i++) {
+      st = onRateLimited(st, { now });
+      expect(st.exhausted).toBe(false);
+      now = st.pauseUntil + 1;
+    }
+    expect(onRateLimited(st, { now }).exhausted).toBe(true);
+  });
+});
+
+/**
+ * 届いているがまだ数えていない本数。known と counted が対になって
+ * いないと、成功が届くたびに枠が1本ずつ狭まったまま戻らない。
+ */
+describe("createPendingTally", () => {
+  it("成功と試行を、届いたときに足し、数えたときに引く", () => {
+    const t = createPendingTally();
+    t.known("success");
+    t.known("refused");
+    t.known("error");
+    expect(t.successes()).toBe(1);
+    expect(t.settled()).toBe(3);
+    t.counted("success");
+    expect(t.successes()).toBe(0);
+    expect(t.settled()).toBe(2);
+    t.counted("refused");
+    t.counted("error");
+    expect(t.settled()).toBe(0);
+  });
+
+  it("レート制限は試行ではないので数えない", () => {
+    const t = createPendingTally();
+    t.known("rate_limited");
+    expect(t.settled()).toBe(0);
+    expect(t.successes()).toBe(0);
+    t.counted("rate_limited");
+    expect(t.settled()).toBe(0);
   });
 });

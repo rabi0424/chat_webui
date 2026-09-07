@@ -8,6 +8,9 @@ import {
 } from "./openrouter.server";
 import { buildGenerationPayload, type ParamsState } from "./params";
 import {
+  RETRY_CONSECUTIVE_ERROR_LIMIT,
+  afterAttemptSettled,
+  createPendingTally,
   formatRetryProgress,
   onRateLimited,
   type RetryConfig,
@@ -25,6 +28,7 @@ import {
   flushGeneration,
   getAttachments,
   getMessage,
+  recordStandaloneUsage,
   rewriteMessageContent,
 } from "./db.server";
 import {
@@ -183,6 +187,15 @@ function promptOf(job: GenerationJob): string | null {
  * ここで打ち切ってその時点の内容で確定させる。
  */
 const UPSTREAM_IDLE_TIMEOUT_MS = 120_000;
+/**
+ * 画像を出すモデルで、1バイトも来ないまま待ってよい時間。
+ *
+ * 画像生成は最初の1バイトまで長く黙る上流がある。文章と同じ120秒で
+ * 切ると、上流側では生成が完了して課金されるのに、こちらには何も
+ * 残らない。リトライ生成ではそれが試行のたびに繰り返される。
+ * 生存確認は別に打っているので、待ちを長くしても行は中断とみなされない。
+ */
+const IMAGE_IDLE_TIMEOUT_MS = 300_000;
 
 const MAX_CAPTURED_IMAGES = 8;
 const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
@@ -732,6 +745,7 @@ async function readUpstreamStream(
     content: string;
     reasoning: string;
   }) => Promise<boolean>,
+  idleTimeoutMs: number = UPSTREAM_IDLE_TIMEOUT_MS,
 ): Promise<StreamResult> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -747,7 +761,7 @@ async function readUpstreamStream(
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(
         () => reject(new Error("上流からの応答が途絶えました")),
-        UPSTREAM_IDLE_TIMEOUT_MS,
+        idleTimeoutMs,
       );
     });
     try {
@@ -967,11 +981,13 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
 
   const write = async (): Promise<boolean> => {
     lastWrite = Date.now();
-    const { stopRequested } = await flushGeneration(job.assistantMessageId, {
-      content: latest.content,
-      reasoning: latest.reasoning,
-    });
-    return stopRequested;
+    const { stopRequested, applied } = await flushGeneration(
+      job.assistantMessageId,
+      { content: latest.content, reasoning: latest.reasoning },
+    );
+    // 行が消えた・確定済みなら、読み続けても受け取る先が無い。
+    // 停止と同じに扱って上流を切る（読み続けた分も課金される）
+    return stopRequested || !applied;
   };
 
   const heartbeat = (async () => {
@@ -1124,8 +1140,12 @@ type AttemptOutcome =
       usageJson: string | null;
       imageUrls: string[];
     }
-  /** 画像が返らなかった応答。揺らぎの可能性があるので投げ直す対象。 */
-  | { kind: "refused"; text: string }
+  /**
+   * 画像が返らなかった応答。揺らぎの可能性があるので投げ直す対象。
+   * 上流が返した usage も持つ——拒否文にも課金されていて、捨てると
+   * リトライ生成の支出の大半が台帳から消える。
+   */
+  | { kind: "refused"; text: string; usageJson: string | null }
   /** waitMs は上流が申告した待ち時間。無ければ null（固定の待ちに落ちる）。 */
   | { kind: "rate_limited"; waitMs: number | null }
   | { kind: "error"; error: string };
@@ -1168,7 +1188,11 @@ async function runAttempt(
     return { kind: "error", error: await upstreamErrorMessage(upstream, isPoe) };
   }
 
-  const result = await readUpstreamStream(upstream.body);
+  const result = await readUpstreamStream(
+    upstream.body,
+    undefined,
+    job.imageOutput ? IMAGE_IDLE_TIMEOUT_MS : UPSTREAM_IDLE_TIMEOUT_MS,
+  );
   const hasImage =
     result.imageUrls.length > 0 || extractImageUrls(result.content).length > 0;
   // 画像が揃っているなら、途中で切れていても成果は成果なので受け取る。
@@ -1187,7 +1211,7 @@ async function runAttempt(
         usageJson: result.usageJson,
         imageUrls: result.imageUrls,
       }
-    : { kind: "refused", text: result.content };
+    : { kind: "refused", text: result.content, usageJson: result.usageJson };
 }
 
 /**
@@ -1222,6 +1246,19 @@ export interface RetryRunState {
   lastError: string | null;
   /** 画像の取り込みが途中で終わった成功メッセージのID。 */
   pendingCapture: string[];
+  /** 直近で続いているエラーの数。成功か拒否が返れば 0 に戻る。 */
+  consecutiveErrors: number;
+  /**
+   * レート制限で、この時刻まで発射を控える。チャンクをまたいで持つ——
+   * 持たないと続きの実行が待ちの途中で投げ、429 を受けて待ち直しの
+   * 回数を1つ無駄にする。
+   */
+  pauseUntil: number;
+  /**
+   * Poe: ここまでの実行で使ったと分かっているポイントと額。台帳には
+   * 実行の最後にまとめて載るので、途中の月間上限の判定にだけ足す。
+   */
+  provisional: { points: number; costUsd: number | null } | null;
 }
 
 /** ジョブ1回ぶんの実行結果。done でなければ続きが残っている。 */
@@ -1242,6 +1279,9 @@ function initialRetryState(statusId: string): RetryRunState {
     firstRefusal: null,
     lastError: null,
     pendingCapture: [],
+    consecutiveErrors: 0,
+    pauseUntil: 0,
+    provisional: null,
   };
 }
 
@@ -1263,6 +1303,9 @@ function restoreRetryState(
     refusals: previous.refusals ?? 0,
     emptyResponses: previous.emptyResponses ?? 0,
     errors: previous.errors ?? 0,
+    consecutiveErrors: previous.consecutiveErrors ?? 0,
+    pauseUntil: previous.pauseUntil ?? 0,
+    provisional: previous.provisional ?? null,
   };
 }
 
@@ -1302,6 +1345,35 @@ async function drainPendingCaptures(
     if (captured.deferred) remaining.push(messageId);
   }
   state.pendingCapture = remaining;
+}
+
+/**
+ * 拒否された応答の支出を台帳へ載せる。
+ *
+ * 台帳への記録に失敗しても実行は続ける（課金は済んでいるので、記録の
+ * 失敗で走っている分を失うほうが害が大きい）。黙りはしない。
+ */
+async function recordRefusalUsage(
+  modelId: string,
+  usageJson: string | null,
+): Promise<void> {
+  if (!usageJson) return;
+  try {
+    const u = JSON.parse(usageJson) as Record<string, unknown>;
+    const num = (v: unknown): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    await recordStandaloneUsage({
+      kind: "retry",
+      modelId,
+      costUsd: num(u.cost),
+      promptTokens: num(u.promptTokens),
+      completionTokens: num(u.completionTokens),
+    });
+  } catch (e) {
+    console.error("[usage] 拒否された応答の台帳への記録に失敗しました", e);
+  }
 }
 
 /**
@@ -1346,13 +1418,22 @@ async function runRetryGenerationJob(
   }
 
   let stopped = false;
-  /** レート制限に当たったら、この時刻まで新しい発射を控える。 */
-  let pauseUntil = 0;
+  /**
+   * 見出しの行が、もうこの実行のものではない（消えた・確定済み）。
+   * 成果を受け取る先が無いので発射をやめ、最後の確定も要約も書かない。
+   */
+  let lost = false;
+  /** 直近の生存確認が D1 の失敗で書けなかった。書けるまで発射しない。 */
+  let touchFailed = false;
   let rateLimitExhausted = false;
+  /** 同じ失敗が続いたので打ち切った。 */
+  let errorsExhausted = false;
   const inflight = new Set<Promise<void>>();
+  /** 結果は届いているが、まだ数え上げに載っていない本数（retry.ts の注記）。 */
+  const pending = createPendingTally();
   const gate = createRateLimitGate();
   /** 自分で決めた待ちと、上流が申告した待ちの遅いほう。 */
-  const waitUntil = () => Math.max(pauseUntil, gate.until());
+  const waitUntil = () => Math.max(state.pauseUntil, gate.until());
 
   /** 上限に達して打ち切ったか（要約の文言を変えるため）。 */
   let budgetStopped = false;
@@ -1360,31 +1441,82 @@ async function runRetryGenerationJob(
   /** 今月の使用額が上限に達しているか。 */
   const overBudget = async (): Promise<boolean> => {
     try {
-      return (await checkMonthlyLimit()).blocked;
+      // Poe はこの実行の消費が最後まで台帳に載らないので、途中で
+      // 分かっているぶんを判定にだけ足す
+      return (await checkMonthlyLimit(Date.now(), state.provisional)).blocked;
     } catch {
       // 判定できないことを理由に、走っている生成を止めはしない
       return false;
     }
   };
 
-  /** 進捗の保存を兼ねた停止確認。 */
+  /**
+   * 進捗の保存を兼ねた停止確認。true なら新しい発射をしない。
+   *
+   * 例外を外へ出さない。ここは発射ループの途中でも heartbeat からも
+   * 呼ばれ、投げたままにすると実行全体がそこで倒れて、走っている
+   * 並列数ぶんの結果（課金済み）が宙に浮く。D1 が一時的に失敗した
+   * ときは「書けなかった」と覚えて発射だけ止め、走っている分は受け取る。
+   */
   const touch = async (): Promise<boolean> => {
     budget.spendTouch();
-    const { stopRequested } = await flushGeneration(statusId, {
-      content: formatRetryProgress({
-        successes: state.successes,
-        attempts: state.attempts,
-        inflight: inflight.size,
-        retry,
-      }),
-      reasoning: null,
-    });
-    if (stopRequested) stopped = true;
-    return stopRequested;
+    try {
+      const { stopRequested, applied } = await flushGeneration(statusId, {
+        content: formatRetryProgress({
+          successes: state.successes,
+          attempts: state.attempts,
+          inflight: inflight.size,
+          retry,
+        }),
+        reasoning: null,
+      });
+      touchFailed = false;
+      if (stopRequested) stopped = true;
+      // 保存が当たらない＝行が消えたか、中断とみなされて確定済み。
+      // 会話を消しても投げ続けないよう、停止と同じに扱う
+      if (!applied) {
+        lost = true;
+        stopped = true;
+      }
+      return stopped;
+    } catch (e) {
+      touchFailed = true;
+      console.error("[gen] 生存確認を書けませんでした", statusId, e);
+      return true;
+    }
   };
+
+  /**
+   * 見出しの打ち直し。進捗の表示であると同時に、中断（放置）とみなされる
+   * 前に打つ生存確認で、停止要求を拾う経路でもある。
+   *
+   * **前の実行から持ち越した画像を拾うより先に**始める。拾う処理は枠が
+   * 許す限り外部から画像を取りに行くので、その間に60秒を超えると見出しが
+   * 中断とみなされて確定し、以後この実行の保存が全部当たらなくなる
+   * （停止も効かず、要約も消える）。
+   */
+  const heartbeat = (async () => {
+    while (inflight.size > 0 || !stopped) {
+      const nap = cancellableSleep(HEARTBEAT_MS);
+      wakeHeartbeat = nap.cancel;
+      await nap.promise;
+      if (finished) break;
+      await touch();
+    }
+  })();
 
   // 前の実行が取り込みきれなかった画像を先に拾う（枠を使うので発射より先）
   await drainPendingCaptures(job, state, budget);
+
+  // Poe: 続きの実行では、ここまでの消費を月間上限の判定に足せるよう取る。
+  // 1チャンクにつき外部リクエスト1件。最初の実行はまだ何も使っていない
+  if (isPoe && previous && state.attempts > 0 && !lost) {
+    budget.spend();
+    const soFar = await fetchPoeRunPoints(modelName, state.startedAt);
+    if (soFar) {
+      state.provisional = { points: soFar.points, costUsd: soFar.costUsd ?? null };
+    }
+  }
 
   /**
    * 結果の取り込みは1件ずつ直列に行う。
@@ -1392,12 +1524,23 @@ async function runRetryGenerationJob(
    */
   let queue: Promise<void> = Promise.resolve();
   const accept = (r: AttemptOutcome): Promise<void> => {
+    // 結果が分かった瞬間に数えておく。数え上げは直列の取り込みの後で、
+    // その間に枠を数え直すと、この成功が「まだ分からない1本」に見える
+    pending.known(r.kind);
     // 1件の取り込みが失敗しても、キュー自体は必ず成功で繋ぐ。
     // ここで握らないとキューが reject のまま固まり、以降に届いた
     // 成功応答の取り込みが丸ごと飛ばされる（課金済みの結果が消える）
-    queue = queue.then(() => acceptOne(r)).catch(() => {});
+    queue = queue
+      .then(() => acceptOne(r))
+      .catch(() => {})
+      .finally(() => pending.counted(r.kind));
     return queue;
   };
+
+  /** 数え上げ済みと、届いているがまだ数えていない分を合わせた成功数。 */
+  const knownSuccesses = () => state.successes + pending.successes();
+  /** 上流でまだ結果の分からない本数（取り込み中の分は含めない）。 */
+  const running = () => inflight.size - pending.settled();
 
   const acceptOne = async (r: AttemptOutcome): Promise<void> => {
     let counted = false;
@@ -1410,13 +1553,13 @@ async function runRetryGenerationJob(
         // 上流が待ち時間を言っていればそれに従う
         const next = onRateLimited(
           {
-            pauseUntil,
+            pauseUntil: state.pauseUntil,
             rounds: state.rateLimitRounds,
             exhausted: rateLimitExhausted,
           },
           { now: Date.now(), waitMs: r.waitMs ?? undefined },
         );
-        pauseUntil = next.pauseUntil;
+        state.pauseUntil = next.pauseUntil;
         state.rateLimitRounds = next.rounds;
         if (next.exhausted) {
           state.lastError = "レート制限が続いたため打ち切りました";
@@ -1424,6 +1567,14 @@ async function runRetryGenerationJob(
         }
         return;
       }
+
+      // レート制限以外の結果が1つ返った＝上流は通っている。
+      // 待ち直しの回数は「待っても何も通らない」を数えるものなので戻す
+      state.rateLimitRounds = afterAttemptSettled({
+        pauseUntil: state.pauseUntil,
+        rounds: state.rateLimitRounds,
+        exhausted: rateLimitExhausted,
+      }).rounds;
 
       // 試行に数えた以上、必ずどれか1つの内訳にも数える
       // （数え漏れると要約の内訳が試行回数と合わなくなる）。
@@ -1433,7 +1584,14 @@ async function runRetryGenerationJob(
         state.errors++;
         counted = true;
         state.lastError = r.error;
+        // 直らない失敗を上限まで投げ続けない（RETRY_CONSECUTIVE_ERROR_LIMIT）
+        state.consecutiveErrors++;
+        if (state.consecutiveErrors >= RETRY_CONSECUTIVE_ERROR_LIMIT) {
+          errorsExhausted = true;
+          state.lastError = `同じ失敗が${state.consecutiveErrors}回続いたため打ち切りました: ${r.error}`;
+        }
       } else if (r.kind === "refused") {
+        state.consecutiveErrors = 0;
         // 画像が無い応答。本文があるかで分ける（空の応答は上流の
         // 揺らぎで、拒否文が返るのとは原因も対処も違う）
         if (r.text.trim()) {
@@ -1443,7 +1601,12 @@ async function runRetryGenerationJob(
           state.emptyResponses++;
         }
         counted = true;
+        // 拒否文にも課金されている。メッセージにはならないので単独で
+        // 台帳へ載せる。Poe は額もポイントも応答に載らず、実行の最後に
+        // まとめて載せるので、ここで載せると二重になる
+        if (!isPoe) await recordRefusalUsage(job.model, r.usageJson);
       } else {
+        state.consecutiveErrors = 0;
         // 成功: 応答を1件足し、画像を自前のストレージへ移す。
         // 待たずにここで保存するので、実行中でも順に見えるようになる
         const id = await appendAssistantMessage({
@@ -1453,24 +1616,32 @@ async function runRetryGenerationJob(
           content: r.content,
           usageJson: r.usageJson,
         });
-        const captured = await captureGeneratedImages(
-          r.content,
-          r.imageUrls,
-          {
-            messageId: id,
-            conversationId: job.conversationId,
-            prompt: promptOf(job),
-          },
-          budget,
-        );
-        if (captured.content !== r.content) {
-          await rewriteMessageContent(id, captured.content);
-        }
-        // 枠が尽きて取り込めなかったぶんは次の実行で拾う
-        if (captured.deferred) state.pendingCapture.push(id);
+        // 保存できた時点で成功。画像の取り込みで失敗しても、行は木に
+        // 残っていて画像は元のURLで見える。ここより後で失敗したときに
+        // 成功に数えず親も進めないと、次の成功が同じ親の下へ兄弟として
+        // 付いて片方が隠れ、しかも目標のために余計に投げる
         state.parentId = id;
         state.successes++;
         counted = true;
+        try {
+          const captured = await captureGeneratedImages(
+            r.content,
+            r.imageUrls,
+            {
+              messageId: id,
+              conversationId: job.conversationId,
+              prompt: promptOf(job),
+            },
+            budget,
+          );
+          if (captured.content !== r.content) {
+            await rewriteMessageContent(id, captured.content);
+          }
+          // 枠が尽きて取り込めなかったぶんは次の実行で拾う
+          if (captured.deferred) state.pendingCapture.push(id);
+        } catch (e) {
+          state.lastError = `画像の取り込みに失敗しました: ${(e as Error).message}`;
+        }
       }
       await touch();
     } catch (e) {
@@ -1494,8 +1665,8 @@ async function runRetryGenerationJob(
     retry.smartPercent != null
       ? planRetrySlots({
           target: retry.target,
-          successes: state.successes,
-          attempts: state.attempts,
+          successes: knownSuccesses(),
+          attempts: state.attempts + pending.settled(),
           maxAttempts: retry.maxAttempts,
           cap: retry.concurrency,
           percent: retry.smartPercent,
@@ -1518,17 +1689,7 @@ async function runRetryGenerationJob(
    * 空いた枠にすぐ次を発射し、1本終わるたびに取り込む。
    * バッチ単位で待つと、先に終わった成功が最も遅い1本に足を引っぱられる。
    */
-  const heartbeat = (async () => {
-    while (inflight.size > 0 || !stopped) {
-      const nap = cancellableSleep(HEARTBEAT_MS);
-      wakeHeartbeat = nap.cancel;
-      await nap.promise;
-      if (finished) break;
-      await touch();
-    }
-  })();
-
-  while (!stopped && !rateLimitExhausted) {
+  while (!stopped && !rateLimitExhausted && !errorsExhausted) {
     if (Date.now() < waitUntil()) {
       await sleep(waitUntil() - Date.now());
       continue;
@@ -1548,9 +1709,11 @@ async function runRetryGenerationJob(
     let burst = 0;
     while (
       !stopped &&
-      state.successes < retry.target &&
+      !errorsExhausted &&
+      !touchFailed &&
+      knownSuccesses() < retry.target &&
       state.attempts + inflight.size < retry.maxAttempts &&
-      inflight.size < slots() &&
+      running() < slots() &&
       Date.now() >= waitUntil() &&
       // 外部リクエストの枠を使い切る手前で切り上げ、続きは次の実行へ
       budget.canLaunch()
@@ -1578,6 +1741,15 @@ async function runRetryGenerationJob(
   wakeHeartbeat();
   await heartbeat;
 
+  // 見出しがもうこの実行のものでないなら、確定も要約も書く先が無い。
+  // 続きのアラームも入れない（入れても行の状態を見て何もせず終わる）
+  if (lost) {
+    console.log(
+      `[gen] retry run lost its status row: attempts=${state.attempts} successes=${state.successes}`,
+    );
+    return { done: true };
+  }
+
   /**
    * まだ投げるべき試行が残っているか。停止・打ち切り・目標到達・
    * 上限到達のいずれでもなければ、枠切れで中断しただけなので続ける。
@@ -1591,6 +1763,7 @@ async function runRetryGenerationJob(
   const moreAttempts =
     !stopped &&
     !rateLimitExhausted &&
+    !errorsExhausted &&
     !budgetStopped &&
     state.successes < retry.target &&
     state.attempts < retry.maxAttempts;
@@ -1603,9 +1776,13 @@ async function runRetryGenerationJob(
     return { done: false, state };
   }
 
-  // Poe: 消費ポイントは応答に載らないので、実行時間帯の履歴を合計する
+  // Poe: 消費ポイントは応答に載らないので、実行時間帯の履歴を合計する。
+  // 枠の残りで条件にしない——ここを飛ばすと実行全体の消費が台帳から
+  // 消える。枠は足りる: 発射は30件の手前で止まり、画像の取り込みは
+  // 44件の手前で始めた1枚が最大4件、途中経過の取得と為替が各1件で、
+  // ここの1件を足しても50に届かない
   let usageJson: string | null = null;
-  if (isPoe && state.attempts > 0 && budget.available()) {
+  if (isPoe && state.attempts > 0) {
     await sleep(1500);
     budget.spend();
     const total = await fetchPoeRunPoints(modelName, state.startedAt);
@@ -1634,7 +1811,9 @@ async function runRetryGenerationJob(
   }
   if (!stopped && !budgetStopped && state.successes < retry.target) {
     lines.push(
-      `目標に届きませんでした（上限${state.attempts >= retry.maxAttempts ? "の試行回数" : ""}に達しました）。`,
+      errorsExhausted
+        ? "目標に届きませんでした（同じ失敗が続いたため打ち切りました）。"
+        : `目標に届きませんでした（上限${state.attempts >= retry.maxAttempts ? "の試行回数" : ""}に達しました）。`,
     );
   }
   // 試行の内訳。成功と合わせた合計が試行回数に一致する
