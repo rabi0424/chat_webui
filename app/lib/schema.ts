@@ -648,6 +648,13 @@ export const FLUSH_GENERATION_SQL =
   "UPDATE messages SET content = ?, reasoning = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'";
 export const FLUSH_STOP_CHECK_SQL =
   "SELECT stop_requested FROM messages WHERE id = ?";
+/**
+ * 中断とみなした「生成中」の行を確定させる。本文も書き換える——
+ * 「成功するまで生成」の見出しは進捗の表示なので、残すと止まった数字の
+ * まま会話に居座る（`interruptedGenerationRow`）。
+ */
+export const SWEEP_STALE_STREAMING_SQL =
+  "UPDATE messages SET content = ?, status = ?, error = ? WHERE id = ? AND status = 'streaming'";
 
 export function appendAssistantMessageStatements(params: {
   id: string;

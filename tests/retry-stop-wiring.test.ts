@@ -75,11 +75,14 @@ describe("司令役の続行判定", () => {
   });
 
   it("担当を起こす前に行を作り、起こせなければ不調として決着させる", () => {
-    const burst = job.slice(job.indexOf("let burst = 0;"));
-    expect(burst.indexOf("await insertRetryAttempt(")).toBeLessThan(
+    const burst = job.slice(
+      job.indexOf("const batch: { id: string; seq: number }[] = []"),
+    );
+    // 行が先。逆にすると、担当が結果を書きに来ても書く先が無い
+    expect(burst.indexOf("await insertRetryAttempts(")).toBeLessThan(
       burst.indexOf("await spawnAttempt("),
     );
-    expect(burst).toContain('kind: "transient"');
+    expect(burst).toContain("failRetryAttempts({");
     expect(burst).toContain("担当の実行を起こせませんでした");
   });
 
@@ -107,6 +110,64 @@ describe("司令役の続行判定", () => {
 
   it("毎秒の間隔は刻んだ回数が積もったら広げる", () => {
     expect(job).toContain("ticks < TICK_FAST_COUNT ? TICK_MS : TICK_SLOW_MS");
+  });
+});
+
+/**
+ * 内部サービス（D1）の枠。無料プランは1回の呼び出しにつき1,000件で、
+ * 使い切ると見出しの打ち直しも通らなくなり、60秒の無更新で中断と
+ * みなされて実行が黙って終わる（実際に並列100で起きた）。数え漏らすと
+ * 同じことが起きるので、呼ぶ場所ごとに数えているかを見張る。
+ */
+describe("枠の勘定", () => {
+  const job = fn(run, "runRetryGenerationJob");
+
+  it("D1 と担当の起こしを、呼ぶ場所ごとに数える", () => {
+    const tick = job.match(/const tick = async[\s\S]*?\n {2}};/)![0];
+    expect(tick.indexOf("budget.spend()")).toBeLessThan(
+      tick.indexOf("await tickRetryRun("),
+    );
+    expect(tick).toContain("budget.spend();\n        await markRetryAttemptsProcessed(");
+    const sweep = job.match(/const sweep = async[\s\S]*?\n {2}};/)![0];
+    expect(sweep.indexOf("budget.spend()")).toBeLessThan(
+      sweep.indexOf("await sweepLostRetryAttempts("),
+    );
+    const burst = job.slice(job.indexOf("const batch: { id: string; seq: number }[] = []"));
+    expect(burst).toContain("budget.spend();\n            await insertRetryAttempts(");
+    expect(burst).toContain("budget.spend();\n              await spawnAttempt(");
+    // 実行の頭（記録の作成と数え直し）と、最後の確定
+    expect(job).toContain("budget.spend(2);\n  await createRetryRun(");
+    expect(job).toContain("budget.spend(2);\n  console.log(");
+  });
+
+  it("枠を使い切る手前で区切り、次のアラームへ渡す", () => {
+    const end = job.match(/if \(\n {6}!budget\.ok\(\) \|\|[\s\S]*?\) \{/)![0];
+    expect(end).toContain("!budget.ok()");
+    expect(end).toContain("tickFailures >= RETRY_TICK_FAILURE_LIMIT");
+    expect(end).toContain("COORDINATOR_CHUNK_MS");
+    // 区切りは終わりの判定より後（走っている担当があれば渡す）
+    expect(job.indexOf("if (finishedLaunching && running === 0) break;")).toBeLessThan(
+      job.indexOf("!budget.ok()"),
+    );
+  });
+
+  it("1回の往復で起こす数と、枠の残りで、作る行の数を区切る", () => {
+    const burst = job.slice(job.indexOf("const batch: { id: string; seq: number }[] = []"));
+    const cond = burst.slice(0, burst.indexOf(") {"));
+    expect(cond).toContain("batch.length < RETRY_MAX_SPAWNS_PER_TICK");
+    expect(cond).toContain("budget.room(batch.length + 2)");
+    // 作ったが起こさなかった行は、まとめて不調として決着させる
+    expect(burst).toContain("failRetryAttempts({");
+    expect(burst).toContain("if (stopped || !budget.room(1))");
+  });
+
+  it("月間上限の判定は間隔を空ける（毎周だと枠の半分を使う）", () => {
+    const over = job.match(/const overBudget = async[\s\S]*?\n {2}};/)![0];
+    expect(over).toContain("RETRY_LIMIT_CHECK_INTERVAL_MS");
+    expect(over).toContain("limitCheckedAt = Date.now()");
+    expect(over).toContain("budget.spend(3)");
+    // 一度上限に達したら、以後は聞き直さない
+    expect(over).toContain("if (limitBlocked) return true");
   });
 });
 
@@ -185,6 +246,16 @@ describe("DO の振り分けと単発の生成", () => {
     expect(alarm).toContain("runRetryGenerationJob(job, job.retry, state)");
     expect(alarm).toContain("this.ctx.storage.put(STATE_KEY, outcome.state)");
     expect(alarm).toContain("setAlarm(Date.now() + NEXT_CHUNK_MS)");
+  });
+
+  it("中断の確定は、見出しなら本文ごと書き換える", () => {
+    const db = readFileSync("app/lib/db.server.ts", "utf8");
+    const sweep = db.slice(db.indexOf("async function sweepStaleStreaming("));
+    const body = sweep.slice(0, sweep.indexOf("\n}"));
+    expect(body).toContain("interruptedGenerationRow(m.content)");
+    expect(body).toContain("m.content = next.content");
+    // 本文を bind に載せないと、見出しの「生成中…」が残る
+    expect(body).toContain(".bind(m.content, m.status, m.error, m.id)");
   });
 
   it("単発の生成も、行が消えたら読むのをやめる", () => {

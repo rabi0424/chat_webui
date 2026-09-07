@@ -25,8 +25,12 @@ import type { ParamsState } from "./params";
 import {
   RETRY_ALARM_WALL_MS,
   RETRY_ATTEMPT_DEADLINE_MS,
+  RETRY_LIMIT_CHECK_INTERVAL_MS,
+  RETRY_MAX_SPAWNS_PER_TICK,
   RETRY_STALLED_CHUNK_LIMIT,
+  RETRY_TICK_FAILURE_LIMIT,
   afterAttemptSettled,
+  createChunkBudget,
   formatRetryProgress,
   onTransientFailure,
   retryRequestCap,
@@ -37,9 +41,10 @@ import { checkMonthlyLimit } from "./limit.server";
 import {
   appendRetrySuccess,
   createRetryRun,
+  failRetryAttempts,
   finalizeGeneration,
   finishRetryAttempt,
-  insertRetryAttempt,
+  insertRetryAttempts,
   markRetryAttemptsProcessed,
   retryRunSnapshot,
   rewriteMessageContent,
@@ -186,6 +191,12 @@ export async function runRetryGenerationJob(
   const state: RetryRunState = { ...initialState(), ...(previous ?? {}) };
   const requestCap = retryRequestCap(retry.maxAttempts);
   const chunkStartedAt = Date.now();
+  /**
+   * この続きの実行で使った内部サービス（D1）と担当の起こし。使い切ると
+   * 見出しの打ち直しも通らなくなり、実行が黙って終わる
+   * （`RETRY_CHUNK_INTERNAL_LIMIT` の注記）。手前で区切る。
+   */
+  const budget = createChunkBudget();
 
   let stopped = false;
   /** 見出しの行がもうこの実行のものではない（消えた・確定済み）。 */
@@ -194,11 +205,14 @@ export async function runRetryGenerationJob(
   let budgetStopped = false;
   let running = 0;
   let ticks = 0;
+  /** 続けて失敗した往復の数。続くなら区切って次のアラームへ渡す。 */
+  let tickFailures = 0;
   let progressed = false;
 
   // 実行の記録（無ければ作る）と、続きの実行の頭の数え直し。
   // 数え上げは D1 が本体。担当が書いた行を集計し、集計に含めた行は
   // 「数えた」にして、この後の毎秒の読みで二重に数えない
+  budget.spend(2);
   await createRetryRun({ statusId, conversationId: job.conversationId, now: state.startedAt });
   const snapshot = await retryRunSnapshot(statusId);
   state.successes = snapshot.counts.success;
@@ -220,10 +234,24 @@ export async function runRetryGenerationJob(
     }
   }
 
+  /**
+   * 今月の使用額が上限に達しているか。判定は D1 を3件ほど使うので、
+   * 間隔を空けて見る（`RETRY_LIMIT_CHECK_INTERVAL_MS`）。毎周見ていた
+   * ときは、それだけで内部サービスの枠の半分を使っていた。
+   */
+  let limitCheckedAt = 0;
+  let limitBlocked = false;
   const overBudget = async (): Promise<boolean> => {
+    if (limitBlocked) return true;
+    if (Date.now() - limitCheckedAt < RETRY_LIMIT_CHECK_INTERVAL_MS) return false;
+    limitCheckedAt = Date.now();
     try {
-      return (await checkMonthlyLimit(Date.now(), state.provisional)).blocked;
+      budget.spend(3);
+      limitBlocked = (await checkMonthlyLimit(Date.now(), state.provisional))
+        .blocked;
+      return limitBlocked;
     } catch {
+      // 判定できないことを理由に、走っている生成を止めはしない
       return false;
     }
   };
@@ -290,6 +318,7 @@ export async function runRetryGenerationJob(
   const tick = async (): Promise<void> => {
     ticks++;
     try {
+      budget.spend();
       const t = await tickRetryRun(
         statusId,
         formatRetryProgress({
@@ -307,6 +336,7 @@ export async function runRetryGenerationJob(
         }),
       );
       touchFailed = false;
+      tickFailures = 0;
       if (t.stopRequested) stopped = true;
       if (!t.applied) {
         // 行が消えたか確定済み。会話を消しても投げ続けないよう停止と同じに扱う
@@ -316,10 +346,12 @@ export async function runRetryGenerationJob(
       running = t.running;
       if (t.finished.length > 0) {
         for (const row of t.finished) absorb(row);
+        budget.spend();
         await markRetryAttemptsProcessed(t.finished.map((r) => r.id));
       }
     } catch (e) {
       touchFailed = true;
+      tickFailures++;
       console.error("[gen] 司令役の生存確認を書けませんでした", statusId, e);
     }
   };
@@ -327,6 +359,7 @@ export async function runRetryGenerationJob(
   /** 担当の実行が失われた行を決着させる。 */
   const sweep = async (): Promise<void> => {
     try {
+      budget.spend();
       const swept = await sweepLostRetryAttempts({
         statusId,
         launchedBefore: Date.now() - LOST_AFTER_MS,
@@ -357,35 +390,63 @@ export async function runRetryGenerationJob(
         state.lastError = "今月の使用額が上限に達したため打ち切りました";
         budgetStopped = true;
       } else {
-        let burst = 0;
+        /*
+         * この往復で起こす分を決める。1回に起こす数を区切るのは、
+         * 起こしているあいだ見出しを打ち直せないため——並列100を一息に
+         * 起こすと20秒以上黙ることになり、中断とみなされる60秒に近づく。
+         * 枠の残りぶんしか作らない（行の作成1件＋起こし1件ずつ）。
+         */
+        const batch: { id: string; seq: number }[] = [];
         while (
-          running < slots() &&
-          state.attempts + running < retry.maxAttempts &&
-          state.launched < requestCap &&
-          !stopped
+          batch.length < RETRY_MAX_SPAWNS_PER_TICK &&
+          running + batch.length < slots() &&
+          state.attempts + running + batch.length < retry.maxAttempts &&
+          state.launched + batch.length < requestCap &&
+          budget.room(batch.length + 2)
         ) {
-          if (burst > 0) await sleep(SPAWN_STAGGER_MS);
-          const attemptId = crypto.randomUUID();
-          const seq = state.lastSeq + 1;
+          batch.push({
+            id: crypto.randomUUID(),
+            seq: state.lastSeq + batch.length + 1,
+          });
+        }
+        if (batch.length > 0) {
+          let inserted = false;
           try {
             // 行を先に作る。担当の実行が失われても行は残り、掃除で決着する
-            await insertRetryAttempt({ id: attemptId, statusId, seq, now: Date.now() });
-            state.lastSeq = seq;
-            state.launched++;
-            running++;
-            progressed = true;
-            burst++;
-            await spawnAttempt(job, attemptId);
+            budget.spend();
+            await insertRetryAttempts({ statusId, attempts: batch, now: Date.now() });
+            state.lastSeq = batch[batch.length - 1].seq;
+            inserted = true;
           } catch (e) {
-            // 起こせなかった分は一時的な不調として決着させ、待ってから投げ直す
-            await finishRetryAttempt({
-              id: attemptId,
-              kind: "transient",
-              detail: `担当の実行を起こせませんでした: ${(e as Error).message}`,
-              waitMs: null,
-              now: Date.now(),
-            }).catch(() => {});
-            break;
+            state.lastError = `担当の行を作れませんでした: ${(e as Error).message}`;
+          }
+          for (let i = 0; inserted && i < batch.length; i++) {
+            // 停止要求は起こす直前に見る。起こしてから気づいたのでは、
+            // 押したあとに1本ぶん余計に投げて課金されてしまう
+            if (stopped || !budget.room(1)) {
+              await failRetryAttempts({
+                ids: batch.slice(i).map((b) => b.id),
+                detail: stopped ? "停止のため起こしませんでした" : "枠の切れ目で起こしませんでした",
+                now: Date.now(),
+              }).catch(() => {});
+              break;
+            }
+            if (i > 0) await sleep(SPAWN_STAGGER_MS);
+            try {
+              budget.spend();
+              await spawnAttempt(job, batch[i].id);
+              state.launched++;
+              running++;
+              progressed = true;
+            } catch (e) {
+              // 起こせなかった分は不調として決着させ、待ってから投げ直す
+              await failRetryAttempts({
+                ids: batch.slice(i).map((b) => b.id),
+                detail: `担当の実行を起こせませんでした: ${(e as Error).message}`,
+                now: Date.now(),
+              }).catch(() => {});
+              break;
+            }
           }
         }
       }
@@ -402,8 +463,18 @@ export async function runRetryGenerationJob(
       state.launched >= requestCap;
     if (finishedLaunching && running === 0) break;
 
-    // 続きの実行の区切り。走っている依頼は担当が持っているので失われない
-    if (Date.now() - chunkStartedAt > COORDINATOR_CHUNK_MS) {
+    /*
+     * 続きの実行の区切り。走っている依頼は担当が持っているので失われない。
+     * 内部サービスの枠を使い切る手前で区切るのが要（使い切ると見出しの
+     * 打ち直しも通らなくなり、60秒の無更新で中断とみなされて黙って
+     * 終わる）。往復が続けて失敗しているときも、次のアラームで枠を
+     * 取り直したほうが早い。
+     */
+    if (
+      !budget.ok() ||
+      tickFailures >= RETRY_TICK_FAILURE_LIMIT ||
+      Date.now() - chunkStartedAt > COORDINATOR_CHUNK_MS
+    ) {
       state.stalledChunks = progressed ? 0 : state.stalledChunks + 1;
       if (state.stalledChunks >= RETRY_STALLED_CHUNK_LIMIT) {
         state.lastError = `進まないまま${state.stalledChunks}回続いたため打ち切りました${
@@ -413,7 +484,7 @@ export async function runRetryGenerationJob(
       }
       if (lost) break;
       console.log(
-        `[gen] retry chunk paused: attempts=${state.attempts} successes=${state.successes} running=${running} launched=${state.launched}`,
+        `[gen] retry chunk paused: internal=${budget.spent()} attempts=${state.attempts} successes=${state.successes} running=${running} launched=${state.launched} tickFailures=${tickFailures}`,
       );
       return { done: false, state };
     }
@@ -488,8 +559,9 @@ export async function runRetryGenerationJob(
   }
   if (state.lastError) lines.push(`\n最後のエラー: ${state.lastError}`);
 
+  budget.spend(2);
   console.log(
-    `[gen] retry run finished: attempts=${state.attempts} successes=${state.successes} refusals=${state.refusals} empty=${state.emptyResponses} transients=${state.transients} launched=${state.launched}`,
+    `[gen] retry run finished: internal=${budget.spent()} attempts=${state.attempts} successes=${state.successes} refusals=${state.refusals} empty=${state.emptyResponses} transients=${state.transients} launched=${state.launched}`,
   );
 
   const summary = lines.join("\n");

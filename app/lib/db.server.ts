@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { interruptedGenerationRow } from "./retry";
 import { deleteFiles } from "./r2.server";
 import {
   DEFAULT_APP_SETTINGS,
@@ -38,6 +39,7 @@ import {
   RETRY_ATTEMPT_FINISH_SQL,
   RETRY_ATTEMPT_INSERT_SQL,
   RETRY_RUN_INSERT_SQL,
+  SWEEP_STALE_STREAMING_SQL,
   appendRetrySuccessStatements,
   markRetryAttemptsProcessedSql,
   clearPendingDeletionsSql,
@@ -320,19 +322,14 @@ async function sweepStaleStreaming(rows: MessageRow[]): Promise<void> {
   const d = await db();
   const statements: D1PreparedStatement[] = [];
   for (const m of stale) {
-    if (m.content !== "") {
-      m.status = "done";
-      m.error = null;
-    } else {
-      m.status = "error";
-      m.error = "生成が中断されました。再試行してください。";
-    }
+    const next = interruptedGenerationRow(m.content);
+    m.status = next.status;
+    m.content = next.content;
+    m.error = next.error;
     statements.push(
       d
-        .prepare(
-          "UPDATE messages SET status = ?, error = ? WHERE id = ? AND status = 'streaming'",
-        )
-        .bind(m.status, m.error, m.id),
+        .prepare(SWEEP_STALE_STREAMING_SQL)
+        .bind(m.content, m.status, m.error, m.id),
     );
   }
   await d.batch(statements);
@@ -2244,18 +2241,45 @@ export async function createRetryRun(params: {
     .run();
 }
 
-/** 1本を投げる前に、その行を作る（担当の実行が失われても行は残る）。 */
-export async function insertRetryAttempt(params: {
-  id: string;
+/**
+ * 起こす前に行をまとめて作る（担当の実行が失われても行は残る）。
+ * 1本ずつ書くと担当1本につき内部サービスを1件使う。まとめれば1件で済む
+ * （`RETRY_CHUNK_INTERNAL_LIMIT` の注記）。
+ */
+export async function insertRetryAttempts(params: {
   statusId: string;
-  seq: number;
+  attempts: { id: string; seq: number }[];
   now: number;
 }): Promise<void> {
+  if (params.attempts.length === 0) return;
   const d = await db();
-  await d
-    .prepare(RETRY_ATTEMPT_INSERT_SQL)
-    .bind(params.id, params.statusId, params.seq, params.now)
-    .run();
+  await d.batch(
+    params.attempts.map((a) =>
+      d
+        .prepare(RETRY_ATTEMPT_INSERT_SQL)
+        .bind(a.id, params.statusId, a.seq, params.now),
+    ),
+  );
+}
+
+/**
+ * 作ったが起こせなかった行を、まとめて一時的な不調として決着させる。
+ * 決着させないと、走っていない担当を待ち続けて実行が終われない。
+ */
+export async function failRetryAttempts(params: {
+  ids: string[];
+  detail: string;
+  now: number;
+}): Promise<void> {
+  if (params.ids.length === 0) return;
+  const d = await db();
+  await d.batch(
+    params.ids.map((id) =>
+      d
+        .prepare(RETRY_ATTEMPT_FINISH_SQL)
+        .bind(params.now, "transient", params.detail, null, id),
+    ),
+  );
 }
 
 /**

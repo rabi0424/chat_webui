@@ -20,6 +20,7 @@ import {
   RETRY_ATTEMPT_INSERT_SQL,
   RETRY_RUN_INSERT_SQL,
   STALE_STREAMING_MS,
+  SWEEP_STALE_STREAMING_SQL,
   STORAGE_STATS_SQL,
   USAGE_DAILY_SQL,
   USAGE_TOTALS_SQL,
@@ -1234,5 +1235,49 @@ describe("成功するまで生成の記録", () => {
     finish("b1", "success");
     expect(unprocessed()).toEqual([]);
     expect(running()).toBe(0);
+  });
+});
+
+/**
+ * 中断とみなした行の確定。生成中の行にだけ当たること、本文も書き換わる
+ * ことを本物の SQLite で見る（見出しの「生成中…」を残すと、止まった
+ * 数字の1行が会話に居座る）。
+ */
+describe("中断の確定", () => {
+  beforeEach(() => {
+    migrate(db);
+    db.prepare(
+      "INSERT INTO conversations (id, title, unread, created_at, updated_at) VALUES ('c1', 't', 0, 1, 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, status, created_at) VALUES ('s1', 'c1', 'assistant', '生成中… 成功 1/3', 'streaming', 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, status, created_at) VALUES ('d1', 'c1', 'assistant', '猫', 'done', 1)",
+    ).run();
+  });
+
+  const sweep = (id: string, content: string, status: string, error: string | null) =>
+    db.prepare(SWEEP_STALE_STREAMING_SQL).run(content, status, error, id).changes;
+  const row = (id: string) =>
+    db.prepare("SELECT content, status, error FROM messages WHERE id = ?").get(id) as {
+      content: string;
+      status: string;
+      error: string | null;
+    };
+
+  it("生成中の行は、本文ごと書き換わる", () => {
+    expect(sweep("s1", "", "error", "中断されました")).toBe(1);
+    expect(row("s1")).toEqual({
+      content: "",
+      status: "error",
+      error: "中断されました",
+    });
+  });
+
+  it("確定済みの行には当たらない（本文を消さない）", () => {
+    expect(sweep("d1", "", "error", "中断されました")).toBe(0);
+    expect(row("d1").content).toBe("猫");
+    expect(row("d1").status).toBe("done");
   });
 });

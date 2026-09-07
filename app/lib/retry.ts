@@ -355,3 +355,86 @@ export const RETRY_ALARM_WALL_MS = 15 * 60_000;
  */
 export const RETRY_ATTEMPT_DEADLINE_MS = 12 * 60_000;
 
+/**
+ * 司令役の続きの実行1回で使ってよい、内部サービス（D1）と担当を起こす
+ * 呼び出しの本数。
+ *
+ * 無料プランは1回の呼び出しにつき内部サービスへ1,000件（Cloudflare の
+ * 文書）。使い切ると以降の D1 が全部失敗する——見出しの打ち直しも通ら
+ * なくなり、60秒の無更新で中断とみなされて実行が黙って終わる。実際に
+ * 起きた: 並列100・拒否続きで368本を起こしたところ、行の作成と起こしで
+ * 736件、毎秒の往復で約250件、月間上限の判定を毎周やって約550件、
+ * 合計1,500件超で250秒あたりに枠が尽きた。
+ *
+ * 使い切る手前で区切り、途中経過を次のアラームへ渡す（アラームは
+ * 呼び出しが別なので、そのたびに枠が戻る）。残りは要約の確定に使う。
+ */
+export const RETRY_CHUNK_INTERNAL_LIMIT = 850;
+
+/** 1回の往復で起こしてよい担当の数。ここで区切って見出しを打ち直す。 */
+export const RETRY_MAX_SPAWNS_PER_TICK = 12;
+
+/**
+ * 月間上限を見直す間隔。判定は D1 を3件ほど使うので毎周は見ない。
+ * 毎周見ても精度は上がらない（走っている分の額は終わるまで台帳に
+ * 載らないので、どのみち遅れる）。踏み越える量はこの間隔に収まる。
+ */
+export const RETRY_LIMIT_CHECK_INTERVAL_MS = 30_000;
+
+/** 毎秒の往復がこの回数続けて失敗したら、区切って次のアラームへ渡す。 */
+export const RETRY_TICK_FAILURE_LIMIT = 3;
+
+/** この実行で使った内部サービスの本数を数える。 */
+export interface ChunkBudget {
+  spend(n?: number): void;
+  spent(): number;
+  /** まだ続けてよいか。 */
+  ok(): boolean;
+  /** これから n 件ぶん使う余地があるか。 */
+  room(n: number): boolean;
+}
+
+export function createChunkBudget(
+  limit: number = RETRY_CHUNK_INTERNAL_LIMIT,
+): ChunkBudget {
+  let spent = 0;
+  return {
+    spend: (n = 1) => {
+      spent += n;
+    },
+    spent: () => spent,
+    ok: () => spent < limit,
+    room: (n: number) => spent + n <= limit,
+  };
+}
+
+/**
+ * 中断とみなされた「生成中」の行を、どう確定させるか。
+ *
+ * 本文があれば途中まででも成果なので done で残す。ただし「成功するまで
+ * 生成」の見出しは応答ではなく進捗の表示なので、そのまま done にすると
+ * 「生成中… 成功 1/3・投げた 368/1000・…」という行が会話に残り続ける
+ * （実際にそう見えた。カードではなく素の1行として、止まった数字のまま）。
+ * 見出しは中断として確定させ、下に積まれた成功はそのまま使えることを
+ * 伝える。
+ */
+export function interruptedGenerationRow(content: string): {
+  status: "done" | "error";
+  content: string;
+  error: string | null;
+} {
+  if (isRetryProgress(content)) {
+    return {
+      status: "error",
+      content: "",
+      error:
+        "生成が中断されました。下に残っている応答はそのまま使えます。再試行してください。",
+    };
+  }
+  if (content !== "") return { status: "done", content, error: null };
+  return {
+    status: "error",
+    content: "",
+    error: "生成が中断されました。再試行してください。",
+  };
+}

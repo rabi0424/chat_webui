@@ -8,13 +8,17 @@ import {
   RETRY_SMART_PERCENT_KEY,
   RETRY_TARGET_KEY,
   afterAttemptSettled,
+  createChunkBudget,
   createPendingTally,
   formatRetryProgress,
+  interruptedGenerationRow,
   isRetryProgress,
   parseRetryProgress,
   retryRequestCap,
   RETRY_ALARM_WALL_MS,
   RETRY_ATTEMPT_DEADLINE_MS,
+  RETRY_CHUNK_INTERNAL_LIMIT,
+  RETRY_MAX_SPAWNS_PER_TICK,
   RETRY_REQUEST_CAP_FACTOR,
   RETRY_STALLED_CHUNK_LIMIT,
   onTransientFailure,
@@ -405,5 +409,85 @@ describe("上流への本数の柵", () => {
     expect(RETRY_ALARM_WALL_MS).toBe(15 * 60_000);
     expect(RETRY_ATTEMPT_DEADLINE_MS).toBe(12 * 60_000);
     expect(RETRY_ATTEMPT_DEADLINE_MS).toBeLessThan(RETRY_ALARM_WALL_MS - 60_000);
+  });
+});
+
+/**
+ * 続きの実行1回で使ってよい内部サービス（D1）の枠。
+ *
+ * 使い切ると以降の D1 が全部失敗し、見出しの打ち直しも通らなくなって、
+ * 60秒の無更新で中断とみなされて実行が黙って終わる。実際に並列100で
+ * 起きた（368本を起こしたところで枠が尽き、318秒の見出しが残った）。
+ */
+describe("続きの実行の枠", () => {
+  it("使った分を数え、上限に届いたら続けない", () => {
+    const b = createChunkBudget(10);
+    expect(b.ok()).toBe(true);
+    b.spend(9);
+    expect(b.spent()).toBe(9);
+    expect(b.ok()).toBe(true);
+    b.spend();
+    expect(b.spent()).toBe(10);
+    expect(b.ok()).toBe(false);
+  });
+
+  it("これから使う余地があるかを、まとめて聞ける", () => {
+    const b = createChunkBudget(10);
+    b.spend(7);
+    expect(b.room(3)).toBe(true);
+    expect(b.room(4)).toBe(false);
+  });
+
+  it("上限は無料プランの1,000件より手前（確定の分を残す）", () => {
+    expect(RETRY_CHUNK_INTERNAL_LIMIT).toBeLessThanOrEqual(900);
+    expect(RETRY_CHUNK_INTERNAL_LIMIT).toBeGreaterThan(100);
+    expect(createChunkBudget().ok()).toBe(true);
+  });
+
+  it("1回の往復で起こす数は、見出しを打ち直せる程度に区切る", () => {
+    // 起こすのに1本200ms。区切らないと並列100で20秒以上黙り、
+    // 中断とみなされる60秒に近づく
+    expect(RETRY_MAX_SPAWNS_PER_TICK).toBeLessThanOrEqual(20);
+    expect(RETRY_MAX_SPAWNS_PER_TICK).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * 中断とみなされた行の確定。「成功するまで生成」の見出しをそのまま
+ * done にすると、止まった数字の1行が会話に残り続ける（実際にそう見えた）。
+ */
+describe("interruptedGenerationRow", () => {
+  it("進捗の見出しは、本文を残さずエラーとして確定する", () => {
+    const line = formatRetryProgress({
+      target: 3,
+      successes: 1,
+      attempts: 368,
+      maxAttempts: 1000,
+      refusals: 367,
+      emptyResponses: 0,
+      transients: 0,
+      running: 100,
+      slots: 100,
+      waitSeconds: 0,
+      stopping: false,
+    });
+    const out = interruptedGenerationRow(line);
+    expect(out.status).toBe("error");
+    expect(out.content).toBe("");
+    expect(out.error).toContain("下に残っている応答はそのまま使えます");
+  });
+
+  it("途中まで書けた応答は、そのまま残す", () => {
+    expect(interruptedGenerationRow("猫の絵です")).toEqual({
+      status: "done",
+      content: "猫の絵です",
+      error: null,
+    });
+  });
+
+  it("何も書けていなければ、再試行できるようエラーにする", () => {
+    const out = interruptedGenerationRow("");
+    expect(out.status).toBe("error");
+    expect(out.error).toBe("生成が中断されました。再試行してください。");
   });
 });
