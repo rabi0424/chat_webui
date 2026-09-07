@@ -19,7 +19,7 @@ const progress = {
   maxAttempts: 1000,
   refusals: 4,
   emptyResponses: 0,
-  errors: 1,
+  transients: 1,
   running: 2,
   slots: 3,
   waitSeconds: 0,
@@ -43,7 +43,7 @@ describe("RetryProgressCard", () => {
     expect(screen.getByText("上流で待ち").nextElementSibling?.textContent).toBe(
       "2 / 枠 3",
     );
-    expect(card.textContent).toContain("内訳: 拒否 4・エラー 1");
+    expect(card.textContent).toContain("内訳: 拒否 4・不調 1");
     expect(card.textContent).not.toContain("レート制限");
     expect(card.textContent).not.toContain("停止");
   });
@@ -65,7 +65,7 @@ describe("RetryProgressCard", () => {
   it("失敗が無いうちは内訳の行を出さない（落ちているのではなく畳んでいる）", () => {
     render(
       <RetryProgressCard
-        content={formatRetryProgress({ ...progress, refusals: 0, errors: 0 })}
+        content={formatRetryProgress({ ...progress, refusals: 0, transients: 0 })}
         startedAt={Date.now()}
       />,
     );

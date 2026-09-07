@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 /**
  * リトライ生成の発射ループの配線。
  *
- * 打ち切りの理由はローカル変数（stopped / rateLimitExhausted /
- * errorsExhausted / budgetStopped）に散っていて、続行判定（moreAttempts）
+ * 打ち切りの理由はローカル変数（stopped / transientExhausted /
+ * fatalStopped / budgetStopped / requestsExhausted）に散っていて、続行判定（moreAttempts）
  * への追記を1つ忘れても画面には何も出ない。実際に budgetStopped が
  * 抜けていて、月間上限に達した実行が「枠切れで中断しただけ」と解釈され、
  * DO が 50ms 間隔でアラームを打ち直し続けた——毎周 R2 と D1 を読む無限
@@ -33,8 +33,8 @@ describe("リトライ生成の続行判定", () => {
     expect(m).not.toBeNull();
     const expr = m![0];
     expect(expr).toContain("!stopped");
-    expect(expr).toContain("!rateLimitExhausted");
-    expect(expr).toContain("!errorsExhausted");
+    expect(expr).toContain("!transientExhausted");
+    expect(expr).toContain("!fatalStopped");
     expect(expr).toContain("!budgetStopped");
     expect(expr).toContain("!requestsExhausted");
   });
@@ -105,7 +105,7 @@ describe("受け取る先が無くなった実行", () => {
       /\/\/ 目標に届くまで、上限と並列数の範囲で発射し続ける[\s\S]*?\{/,
     )![0];
     expect(loop).toContain("!touchFailed");
-    expect(loop).toContain("!errorsExhausted");
+    expect(loop).toContain("!fatalStopped");
   });
 
   it("見出しを失ったら、走っている分を受け取ったあと確定を書きに行かない", () => {
@@ -158,15 +158,20 @@ describe("取りこぼしと数え漏れ", () => {
     );
   });
 
-  it("同じ失敗の連続を数え、成功か拒否で戻す", () => {
-    expect(acceptOne).toContain("state.consecutiveErrors++");
-    expect(acceptOne).toContain(
-      "state.consecutiveErrors >= RETRY_CONSECUTIVE_ERROR_LIMIT",
-    );
-    expect(acceptOne.match(/state\.consecutiveErrors = 0/g)?.length).toBe(2);
+  it("直らないエラーはその場で止め、一時的な不調は試行に数えず待つ", () => {
+    expect(acceptOne).toContain('if (r.kind === "fatal")');
+    expect(acceptOne).toContain("fatalStopped = true");
+    expect(acceptOne).toContain('if (r.kind === "transient")');
+    expect(acceptOne).toContain("onTransientFailure(");
+    // 一時的な不調の分岐は attempts++ より前で return する
+    const transientAt = acceptOne.indexOf('if (r.kind === "transient")');
+    const attemptsAt = acceptOne.indexOf("state.attempts++");
+    expect(transientAt).toBeGreaterThan(-1);
+    expect(transientAt).toBeLessThan(attemptsAt);
+    expect(acceptOne).not.toContain("consecutiveErrors");
   });
 
-  it("レート制限以外が返ったら待ち直しの回数を戻し、待ちの時刻は持ち越す", () => {
+  it("成功か拒否が返ったら待ち直しの回数を戻し、待ちの時刻は持ち越す", () => {
     expect(acceptOne).toContain("afterAttemptSettled(");
     expect(acceptOne).toContain("state.pauseUntil = next.pauseUntil");
     expect(job).toContain("Math.max(state.pauseUntil, gate.until())");
@@ -199,13 +204,29 @@ describe("台帳と課金", () => {
     expect(job).toContain("state.provisional = { points: soFar.points");
   });
 
-  it("エラー応答で返る拒否は、エラーではなく拒否として扱う", () => {
+  it("失敗の分け方は upstream-outcome に一本化し、HTTP のエラーも本文の中のエラーも通す", () => {
     const attempt = fn("runAttempt");
-    const branch = attempt.slice(attempt.indexOf("if (!upstream.ok || !upstream.body)"));
-    expect(branch).toContain("isSafetyRejection(upstream.status, body.raw)");
+    const http = attempt.slice(attempt.indexOf("if (!upstream.ok || !upstream.body)"));
+    expect(http).toContain("classifyUpstreamFailure({");
+    expect(http).toContain("status: upstream.status");
     // 本文は一度しか読めないので、読んだものを文言の組み立てにも渡す
-    expect(branch).toContain("upstreamErrorMessage(upstream, isPoe, body)");
-    expect(branch).toContain('kind: "refused", text: message');
+    expect(http).toContain("upstreamErrorMessage(upstream, isPoe, body)");
+    const mid = attempt.slice(attempt.indexOf("if (!hasImage && result.error)"));
+    expect(mid).toContain("classifyUpstreamFailure({");
+    expect(mid).toContain("status: result.error.code");
+    // 文言での判定は runAttempt に残っていない（分け方は1か所）
+    expect(attempt).not.toContain("isSafetyRejection");
+    expect(attempt).not.toContain("MODERATION");
+  });
+
+  it("画像を出すモデルは、ヘッダを待つ時間も本文の無音も長く取り、締め切りの signal を渡す", () => {
+    const attempt = fn("runAttempt");
+    expect(attempt).toMatch(
+      /const idleTimeoutMs = job\.imageOutput\s*\?\s*IMAGE_IDLE_TIMEOUT_MS\s*:\s*UPSTREAM_IDLE_TIMEOUT_MS/,
+    );
+    expect(attempt).toContain("connectTimeoutMs: idleTimeoutMs,");
+    const req = attempt.slice(attempt.indexOf("requestUpstream(job, messages, onRequest, {"));
+    expect(req.slice(0, req.indexOf("})"))).toContain("signal,");
   });
 
   it("1本ごとに総時間の締め切りを置き、停止後は猶予の後に切る", () => {
@@ -221,10 +242,4 @@ describe("台帳と課金", () => {
     expect(attempt).toContain("signal,");
   });
 
-  it("画像を出すモデルは、無音の待ちを長くする", () => {
-    const attempt = fn("runAttempt");
-    expect(attempt).toMatch(
-      /idleTimeoutMs: job\.imageOutput\s*\?\s*IMAGE_IDLE_TIMEOUT_MS\s*:\s*UPSTREAM_IDLE_TIMEOUT_MS/,
-    );
-  });
 });

@@ -129,7 +129,8 @@ export interface RetryProgress {
   maxAttempts: number;
   refusals: number;
   emptyResponses: number;
-  errors: number;
+  /** 一時的な不調（混雑・時間切れ・上流の障害）。試行には数えない。 */
+  transients: number;
   /** 上流へ投げて結果待ちの本数（取り込み中は含まない）。 */
   running: number;
   /** いま開けている枠の数。スマート生成では成功率から決め直した値。 */
@@ -159,7 +160,7 @@ export function formatRetryProgress(p: RetryProgress): string {
   ];
   if (p.refusals > 0) parts.push(`拒否 ${p.refusals}`);
   if (p.emptyResponses > 0) parts.push(`空 ${p.emptyResponses}`);
-  if (p.errors > 0) parts.push(`エラー ${p.errors}`);
+  if (p.transients > 0) parts.push(`不調 ${p.transients}`);
   parts.push(`待ち ${p.running}本`, `枠 ${p.slots}本`);
   if (p.waitSeconds > 0) parts.push(`レート制限で待機 あと${p.waitSeconds}秒`);
   if (p.stopping) parts.push("停止中");
@@ -193,7 +194,7 @@ export function parseRetryProgress(content: string): RetryProgress | null {
     maxAttempts: attempts[1],
     refusals: count("拒否"),
     emptyResponses: count("空"),
-    errors: count("エラー"),
+    transients: count("不調"),
     running: count("待ち"),
     slots: count("枠"),
     waitSeconds: wait ? Number(wait[1]) : 0,
@@ -206,7 +207,7 @@ export function isRetryProgress(content: string): boolean {
   return content.startsWith(RETRY_PROGRESS_PREFIX);
 }
 
-/** レート制限に当たったときの待ち時間（ミリ秒）。回を追うごとに伸ばす。 */
+/** 一時的な不調に当たったときの待ち時間（ミリ秒）。回を追うごとに伸ばす。 */
 export const RATE_LIMIT_BACKOFF_MS = [2_000, 4_000, 8_000];
 
 export interface RateLimitState {
@@ -219,7 +220,8 @@ export interface RateLimitState {
 }
 
 /**
- * レート制限の応答を1つ受けたときの、待ちと回数の更新。
+ * 一時的な不調（混雑・時間切れ・上流の障害）を1つ受けたときの、
+ * 待ちと回数の更新。
  *
  * **並列で走っている本数ぶんの応答が、ほぼ同時に 429 で返る。**
  * 1つ受けるたびに回数を増やしていたので、並列4なら1回の制限で
@@ -230,7 +232,7 @@ export interface RateLimitState {
  * 待ち時間だけは長いほうへ伸ばす（上流が Retry-After で長めを指示して
  * きた場合に、短いほうで先に投げ直さないため）。
  */
-export function onRateLimited(
+export function onTransientFailure(
   state: RateLimitState,
   opts: { now: number; waitMs?: number; maxRounds?: number },
 ): RateLimitState {
@@ -253,27 +255,16 @@ export function onRateLimited(
 }
 
 /**
- * レート制限以外の結果が1つ返ったときの、待ち直し回数の扱い。
+ * 成功か拒否が1つ返ったときの、待ち直し回数の扱い。
  *
  * 回数は増える一方だったので、長い実行で分単位の制限に3回触れると、
  * 毎回きちんと待てていても試行を残して打ち切っていた。数えたいのは
- * 「待っても何も通らない」が続いた回数なので、何か1つでも決着したら
+ * 「待っても何も通らない」が続いた回数なので、何か1つでも通ったら
  * 数え直す。
  */
 export function afterAttemptSettled(state: RateLimitState): RateLimitState {
   return { ...state, rounds: 0 };
 }
-
-/**
- * 同じ失敗が続いたら打ち切る本数。
- *
- * 認証・残高・パラメータのような直らないエラーは、投げるたびに同じ
- * 結果で返る。試行を消費しながら上限まで投げ続けるのは無駄で、
- * 「画像が揃う前に接続が切れた」型のエラーは上流側で課金されている
- * ことがある。拒否（画像の無い応答）は数えない——それを乗り越える
- * ための機能なので。
- */
-export const RETRY_CONSECUTIVE_ERROR_LIMIT = 5;
 
 /**
  * 結果は分かっているが、まだ数え上げに載っていない本数。
@@ -285,14 +276,16 @@ export const RETRY_CONSECUTIVE_ERROR_LIMIT = 5;
  * 抑えたい超過そのもの。結果が届いた瞬間にここへ足し、数え上げが
  * 済んだら引く。
  */
+export type AttemptKind = "success" | "refused" | "transient" | "fatal";
+
 export interface PendingTally {
-  /** 結果が届いた（レート制限を除く）。 */
-  known(kind: "success" | "refused" | "error" | "rate_limited"): void;
+  /** 結果が届いた。試行に数えるのは成功と拒否だけ。 */
+  known(kind: AttemptKind): void;
   /** 数え上げが済んだ。known と対で呼ぶ。 */
-  counted(kind: "success" | "refused" | "error" | "rate_limited"): void;
+  counted(kind: AttemptKind): void;
   /** 届いているがまだ数えていない成功。 */
   successes(): number;
-  /** 届いているがまだ数えていない試行（レート制限は含まない）。 */
+  /** 届いているがまだ数えていない試行（成功と拒否）。 */
   settled(): number;
 }
 
@@ -301,45 +294,18 @@ export function createPendingTally(): PendingTally {
   let settled = 0;
   return {
     known(kind) {
-      if (kind === "rate_limited") return;
+      if (kind === "transient" || kind === "fatal") return;
       settled++;
       if (kind === "success") successes++;
     },
     counted(kind) {
-      if (kind === "rate_limited") return;
+      if (kind === "transient" || kind === "fatal") return;
       settled--;
       if (kind === "success") successes--;
     },
     successes: () => successes,
     settled: () => settled,
   };
-}
-
-/**
- * 上流のエラー応答が、セーフティ判定による拒否か。
- *
- * 拒否を本文ではなく HTTP のエラーで返すモデルがある（400 と
- * "Your request was rejected by the safety system…" のような API の
- * 定型文）。エラーとして扱うと「同じ失敗が続いたら打ち切る」に掛かり、
- * 乗り越えるための機能が5回の拒否で止まる。拒否として扱えば、投げ直す
- * 対象になり、打ち切りの数え上げも戻る。
- *
- * 「拒否文の文言は見ない」という決まりの例外。ここで見るのはモデルの
- * 出力ではなく API 側の固定の文言と code で、言語も表現も揺れない。
- * 見誤ったときの害も有限で、拒否をエラーと読めば打ち切りが早まる
- * （直す前の状態）、エラーを拒否と読めば上限まで投げる（打ち切りを
- * 足す前の状態）。成功の判定（画像があるか）には触れない。
- *
- * 認証（401）・残高（402）・レート制限（429）は文言に何が書いてあっても
- * 拒否ではない。
- */
-export const SAFETY_REJECTION_STATUSES = [400, 403, 422];
-const SAFETY_REJECTION_PATTERN =
-  /safety|moderation|content[ _-]?policy|usage[ _-]?policy|policy[ _-]?violation/i;
-
-export function isSafetyRejection(status: number, text: string): boolean {
-  if (!SAFETY_REJECTION_STATUSES.includes(status)) return false;
-  return SAFETY_REJECTION_PATTERN.test(text);
 }
 
 /**

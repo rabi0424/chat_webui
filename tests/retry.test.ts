@@ -11,14 +11,13 @@ import {
   createPendingTally,
   formatRetryProgress,
   isRetryProgress,
-  isSafetyRejection,
   parseRetryProgress,
   retryRequestCap,
   RETRY_ATTEMPT_DEADLINE_MS,
   RETRY_REQUEST_CAP_FACTOR,
   RETRY_STOP_GRACE_MS,
   RETRY_STALLED_CHUNK_LIMIT,
-  onRateLimited,
+  onTransientFailure,
   readRetryConfig,
 } from "../app/lib/retry";
 
@@ -195,7 +194,7 @@ describe("進捗の見出し", () => {
     maxAttempts: 1000,
     refusals: 4,
     emptyResponses: 0,
-    errors: 1,
+    transients: 1,
     running: 2,
     slots: 3,
     waitSeconds: 12,
@@ -206,7 +205,7 @@ describe("進捗の見出し", () => {
     const line = formatRetryProgress(full);
     expect(isRetryProgress(line)).toBe(true);
     expect(line).toBe(
-      "生成中… 成功 1/3・投げた 6/1000・拒否 4・エラー 1・待ち 2本・枠 3本・レート制限で待機 あと12秒・停止中",
+      "生成中… 成功 1/3・投げた 6/1000・拒否 4・不調 1・待ち 2本・枠 3本・レート制限で待機 あと12秒・停止中",
     );
   });
 
@@ -216,7 +215,7 @@ describe("進捗の見出し", () => {
       ...full,
       successes: 0,
       refusals: 0,
-      errors: 0,
+      transients: 0,
       running: 0,
       slots: 1,
       waitSeconds: 0,
@@ -230,8 +229,8 @@ describe("進捗の見出し", () => {
   it("桁が違っても、項の並びが違っても読める", () => {
     const big = { ...full, attempts: 999, maxAttempts: 1000, refusals: 990, slots: 12, waitSeconds: 60 };
     expect(parseRetryProgress(formatRetryProgress(big))).toEqual(big);
-    // 「空 N」と「エラー N」を「拒否 N」と取り違えない
-    const only = { ...full, refusals: 0, emptyResponses: 7, errors: 0, stopping: false, waitSeconds: 0 };
+    // 「空 N」と「不調 N」を「拒否 N」と取り違えない
+    const only = { ...full, refusals: 0, emptyResponses: 7, transients: 0, stopping: false, waitSeconds: 0 };
     expect(parseRetryProgress(formatRetryProgress(only))).toEqual(only);
   });
 
@@ -264,7 +263,7 @@ describe("レート制限の待ち直し", () => {
   const fresh = () => ({ pauseUntil: 0, rounds: 0, exhausted: false });
 
   it("最初の1件で待ちに入り、1回と数える", () => {
-    const s = onRateLimited(fresh(), { now: 1000 });
+    const s = onTransientFailure(fresh(), { now: 1000 });
     expect(s.rounds).toBe(1);
     expect(s.pauseUntil).toBe(1000 + RATE_LIMIT_BACKOFF_MS[0]);
     expect(s.exhausted).toBe(false);
@@ -272,11 +271,11 @@ describe("レート制限の待ち直し", () => {
 
   /** これが直したかったところ。 */
   it("待っている最中に来た分は、同じ回として数えない", () => {
-    let s = onRateLimited(fresh(), { now: 1000 });
+    let s = onTransientFailure(fresh(), { now: 1000 });
     // 並列4なら、残り3件がほぼ同時に返る
-    s = onRateLimited(s, { now: 1001 });
-    s = onRateLimited(s, { now: 1002 });
-    s = onRateLimited(s, { now: 1003 });
+    s = onTransientFailure(s, { now: 1001 });
+    s = onTransientFailure(s, { now: 1002 });
+    s = onTransientFailure(s, { now: 1003 });
     expect(s.rounds).toBe(1);
     expect(s.exhausted).toBe(false);
   });
@@ -286,48 +285,48 @@ describe("レート制限の待ち直し", () => {
     let now = 1000;
     for (let round = 0; round < 3; round++) {
       // 1回の制限で4件返る
-      for (let i = 0; i < 4; i++) s = onRateLimited(s, { now: now + i });
+      for (let i = 0; i < 4; i++) s = onTransientFailure(s, { now: now + i });
       expect(s.exhausted).toBe(false);
       now = s.pauseUntil + 1; // 待ち終わって投げ直す
     }
     expect(s.rounds).toBe(3);
     // 4回目でようやく打ち切る
-    s = onRateLimited(s, { now });
+    s = onTransientFailure(s, { now });
     expect(s.exhausted).toBe(true);
   });
 
   it("待ちは回を追うごとに伸びる", () => {
-    let s = onRateLimited(fresh(), { now: 0 });
+    let s = onTransientFailure(fresh(), { now: 0 });
     expect(s.pauseUntil).toBe(RATE_LIMIT_BACKOFF_MS[0]);
-    s = onRateLimited(s, { now: s.pauseUntil });
+    s = onTransientFailure(s, { now: s.pauseUntil });
     expect(s.pauseUntil - RATE_LIMIT_BACKOFF_MS[0]).toBe(
       RATE_LIMIT_BACKOFF_MS[1],
     );
   });
 
   it("上流が待ち時間を言えばそれに従う", () => {
-    const s = onRateLimited(fresh(), { now: 1000, waitMs: 30_000 });
+    const s = onTransientFailure(fresh(), { now: 1000, waitMs: 30_000 });
     expect(s.pauseUntil).toBe(31_000);
   });
 
   it("余波でも、上流が長い待ちを言えば伸ばす", () => {
     // 短いほうで先に投げ直すと、また同じ制限に当たる
-    let s = onRateLimited(fresh(), { now: 1000 });
+    let s = onTransientFailure(fresh(), { now: 1000 });
     const before = s.pauseUntil;
-    s = onRateLimited(s, { now: 1001, waitMs: 60_000 });
+    s = onTransientFailure(s, { now: 1001, waitMs: 60_000 });
     expect(s.pauseUntil).toBe(61_001);
     expect(s.pauseUntil).toBeGreaterThan(before);
     expect(s.rounds).toBe(1);
   });
 
   it("余波の待ちが短くても、縮めはしない", () => {
-    let s = onRateLimited(fresh(), { now: 1000, waitMs: 60_000 });
-    s = onRateLimited(s, { now: 1001, waitMs: 10 });
+    let s = onTransientFailure(fresh(), { now: 1000, waitMs: 60_000 });
+    s = onTransientFailure(s, { now: 1001, waitMs: 10 });
     expect(s.pauseUntil).toBe(61_000);
   });
 
   it("待ち時間が0以下なら、既定の待ちを使う", () => {
-    const s = onRateLimited(fresh(), { now: 1000, waitMs: 0 });
+    const s = onTransientFailure(fresh(), { now: 1000, waitMs: 0 });
     expect(s.pauseUntil).toBe(1000 + RATE_LIMIT_BACKOFF_MS[0]);
   });
 });
@@ -345,11 +344,11 @@ describe("待ち直しの回数の戻し", () => {
     st = afterAttemptSettled(st);
     let now = 100_000;
     for (let i = 0; i < 3; i++) {
-      st = onRateLimited(st, { now });
+      st = onTransientFailure(st, { now });
       expect(st.exhausted).toBe(false);
       now = st.pauseUntil + 1;
     }
-    expect(onRateLimited(st, { now }).exhausted).toBe(true);
+    expect(onTransientFailure(st, { now }).exhausted).toBe(true);
   });
 });
 
@@ -358,62 +357,28 @@ describe("待ち直しの回数の戻し", () => {
  * いないと、成功が届くたびに枠が1本ずつ狭まったまま戻らない。
  */
 describe("createPendingTally", () => {
-  it("成功と試行を、届いたときに足し、数えたときに引く", () => {
+  it("成功と拒否を、届いたときに足し、数えたときに引く", () => {
     const t = createPendingTally();
     t.known("success");
     t.known("refused");
-    t.known("error");
     expect(t.successes()).toBe(1);
-    expect(t.settled()).toBe(3);
+    expect(t.settled()).toBe(2);
     t.counted("success");
     expect(t.successes()).toBe(0);
-    expect(t.settled()).toBe(2);
+    expect(t.settled()).toBe(1);
     t.counted("refused");
-    t.counted("error");
     expect(t.settled()).toBe(0);
   });
 
-  it("レート制限は試行ではないので数えない", () => {
+  it("一時的な不調と直らないエラーは試行ではないので数えない", () => {
     const t = createPendingTally();
-    t.known("rate_limited");
+    t.known("transient");
+    t.known("fatal");
     expect(t.settled()).toBe(0);
     expect(t.successes()).toBe(0);
-    t.counted("rate_limited");
+    t.counted("transient");
+    t.counted("fatal");
     expect(t.settled()).toBe(0);
-  });
-});
-
-/**
- * 上流のエラー応答のうち、セーフティ判定による拒否を見分ける。
- * エラーとして扱うと「同じ失敗が続いたら打ち切る」に掛かり、
- * 乗り越えるための機能が5回の拒否で止まる。
- */
-describe("isSafetyRejection", () => {
-  it("API の定型文と code を拒否と読む", () => {
-    expect(
-      isSafetyRejection(
-        400,
-        "Your request was rejected by the safety system. If you believe this is an error, contact us at help.openai.com and include the request ID",
-      ),
-    ).toBe(true);
-    expect(isSafetyRejection(400, "content_policy_violation")).toBe(true);
-    expect(isSafetyRejection(400, "moderation_blocked")).toBe(true);
-    expect(
-      isSafetyRejection(403, "This request violates our usage policy."),
-    ).toBe(true);
-    expect(isSafetyRejection(422, "Content Policy Violation")).toBe(true);
-  });
-
-  it("直らないエラーを拒否と読まない", () => {
-    expect(isSafetyRejection(400, "Unknown parameter: 'foo'")).toBe(false);
-    expect(isSafetyRejection(400, "Invalid JSON body")).toBe(false);
-    expect(isSafetyRejection(500, "internal error")).toBe(false);
-  });
-
-  it("認証・残高・レート制限は文言に何があっても拒否ではない", () => {
-    expect(isSafetyRejection(401, "rejected by the safety system")).toBe(false);
-    expect(isSafetyRejection(402, "content policy: insufficient credits")).toBe(false);
-    expect(isSafetyRejection(429, "moderation rate limit")).toBe(false);
   });
 });
 

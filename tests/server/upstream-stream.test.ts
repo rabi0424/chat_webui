@@ -102,3 +102,29 @@ describe("readUpstreamStream", () => {
     expect(result.interrupted).toBeUndefined();
   });
 });
+
+describe("本文の中で届くエラー", () => {
+  it("200 のあとに error を含むチャンクが来たら拾う（空の応答に見せない）", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            ': OPENROUTER PROCESSING\n\n' +
+              'data: {"id":"x","error":{"message":"Your request was rejected by the safety system.","code":400,"metadata":{"provider_name":"OpenAI","raw":"{\\"error\\":{\\"code\\":\\"moderation_blocked\\"}}"}},"choices":[{"delta":{"content":""},"finish_reason":"error"}]}\n\n' +
+              "data: [DONE]\n\n",
+          ),
+        );
+        controller.close();
+      },
+    });
+    const result = await readUpstreamStream(body, undefined, {
+      idleTimeoutMs: 1_000,
+      signal: new AbortController().signal,
+    });
+    expect(result.content).toBe("");
+    expect(result.error?.code).toBe(400);
+    expect(result.error?.detail).toContain("safety system");
+    expect(result.error?.raw).toContain("moderation_blocked");
+    expect(result.error?.raw).toContain("OpenAI");
+  });
+});

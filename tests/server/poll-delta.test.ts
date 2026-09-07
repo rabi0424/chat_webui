@@ -109,7 +109,7 @@ describe("1件追いのルート", () => {
       maxAttempts: 12,
       refusals: 1,
       emptyResponses: 0,
-      errors: 0,
+      transients: 0,
       running: 1,
       slots: 2,
       waitSeconds: 0,

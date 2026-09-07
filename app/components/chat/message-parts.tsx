@@ -168,7 +168,7 @@ export function RetryProgressCard({
   const breakdown = [
     p.refusals > 0 ? `拒否 ${p.refusals}` : null,
     p.emptyResponses > 0 ? `空の応答 ${p.emptyResponses}` : null,
-    p.errors > 0 ? `エラー ${p.errors}` : null,
+    p.transients > 0 ? `不調 ${p.transients}` : null,
   ].filter((x): x is string => x != null);
   const cell = "flex flex-col gap-0.5";
   const label = "text-xs text-ink-3";
