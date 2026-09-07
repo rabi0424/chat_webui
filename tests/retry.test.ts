@@ -12,6 +12,7 @@ import {
   formatRetryProgress,
   isRetryProgress,
   isSafetyRejection,
+  parseRetryProgress,
   retryRequestCap,
   RETRY_REQUEST_CAP_FACTOR,
   RETRY_STALLED_CHUNK_LIMIT,
@@ -185,28 +186,61 @@ describe("readRetryConfig", () => {
 });
 
 describe("進捗の見出し", () => {
-  const retry = { target: 10, maxAttempts: 100, concurrency: 4 };
+  const full = {
+    target: 3,
+    successes: 1,
+    attempts: 6,
+    maxAttempts: 1000,
+    refusals: 4,
+    emptyResponses: 0,
+    errors: 1,
+    running: 2,
+    slots: 3,
+    waitSeconds: 12,
+    stopping: true,
+  };
 
-  it("見出しとして判別できる形で書く", () => {
-    const line = formatRetryProgress({
-      successes: 2,
-      attempts: 37,
-      inflight: 4,
-      retry,
-    });
+  it("見出しとして判別できる形で書き、素で読んでも意味が取れる", () => {
+    const line = formatRetryProgress(full);
     expect(isRetryProgress(line)).toBe(true);
-    expect(line).toContain("成功 2/10");
-    expect(line).toContain("試行 37/100");
-    expect(line).toContain("実行中 4本");
+    expect(line).toBe(
+      "生成中… 成功 1/3・投げた 6/1000・拒否 4・エラー 1・待ち 2本・枠 3本・レート制限で待機 あと12秒・停止中",
+    );
+  });
+
+  it("書いたものを読むと同じ進捗に戻る（0 の内訳や無い状態も）", () => {
+    expect(parseRetryProgress(formatRetryProgress(full))).toEqual(full);
+    const quiet = {
+      ...full,
+      successes: 0,
+      refusals: 0,
+      errors: 0,
+      running: 0,
+      slots: 1,
+      waitSeconds: 0,
+      stopping: false,
+    };
+    const line = formatRetryProgress(quiet);
+    expect(line).toBe("生成中… 成功 0/3・投げた 6/1000・待ち 0本・枠 1本");
+    expect(parseRetryProgress(line)).toEqual(quiet);
+  });
+
+  it("桁が違っても、項の並びが違っても読める", () => {
+    const big = { ...full, attempts: 999, maxAttempts: 1000, refusals: 990, slots: 12, waitSeconds: 60 };
+    expect(parseRetryProgress(formatRetryProgress(big))).toEqual(big);
+    // 「空 N」と「エラー N」を「拒否 N」と取り違えない
+    const only = { ...full, refusals: 0, emptyResponses: 7, errors: 0, stopping: false, waitSeconds: 0 };
+    expect(parseRetryProgress(formatRetryProgress(only))).toEqual(only);
+  });
+
+  it("読めない見出しは null（古い版の1行は素のまま出す側へ倒す）", () => {
+    expect(parseRetryProgress("生成中… 成功 0/3・試行 6/1000・実行中 1本")).toBeNull();
+    expect(parseRetryProgress("生成中…")).toBeNull();
+    expect(parseRetryProgress("画像を生成しました。")).toBeNull();
   });
 
   it("経過秒はサーバー側で書かない（クライアントが刻む）", () => {
-    const line = formatRetryProgress({
-      successes: 0,
-      attempts: 0,
-      inflight: 0,
-      retry,
-    });
+    const line = formatRetryProgress({ ...full, waitSeconds: 0 });
     expect(line).not.toMatch(/秒|\d+s\b/);
   });
 

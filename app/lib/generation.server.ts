@@ -1521,15 +1521,55 @@ async function runRetryGenerationJob(
    * 並列数ぶんの結果（課金済み）が宙に浮く。D1 が一時的に失敗した
    * ときは「書けなかった」と覚えて発射だけ止め、走っている分は受け取る。
    */
+  /** 数え上げ済みと、届いているがまだ数えていない分を合わせた成功数。 */
+  const knownSuccesses = () => state.successes + pending.successes();
+  /** 上流でまだ結果の分からない本数（取り込み中の分は含めない）。 */
+  const running = () => inflight.size - pending.settled();
+
+  /**
+   * いま開けておく枠の数。固定なら並列数そのもの、スマートなら実行中の
+   * 成功率から決め直す（`planRetrySlots`）。
+   *
+   * 発射のたびに呼ぶ。ずらしの待ちや停止確認のあいだに結果が届いて
+   * state が動くことがあり、burst の頭で1回だけ数えると、成功が届いた
+   * あとも縮む前の枠のまま投げ足してしまう。
+   *
+   * touch より前に置く。heartbeat は持ち越した画像を拾うあいだにも
+   * 打ち、そのとき見出しに枠の数を書くので、後ろで定義すると最初の
+   * 打ち直しが未定義の const に触る。
+   */
+  const slots = (): number =>
+    retry.smartPercent != null
+      ? planRetrySlots({
+          target: retry.target,
+          successes: knownSuccesses(),
+          attempts: state.attempts + pending.settled(),
+          maxAttempts: retry.maxAttempts,
+          cap: retry.concurrency,
+          percent: retry.smartPercent,
+        })
+      : retry.concurrency;
+
   const touch = async (): Promise<boolean> => {
     budget.spendTouch();
     try {
       const { stopRequested, applied } = await flushGeneration(statusId, {
         content: formatRetryProgress({
+          target: retry.target,
           successes: state.successes,
           attempts: state.attempts,
-          inflight: inflight.size,
-          retry,
+          maxAttempts: retry.maxAttempts,
+          refusals: state.refusals,
+          emptyResponses: state.emptyResponses,
+          errors: state.errors,
+          running: running(),
+          slots: slots(),
+          // 見出しは毎秒書き直すので、残り秒はここで書いてよい
+          waitSeconds: Math.max(
+            0,
+            Math.ceil((waitUntil() - Date.now()) / 1000),
+          ),
+          stopping: stopped && inflight.size > 0,
         }),
         reasoning: null,
       });
@@ -1599,11 +1639,6 @@ async function runRetryGenerationJob(
       .finally(() => pending.counted(r.kind));
     return queue;
   };
-
-  /** 数え上げ済みと、届いているがまだ数えていない分を合わせた成功数。 */
-  const knownSuccesses = () => state.successes + pending.successes();
-  /** 上流でまだ結果の分からない本数（取り込み中の分は含めない）。 */
-  const running = () => inflight.size - pending.settled();
 
   const acceptOne = async (r: AttemptOutcome): Promise<void> => {
     let counted = false;
@@ -1715,26 +1750,6 @@ async function runRetryGenerationJob(
       state.lastError = `結果の取り込みに失敗しました: ${(e as Error).message}`;
     }
   };
-
-  /**
-   * いま開けておく枠の数。固定なら並列数そのもの、スマートなら実行中の
-   * 成功率から決め直す（`planRetrySlots`）。
-   *
-   * 発射のたびに呼ぶ。ずらしの待ちや停止確認のあいだに結果が届いて
-   * state が動くことがあり、burst の頭で1回だけ数えると、成功が届いた
-   * あとも縮む前の枠のまま投げ足してしまう。
-   */
-  const slots = (): number =>
-    retry.smartPercent != null
-      ? planRetrySlots({
-          target: retry.target,
-          successes: knownSuccesses(),
-          attempts: state.attempts + pending.settled(),
-          maxAttempts: retry.maxAttempts,
-          cap: retry.concurrency,
-          percent: retry.smartPercent,
-        })
-      : retry.concurrency;
 
   const launch = () => {
     const p = runAttempt(

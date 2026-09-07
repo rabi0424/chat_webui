@@ -6,6 +6,7 @@
  * 見た目の都合だけで育つ部分を外に出しておく。
  */
 import { useEffect, useRef, useState } from "react";
+import { parseRetryProgress } from "../../lib/retry";
 import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
 import { GLASS_PANEL, MSG_ICON_ACTION } from "../../lib/ui";
@@ -78,34 +79,20 @@ export function MessageImages({
 }
 
 /**
- * 生成中の見出し（本文 + 経過秒）。
+ * 生成開始からの経過秒。
  *
- * 経過秒はここで刻む。サーバーに秒を書かせると、毎秒表示するのに
+ * 秒はここで刻む。サーバーに秒を書かせると、毎秒表示するのに
  * 毎秒のD1書き込みと取得が要るうえ、ポーリングの間隔しだいで数字が
  * 飛ぶ。開始時刻から引けば、通信を増やさずにちょうど毎秒進む。
  *
- * 「成功するまで生成」の進捗（成功数・試行数）も、1枚だけの画像生成も
- * これで出す。画像生成は本文が流れてこないぶん、待っているあいだ
- * 手がかりが秒数しかない。
+ * null = まだ数え始めていない（サーバー描画と最初の描画）。
+ * 秒をいきなり描くと、サーバーが書いた数字とブラウザが数えた数字が
+ * 食い違ってハイドレーションが失敗する。失敗すると React は文書ごと
+ * 描き直し、<html> に載せたテーマ・アクセント・文字サイズまで消える
+ * （lib/appearance.ts 参照）。最初は秒を出さず、マウント後に足す。
  */
-export function GenerationProgress({
-  text,
-  startedAt,
-}: {
-  text: string;
-  /** 生成開始時刻。未保存の場合は表示した時刻から数える。 */
-  startedAt: number | undefined;
-}) {
-  /**
-   * null = まだ数え始めていない（サーバー描画と最初の描画）。
-   *
-   * 秒をいきなり描くと、サーバーが書いた数字とブラウザが数えた数字が
-   * 食い違ってハイドレーションが失敗する。失敗すると React は文書ごと
-   * 描き直し、<html> に載せたテーマ・アクセント・文字サイズまで消える
-   * （lib/appearance.ts 参照）。最初は秒を出さず、マウント後に足す。
-   */
+function useElapsedSeconds(startedAt: number | undefined): number | null {
   const [elapsed, setElapsed] = useState<number | null>(null);
-
   useEffect(() => {
     const start = startedAt ?? Date.now();
     const tick = () =>
@@ -116,18 +103,127 @@ export function GenerationProgress({
     const timer = setInterval(tick, 250);
     return () => clearInterval(timer);
   }, [startedAt]);
+  return elapsed;
+}
 
+function Spinner() {
+  return (
+    <span
+      aria-hidden
+      className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-700 dark:border-t-accent"
+    />
+  );
+}
+
+/**
+ * 生成中の見出し（本文 + 経過秒）。
+ *
+ * 1枚だけの画像生成は本文が流れてこないぶん、待っているあいだ
+ * 手がかりが秒数しかないので、これで出す。
+ */
+export function GenerationProgress({
+  text,
+  startedAt,
+}: {
+  text: string;
+  /** 生成開始時刻。未保存の場合は表示した時刻から数える。 */
+  startedAt: number | undefined;
+}) {
+  const elapsed = useElapsedSeconds(startedAt);
   return (
     <p className="flex items-center gap-2 text-sm text-ink-2">
-      <span
-        aria-hidden
-        className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-neutral-300 border-t-accent dark:border-neutral-700 dark:border-t-accent"
-      />
+      <Spinner />
       <span>
         {text}
         {elapsed != null && `（${elapsed}秒）`}
       </span>
     </p>
+  );
+}
+
+/**
+ * 「成功するまで生成」の進捗。サーバーが毎秒書く1行を読んで、数と
+ * 状態が見える形に描く。
+ *
+ * 以前は「生成中… 成功 0/3・試行 6/1000・実行中 1本（23秒）」と1行で
+ * 出し、右下に所要時間のつもりの秒（実際は最後に進捗を書いた時刻から
+ * の経過）も並んでいた。同じ数字が丸め方の違う形で2つ並び、「実行中」
+ * が上流で待っている本数なのか枠なのか、失敗が拒否なのかエラーなのか、
+ * レート制限で待っているのか止まっているのかは、どれも読めなかった。
+ *
+ * 読めない1行（古い版が書いたもの）は素のまま出す。
+ */
+export function RetryProgressCard({
+  content,
+  startedAt,
+}: {
+  content: string;
+  startedAt: number | undefined;
+}) {
+  const elapsed = useElapsedSeconds(startedAt);
+  const p = parseRetryProgress(content);
+  if (!p) {
+    return <GenerationProgress text={content} startedAt={startedAt} />;
+  }
+  const breakdown = [
+    p.refusals > 0 ? `拒否 ${p.refusals}` : null,
+    p.emptyResponses > 0 ? `空の応答 ${p.emptyResponses}` : null,
+    p.errors > 0 ? `エラー ${p.errors}` : null,
+  ].filter((x): x is string => x != null);
+  const cell = "flex flex-col gap-0.5";
+  const label = "text-xs text-ink-3";
+  const value = "font-heading text-base tabular-nums";
+  return (
+    <div
+      data-testid="retry-progress"
+      className="rounded-xl border border-neutral-200/80 px-4 py-3 text-sm dark:border-white/10"
+    >
+      <div className="flex items-center gap-2">
+        <Spinner />
+        <span className="font-medium">
+          {p.stopping ? "停止中" : "成功するまで生成中"}
+        </span>
+        <span className={`ml-auto ${label} tabular-nums`}>
+          {elapsed != null && `${elapsed}秒`}
+        </span>
+      </div>
+      <dl className="mt-2 grid grid-cols-3 gap-x-3">
+        <div className={cell}>
+          <dt className={label}>成功</dt>
+          <dd className={value}>
+            {p.successes}
+            <span className="text-ink-3"> / {p.target}</span>
+          </dd>
+        </div>
+        <div className={cell}>
+          <dt className={label}>投げた</dt>
+          <dd className={value}>
+            {p.attempts}
+            <span className="text-ink-3"> / {p.maxAttempts}</span>
+          </dd>
+        </div>
+        <div className={cell}>
+          <dt className={label}>上流で待ち</dt>
+          <dd className={value}>
+            {p.running}
+            <span className="text-ink-3"> / 枠 {p.slots}</span>
+          </dd>
+        </div>
+      </dl>
+      {breakdown.length > 0 && (
+        <p className={`mt-1.5 ${label}`}>内訳: {breakdown.join("・")}</p>
+      )}
+      {p.waitSeconds > 0 && (
+        <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">
+          レート制限で待機中（あと {p.waitSeconds} 秒）
+        </p>
+      )}
+      {p.stopping && (
+        <p className={`mt-1.5 ${label}`}>
+          走っている {p.running} 本の結果を受け取ってから終わります
+        </p>
+      )}
+    </div>
   );
 }
 

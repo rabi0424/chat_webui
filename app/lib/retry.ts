@@ -109,9 +109,36 @@ export function readRetryConfig(
 
 /**
  * 進捗行の先頭。クライアントはこれを見て「リトライ生成の見出し」と判断し、
- * 経過秒を自分で刻む（サーバーは秒を書かない）。
+ * 経過秒を自分で刻む（サーバーは秒を書かない）。DO の中断判定と
+ * ポーリングの差分判定もこの先頭文字列に懸かっている。
  */
 export const RETRY_PROGRESS_PREFIX = "生成中…";
+
+/**
+ * 見出しに載せる進捗。サーバーが毎秒書き、クライアントが読んで描く。
+ *
+ * 文字列そのものが両者の取り決め（wire format）。素のまま読んでも
+ * 意味が取れる1行にしておく——古い画面やコピーではこの文字列が
+ * そのまま見える。
+ */
+export interface RetryProgress {
+  target: number;
+  successes: number;
+  /** 消費した試行（成功＋拒否＋空＋エラー）。レート制限は含まない。 */
+  attempts: number;
+  maxAttempts: number;
+  refusals: number;
+  emptyResponses: number;
+  errors: number;
+  /** 上流へ投げて結果待ちの本数（取り込み中は含まない）。 */
+  running: number;
+  /** いま開けている枠の数。スマート生成では成功率から決め直した値。 */
+  slots: number;
+  /** レート制限で発射を控えている残り秒。0 なら控えていない。 */
+  waitSeconds: number;
+  /** 停止要求を受け、走っている分を待っている。 */
+  stopping: boolean;
+}
 
 /**
  * 見出しメッセージに出す進捗の文言。
@@ -119,19 +146,59 @@ export const RETRY_PROGRESS_PREFIX = "生成中…";
  * 経過秒はここに入れない。秒をサーバーが書くと、毎秒表示するために
  * 1秒ごとのD1書き込みとポーリング取得が要る。数字が動くだけの行なので、
  * 開始時刻（メッセージのcreated_at）からクライアントが刻んだほうが
- * 正確で、しかも安い。
+ * 正確で、しかも安い。レート制限の残り秒だけは例外で、見出しは
+ * どのみち毎秒書き直されるのでサーバーが書く。
+ *
+ * 0 の内訳と、待機していないとき・停止していないときの項は省く
+ * （素で読むときの見やすさのため。読む側は無い項を 0 / false と読む）。
  */
-export function formatRetryProgress(state: {
-  successes: number;
-  attempts: number;
-  inflight: number;
-  retry: RetryConfig;
-}): string {
-  return (
-    `${RETRY_PROGRESS_PREFIX} 成功 ${state.successes}/${state.retry.target}・` +
-    `試行 ${state.attempts}/${state.retry.maxAttempts}・` +
-    `実行中 ${state.inflight}本`
-  );
+export function formatRetryProgress(p: RetryProgress): string {
+  const parts = [
+    `成功 ${p.successes}/${p.target}`,
+    `投げた ${p.attempts}/${p.maxAttempts}`,
+  ];
+  if (p.refusals > 0) parts.push(`拒否 ${p.refusals}`);
+  if (p.emptyResponses > 0) parts.push(`空 ${p.emptyResponses}`);
+  if (p.errors > 0) parts.push(`エラー ${p.errors}`);
+  parts.push(`待ち ${p.running}本`, `枠 ${p.slots}本`);
+  if (p.waitSeconds > 0) parts.push(`レート制限で待機 あと${p.waitSeconds}秒`);
+  if (p.stopping) parts.push("停止中");
+  return `${RETRY_PROGRESS_PREFIX} ${parts.join("・")}`;
+}
+
+/**
+ * 見出しの文言を進捗へ戻す。読めなければ null（素の1行を出す側へ倒す）。
+ *
+ * formatRetryProgress と対で、往復のテストで結んである。
+ */
+export function parseRetryProgress(content: string): RetryProgress | null {
+  if (!isRetryProgress(content)) return null;
+  const body = content.slice(RETRY_PROGRESS_PREFIX.length);
+  const pair = (label: string) => {
+    const m = body.match(new RegExp(`(?:^|・)\\s*${label} (\\d+)/(\\d+)`));
+    return m ? [Number(m[1]), Number(m[2])] : null;
+  };
+  const count = (label: string) => {
+    const m = body.match(new RegExp(`(?:^|・)\\s*${label} (\\d+)`));
+    return m ? Number(m[1]) : 0;
+  };
+  const successes = pair("成功");
+  const attempts = pair("投げた");
+  if (!successes || !attempts) return null;
+  const wait = body.match(/レート制限で待機 あと(\d+)秒/);
+  return {
+    successes: successes[0],
+    target: successes[1],
+    attempts: attempts[0],
+    maxAttempts: attempts[1],
+    refusals: count("拒否"),
+    emptyResponses: count("空"),
+    errors: count("エラー"),
+    running: count("待ち"),
+    slots: count("枠"),
+    waitSeconds: wait ? Number(wait[1]) : 0,
+    stopping: /(?:^|・)停止中(?:・|$)/.test(body),
+  };
 }
 
 /** 進捗の見出しメッセージか（本文の見た目で判断する）。 */

@@ -22,6 +22,7 @@ import {
   CitationList,
   CopyButton,
   GenerationProgress,
+  RetryProgressCard,
   MessageDetails,
   ReasoningBlock,
   formatJpy,
@@ -33,8 +34,15 @@ import {
   MSG_TEXT_ACTION,
 } from "../../lib/ui";
 
-/** 操作列の右端に置く短い数字（額と秒）。 */
-function briefMeta(m: UiMessage, usdJpy: number | null): string | null {
+/**
+ * 操作列の右端に置く短い数字（額と秒）。
+ *
+ * 秒は所要時間で、確定してから出す。生成中の finishedAt は「最後に
+ * 途中経過を書いた時刻」なので、出すと経過秒の写しが丸め方を変えて
+ * もう1つ並ぶ（「成功するまで生成」の見出しでは毎秒動く数字が2つ
+ * 見えていた）。
+ */
+export function briefMeta(m: UiMessage, usdJpy: number | null): string | null {
   const parts: string[] = [];
   const u = m.usage;
   if (u?.cost != null) {
@@ -42,7 +50,12 @@ function briefMeta(m: UiMessage, usdJpy: number | null): string | null {
   } else if (u?.points != null) {
     parts.push(`${u.points.toLocaleString()} pt`);
   }
-  if (m.finishedAt && m.createdAt && m.finishedAt > m.createdAt) {
+  if (
+    m.status !== "streaming" &&
+    m.finishedAt &&
+    m.createdAt &&
+    m.finishedAt > m.createdAt
+  ) {
     parts.push(`${((m.finishedAt - m.createdAt) / 1000).toFixed(1)}秒`);
   }
   return parts.length > 0 ? parts.join(" · ") : null;
@@ -89,7 +102,7 @@ export function AssistantMessage({
       )}
       {m.status === "streaming" && isRetryProgress(m.content) ? (
         // 「成功するまで生成」の見出し。経過秒はここで毎秒進める
-        <GenerationProgress text={m.content} startedAt={m.createdAt} />
+        <RetryProgressCard content={m.content} startedAt={m.createdAt} />
       ) : generatingImage ? (
         // 1枚だけの画像生成。本文が流れてこないので秒だけ進める
         <GenerationProgress text="画像を生成中…" startedAt={m.createdAt} />
