@@ -76,7 +76,7 @@ describe("司令役の続行判定", () => {
 
   it("担当を起こす前に行を作り、起こせなければ不調として決着させる", () => {
     const burst = job.slice(
-      job.indexOf("const batch: { id: string; seq: number }[] = []"),
+      job.indexOf("const groups: { id: string; seq: number }[][] = []"),
     );
     // 行が先。逆にすると、担当が結果を書きに来ても書く先が無い
     expect(burst.indexOf("await insertRetryAttempts(")).toBeLessThan(
@@ -132,7 +132,7 @@ describe("枠の勘定", () => {
     expect(sweep.indexOf("budget.spend()")).toBeLessThan(
       sweep.indexOf("await sweepLostRetryAttempts("),
     );
-    const burst = job.slice(job.indexOf("const batch: { id: string; seq: number }[] = []"));
+    const burst = job.slice(job.indexOf("const groups: { id: string; seq: number }[][] = []"));
     expect(burst).toContain("budget.spend();\n            await insertRetryAttempts(");
     expect(burst).toContain("budget.spend();\n              await spawnAttempt(");
     // 実行の頭（記録の作成と数え直し）と、最後の確定
@@ -151,11 +151,13 @@ describe("枠の勘定", () => {
     );
   });
 
-  it("1回の往復で起こす数と、枠の残りで、作る行の数を区切る", () => {
-    const burst = job.slice(job.indexOf("const batch: { id: string; seq: number }[] = []"));
-    const cond = burst.slice(0, burst.indexOf(") {"));
-    expect(cond).toContain("batch.length < RETRY_MAX_SPAWNS_PER_TICK");
-    expect(cond).toContain("budget.room(batch.length + 2)");
+  it("1回の往復で起こす担当の数と、枠の残りで区切る", () => {
+    const burst = job.slice(job.indexOf("const groups: { id: string; seq: number }[][] = []"));
+    const cond = burst.slice(0, burst.indexOf("const group:"));
+    expect(cond).toContain("groups.length < RETRY_MAX_SPAWNS_PER_TICK");
+    expect(cond).toContain("budget.room(groups.length + 2)");
+    // 担当1つは依頼をまとめて引き受ける（実行体を分けると課金が倍になる）
+    expect(burst).toContain("group.length < RETRY_WORKER_ATTEMPTS");
     // 作ったが起こさなかった行は、まとめて不調として決着させる
     expect(burst).toContain("failRetryAttempts({");
     expect(burst).toContain("if (stopped || !budget.room(1))");
@@ -186,18 +188,29 @@ describe("1本担当", () => {
   it("成功は保存できた時点で書き、画像の取り込みの失敗で取り消さない", () => {
     const success = w.slice(w.indexOf('if (r.kind === "success")'), w.indexOf('else if (r.kind === "refused")'));
     expect(success.indexOf("await appendRetrySuccess(")).toBeLessThan(
-      success.indexOf('await finish("success", null)'),
+      success.indexOf('await finish(attemptId, "success", null)'),
     );
-    expect(success.indexOf('await finish("success", null)')).toBeLessThan(
+    expect(success.indexOf('await finish(attemptId, "success", null)')).toBeLessThan(
       success.indexOf("captureGeneratedImages("),
     );
     expect(success).toContain("画像の取り込みに失敗しました");
   });
 
+  it("引き受けた依頼を、同時数を守って回し、投げなかった分は決着させる", () => {
+    expect(w).toContain("inflight.size < RETRY_WORKER_CONCURRENCY");
+    expect(w).toContain("await Promise.race(inflight)");
+    expect(w).toContain("await Promise.all(inflight)");
+    // 窓を過ぎたら新しく投げない。引き受けたまま放置しない
+    expect(w).toContain("RETRY_WORKER_LAUNCH_WINDOW_MS");
+    expect(w).toContain("budget.canLaunch()");
+    const tail = w.slice(w.indexOf("await Promise.all(inflight)"));
+    expect(tail).toContain("await giveUp(");
+  });
+
   it("拒否の額を台帳へ載せ（OpenRouter）、不調は待ち時間を運ぶ", () => {
     expect(w).toContain("if (!isPoe) await recordRefusalUsage(job.model, r.usageJson)");
-    expect(w).toContain('await finish("transient", r.reason, r.waitMs)');
-    expect(w).toContain('await finish("fatal", r.reason)');
+    expect(w).toContain('await finish(attemptId, "transient", r.reason, r.waitMs)');
+    expect(w).toContain('await finish(attemptId, "fatal", r.reason)');
   });
 
   it("1本の締め切りを signal で渡す", () => {

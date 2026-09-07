@@ -40,7 +40,7 @@ describe("RetryProgressCard", () => {
     expect(screen.getByText("投げた").nextElementSibling?.textContent).toBe(
       "6 / 1000",
     );
-    expect(screen.getByText("上流で待ち").nextElementSibling?.textContent).toBe(
+    expect(screen.getByText("受け持ち中").nextElementSibling?.textContent).toBe(
       "2 / 枠 3",
     );
     expect(card.textContent).toContain("内訳: 拒否 4・不調 1");

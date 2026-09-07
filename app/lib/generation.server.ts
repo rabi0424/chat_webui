@@ -71,7 +71,7 @@ type ContentPart =
       cache_control?: { type: "ephemeral" };
     };
 
-interface OutgoingMessage {
+export interface OutgoingMessage {
   role: string;
   content: string | ContentPart[];
 }

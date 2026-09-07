@@ -11,9 +11,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * 差し替えるのは境界だけ（db.server / limit.server / 別の実行の呼び出し）。
  * 司令役の中の判断（枠・数え上げ・終わりの判定）は本物を通す。
  */
-const spawned: string[] = [];
+/** 起こした担当ごとの、引き受けた依頼の id。 */
+const spawned: string[][] = [];
 const inserted: { id: string; seq: number }[] = [];
 const failed: string[] = [];
+/** 担当が書いた結果。 */
+const finished: { id: string; kind: string; detail: string | null }[] = [];
 /** tickRetryRun が返す値。テストごとに差し替える。 */
 let tickResult: {
   stopRequested: boolean;
@@ -45,9 +48,9 @@ vi.mock("cloudflare:workers", () => ({
   env: {
     GENERATOR: {
       idFromName: (name: string) => ({ name }),
-      get: (id: { name: string }) => ({
-        fetch: async () => {
-          spawned.push(id.name);
+      get: () => ({
+        fetch: async (_url: string, init: { body: string }) => {
+          spawned.push((JSON.parse(init.body) as { attemptIds: string[] }).attemptIds);
           return new Response("{}", { status: 202 });
         },
       }),
@@ -74,7 +77,12 @@ vi.mock("../../app/lib/db.server", () => ({
   }),
   markRetryAttemptsProcessed: vi.fn(async () => {}),
   sweepLostRetryAttempts: vi.fn(async () => 0),
-  finishRetryAttempt: vi.fn(async () => true),
+  finishRetryAttempt: vi.fn(
+    async (p: { id: string; kind: string; detail: string | null }) => {
+      finished.push(p);
+      return true;
+    },
+  ),
   appendRetrySuccess: vi.fn(async () => "m1"),
   rewriteMessageContent: vi.fn(async () => {}),
   finalizeGeneration: vi.fn(
@@ -92,11 +100,37 @@ vi.mock("../../app/lib/limit.server", () => ({
   checkMonthlyLimit: monthlyLimit,
 }));
 
+/** 1本の上流呼び出し。同時に何本走ったかを数える。 */
+const attemptCalls = { started: 0, finished: 0, peak: 0 };
+/** 担当が使ってよい通信の数。尽きたら新しく投げない。 */
+let launchAllowance = Number.POSITIVE_INFINITY;
+const upstream = vi.fn(async (_job: unknown, _messages: unknown, spend?: () => void) => {
+  spend?.();
+  attemptCalls.started++;
+  attemptCalls.peak = Math.max(
+    attemptCalls.peak,
+    attemptCalls.started - attemptCalls.finished,
+  );
+  // 起こす間隔（200ms）より長くする。短いと1本ずつ終わってしまい、
+  // 同時に走っていることを検査できない
+  await new Promise((r) => setTimeout(r, 1_500));
+  attemptCalls.finished++;
+  return { kind: "refused" as const, text: "だめです", usageJson: null };
+});
+
 vi.mock("../../app/lib/generation.server", () => ({
-  runAttempt: vi.fn(),
+  runAttempt: upstream,
   expandAttachments: vi.fn(async (m: unknown) => m),
   promptOf: vi.fn(() => null),
-  createBudget: vi.fn(() => ({ spend: () => {} })),
+  createBudget: vi.fn(() => {
+    let spent = 0;
+    return {
+      spend: () => {
+        spent++;
+      },
+      canLaunch: () => spent < launchAllowance,
+    };
+  }),
   createRateLimitGate: vi.fn(() => ({})),
   captureGeneratedImages: vi.fn(),
   recordRefusalUsage: vi.fn(),
@@ -108,7 +142,9 @@ vi.mock("../../app/lib/openrouter.server", () => ({
   fetchPoeRunPoints: poePoints,
 }));
 
-const { runRetryGenerationJob } = await import("../../app/lib/retry-run.server");
+const { runAttemptJob, runRetryGenerationJob } = await import(
+  "../../app/lib/retry-run.server"
+);
 const { parseRetryProgress } = await import("../../app/lib/retry");
 
 const job = {
@@ -134,6 +170,12 @@ beforeEach(() => {
   spawned.length = 0;
   inserted.length = 0;
   failed.length = 0;
+  finished.length = 0;
+  attemptCalls.started = 0;
+  attemptCalls.finished = 0;
+  attemptCalls.peak = 0;
+  upstream.mockClear();
+  launchAllowance = Number.POSITIVE_INFINITY;
   tickCalls = [];
   finalized = null;
   onTick = null;
@@ -158,7 +200,7 @@ describe("司令役を回す", () => {
         if (n === 1) return; // 1回目: まだ何も走っていない
         if (n === 2) {
           // 起こした分が走っている
-          tickResult = { ...idle, running: spawned.length };
+          tickResult = { ...idle, running: spawned.flat().length };
           return;
         }
         // 3回目: 目標ぶんの成功が届く
@@ -175,8 +217,10 @@ describe("司令役を回す", () => {
 
       const out = await runRetryGenerationJob(job, retry, null);
 
-      // 並列数ぶん起こしている（枠は4）
-      expect(spawned.length).toBe(4);
+      // 枠は4。担当1つが4本まとめて引き受ける（実行体を分けると
+      // 待ち時間が並列数だけ倍に課金されるため）
+      expect(spawned.length).toBe(1);
+      expect(spawned[0]).toHaveLength(4);
       expect(inserted.length).toBe(4);
       expect(failed).toEqual([]);
       // 起こす前に行を作っている
@@ -213,8 +257,12 @@ describe("司令役を回す", () => {
         { ...retry, concurrency: 100 },
         null,
       );
+      // 枠100 → 12本ずつ引き受けるので担当は9つ。1回の往復で起こす
+      // 担当の数（12）も超えない
       expect(spawned.length).toBeLessThanOrEqual(12);
-      expect(spawned.length).toBeGreaterThan(1);
+      expect(spawned.flat().length).toBeLessThanOrEqual(100);
+      expect(spawned.flat().length).toBeGreaterThan(12);
+      for (const group of spawned) expect(group.length).toBeLessThanOrEqual(12);
     },
     20_000,
   );
@@ -379,10 +427,123 @@ describe("途中経過が無いまま再入する", () => {
         };
       };
       await runRetryGenerationJob(job, retry, null);
-      // 枠4・走っている1本 → 3本だけ起こす。番号は記録の続き
-      expect(spawned.length).toBe(3);
+      // 枠4・走っている1本 → 3本だけ。担当1つがまとめて引き受ける
+      expect(spawned.length).toBe(1);
+      expect(spawned[0]).toHaveLength(3);
       expect(inserted.map((a) => a.seq)).toEqual([4, 5, 6]);
     },
     20_000,
+  );
+});
+
+/**
+ * 1本担当。引き受けた依頼を、1つの実行体の中で同時に回す。
+ *
+ * ここが「1依頼＝1実行体」だったとき、待ち時間が並列数だけ倍に課金され、
+ * 368本の実行1回で無料枠の6割を使い切って止まった。同時数は接続の
+ * 上限（6本）まで、引き受けた分は全部決着させること。
+ */
+describe("1本担当", () => {
+  const attemptJob = (ids: string[]) =>
+    ({
+      kind: "attempt",
+      attemptIds: ids,
+      statusId: "s1",
+      conversationId: "c1",
+      model: "poe:Imagen",
+      web: false,
+      imageOutput: true,
+      paramsState: null,
+      messages: [],
+    }) as never;
+
+  it(
+    "引き受けた分を全部投げ、同時に走るのは6本まで",
+    async () => {
+      const ids = Array.from({ length: 12 }, (_, i) => `a${i}`);
+      await runAttemptJob(attemptJob(ids));
+      expect(upstream).toHaveBeenCalledTimes(12);
+      expect(attemptCalls.peak).toBe(6);
+      // 12本とも結果を書いている（司令役が待ち続けないように）
+      expect(finished.map((f) => f.id).sort()).toEqual([...ids].sort());
+      expect(finished.every((f) => f.kind === "refused")).toBe(true);
+      expect(failed).toEqual([]);
+    },
+    30_000,
+  );
+
+  it(
+    "通信の枠が尽きたら、引き受けたまま投げていない分を決着させる",
+    async () => {
+      // 決着させないと、司令役は走っていない担当を待ち続けて終われない
+      launchAllowance = 3;
+      const ids = Array.from({ length: 12 }, (_, i) => `c${i}`);
+      await runAttemptJob(attemptJob(ids));
+      expect(upstream).toHaveBeenCalledTimes(3);
+      expect(failed).toHaveLength(9);
+      expect(finished).toHaveLength(3);
+      // 投げた分と投げなかった分を合わせて、引き受けた数と一致する
+      expect(failed.length + finished.length).toBe(ids.length);
+    },
+    30_000,
+  );
+
+  it(
+    "上流が失敗しても、引き受けた分は決着させる",
+    async () => {
+      upstream.mockRejectedValueOnce(new Error("こわれた"));
+      await runAttemptJob(attemptJob(["b1", "b2"]));
+      expect(finished).toHaveLength(2);
+      expect(finished.find((f) => f.kind === "transient")?.detail).toContain(
+        "こわれた",
+      );
+    },
+    30_000,
+  );
+});
+
+/**
+ * いちばん外側の柵（上限試行回数の3倍）。試行に数えない一時的な不調が
+ * 続いても、上流へ投げる本数はここで止まる。担当1つに複数の依頼を
+ * 持たせるようになったので、**起こした担当の数ではなく依頼の数**で
+ * 数えないと、柵が担当の数ぶん（最大12倍）緩む。
+ */
+describe("上流への本数の柵", () => {
+  it(
+    "不調が続いても、投げた依頼の数で打ち切る",
+    async () => {
+      onTick = () => {
+        // 結果は全部「一時的な不調」。試行には数えないので、
+        // 止まる理由は柵しかない
+        tickResult = {
+          stopRequested: false,
+          applied: true,
+          running: 0,
+          finished: spawned
+            .flat()
+            .slice(finishedIds.size)
+            .map((id) => {
+              finishedIds.add(id);
+              return {
+                id,
+                kind: "transient" as const,
+                detail: "混雑",
+                wait_ms: 1,
+                message_id: null,
+              };
+            }),
+        };
+      };
+      const finishedIds = new Set<string>();
+      await runRetryGenerationJob(
+        job,
+        { target: 99, maxAttempts: 10, concurrency: 100, smartPercent: null },
+        null,
+      );
+      // 柵は 10 × 3 = 30本
+      expect(spawned.flat().length).toBe(30);
+      expect(finalized?.error).toContain("柵");
+    },
+    60_000,
   );
 });

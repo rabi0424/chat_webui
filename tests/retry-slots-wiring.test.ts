@@ -15,11 +15,11 @@ describe("スマート生成の配線", () => {
 
   it("担当を起こすループは並列数を直接見ず、枠の計算を通す", () => {
     const loop = source.match(
-      /\/\/ 目標に届くまで、上限と並列数の範囲で担当を起こし続ける[\s\S]*?while \([\s\S]*?\) \{/,
+      /\/\/ 目標に届くまで、上限と並列数の範囲で担当を起こし続ける[\s\S]*?const roomForMore = \(\) =>[\s\S]*?;/,
     );
     expect(loop).not.toBeNull();
     // 走っている本数に、この往復で作る分を足して枠と比べる
-    expect(loop![0]).toContain("running + batch.length < slots()");
+    expect(loop![0]).toContain("running + planned < slots()");
     expect(loop![0]).not.toContain("retry.concurrency");
   });
 

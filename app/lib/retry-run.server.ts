@@ -29,6 +29,9 @@ import {
   RETRY_MAX_SPAWNS_PER_TICK,
   RETRY_STALLED_CHUNK_LIMIT,
   RETRY_TICK_FAILURE_LIMIT,
+  RETRY_WORKER_ATTEMPTS,
+  RETRY_WORKER_CONCURRENCY,
+  RETRY_WORKER_LAUNCH_WINDOW_MS,
   afterAttemptSettled,
   createChunkBudget,
   formatRetryProgress,
@@ -61,12 +64,18 @@ import {
   recordRefusalUsage,
   runAttempt,
   type GenerationJob,
+  type OutgoingMessage,
 } from "./generation.server";
 
 /** 1本担当の実行へ渡す仕事。 */
 export interface AttemptJob {
   kind: "attempt";
-  attemptId: string;
+  /**
+   * この担当が引き受けた依頼。1つの実行体の中で
+   * `RETRY_WORKER_CONCURRENCY` 本ずつ同時に投げる——実行体を分けると
+   * 待ち時間が並列数だけ倍に課金されるため（`RETRY_WORKER_ATTEMPTS`）。
+   */
+  attemptIds: string[];
   statusId: string;
   conversationId: string;
   model: string;
@@ -154,10 +163,13 @@ function initialState(): RetryRunState {
 }
 
 /** 担当の実行を起こす。 */
-async function spawnAttempt(job: GenerationJob, attemptId: string): Promise<void> {
+async function spawnAttempt(
+  job: GenerationJob,
+  attemptIds: string[],
+): Promise<void> {
   const attempt: AttemptJob = {
     kind: "attempt",
-    attemptId,
+    attemptIds,
     statusId: job.assistantMessageId,
     conversationId: job.conversationId,
     model: job.model,
@@ -167,7 +179,7 @@ async function spawnAttempt(job: GenerationJob, attemptId: string): Promise<void
     paramsState: job.paramsState,
     messages: job.messages,
   };
-  const stub = env.GENERATOR.get(env.GENERATOR.idFromName(attemptId));
+  const stub = env.GENERATOR.get(env.GENERATOR.idFromName(attemptIds[0]));
   const res = await stub.fetch("https://generator/attempt", {
     method: "POST",
     body: JSON.stringify(attempt),
@@ -394,24 +406,36 @@ export async function runRetryGenerationJob(
         budgetStopped = true;
       } else {
         /*
-         * この往復で起こす分を決める。1回に起こす数を区切るのは、
-         * 起こしているあいだ見出しを打ち直せないため——並列100を一息に
-         * 起こすと20秒以上黙ることになり、中断とみなされる60秒に近づく。
-         * 枠の残りぶんしか作らない（行の作成1件＋起こし1件ずつ）。
+         * この往復で起こす分を決める。担当1つに依頼を
+         * `RETRY_WORKER_ATTEMPTS` 本まとめて持たせる——実行体を分けると
+         * 待ち時間が並列数だけ倍に課金されるため（retry.ts の注記）。
+         * 1回の往復で起こす担当の数は区切る（起こしているあいだ見出しを
+         * 打ち直せないため）。枠の残りぶんしか作らない
+         * （行の作成1件＋担当ごとに1件）。
          */
-        const batch: { id: string; seq: number }[] = [];
+        const groups: { id: string; seq: number }[][] = [];
+        let planned = 0;
+        const roomForMore = () =>
+          running + planned < slots() &&
+          state.attempts + running + planned < retry.maxAttempts &&
+          state.launched + planned < requestCap;
         while (
-          batch.length < RETRY_MAX_SPAWNS_PER_TICK &&
-          running + batch.length < slots() &&
-          state.attempts + running + batch.length < retry.maxAttempts &&
-          state.launched + batch.length < requestCap &&
-          budget.room(batch.length + 2)
+          groups.length < RETRY_MAX_SPAWNS_PER_TICK &&
+          roomForMore() &&
+          budget.room(groups.length + 2)
         ) {
-          batch.push({
-            id: crypto.randomUUID(),
-            seq: state.lastSeq + batch.length + 1,
-          });
+          const group: { id: string; seq: number }[] = [];
+          while (group.length < RETRY_WORKER_ATTEMPTS && roomForMore()) {
+            group.push({
+              id: crypto.randomUUID(),
+              seq: state.lastSeq + planned + 1,
+            });
+            planned++;
+          }
+          if (group.length === 0) break;
+          groups.push(group);
         }
+        const batch = groups.flat();
         if (batch.length > 0) {
           let inserted = false;
           try {
@@ -423,12 +447,12 @@ export async function runRetryGenerationJob(
           } catch (e) {
             state.lastError = `担当の行を作れませんでした: ${(e as Error).message}`;
           }
-          for (let i = 0; inserted && i < batch.length; i++) {
+          for (let i = 0; inserted && i < groups.length; i++) {
             // 停止要求は起こす直前に見る。起こしてから気づいたのでは、
             // 押したあとに1本ぶん余計に投げて課金されてしまう
             if (stopped || !budget.room(1)) {
               await failRetryAttempts({
-                ids: batch.slice(i).map((b) => b.id),
+                ids: groups.slice(i).flat().map((b) => b.id),
                 detail: stopped ? "停止のため起こしませんでした" : "枠の切れ目で起こしませんでした",
                 now: Date.now(),
               }).catch(() => {});
@@ -437,14 +461,14 @@ export async function runRetryGenerationJob(
             if (i > 0) await sleep(SPAWN_STAGGER_MS);
             try {
               budget.spend();
-              await spawnAttempt(job, batch[i].id);
-              state.launched++;
-              running++;
+              await spawnAttempt(job, groups[i].map((b) => b.id));
+              state.launched += groups[i].length;
+              running += groups[i].length;
               progressed = true;
             } catch (e) {
               // 起こせなかった分は不調として決着させ、待ってから投げ直す
               await failRetryAttempts({
-                ids: batch.slice(i).map((b) => b.id),
+                ids: groups.slice(i).flat().map((b) => b.id),
                 detail: `担当の実行を起こせませんでした: ${(e as Error).message}`,
                 now: Date.now(),
               }).catch(() => {});
@@ -587,83 +611,145 @@ export async function runRetryGenerationJob(
  * 成功は保存できた時点で書く（親の付け替えは1つの batch で原子的）。
  * 画像の取り込みで失敗しても行は木に残り、画像は元の URL で見える。
  */
+/**
+ * 1本担当。引き受けた依頼を、1つの実行体の中で
+ * `RETRY_WORKER_CONCURRENCY` 本ずつ同時に投げ、結果を D1 に書く。
+ *
+ * **例外を外へ出さない**——出すとアラームが再送され、同じ依頼をもう一度
+ * 投げて二重に課金される。結果を書けなかった行は、司令役が時間切れで
+ * 一時的な不調として掃く。
+ *
+ * 成功は保存できた時点で書く（親の付け替えは1つの batch で原子的）。
+ * 画像の取り込みで失敗しても行は木に残り、画像は元の URL で見える。
+ */
 export async function runAttemptJob(job: AttemptJob): Promise<void> {
   const isPoe = job.model.startsWith(POE_PREFIX);
+  // 外部の通信の枠（1回の呼び出しで50件）は担当の中で共有する。
+  // 成功すると画像の取り込みにも使うので、投げる側は手前で切り上げる
   const budget = createBudget();
   const gate = createRateLimitGate();
-  // 1本の総時間の締め切り。担当の実行そのものは15分で止められるので、
-  // その手前で必ず結果を書けるようにする
-  const controller = new AbortController();
-  const deadline = setTimeout(
-    () =>
-      controller.abort(
-        `上流が${Math.round(RETRY_ATTEMPT_DEADLINE_MS / 60_000)}分以内に応答を完了しなかったため打ち切りました`,
-      ),
-    RETRY_ATTEMPT_DEADLINE_MS,
-  );
+  const startedAt = Date.now();
+  const queue = [...job.attemptIds];
+  const inner = { ...job, assistantMessageId: job.statusId, retry: undefined };
+
   const finish = (
+    attemptId: string,
     kind: "success" | "refused" | "transient" | "fatal",
     detail: string | null,
     waitMs: number | null = null,
   ) =>
     finishRetryAttempt({
-      id: job.attemptId,
+      id: attemptId,
       kind,
       detail: detail ? detail.slice(0, 301) : null,
       waitMs,
       now: Date.now(),
     });
 
+  /** 引き受けたが投げられなかった分。待ち続けさせないので必ず決着させる。 */
+  const giveUp = async (ids: string[], detail: string): Promise<void> => {
+    if (ids.length === 0) return;
+    await failRetryAttempts({ ids, detail, now: Date.now() }).catch(() => {});
+  };
+
+  let messages: OutgoingMessage[];
   try {
-    const messages = await expandAttachments(job.messages);
-    const r = await runAttempt(
-      { ...job, assistantMessageId: job.statusId, retry: undefined },
-      messages,
-      budget.spend,
-      gate,
-      controller.signal,
-    );
-    if (r.kind === "success") {
-      const id = await appendRetrySuccess({
-        attemptId: job.attemptId,
-        statusId: job.statusId,
-        conversationId: job.conversationId,
-        modelId: job.model,
-        content: r.content,
-        usageJson: r.usageJson,
-      });
-      await finish("success", null);
-      try {
-        const captured = await captureGeneratedImages(
-          r.content,
-          r.imageUrls,
-          {
-            messageId: id,
-            conversationId: job.conversationId,
-            prompt: promptOf({ ...job, assistantMessageId: job.statusId, retry: undefined }),
-          },
-          budget,
-        );
-        if (captured.content !== r.content) {
-          await rewriteMessageContent(id, captured.content);
-        }
-      } catch (e) {
-        console.error("[gen] 画像の取り込みに失敗しました", id, e);
-      }
-    } else if (r.kind === "refused") {
-      await finish("refused", r.text);
-      if (!isPoe) await recordRefusalUsage(job.model, r.usageJson);
-    } else if (r.kind === "transient") {
-      await finish("transient", r.reason, r.waitMs);
-    } else {
-      await finish("fatal", r.reason);
-    }
+    messages = await expandAttachments(job.messages);
   } catch (e) {
-    await finish(
-      "transient",
-      `担当の実行が失敗しました: ${(e as Error).message}`,
-    ).catch(() => {});
-  } finally {
-    clearTimeout(deadline);
+    await giveUp(queue, `添付の読み出しに失敗しました: ${(e as Error).message}`);
+    return;
   }
+
+  const runOne = async (attemptId: string): Promise<void> => {
+    // 1本の総時間の締め切り。担当の実行そのものは15分で止められるので、
+    // その手前で必ず結果を書けるようにする
+    const controller = new AbortController();
+    const deadline = setTimeout(
+      () =>
+        controller.abort(
+          `上流が${Math.round(RETRY_ATTEMPT_DEADLINE_MS / 60_000)}分以内に応答を完了しなかったため打ち切りました`,
+        ),
+      RETRY_ATTEMPT_DEADLINE_MS,
+    );
+    try {
+      const r = await runAttempt(
+        inner,
+        messages,
+        budget.spend,
+        gate,
+        controller.signal,
+      );
+      if (r.kind === "success") {
+        const id = await appendRetrySuccess({
+          attemptId,
+          statusId: job.statusId,
+          conversationId: job.conversationId,
+          modelId: job.model,
+          content: r.content,
+          usageJson: r.usageJson,
+        });
+        await finish(attemptId, "success", null);
+        try {
+          const captured = await captureGeneratedImages(
+            r.content,
+            r.imageUrls,
+            {
+              messageId: id,
+              conversationId: job.conversationId,
+              prompt: promptOf(inner),
+            },
+            budget,
+          );
+          if (captured.content !== r.content) {
+            await rewriteMessageContent(id, captured.content);
+          }
+        } catch (e) {
+          console.error("[gen] 画像の取り込みに失敗しました", id, e);
+        }
+      } else if (r.kind === "refused") {
+        await finish(attemptId, "refused", r.text);
+        if (!isPoe) await recordRefusalUsage(job.model, r.usageJson);
+      } else if (r.kind === "transient") {
+        await finish(attemptId, "transient", r.reason, r.waitMs);
+      } else {
+        await finish(attemptId, "fatal", r.reason);
+      }
+    } catch (e) {
+      await finish(
+        attemptId,
+        "transient",
+        `担当の実行が失敗しました: ${(e as Error).message}`,
+      ).catch(() => {});
+    } finally {
+      clearTimeout(deadline);
+    }
+  };
+
+  /** 新しく投げてよいか。窓を過ぎたら、残りは決着させて次の担当へ渡す。 */
+  const canStart = () =>
+    Date.now() - startedAt < RETRY_WORKER_LAUNCH_WINDOW_MS && budget.canLaunch();
+
+  const inflight = new Set<Promise<void>>();
+  while (queue.length > 0 && canStart()) {
+    while (
+      inflight.size < RETRY_WORKER_CONCURRENCY &&
+      queue.length > 0 &&
+      canStart()
+    ) {
+      // 同時に投げる分も少しずらす（上流へ一斉に当たるのを避ける）
+      if (inflight.size > 0) await sleep(SPAWN_STAGGER_MS);
+      const attemptId = queue.shift()!;
+      const p = runOne(attemptId).finally(() => inflight.delete(p));
+      inflight.add(p);
+    }
+    if (inflight.size === 0) break;
+    await Promise.race(inflight);
+  }
+  await Promise.all(inflight);
+  await giveUp(
+    queue,
+    budget.canLaunch()
+      ? "担当の持ち時間が尽きました"
+      : "担当の通信の枠が尽きました",
+  );
 }

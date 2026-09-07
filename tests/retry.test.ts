@@ -19,6 +19,9 @@ import {
   RETRY_ALARM_WALL_MS,
   RETRY_ATTEMPT_DEADLINE_MS,
   RETRY_CHUNK_INTERNAL_LIMIT,
+  RETRY_WORKER_ATTEMPTS,
+  RETRY_WORKER_CONCURRENCY,
+  RETRY_WORKER_LAUNCH_WINDOW_MS,
   RETRY_MAX_SPAWNS_PER_TICK,
   RETRY_REQUEST_CAP_FACTOR,
   RETRY_STALLED_CHUNK_LIMIT,
@@ -406,10 +409,31 @@ describe("上流への本数の柵", () => {
    * 15分の壁（Cloudflare: Durable Object のアラームは最長15分）。
    * 1本担当の実行は自分の壁の手前で必ず結果を書く。
    */
-  it("1本の締め切りは、担当の実行の壁より手前", () => {
+  it("担当は、波を2つ回しても壁の手前で終わる", () => {
     expect(RETRY_ALARM_WALL_MS).toBe(15 * 60_000);
-    expect(RETRY_ATTEMPT_DEADLINE_MS).toBe(12 * 60_000);
-    expect(RETRY_ATTEMPT_DEADLINE_MS).toBeLessThan(RETRY_ALARM_WALL_MS - 60_000);
+    // 窓のぎりぎりに始めた最後の1本が締め切りまで粘っても、壁に届かない
+    expect(RETRY_WORKER_LAUNCH_WINDOW_MS + RETRY_ATTEMPT_DEADLINE_MS).toBeLessThan(
+      RETRY_ALARM_WALL_MS - 60_000,
+    );
+    // 引き受けた数を同時数で割った波の数ぶん、窓の中に収まる
+    const waves = Math.ceil(RETRY_WORKER_ATTEMPTS / RETRY_WORKER_CONCURRENCY);
+    expect(waves).toBe(2);
+    expect((waves - 1) * RETRY_ATTEMPT_DEADLINE_MS).toBeLessThanOrEqual(
+      RETRY_WORKER_LAUNCH_WINDOW_MS,
+    );
+  });
+
+  /**
+   * Durable Object は「実行体1つが起きている時間」で課金され、外の応答を
+   * 待つあいだも含む。依頼1本ごとに実行体を分けると並列数だけ倍に課金
+   * され、368本の実行1回で日の枠の6割を使い切った。1つの実行体の中で
+   * 同時に投げれば、待ち時間は1本ぶんしか課金されない。
+   */
+  it("担当は複数の依頼を引き受け、同時数は接続の上限に合わせる", () => {
+    expect(RETRY_WORKER_CONCURRENCY).toBe(6);
+    expect(RETRY_WORKER_ATTEMPTS).toBeGreaterThan(RETRY_WORKER_CONCURRENCY);
+    // 依頼1本あたりの実行体の時間が、分けたときの何分の1になるか
+    expect(RETRY_WORKER_ATTEMPTS / RETRY_WORKER_CONCURRENCY).toBeGreaterThanOrEqual(2);
   });
 });
 

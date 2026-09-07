@@ -203,7 +203,7 @@ export function RetryProgressCard({
           </dd>
         </div>
         <div className={cell}>
-          <dt className={label}>上流で待ち</dt>
+          <dt className={label}>受け持ち中</dt>
           <dd className={value}>
             {p.running}
             <span className="text-ink-3"> / 枠 {p.slots}</span>
