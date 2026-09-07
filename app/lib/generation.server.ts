@@ -9,8 +9,8 @@ import {
 import { buildGenerationPayload, type ParamsState } from "./params";
 import {
   RETRY_ATTEMPT_DEADLINE_MS,
+  RETRY_LAUNCH_WINDOW_MS,
   RETRY_STALLED_CHUNK_LIMIT,
-  RETRY_STOP_GRACE_MS,
   afterAttemptSettled,
   createPendingTally,
   formatRetryProgress,
@@ -191,19 +191,6 @@ function promptOf(job: GenerationJob): string | null {
  * ここで打ち切ってその時点の内容で確定させる。
  */
 const UPSTREAM_IDLE_TIMEOUT_MS = 120_000;
-/**
- * 画像を出すモデルで、1バイトも来ないまま待ってよい時間。
- * **応答ヘッダを待つ時間にも使う。**
- *
- * 画像生成は最初の1バイトまで長く黙る上流がある。Poe は画像ができ
- * 始めるまで応答ヘッダも返さないので、ヘッダの見張り（既定60秒）で
- * 切ると「Poeへの接続に失敗しました: 上流が応答ヘッダを返しません
- * でした」になる。上流側では生成が完了して課金されるのに、こちらには
- * 何も残らず、リトライ生成ではそれが試行のたびに繰り返される。
- * 生存確認は別に打っているので、待ちを長くしても行は中断とみなされない。
- * 総時間の上限は1本の締め切り（RETRY_ATTEMPT_DEADLINE_MS）が持つ。
- */
-const IMAGE_IDLE_TIMEOUT_MS = 300_000;
 
 const MAX_CAPTURED_IMAGES = 8;
 const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
@@ -1195,6 +1182,9 @@ async function runSingleGeneration(job: GenerationJob): Promise<void> {
  * 打ち直しの総回数は CHUNK_TOUCH_LIMIT で頭打ちにしてある。
  */
 const HEARTBEAT_MS = 1_000;
+/** 打ち直しがこの回数を超えたら、間隔を HEARTBEAT_SLOW_MS に広げる。 */
+const HEARTBEAT_FAST_TOUCHES = 300;
+const HEARTBEAT_SLOW_MS = 5_000;
 
 /**
  * 単発生成で「まだ生きている」印を打ち直す間隔。
@@ -1278,9 +1268,13 @@ async function runAttempt(
 ): Promise<AttemptOutcome> {
   const isPoe = job.model.startsWith(POE_PREFIX);
   const provider = isPoe ? "poe" : "openrouter";
-  // 画像を出すモデルは、ヘッダも本文の最初の1バイトも長く待つ
+  // 画像を出すモデルは、ヘッダも本文の無音も1本の締め切りまで待つ。
+  // 画像生成は最初の1バイトまで長く黙る上流があり、Poe は画像ができ
+  // 始めるまで応答ヘッダも返さない。短く切ると上流側では完了して課金
+  // されるのに、こちらには何も残らない（「上流が応答ヘッダを返しません
+  // でした」）。生存確認は別に打っているので、待っても中断とはみなされない
   const idleTimeoutMs = job.imageOutput
-    ? IMAGE_IDLE_TIMEOUT_MS
+    ? RETRY_ATTEMPT_DEADLINE_MS
     : UPSTREAM_IDLE_TIMEOUT_MS;
   let upstream: Response;
   try {
@@ -1602,25 +1596,13 @@ async function runRetryGenerationJob(
   /** 直らないエラーを受けたので、その場で打ち切った。 */
   let fatalStopped = false;
   const inflight = new Set<Promise<void>>();
-  /** 走っている1本1本を外から切るための取っ手。 */
-  const controllers = new Set<AbortController>();
-  /** 停止後の猶予。過ぎたら走っている分を切る（RETRY_STOP_GRACE_MS）。 */
-  let stopGrace: ReturnType<typeof setTimeout> | undefined;
-  const abortAll = (reason: string) => {
-    for (const c of controllers) c.abort(reason);
-  };
   /**
-   * 停止が決まったら、走っている分に猶予を与えてから切る。
-   * 発射済みの分は課金されているので受け取りたいが、固まった本を
-   * いつまでも待つと停止が効かない。
+   * この続きの実行が始まった時刻。新しく投げてよいのは、ここから
+   * RETRY_LAUNCH_WINDOW_MS のあいだだけ（15分の壁の注記）。
    */
-  const armStopGrace = () => {
-    if (stopGrace) return;
-    stopGrace = setTimeout(
-      () => abortAll("停止により打ち切りました"),
-      RETRY_STOP_GRACE_MS,
-    );
-  };
+  const chunkStartedAt = Date.now();
+  const launchWindowOpen = () =>
+    Date.now() - chunkStartedAt < RETRY_LAUNCH_WINDOW_MS;
   /** 結果は届いているが、まだ数え上げに載っていない本数（retry.ts の注記）。 */
   const pending = createPendingTally();
   const gate = createRateLimitGate();
@@ -1710,7 +1692,6 @@ async function runRetryGenerationJob(
         lost = true;
         stopped = true;
       }
-      if (stopped) armStopGrace();
       return stopped;
     } catch (e) {
       touchFailed = true;
@@ -1730,7 +1711,14 @@ async function runRetryGenerationJob(
    */
   const heartbeat = (async () => {
     while (inflight.size > 0 || !stopped) {
-      const nap = cancellableSleep(HEARTBEAT_MS);
+      // 最初は毎秒、打ち直しが積もったら間隔を広げる。続きの実行は
+      // 最長15分で、毎秒打ち続けると内部の呼び出し回数の上限に届く。
+      // 中断とみなされる無更新は60秒なので、5秒なら十分に手前
+      const nap = cancellableSleep(
+        budget.touched() < HEARTBEAT_FAST_TOUCHES
+          ? HEARTBEAT_MS
+          : HEARTBEAT_SLOW_MS,
+      );
       wakeHeartbeat = nap.cancel;
       await nap.promise;
       if (finished) break;
@@ -1878,7 +1866,6 @@ async function runRetryGenerationJob(
     // 1本ごとの総時間の締め切り。無音の見張りだけでは「処理中」の
     // コメント行を送り続ける上流を切れない（RETRY_ATTEMPT_DEADLINE_MS）
     const controller = new AbortController();
-    controllers.add(controller);
     const deadline = setTimeout(
       () =>
         controller.abort(
@@ -1902,7 +1889,6 @@ async function runRetryGenerationJob(
       })
       .finally(() => {
         clearTimeout(deadline);
-        controllers.delete(controller);
         inflight.delete(p);
       });
     inflight.add(p);
@@ -1939,6 +1925,9 @@ async function runRetryGenerationJob(
       // 429 を含めた本数の柵。走っている分も1本ずつ数えてあるので、
       // ここで見るのは「これから投げる1本」が入るか
       state.upstreamRequests < requestCap &&
+      // 窓が閉じたら投げない。今から投げると1本の締め切りが15分の壁を
+      // 越え、締め切りの前に実行ごと止められて結果を失う
+      launchWindowOpen() &&
       running() < slots() &&
       Date.now() >= waitUntil() &&
       // 外部リクエストの枠を使い切る手前で切り上げ、続きは次の実行へ
@@ -1960,11 +1949,11 @@ async function runRetryGenerationJob(
     await Promise.race(inflight);
   }
 
-  // 走っている分は受け取る（課金済みなので成功は捨てない）。
-  // ただし停止後は猶予までで、固まった本は切る（armStopGrace）
+  // 走っている分は最後まで受け取る（課金済みなので成功は捨てない）。
+  // 停止しても切らない。切るのは1本の締め切りだけで、それは窓の
+  // 決め方により15分の壁の手前に収まる
   await Promise.all(inflight);
   await queue;
-  clearTimeout(stopGrace);
   finished = true;
   wakeHeartbeat();
   await heartbeat;

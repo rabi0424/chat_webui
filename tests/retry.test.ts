@@ -13,9 +13,12 @@ import {
   isRetryProgress,
   parseRetryProgress,
   retryRequestCap,
+  RETRY_ALARM_WALL_MS,
   RETRY_ATTEMPT_DEADLINE_MS,
+  RETRY_CHUNK_TAIL_MS,
+  RETRY_LAUNCH_WINDOW_MS,
+  RETRY_MAX_CONCURRENCY,
   RETRY_REQUEST_CAP_FACTOR,
-  RETRY_STOP_GRACE_MS,
   RETRY_STALLED_CHUNK_LIMIT,
   onTransientFailure,
   readRetryConfig,
@@ -153,13 +156,20 @@ describe("readRetryConfig", () => {
       expect(at("abc")).toBe(10);
     });
 
-    it("並列数が未入力なら上限を試行回数に合わせる（目標数ではない）", () => {
+    it("並列数が未入力なら上限を並列の上限（5本）に合わせる（目標数ではない）", () => {
       expect(
         readRetryConfig(
           on({ [RETRY_SMART_KEY]: "on", [RETRY_TARGET_KEY]: 1, [RETRY_MAX_KEY]: 8 }),
           100,
         ),
-      ).toEqual({ target: 1, maxAttempts: 8, concurrency: 8, smartPercent: 10 });
+      ).toEqual({ target: 1, maxAttempts: 8, concurrency: 5, smartPercent: 10 });
+      // 試行回数のほうが少なければそちら
+      expect(
+        readRetryConfig(
+          on({ [RETRY_SMART_KEY]: "on", [RETRY_TARGET_KEY]: 1, [RETRY_MAX_KEY]: 3 }),
+          100,
+        )?.concurrency,
+      ).toBe(3);
     });
 
     it("入力した並列数はそのまま上限になり、試行回数は超えない", () => {
@@ -181,8 +191,23 @@ describe("readRetryConfig", () => {
         }),
         100,
       );
-      expect(over?.concurrency).toBe(8);
+      expect(over?.concurrency).toBe(5);
     });
+  });
+
+  /**
+   * 同時に応答ヘッダを待てる接続は6本まで（Cloudflare）。Poe は画像が
+   * できるまでヘッダを返さないので、それ以上は順番待ちになるだけ。
+   */
+  it("並列数は固定でも5本を超えない", () => {
+    expect(RETRY_MAX_CONCURRENCY).toBe(5);
+    const c = readRetryConfig(
+      on({ [RETRY_TARGET_KEY]: 20, [RETRY_MAX_KEY]: 40, [RETRY_CONCURRENCY_KEY]: 20 }),
+      100,
+    );
+    expect(c?.concurrency).toBe(5);
+    // 未入力で目標数が大きくても同じ
+    expect(readRetryConfig(on({ [RETRY_TARGET_KEY]: 20 }), 100)?.concurrency).toBe(5);
   });
 });
 
@@ -397,8 +422,18 @@ describe("上流への本数の柵", () => {
     expect(RETRY_STALLED_CHUNK_LIMIT).toBe(3);
   });
 
-  it("1本の総時間は10分、停止後の猶予は30秒", () => {
-    expect(RETRY_ATTEMPT_DEADLINE_MS).toBe(10 * 60_000);
-    expect(RETRY_STOP_GRACE_MS).toBe(30_000);
+  /**
+   * 15分の壁（Cloudflare: Durable Object のアラームは最長15分）。
+   * 窓の中で投げた1本は、締め切りまで待っても壁の手前で終わる。
+   */
+  it("投げる窓 + 1本の締め切り + 余白 = 15分の壁", () => {
+    expect(RETRY_ALARM_WALL_MS).toBe(15 * 60_000);
+    expect(RETRY_ATTEMPT_DEADLINE_MS).toBe(12 * 60_000);
+    expect(RETRY_CHUNK_TAIL_MS).toBe(60_000);
+    expect(RETRY_LAUNCH_WINDOW_MS).toBe(2 * 60_000);
+    expect(
+      RETRY_LAUNCH_WINDOW_MS + RETRY_ATTEMPT_DEADLINE_MS + RETRY_CHUNK_TAIL_MS,
+    ).toBe(RETRY_ALARM_WALL_MS);
+    expect(RETRY_LAUNCH_WINDOW_MS).toBeGreaterThan(0);
   });
 });

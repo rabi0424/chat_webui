@@ -6,7 +6,7 @@
  * 見た目の都合だけで育つ部分を外に出しておく。
  */
 import { useEffect, useRef, useState } from "react";
-import { RETRY_STOP_GRACE_MS, parseRetryProgress } from "../../lib/retry";
+import { parseRetryProgress } from "../../lib/retry";
 import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
 import { GLASS_PANEL, MSG_ICON_ACTION } from "../../lib/ui";
@@ -220,8 +220,7 @@ export function RetryProgressCard({
       )}
       {p.stopping && (
         <p className={`mt-1.5 ${label}`}>
-          走っている {p.running} 本の結果を待っています（最長{" "}
-          {Math.round(RETRY_STOP_GRACE_MS / 1000)} 秒）
+          走っている {p.running} 本の結果を待っています（切りません）
         </p>
       )}
     </div>

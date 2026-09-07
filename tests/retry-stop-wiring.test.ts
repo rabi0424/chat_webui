@@ -223,24 +223,41 @@ describe("台帳と課金", () => {
   it("画像を出すモデルは、ヘッダを待つ時間も本文の無音も長く取り、締め切りの signal を渡す", () => {
     const attempt = fn("runAttempt");
     expect(attempt).toMatch(
-      /const idleTimeoutMs = job\.imageOutput\s*\?\s*IMAGE_IDLE_TIMEOUT_MS\s*:\s*UPSTREAM_IDLE_TIMEOUT_MS/,
+      /const idleTimeoutMs = job\.imageOutput\s*\?\s*RETRY_ATTEMPT_DEADLINE_MS\s*:\s*UPSTREAM_IDLE_TIMEOUT_MS/,
     );
     expect(attempt).toContain("connectTimeoutMs: idleTimeoutMs,");
     const req = attempt.slice(attempt.indexOf("requestUpstream(job, messages, onRequest, {"));
     expect(req.slice(0, req.indexOf("})"))).toContain("signal,");
   });
 
-  it("1本ごとに総時間の締め切りを置き、停止後は猶予の後に切る", () => {
+  it("1本ごとに総時間の締め切りを置く。停止で切りはしない", () => {
     const launch = job.match(/const launch = \(\) => \{[\s\S]*?\n {2}};/)![0];
     expect(launch).toContain("new AbortController()");
     expect(launch).toContain("RETRY_ATTEMPT_DEADLINE_MS");
     expect(launch).toContain("controller.signal");
     expect(launch).toContain("clearTimeout(deadline)");
-    const touch = job.match(/const touch = async[\s\S]*?\n {2}};/)![0];
-    expect(touch).toContain("if (stopped) armStopGrace()");
-    expect(job).toContain("RETRY_STOP_GRACE_MS");
+    // 課金済みの結果を捨てる経路は締め切りだけ。停止の猶予切れは無い
+    expect(job).not.toContain("abortAll");
+    expect(job).not.toContain("STOP_GRACE");
     const attempt = fn("runAttempt");
     expect(attempt).toContain("signal,");
+  });
+
+  it("新しく投げるのは窓の中だけ（15分の壁の手前で1本が終わるように）", () => {
+    const loop = job.match(
+      /\/\/ 目標に届くまで、上限と並列数の範囲で発射し続ける[\s\S]*?\{/,
+    )![0];
+    expect(loop).toContain("launchWindowOpen()");
+    expect(job).toContain(
+      "Date.now() - chunkStartedAt < RETRY_LAUNCH_WINDOW_MS",
+    );
+  });
+
+  it("生存確認は打ち直しが積もったら間隔を広げる（内部の呼び出し回数の上限）", () => {
+    const heartbeat = job.match(/const heartbeat = \(async[\s\S]*?\n {2}\}\)\(\);/)![0];
+    expect(heartbeat).toContain("HEARTBEAT_FAST_TOUCHES");
+    expect(heartbeat).toContain("HEARTBEAT_SLOW_MS");
+    expect(source).toMatch(/const HEARTBEAT_SLOW_MS = 5_000;/);
   });
 
 });

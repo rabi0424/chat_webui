@@ -58,7 +58,7 @@ describe("RetryProgressCard", () => {
     const card = screen.getByTestId("retry-progress");
     expect(card.textContent).toContain("レート制限で待機中（あと 12 秒）");
     expect(card.textContent).toContain("停止中");
-    expect(card.textContent).toContain("走っている 2 本の結果を待っています（最長 30 秒）");
+    expect(card.textContent).toContain("走っている 2 本の結果を待っています（切りません）");
     expect(card.textContent).not.toContain("成功するまで生成中");
   });
 

@@ -6,6 +6,7 @@ import {
   RETRY_DEFAULT_MAX_ATTEMPTS,
   RETRY_DEFAULT_TARGET,
   RETRY_ENABLED_KEY,
+  RETRY_MAX_CONCURRENCY,
   RETRY_MAX_KEY,
   RETRY_SMART_KEY,
   RETRY_SMART_PERCENT_KEY,
@@ -203,13 +204,13 @@ export function RetrySettings({
             label={smart ? "並列数の上限" : "並列数"}
             hint={
               smart
-                ? "枠はここまでしか広げない。未入力なら上限の試行回数と同じ"
-                : "同時に走らせる数。未入力なら目標数と同じ"
+                ? `枠はここまでしか広げない。未入力なら${RETRY_MAX_CONCURRENCY}本（同時に待てる接続の上限）`
+                : `同時に走らせる数。未入力なら目標数と同じ。最大${RETRY_MAX_CONCURRENCY}本`
             }
             value={field(RETRY_CONCURRENCY_KEY)}
             effective={config.concurrency}
             min={1}
-            max={config.maxAttempts}
+            max={Math.min(config.maxAttempts, RETRY_MAX_CONCURRENCY)}
             onChange={(v) => set(RETRY_CONCURRENCY_KEY, v)}
             onClear={() => set(RETRY_CONCURRENCY_KEY, null)}
           />

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { RetrySettings } from "../../app/components/RetrySettings";
 import type { ParamsState } from "../../app/lib/params";
@@ -67,6 +67,19 @@ describe("RetrySettings のスマート生成", () => {
       target: { value: "25" },
     });
     expect(params()[RETRY_SMART_PERCENT_KEY]).toBe(25);
+  });
+
+  it("並列数の欄は5本までしか入れられない（同時に待てる接続の上限）", () => {
+    render(
+      <Harness initial={{ [RETRY_ENABLED_KEY]: "on", [RETRY_MAX_KEY]: 8 }} />,
+    );
+    expect(spin("並列数").max).toBe("5");
+    // 試行回数のほうが少なければそちら
+    cleanup();
+    render(
+      <Harness initial={{ [RETRY_ENABLED_KEY]: "on", [RETRY_MAX_KEY]: 3 }} />,
+    );
+    expect(spin("並列数").max).toBe("3");
   });
 
   it('切ると予約キーが消える（"off" を残さない）', () => {
