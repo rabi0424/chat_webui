@@ -257,12 +257,40 @@ describe("司令役を回す", () => {
         { ...retry, concurrency: 100 },
         null,
       );
-      // 枠100 → 12本ずつ引き受けるので担当は9つ。1回の往復で起こす
+      // 枠100・Poe → 12本ずつ引き受けるので担当は9つ。1回の往復で起こす
       // 担当の数（12）も超えない
       expect(spawned.length).toBeLessThanOrEqual(12);
       expect(spawned.flat().length).toBeLessThanOrEqual(100);
-      expect(spawned.flat().length).toBeGreaterThan(12);
+      expect(spawned[0]).toHaveLength(12);
       for (const group of spawned) expect(group.length).toBeLessThanOrEqual(12);
+    },
+    20_000,
+  );
+
+  it(
+    "ヘッダがすぐ返る上流には、担当1つにもっと多く持たせる",
+    async () => {
+      // 依頼1本あたりの実行体の時間は「生成時間 ÷ 同時数」なので、
+      // ここが増えるほど無料枠で回せる本数が増える
+      onTick = (n) => {
+        if (n >= 2) {
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 0,
+            finished: [
+              { id: "a1", kind: "success", detail: null, wait_ms: null, message_id: "m1" },
+              { id: "a2", kind: "success", detail: null, wait_ms: null, message_id: "m2" },
+            ],
+          };
+        }
+      };
+      await runRetryGenerationJob(
+        { ...(job as unknown as Record<string, unknown>), model: "google/gemini-2.5-flash-image" } as never,
+        { ...retry, concurrency: 100 },
+        null,
+      );
+      expect(spawned[0]).toHaveLength(24);
     },
     20_000,
   );
@@ -486,6 +514,22 @@ describe("1本担当", () => {
       expect(failed.length + finished.length).toBe(ids.length);
     },
     30_000,
+  );
+
+  it(
+    "ヘッダがすぐ返る上流なら、もっと同時に投げる",
+    async () => {
+      // OpenRouter は待っているあいだ「処理中」の行を送るので、
+      // 「同時にヘッダを待てる接続は6本」の縛りに当たらない
+      const ids = Array.from({ length: 24 }, (_, i) => `o${i}`);
+      await runAttemptJob({
+        ...(attemptJob(ids) as unknown as Record<string, unknown>),
+        model: "google/gemini-2.5-flash-image",
+      } as never);
+      expect(upstream).toHaveBeenCalledTimes(24);
+      expect(attemptCalls.peak).toBeGreaterThan(6);
+    },
+    60_000,
   );
 
   it(

@@ -17,6 +17,7 @@
  * buildGenerationPayload からは読まれない）。
  */
 
+import { isPoeModel } from "./constants";
 import {
   RETRY_SMART_DEFAULT_PERCENT,
   RETRY_SMART_MAX_PERCENT,
@@ -376,6 +377,47 @@ export const RETRY_ATTEMPT_DEADLINE_MS = 6 * 60_000;
  */
 export const RETRY_WORKER_CONCURRENCY = 6;
 export const RETRY_WORKER_ATTEMPTS = 12;
+
+/**
+ * ヘッダがすぐ返る上流での同時数。
+ *
+ * 6本の縛りは「**応答ヘッダを**同時に待てる接続」の数。OpenRouter は
+ * プロバイダを待っているあいだ「処理中」のコメント行を送るので、ヘッダは
+ * すぐ返る＝この縛りに当たらない。上限になるのは1回の呼び出しで出せる
+ * 外部の通信（無料プランで50件）のほうで、成功したときの画像の取り込みに
+ * 残す分を引いてここまで。
+ *
+ * 依頼1本あたりの実行体の時間は「生成にかかる時間 ÷ 同時数」なので、
+ * ここが4倍になれば費用は4分の1になる。
+ */
+export const RETRY_WORKER_STREAMING_CONCURRENCY = 24;
+
+export interface RetryWorkerPlan {
+  /** 担当1つが引き受ける依頼の数。 */
+  attempts: number;
+  /** その中で同時に投げる本数。 */
+  concurrency: number;
+}
+
+/**
+ * 担当1つの持ち分。上流によって同時数の上限が違う（上の注記）。
+ *
+ * Poe は画像ができるまで応答ヘッダを返さないので6本まで。引き受けるのは
+ * 12本（6本ずつ2波）。同時数を超えて引き受けても費用は変わらないが、
+ * 担当が失われたときに決着しないまま残る数が増えるので、2波までにする。
+ */
+export function retryWorkerPlan(model: string): RetryWorkerPlan {
+  if (isPoeModel(model)) {
+    return {
+      attempts: RETRY_WORKER_ATTEMPTS,
+      concurrency: RETRY_WORKER_CONCURRENCY,
+    };
+  }
+  return {
+    attempts: RETRY_WORKER_STREAMING_CONCURRENCY,
+    concurrency: RETRY_WORKER_STREAMING_CONCURRENCY,
+  };
+}
 
 /**
  * 担当が新しい依頼を投げ始めてよい時間。過ぎたら、引き受けたまま投げて

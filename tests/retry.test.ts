@@ -12,6 +12,7 @@ import {
   createPendingTally,
   formatRetryProgress,
   interruptedGenerationRow,
+  retryWorkerPlan,
   shouldFinalizeLostRun,
   isRetryProgress,
   parseRetryProgress,
@@ -22,6 +23,7 @@ import {
   RETRY_WORKER_ATTEMPTS,
   RETRY_WORKER_CONCURRENCY,
   RETRY_WORKER_LAUNCH_WINDOW_MS,
+  RETRY_WORKER_STREAMING_CONCURRENCY,
   RETRY_MAX_SPAWNS_PER_TICK,
   RETRY_REQUEST_CAP_FACTOR,
   RETRY_STALLED_CHUNK_LIMIT,
@@ -554,5 +556,36 @@ describe("shouldFinalizeLostRun", () => {
         shouldFinalizeLostRun({ retry, hasState: true, content: "猫の絵" }),
       ).toBe(false);
     }
+  });
+});
+
+/**
+ * 担当1つの持ち分。依頼1本あたりの実行体の時間は
+ * 「生成にかかる時間 ÷ 同時数」なので、ここが費用をそのまま決める。
+ *
+ * 6本の縛りは「**応答ヘッダを**同時に待てる接続」の数。Poe は画像が
+ * できるまでヘッダを返さないので当たるが、OpenRouter は待っているあいだ
+ * 「処理中」の行を送るのでヘッダはすぐ返り、当たらない。
+ */
+describe("retryWorkerPlan", () => {
+  it("Poe は6本まで（画像ができるまでヘッダを返さない）", () => {
+    expect(retryWorkerPlan("poe:Imagen")).toEqual({
+      attempts: RETRY_WORKER_ATTEMPTS,
+      concurrency: RETRY_WORKER_CONCURRENCY,
+    });
+    expect(RETRY_WORKER_CONCURRENCY).toBe(6);
+  });
+
+  it("OpenRouter はヘッダがすぐ返るので、もっと同時に投げられる", () => {
+    const plan = retryWorkerPlan("google/gemini-2.5-flash-image");
+    expect(plan.concurrency).toBe(RETRY_WORKER_STREAMING_CONCURRENCY);
+    expect(plan.concurrency).toBeGreaterThan(RETRY_WORKER_CONCURRENCY);
+    // 引き受けた分を1波で投げ切る
+    expect(plan.attempts).toBe(plan.concurrency);
+  });
+
+  it("同時数は、1回の呼び出しで出せる外部の通信（50件）を超えない", () => {
+    // 成功したときの画像の取り込みにも使うので、余裕を残す
+    expect(RETRY_WORKER_STREAMING_CONCURRENCY).toBeLessThanOrEqual(30);
   });
 });

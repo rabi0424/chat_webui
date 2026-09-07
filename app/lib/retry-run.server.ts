@@ -29,9 +29,8 @@ import {
   RETRY_MAX_SPAWNS_PER_TICK,
   RETRY_STALLED_CHUNK_LIMIT,
   RETRY_TICK_FAILURE_LIMIT,
-  RETRY_WORKER_ATTEMPTS,
-  RETRY_WORKER_CONCURRENCY,
   RETRY_WORKER_LAUNCH_WINDOW_MS,
+  retryWorkerPlan,
   afterAttemptSettled,
   createChunkBudget,
   formatRetryProgress,
@@ -202,6 +201,8 @@ export async function runRetryGenerationJob(
   const statusId = job.assistantMessageId;
   const state: RetryRunState = { ...initialState(), ...(previous ?? {}) };
   const requestCap = retryRequestCap(retry.maxAttempts);
+  /** 担当1つの持ち分。上流によって同時に投げられる数が違う。 */
+  const plan = retryWorkerPlan(job.model);
   const chunkStartedAt = Date.now();
   /**
    * この続きの実行で使った内部サービス（D1）と担当の起こし。使い切ると
@@ -425,7 +426,7 @@ export async function runRetryGenerationJob(
           budget.room(groups.length + 2)
         ) {
           const group: { id: string; seq: number }[] = [];
-          while (group.length < RETRY_WORKER_ATTEMPTS && roomForMore()) {
+          while (group.length < plan.attempts && roomForMore()) {
             group.push({
               id: crypto.randomUUID(),
               seq: state.lastSeq + planned + 1,
@@ -624,6 +625,7 @@ export async function runRetryGenerationJob(
  */
 export async function runAttemptJob(job: AttemptJob): Promise<void> {
   const isPoe = job.model.startsWith(POE_PREFIX);
+  const plan = retryWorkerPlan(job.model);
   // 外部の通信の枠（1回の呼び出しで50件）は担当の中で共有する。
   // 成功すると画像の取り込みにも使うので、投げる側は手前で切り上げる
   const budget = createBudget();
@@ -732,7 +734,7 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
   const inflight = new Set<Promise<void>>();
   while (queue.length > 0 && canStart()) {
     while (
-      inflight.size < RETRY_WORKER_CONCURRENCY &&
+      inflight.size < plan.concurrency &&
       queue.length > 0 &&
       canStart()
     ) {
