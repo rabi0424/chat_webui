@@ -208,10 +208,23 @@ describe("台帳と課金", () => {
     expect(branch).toContain('kind: "refused", text: message');
   });
 
+  it("1本ごとに総時間の締め切りを置き、停止後は猶予の後に切る", () => {
+    const launch = job.match(/const launch = \(\) => \{[\s\S]*?\n {2}};/)![0];
+    expect(launch).toContain("new AbortController()");
+    expect(launch).toContain("RETRY_ATTEMPT_DEADLINE_MS");
+    expect(launch).toContain("controller.signal");
+    expect(launch).toContain("clearTimeout(deadline)");
+    const touch = job.match(/const touch = async[\s\S]*?\n {2}};/)![0];
+    expect(touch).toContain("if (stopped) armStopGrace()");
+    expect(job).toContain("RETRY_STOP_GRACE_MS");
+    const attempt = fn("runAttempt");
+    expect(attempt).toContain("signal,");
+  });
+
   it("画像を出すモデルは、無音の待ちを長くする", () => {
     const attempt = fn("runAttempt");
-    expect(attempt).toContain(
-      "job.imageOutput ? IMAGE_IDLE_TIMEOUT_MS : UPSTREAM_IDLE_TIMEOUT_MS",
+    expect(attempt).toMatch(
+      /idleTimeoutMs: job\.imageOutput\s*\?\s*IMAGE_IDLE_TIMEOUT_MS\s*:\s*UPSTREAM_IDLE_TIMEOUT_MS/,
     );
   });
 });

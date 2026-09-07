@@ -14,7 +14,9 @@ import {
   isSafetyRejection,
   parseRetryProgress,
   retryRequestCap,
+  RETRY_ATTEMPT_DEADLINE_MS,
   RETRY_REQUEST_CAP_FACTOR,
+  RETRY_STOP_GRACE_MS,
   RETRY_STALLED_CHUNK_LIMIT,
   onRateLimited,
   readRetryConfig,
@@ -431,5 +433,10 @@ describe("上流への本数の柵", () => {
 
   it("進まないチャンクは3回で終える", () => {
     expect(RETRY_STALLED_CHUNK_LIMIT).toBe(3);
+  });
+
+  it("1本の総時間は10分、停止後の猶予は30秒", () => {
+    expect(RETRY_ATTEMPT_DEADLINE_MS).toBe(10 * 60_000);
+    expect(RETRY_STOP_GRACE_MS).toBe(30_000);
   });
 });

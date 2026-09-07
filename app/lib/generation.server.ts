@@ -8,8 +8,10 @@ import {
 } from "./openrouter.server";
 import { buildGenerationPayload, type ParamsState } from "./params";
 import {
+  RETRY_ATTEMPT_DEADLINE_MS,
   RETRY_CONSECUTIVE_ERROR_LIMIT,
   RETRY_STALLED_CHUNK_LIMIT,
+  RETRY_STOP_GRACE_MS,
   afterAttemptSettled,
   createPendingTally,
   formatRetryProgress,
@@ -773,15 +775,24 @@ interface StreamResult {
  *
  * onProgress は一定間隔で呼ばれ、true を返すと（停止要求）読み取りを
  * 打ち切る。リトライ生成では途中経過を保存しないので渡さない。
+ *
+ * signal で外から打ち切れる（総時間の締め切り、停止後の猶予切れ）。
+ * 打ち切りは interrupted に理由を残して、ここまでの内容で返す。
  */
-async function readUpstreamStream(
+export async function readUpstreamStream(
   body: ReadableStream<Uint8Array>,
   onProgress?: (partial: {
     content: string;
     reasoning: string;
   }) => Promise<boolean>,
-  idleTimeoutMs: number = UPSTREAM_IDLE_TIMEOUT_MS,
+  opts: { idleTimeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<StreamResult> {
+  const idleTimeoutMs = opts.idleTimeoutMs ?? UPSTREAM_IDLE_TIMEOUT_MS;
+  const signal = opts.signal;
+  const abortReason = () =>
+    typeof signal?.reason === "string"
+      ? signal.reason
+      : ((signal?.reason as Error | undefined)?.message ?? "打ち切りました");
   const reader = body.getReader();
   const decoder = new TextDecoder();
   /**
@@ -790,19 +801,28 @@ async function readUpstreamStream(
    * 応答が始まったあとに黙り込む上流もあり、その場合 read() は永久に
    * 返らない。読むたびに時計を張り直し、超えたら打ち切って
    * ここまでの内容で確定させる（実行が固まったままにならないように）。
+   *
+   * ただし、これだけでは「処理中」のコメント行を送り続ける上流
+   * （OpenRouter）を切れない。1バイトでも来れば時計が戻るため。
+   * そちらは signal（総時間の締め切り）で切る。
    */
   const readOnce = async () => {
+    if (signal?.aborted) throw new Error(abortReason());
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(
         () => reject(new Error("上流からの応答が途絶えました")),
         idleTimeoutMs,
       );
+      onAbort = () => reject(new Error(abortReason()));
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
     try {
       return await Promise.race([reader.read(), timeout]);
     } finally {
       clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
     }
   };
   let buffer = "";
@@ -1195,6 +1215,8 @@ async function runAttempt(
   /** 上流へ1件投げる直前に呼ばれる（枠と、実行全体の本数を数える）。 */
   onRequest: () => void,
   gate: RateLimitGate,
+  /** 外からの打ち切り（総時間の締め切り・停止後の猶予切れ）。 */
+  signal: AbortSignal,
 ): Promise<AttemptOutcome> {
   const isPoe = job.model.startsWith(POE_PREFIX);
   let upstream: Response;
@@ -1232,11 +1254,12 @@ async function runAttempt(
     return { kind: "error", error: message };
   }
 
-  const result = await readUpstreamStream(
-    upstream.body,
-    undefined,
-    job.imageOutput ? IMAGE_IDLE_TIMEOUT_MS : UPSTREAM_IDLE_TIMEOUT_MS,
-  );
+  const result = await readUpstreamStream(upstream.body, undefined, {
+    idleTimeoutMs: job.imageOutput
+      ? IMAGE_IDLE_TIMEOUT_MS
+      : UPSTREAM_IDLE_TIMEOUT_MS,
+    signal,
+  });
   const hasImage =
     result.imageUrls.length > 0 || extractImageUrls(result.content).length > 0;
   // 画像が揃っているなら、途中で切れていても成果は成果なので受け取る。
@@ -1492,6 +1515,25 @@ async function runRetryGenerationJob(
   /** 同じ失敗が続いたので打ち切った。 */
   let errorsExhausted = false;
   const inflight = new Set<Promise<void>>();
+  /** 走っている1本1本を外から切るための取っ手。 */
+  const controllers = new Set<AbortController>();
+  /** 停止後の猶予。過ぎたら走っている分を切る（RETRY_STOP_GRACE_MS）。 */
+  let stopGrace: ReturnType<typeof setTimeout> | undefined;
+  const abortAll = (reason: string) => {
+    for (const c of controllers) c.abort(reason);
+  };
+  /**
+   * 停止が決まったら、走っている分に猶予を与えてから切る。
+   * 発射済みの分は課金されているので受け取りたいが、固まった本を
+   * いつまでも待つと停止が効かない。
+   */
+  const armStopGrace = () => {
+    if (stopGrace) return;
+    stopGrace = setTimeout(
+      () => abortAll("停止により打ち切りました"),
+      RETRY_STOP_GRACE_MS,
+    );
+  };
   /** 結果は届いているが、まだ数え上げに載っていない本数（retry.ts の注記）。 */
   const pending = createPendingTally();
   const gate = createRateLimitGate();
@@ -1581,6 +1623,7 @@ async function runRetryGenerationJob(
         lost = true;
         stopped = true;
       }
+      if (stopped) armStopGrace();
       return stopped;
     } catch (e) {
       touchFailed = true;
@@ -1752,6 +1795,17 @@ async function runRetryGenerationJob(
   };
 
   const launch = () => {
+    // 1本ごとの総時間の締め切り。無音の見張りだけでは「処理中」の
+    // コメント行を送り続ける上流を切れない（RETRY_ATTEMPT_DEADLINE_MS）
+    const controller = new AbortController();
+    controllers.add(controller);
+    const deadline = setTimeout(
+      () =>
+        controller.abort(
+          `上流が${Math.round(RETRY_ATTEMPT_DEADLINE_MS / 60_000)}分以内に応答を完了しなかったため打ち切りました`,
+        ),
+      RETRY_ATTEMPT_DEADLINE_MS,
+    );
     const p = runAttempt(
       job,
       messages,
@@ -1760,12 +1814,15 @@ async function runRetryGenerationJob(
         state.upstreamRequests++;
       },
       gate,
+      controller.signal,
     )
       .then(accept)
       .catch(() => {
         // 取り込みに失敗しても実行自体は続ける
       })
       .finally(() => {
+        clearTimeout(deadline);
+        controllers.delete(controller);
         inflight.delete(p);
       });
     inflight.add(p);
@@ -1823,9 +1880,11 @@ async function runRetryGenerationJob(
     await Promise.race(inflight);
   }
 
-  // 走っている分は最後まで受け取る（課金済みなので成功は捨てない）
+  // 走っている分は受け取る（課金済みなので成功は捨てない）。
+  // ただし停止後は猶予までで、固まった本は切る（armStopGrace）
   await Promise.all(inflight);
   await queue;
+  clearTimeout(stopGrace);
   finished = true;
   wakeHeartbeat();
   await heartbeat;
