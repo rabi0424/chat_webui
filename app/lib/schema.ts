@@ -208,7 +208,156 @@ CREATE INDEX IF NOT EXISTS idx_conversations_unread
 CREATE INDEX IF NOT EXISTS idx_attachments_conversation
   ON attachments(conversation_id);
 `,
+  // v18: 「成功するまで生成」を、司令役と1本担当の実行に分ける。
+  //
+  // 1つの実行の中で全部投げると、Cloudflare の「1回の呼び出しあたり」の
+  // 制限（応答ヘッダを同時に待てる接続6本・外部通信50件・15分）に
+  // 並列が縛られる。依頼1本ごとに別の実行（Durable Object）へ渡せば
+  // 縛りが外れるが、実行同士は記憶を共有しないので、進み具合と
+  // 「次の成功をどこへ繋ぐか」を D1 に置く。
+  //
+  // retry_runs.tail_message_id は成功を直列に積む先。1本担当が成功を
+  // 保存するときに、読む・繋ぐ・進めるを1つの batch（トランザクション）
+  // で行うので、同時に成功しても親が競合しない。
+  `
+CREATE TABLE IF NOT EXISTS retry_runs (
+  status_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  tail_message_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS retry_attempts (
+  id TEXT PRIMARY KEY,
+  status_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  launched_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  kind TEXT,
+  detail TEXT,
+  wait_ms INTEGER,
+  message_id TEXT,
+  processed INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_retry_attempts_run
+  ON retry_attempts(status_id, finished_at, processed);
+`,
 ];
+
+/**
+ * 「成功するまで生成」の1本担当が、司令役へ渡すために書く行と、
+ * 司令役が毎秒読む問い合わせ。production とテストで同じ文を使う
+ * （書き写すと JOIN の落とし忘れのような食い違いを検出できない）。
+ */
+export const RETRY_RUN_INSERT_SQL =
+  "INSERT OR IGNORE INTO retry_runs (status_id, conversation_id, tail_message_id, created_at) VALUES (?, ?, ?, ?)";
+export const RETRY_ATTEMPT_INSERT_SQL =
+  "INSERT OR IGNORE INTO retry_attempts (id, status_id, seq, launched_at) VALUES (?, ?, ?, ?)";
+/** 結果が決まった。既に決まっている行は上書きしない（再送で二重に数えない）。 */
+export const RETRY_ATTEMPT_FINISH_SQL =
+  "UPDATE retry_attempts SET finished_at = ?, kind = ?, detail = ?, wait_ms = ? WHERE id = ? AND finished_at IS NULL";
+/** 司令役が毎秒読む、決まったのにまだ数えていない行。 */
+export const RETRY_ATTEMPTS_UNPROCESSED_SQL =
+  "SELECT id, kind, detail, wait_ms, message_id FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND processed = 0 ORDER BY finished_at, seq";
+/** 続きの実行の頭で、集計に含めた行を全部「数えた」にする。 */
+export const RETRY_ATTEMPTS_MARK_ALL_SQL =
+  "UPDATE retry_attempts SET processed = 1 WHERE status_id = ? AND finished_at IS NOT NULL";
+export const RETRY_ATTEMPTS_RUNNING_SQL =
+  "SELECT COUNT(*) AS running FROM retry_attempts WHERE status_id = ? AND finished_at IS NULL";
+/**
+ * 1本担当の実行が失われた（15分の壁・退避）行を、一時的な不調として
+ * 決着させる。決まらないままだと司令役が永久に待つ。
+ */
+export const RETRY_ATTEMPTS_SWEEP_LOST_SQL =
+  "UPDATE retry_attempts SET finished_at = ?, kind = 'transient', detail = ? WHERE status_id = ? AND finished_at IS NULL AND launched_at < ?";
+/** 司令役が続きの実行の頭で数え直すための集計。 */
+export const RETRY_ATTEMPTS_COUNTS_SQL =
+  "SELECT kind, COUNT(*) AS n FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL GROUP BY kind";
+export const RETRY_ATTEMPTS_LAUNCHED_SQL =
+  "SELECT COUNT(*) AS launched, COALESCE(MAX(seq), 0) AS last_seq FROM retry_attempts WHERE status_id = ?";
+export const RETRY_ATTEMPTS_FIRST_REFUSAL_SQL =
+  "SELECT detail FROM retry_attempts WHERE status_id = ? AND kind = 'refused' AND detail IS NOT NULL AND detail != '' ORDER BY finished_at, seq LIMIT 1";
+
+/** 1本の担当が何本まで、を司令役が引く id の並び。100個のバインド上限に収める。 */
+export function markRetryAttemptsProcessedSql(count: number): string {
+  return `UPDATE retry_attempts SET processed = 1 WHERE id IN (${Array.from({ length: count }, () => "?").join(", ")})`;
+}
+
+/**
+ * 1本担当が成功を保存する文の束。1つの batch で流すこと。
+ *
+ * 親（繋ぐ先）は retry_runs.tail_message_id から読み、同じ束の中で
+ * 自分へ進める。別の担当が同時に成功しても、batch はトランザクション
+ * なので割り込まれない。表示中の枝を進めるのは、まだこの実行の枝を
+ * 見ているとき（葉が古い親と一致するとき）だけで、tail を進める前に
+ * 判定する（appendAssistantMessageStatements と同じ理由）。
+ */
+export function appendRetrySuccessStatements(params: {
+  id: string;
+  attemptId: string;
+  statusId: string;
+  conversationId: string;
+  modelId: string;
+  content: string;
+  usageJson: string | null;
+  now: number;
+}): Statement[] {
+  const statements: Statement[] = [
+    {
+      sql: `INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, status, flushed_at, created_at)
+        SELECT ?, ?, tail_message_id, 'assistant', ?, ?, ?, 'done', ?, ?
+          FROM retry_runs WHERE status_id = ?`,
+      binds: [
+        params.id,
+        params.conversationId,
+        params.content,
+        params.modelId,
+        params.usageJson,
+        params.now,
+        params.now,
+        params.statusId,
+      ],
+    },
+    {
+      sql: "UPDATE conversations SET updated_at = ?, unread = 1 WHERE id = ?",
+      binds: [params.now, params.conversationId],
+    },
+    {
+      sql: `UPDATE conversations SET current_leaf_message_id = ?
+        WHERE id = ? AND current_leaf_message_id = (SELECT tail_message_id FROM retry_runs WHERE status_id = ?)`,
+      binds: [params.id, params.conversationId, params.statusId],
+    },
+    {
+      sql: "UPDATE retry_runs SET tail_message_id = ? WHERE status_id = ?",
+      binds: [params.id, params.statusId],
+    },
+    {
+      sql: "UPDATE retry_attempts SET message_id = ? WHERE id = ?",
+      binds: [params.id, params.attemptId],
+    },
+  ];
+  const usage = usageForLedger(params.usageJson);
+  if (usage) {
+    statements.push({
+      sql: `INSERT OR IGNORE INTO usage_events
+         (id, at, kind, provider, model_id, cost_usd, points,
+          prompt_tokens, completion_tokens, conversation_id, message_id)
+       VALUES (?, ?, 'retry', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      binds: [
+        crypto.randomUUID(),
+        params.now,
+        isPoeModel(params.modelId) ? "poe" : "openrouter",
+        params.modelId,
+        usage.cost,
+        usage.points,
+        usage.promptTokens,
+        usage.completionTokens,
+        params.conversationId,
+        params.id,
+      ],
+    });
+  }
+  return statements;
+}
 
 /**
  * 消す候補を控えてから、実際に落とすまでの猶予。

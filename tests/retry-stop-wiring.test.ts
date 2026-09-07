@@ -2,226 +2,166 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 /**
- * リトライ生成の発射ループの配線。
+ * 「成功するまで生成」の配線。司令役（retry-run.server.ts）と1本担当、
+ * その下の runAttempt（generation.server.ts）、DO の振り分け（workers/app.ts）。
  *
- * 打ち切りの理由はローカル変数（stopped / fatalStopped /
- * budgetStopped / requestsExhausted）に散っていて、続行判定（moreAttempts）
- * への追記を1つ忘れても画面には何も出ない。実際に budgetStopped が
- * 抜けていて、月間上限に達した実行が「枠切れで中断しただけ」と解釈され、
- * DO が 50ms 間隔でアラームを打ち直し続けた——毎周 R2 と D1 を読む無限
- * ループで、止める手立ては停止ボタンだけだった。
- *
- * 実行体そのものを回すには上流・D1・R2 の全部を差し替える必要があり、
- * ここでは配線だけを見る（file-deletion-wiring.test.ts と同じ形）。
+ * 実行体そのものを回すには上流・D1・R2・DO の全部を差し替える必要が
+ * あり、ここでは配線だけを見る（file-deletion-wiring.test.ts と同じ形）。
  * 判定の構造を変えるときは、このテストも「新しい構造で同じ漏れが
  * 起きないか」を見る形へ書き換えること。
  */
-const source = readFileSync("app/lib/generation.server.ts", "utf8");
+const run = readFileSync("app/lib/retry-run.server.ts", "utf8");
+const gen = readFileSync("app/lib/generation.server.ts", "utf8");
+const worker = readFileSync("workers/app.ts", "utf8");
 
 /** 関数の本文を、名前から次のトップレベル定義まで切り出す。 */
-function fn(name: string): string {
-  const start = source.indexOf(`async function ${name}(`);
+function fn(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`);
   expect(start, name).toBeGreaterThan(-1);
   const rest = source.slice(start + 1);
   const end = rest.search(/\n(?:export )?(?:async )?function |\n\/\/ ---/);
   return rest.slice(0, end < 0 ? undefined : end);
 }
 
-describe("リトライ生成の続行判定", () => {
-  it("打ち切りの理由が4つとも続行判定に入っていて、不調の連続は入っていない", () => {
-    const m = source.match(/const moreAttempts =[\s\S]*?;/);
-    expect(m).not.toBeNull();
-    const expr = m![0];
-    expect(expr).toContain("!stopped");
-    // 一時的な不調は何回続いても打ち切らない
-    expect(source).not.toContain("transientExhausted");
-    expect(expr).toContain("!fatalStopped");
-    expect(expr).toContain("!budgetStopped");
-    expect(expr).toContain("!requestsExhausted");
+describe("司令役の続行判定", () => {
+  const job = fn(run, "runRetryGenerationJob");
+
+  it("起こすのをやめる理由が全部入っている", () => {
+    const can = job.match(/const canLaunch =[\s\S]*?;/)![0];
+    expect(can).toContain("!stopped");
+    expect(can).toContain("!lost");
+    expect(can).toContain("!touchFailed");
+    expect(can).toContain("!state.fatal");
+    expect(can).toContain("!budgetStopped");
+    const finished = job.match(/const finishedLaunching =[\s\S]*?;/)![0];
+    for (const reason of [
+      "stopped",
+      "lost",
+      "state.fatal",
+      "budgetStopped",
+      "state.successes >= retry.target",
+      "state.attempts >= retry.maxAttempts",
+      "state.launched >= requestCap",
+    ]) {
+      expect(finished).toContain(reason);
+    }
+    // 一時的な不調の連続は理由に無い（何回続いても打ち切らない）
+    expect(run).not.toContain("transientExhausted");
+    expect(run).not.toContain("consecutiveErrors");
   });
 
-  it("進まないチャンクが続いたら、続きを頼まずに終える", () => {
-    const job = fn("runRetryGenerationJob");
-    expect(job).toContain(
-      "state.stalledChunks = progressed ? 0 : state.stalledChunks + 1",
-    );
-    expect(job).toContain(
-      "const stalled = state.stalledChunks >= RETRY_STALLED_CHUNK_LIMIT",
-    );
-    expect(job).toContain(
-      "if (!stalled && (moreAttempts || state.pendingCapture.length > 0))",
-    );
-    // 進捗は試行・待ち直し・持ち越した画像の取り込みのどれか
-    const progressed = job.match(/const progressed =[\s\S]*?;/)![0];
-    expect(progressed).toContain("state.attempts > atStart.attempts");
-    expect(progressed).toContain("state.rateLimitRounds > atStart.rounds");
-    expect(progressed).toContain("state.pendingCapture.length < atStart.pending");
-  });
-});
-
-describe("上流への本数の柵", () => {
-  const job = fn("runRetryGenerationJob");
-
-  it("投げるたびに数え、発射の条件と続行判定の両方で見る", () => {
-    // 数えるのは requestUpstream が実際に投げる直前（429 も、やり直しも）
-    const launch = job.match(/const launch = \(\) => \{[\s\S]*?\n {2}};/)![0];
-    expect(launch).toContain("state.upstreamRequests++");
-    const loop = job.match(
-      /\/\/ 目標に届くまで、上限と並列数の範囲で発射し続ける[\s\S]*?\{/,
-    )![0];
-    expect(loop).toContain("state.upstreamRequests < requestCap");
-    expect(job).toContain(
-      "const requestsExhausted = state.upstreamRequests >= requestCap",
-    );
-    expect(job).toContain("retryRequestCap(retry.maxAttempts)");
+  it("走っている担当が残っているあいだは終えない（課金済み）", () => {
+    expect(job).toContain("if (finishedLaunching && running === 0) break;");
   });
 
-  it("数はチャンクをまたいで持ち越す", () => {
-    const restore = source.slice(source.indexOf("function restoreRetryState"));
-    expect(restore.slice(0, restore.indexOf("\n}"))).toContain(
-      "upstreamRequests: previous.upstreamRequests ?? 0",
-    );
-    expect(restore.slice(0, restore.indexOf("\n}"))).toContain(
-      "stalledChunks: previous.stalledChunks ?? 0",
-    );
-  });
-});
-
-describe("受け取る先が無くなった実行", () => {
-  const job = fn("runRetryGenerationJob");
-
-  it("生存確認は例外を外へ出さず、書けなければ発射を止める", () => {
-    const touch = job.match(/const touch = async[\s\S]*?\n {2}};/)![0];
-    expect(touch).toContain("try {");
-    expect(touch).toContain("catch (e)");
-    expect(touch).toContain("touchFailed = true");
-    // 保存が当たらない＝行が消えた・確定済み。停止と同じに扱う
-    expect(touch).toContain("if (!applied)");
-    expect(touch).toContain("lost = true");
-    expect(touch).toContain("stopped = true");
+  it("毎秒の1往復は例外を外へ出さず、行を失ったら起こさない", () => {
+    const tick = job.match(/const tick = async[\s\S]*?\n {2}};/)![0];
+    expect(tick).toContain("catch (e)");
+    expect(tick).toContain("touchFailed = true");
+    expect(tick).toContain("if (!t.applied)");
+    expect(tick).toContain("lost = true");
+    expect(tick).toContain("stopped = true");
+    // 決まった行は数えてから印を付ける
+    expect(tick).toContain("absorb(row)");
+    expect(tick).toContain("markRetryAttemptsProcessed(");
   });
 
-  it("発射の条件に、生存確認の失敗と同じ失敗の連続が入っている", () => {
-    const loop = job.match(
-      /\/\/ 目標に届くまで、上限と並列数の範囲で発射し続ける[\s\S]*?\{/,
-    )![0];
-    expect(loop).toContain("!touchFailed");
-    expect(loop).toContain("!fatalStopped");
-  });
-
-  it("見出しを失ったら、走っている分を受け取ったあと確定を書きに行かない", () => {
-    const after = job.slice(job.indexOf("await Promise.all(inflight)"));
+  it("見出しを失ったら確定も要約も書かない", () => {
+    const after = job.slice(job.indexOf("if (finishedLaunching && running === 0) break;"));
     const lostAt = after.indexOf("if (lost)");
     expect(lostAt).toBeGreaterThan(-1);
-    expect(lostAt).toBeLessThan(after.indexOf("const moreAttempts"));
     expect(lostAt).toBeLessThan(after.indexOf("fetchPoeRunPoints"));
+    expect(lostAt).toBeLessThan(after.indexOf("finalizeGeneration("));
   });
 
-  it("生存確認は、持ち越した画像を拾うより先に始まる", () => {
-    expect(job.indexOf("const heartbeat = (async")).toBeLessThan(
-      job.indexOf("await drainPendingCaptures("),
+  it("担当を起こす前に行を作り、起こせなければ不調として決着させる", () => {
+    const burst = job.slice(job.indexOf("let burst = 0;"));
+    expect(burst.indexOf("await insertRetryAttempt(")).toBeLessThan(
+      burst.indexOf("await spawnAttempt("),
     );
+    expect(burst).toContain('kind: "transient"');
+    expect(burst).toContain("担当の実行を起こせませんでした");
   });
 
-  it("単発の生成も、行が消えたら読むのをやめる", () => {
-    const single = fn("runSingleGeneration");
-    const write = single.match(/const write = async[\s\S]*?\n {2}};/)![0];
-    expect(write).toContain("!applied");
+  it("結果の数え方: 成功と拒否は試行、不調は待ち、直らないは止める", () => {
+    const absorb = job.match(/const absorb = \(row: RetryAttemptRow\) => \{[\s\S]*?\n {2}};/)![0];
+    const success = absorb.slice(absorb.indexOf('row.kind === "success"'), absorb.indexOf('row.kind === "refused"'));
+    expect(success).toContain("state.successes++");
+    expect(success).toContain("state.attempts++");
+    const refused = absorb.slice(absorb.indexOf('row.kind === "refused"'), absorb.indexOf('row.kind === "transient"'));
+    expect(refused).toContain("state.attempts++");
+    const transient = absorb.slice(absorb.indexOf('row.kind === "transient"'), absorb.indexOf('row.kind === "fatal"'));
+    expect(transient).not.toContain("state.attempts++");
+    expect(transient).toContain("onTransientFailure(");
+    const fatal = absorb.slice(absorb.indexOf('row.kind === "fatal"'));
+    expect(fatal).toContain("state.fatal = true");
+  });
+
+  it("続きの実行の頭で D1 から数え直し、進まないチャンクは3回で終える", () => {
+    expect(job).toContain("await retryRunSnapshot(statusId)");
+    expect(job).toContain("state.stalledChunks = progressed ? 0 : state.stalledChunks + 1");
+    expect(job).toContain("state.stalledChunks >= RETRY_STALLED_CHUNK_LIMIT");
+    // 失われた担当の掃除
+    expect(job).toContain("sweepLostRetryAttempts(");
+  });
+
+  it("毎秒の間隔は刻んだ回数が積もったら広げる", () => {
+    expect(job).toContain("ticks < TICK_FAST_COUNT ? TICK_MS : TICK_SLOW_MS");
   });
 });
 
-describe("取りこぼしと数え漏れ", () => {
-  const job = fn("runRetryGenerationJob");
-  const acceptOne = job.match(/const acceptOne = async[\s\S]*?\n {2}};/)![0];
+describe("1本担当", () => {
+  const w = fn(run, "runAttemptJob");
 
-  it("届いた成功は、数え上げの前でも枠の計算に入る", () => {
-    const loop = job.match(
-      /\/\/ 目標に届くまで、上限と並列数の範囲で発射し続ける[\s\S]*?\{/,
-    )![0];
-    expect(loop).toContain("knownSuccesses() < retry.target");
-    expect(loop).toContain("running() < slots()");
-    const slots = job.match(/const slots = \(\): number =>[\s\S]*?;/)![0];
-    expect(slots).toContain("successes: knownSuccesses()");
-    expect(slots).toContain("attempts: state.attempts + pending.settled()");
-    // 届いたときに足し、数えたら引く
-    const accept = job.match(/const accept = \(r: AttemptOutcome\)[\s\S]*?\n {2}};/)![0];
-    expect(accept).toContain("pending.known(r.kind)");
-    expect(accept).toContain("pending.counted(r.kind)");
+  it("例外を外へ出さず、必ず結果を書く", () => {
+    expect(w).toContain("try {");
+    expect(w).toContain("} catch (e) {");
+    const caught = w.slice(w.indexOf("} catch (e) {"));
+    expect(caught).toContain('"transient"');
+    expect(caught).toContain("担当の実行が失敗しました");
+    expect(w).toContain("finally {");
   });
 
-  it("成功は保存できた時点で数え、画像の取り込みの失敗で取り消さない", () => {
-    const success = acceptOne.slice(acceptOne.indexOf("await appendAssistantMessage("));
-    const counted = success.indexOf("state.successes++");
-    expect(counted).toBeGreaterThan(-1);
-    expect(counted).toBeLessThan(success.indexOf("captureGeneratedImages("));
-    expect(success.indexOf("state.parentId = id")).toBeLessThan(
+  it("成功は保存できた時点で書き、画像の取り込みの失敗で取り消さない", () => {
+    const success = w.slice(w.indexOf('if (r.kind === "success")'), w.indexOf('else if (r.kind === "refused")'));
+    expect(success.indexOf("await appendRetrySuccess(")).toBeLessThan(
+      success.indexOf('await finish("success", null)'),
+    );
+    expect(success.indexOf('await finish("success", null)')).toBeLessThan(
       success.indexOf("captureGeneratedImages("),
     );
+    expect(success).toContain("画像の取り込みに失敗しました");
   });
 
-  it("直らないエラーはその場で止め、一時的な不調は試行に数えず待つ", () => {
-    expect(acceptOne).toContain('if (r.kind === "fatal")');
-    expect(acceptOne).toContain("fatalStopped = true");
-    expect(acceptOne).toContain('if (r.kind === "transient")');
-    expect(acceptOne).toContain("onTransientFailure(");
-    // 一時的な不調の分岐は attempts++ より前で return する
-    const transientAt = acceptOne.indexOf('if (r.kind === "transient")');
-    const attemptsAt = acceptOne.indexOf("state.attempts++");
-    expect(transientAt).toBeGreaterThan(-1);
-    expect(transientAt).toBeLessThan(attemptsAt);
-    expect(acceptOne).not.toContain("consecutiveErrors");
+  it("拒否の額を台帳へ載せ（OpenRouter）、不調は待ち時間を運ぶ", () => {
+    expect(w).toContain("if (!isPoe) await recordRefusalUsage(job.model, r.usageJson)");
+    expect(w).toContain('await finish("transient", r.reason, r.waitMs)');
+    expect(w).toContain('await finish("fatal", r.reason)');
   });
 
-  it("成功か拒否が返ったら待ち直しの回数を戻し、待ちの時刻は持ち越す", () => {
-    expect(acceptOne).toContain("afterAttemptSettled(");
-    expect(acceptOne).toContain("state.pauseUntil = next.pauseUntil");
-    expect(job).toContain("Math.max(state.pauseUntil, gate.until())");
-    // 持ち越しの復元（前の版が保存した state には無い）
-    const restore = source.slice(source.indexOf("function restoreRetryState"));
-    expect(restore.slice(0, restore.indexOf("\n}"))).toContain(
-      "pauseUntil: previous.pauseUntil ?? 0",
-    );
+  it("1本の締め切りを signal で渡す", () => {
+    expect(w).toContain("new AbortController()");
+    expect(w).toContain("RETRY_ATTEMPT_DEADLINE_MS");
+    expect(w).toContain("controller.signal");
+    expect(w).toContain("clearTimeout(deadline)");
   });
 });
 
-describe("台帳と課金", () => {
-  const job = fn("runRetryGenerationJob");
-
-  it("拒否された応答の usage を捨てず、OpenRouter では台帳へ載せる", () => {
-    const attempt = fn("runAttempt");
-    expect(attempt).toContain('kind: "refused", text: result.content, usageJson: result.usageJson');
-    const acceptOne = job.match(/const acceptOne = async[\s\S]*?\n {2}};/)![0];
-    expect(acceptOne).toContain("if (!isPoe) await recordRefusalUsage(job.model, r.usageJson)");
-  });
-
-  it("Poe の実行全体の消費は、枠の残りに関係なく取りに行く", () => {
-    const tail = job.slice(job.indexOf("const moreAttempts"));
-    const guard = tail.match(/if \(isPoe && state\.attempts > 0[^)]*\)/)![0];
-    expect(guard).not.toContain("budget.available()");
-  });
-
-  it("Poe の続きの実行は、ここまでの消費を月間上限の判定に足す", () => {
-    expect(job).toContain("checkMonthlyLimit(Date.now(), state.provisional)");
-    expect(job).toContain("state.provisional = { points: soFar.points");
-  });
+describe("runAttempt（上流1本）", () => {
+  const attempt = fn(gen, "runAttempt");
 
   it("失敗の分け方は upstream-outcome に一本化し、HTTP のエラーも本文の中のエラーも通す", () => {
-    const attempt = fn("runAttempt");
     const http = attempt.slice(attempt.indexOf("if (!upstream.ok || !upstream.body)"));
     expect(http).toContain("classifyUpstreamFailure({");
     expect(http).toContain("status: upstream.status");
-    // 本文は一度しか読めないので、読んだものを文言の組み立てにも渡す
     expect(http).toContain("upstreamErrorMessage(upstream, isPoe, body)");
     const mid = attempt.slice(attempt.indexOf("if (!hasImage && result.error)"));
     expect(mid).toContain("classifyUpstreamFailure({");
     expect(mid).toContain("status: result.error.code");
-    // 文言での判定は runAttempt に残っていない（分け方は1か所）
-    expect(attempt).not.toContain("isSafetyRejection");
     expect(attempt).not.toContain("MODERATION");
   });
 
-  it("画像を出すモデルは、ヘッダを待つ時間も本文の無音も長く取り、締め切りの signal を渡す", () => {
-    const attempt = fn("runAttempt");
+  it("画像を出すモデルは、ヘッダ待ちも本文の無音も締め切りまで待ち、signal を渡す", () => {
     expect(attempt).toMatch(
       /const idleTimeoutMs = job\.imageOutput\s*\?\s*RETRY_ATTEMPT_DEADLINE_MS\s*:\s*UPSTREAM_IDLE_TIMEOUT_MS/,
     );
@@ -229,35 +169,27 @@ describe("台帳と課金", () => {
     const req = attempt.slice(attempt.indexOf("requestUpstream(job, messages, onRequest, {"));
     expect(req.slice(0, req.indexOf("})"))).toContain("signal,");
   });
+});
 
-  it("1本ごとに総時間の締め切りを置く。停止で切りはしない", () => {
-    const launch = job.match(/const launch = \(\) => \{[\s\S]*?\n {2}};/)![0];
-    expect(launch).toContain("new AbortController()");
-    expect(launch).toContain("RETRY_ATTEMPT_DEADLINE_MS");
-    expect(launch).toContain("controller.signal");
-    expect(launch).toContain("clearTimeout(deadline)");
-    // 課金済みの結果を捨てる経路は締め切りだけ。停止の猶予切れは無い
-    expect(job).not.toContain("abortAll");
-    expect(job).not.toContain("STOP_GRACE");
-    const attempt = fn("runAttempt");
-    expect(attempt).toContain("signal,");
+describe("DO の振り分けと単発の生成", () => {
+  it("1本担当の仕事は見出しの状態を見ずに走り、アラームの再送を招かない", () => {
+    const alarm = worker.slice(worker.indexOf("override async alarm()"));
+    const attemptAt = alarm.indexOf("await runAttemptJob(job)");
+    expect(attemptAt).toBeGreaterThan(-1);
+    expect(attemptAt).toBeLessThan(alarm.indexOf("await getMessage("));
+    expect(alarm.slice(attemptAt, attemptAt + 200)).toContain("await this.clearJob()");
   });
 
-  it("新しく投げるのは窓の中だけ（15分の壁の手前で1本が終わるように）", () => {
-    const loop = job.match(
-      /\/\/ 目標に届くまで、上限と並列数の範囲で発射し続ける[\s\S]*?\{/,
-    )![0];
-    expect(loop).toContain("launchWindowOpen()");
-    expect(job).toContain(
-      "Date.now() - chunkStartedAt < RETRY_LAUNCH_WINDOW_MS",
-    );
+  it("司令役は続きがあれば途中経過を保存して次のアラームを入れる", () => {
+    const alarm = worker.slice(worker.indexOf("override async alarm()"));
+    expect(alarm).toContain("runRetryGenerationJob(job, job.retry, state)");
+    expect(alarm).toContain("this.ctx.storage.put(STATE_KEY, outcome.state)");
+    expect(alarm).toContain("setAlarm(Date.now() + NEXT_CHUNK_MS)");
   });
 
-  it("生存確認は打ち直しが積もったら間隔を広げる（内部の呼び出し回数の上限）", () => {
-    const heartbeat = job.match(/const heartbeat = \(async[\s\S]*?\n {2}\}\)\(\);/)![0];
-    expect(heartbeat).toContain("HEARTBEAT_FAST_TOUCHES");
-    expect(heartbeat).toContain("HEARTBEAT_SLOW_MS");
-    expect(source).toMatch(/const HEARTBEAT_SLOW_MS = 5_000;/);
+  it("単発の生成も、行が消えたら読むのをやめる", () => {
+    const single = fn(gen, "runSingleGeneration");
+    const write = single.match(/const write = async[\s\S]*?\n {2}};/)![0];
+    expect(write).toContain("!applied");
   });
-
 });

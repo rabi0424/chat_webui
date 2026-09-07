@@ -53,16 +53,6 @@ export interface RetryConfig {
 export const RETRY_DEFAULT_TARGET = 1;
 export const RETRY_DEFAULT_MAX_ATTEMPTS = 5;
 
-/**
- * 同時に走らせる本数の上限。
- *
- * Workers は1回の呼び出しで「応答ヘッダを待っている接続」を同時に
- * 6本までしか持てない（Cloudflare の文書）。Poe は画像ができるまで
- * ヘッダを返さないので、7本目以降はこちら側で順番待ちになり、速く
- * ならないまま待ち時間だけが延びて締め切りに掛かる。1本は生成画像の
- * 取り込みに残し、試行は5本まで。
- */
-export const RETRY_MAX_CONCURRENCY = 5;
 
 function toInt(value: unknown, fallback: number): number {
   const n = Number(value);
@@ -75,10 +65,11 @@ function toInt(value: unknown, fallback: number): number {
  * ceiling はアプリ全体の天井。クライアントの値を信用せず、
  * 送信のたびにサーバー側でも通す。
  *
- * 並列数が未入力のときの既定は、固定なら目標数、スマートなら並列の
- * 上限（RETRY_MAX_CONCURRENCY）。スマートで目標数を既定にすると、
- * 目標1のとき枠が1本から増やせず、失敗が続いても何もしない
- * 「スマート」になる。どちらも上限を超えない。
+ * 並列数が未入力のときの既定は、固定なら目標数、スマートなら上限の
+ * 試行回数。スマートで目標数を既定にすると、目標1のとき枠が1本から
+ * 増やせず、失敗が続いても何もしない「スマート」になる。並列の上限は
+ * Cloudflare ではなく上流のレート制限と利用者の設定だけ（依頼1本ごとに
+ * 別の実行へ渡すため。retry-run.server.ts の注記）。
  */
 export function readRetryConfig(
   state: Record<string, number | string> | null | undefined,
@@ -108,13 +99,9 @@ export function readRetryConfig(
   const concurrency = Math.min(
     Math.max(
       1,
-      toInt(
-        state[RETRY_CONCURRENCY_KEY],
-        smart ? RETRY_MAX_CONCURRENCY : target,
-      ),
+      toInt(state[RETRY_CONCURRENCY_KEY], smart ? maxAttempts : target),
     ),
     maxAttempts,
-    RETRY_MAX_CONCURRENCY,
   );
 
   return { target, maxAttempts, concurrency, smartPercent };
@@ -345,19 +332,13 @@ export function retryRequestCap(maxAttempts: number): number {
 export const RETRY_STALLED_CHUNK_LIMIT = 3;
 
 /**
- * 続きの実行（DO のアラーム1回）に許される時間。Cloudflare の文書に
+ * 実行（DO のアラーム1回）に許される時間。Cloudflare の文書に
  * 「Durable Object のアラームは最長15分」とある。ここを過ぎると実行
- * ごと止められ、返事待ちの依頼は失われる（課金は済んでいる）。
- * この機能で結果を取りこぼす経路は、こちらから切るか、この壁に当たる
- * かの2つしか無い。
+ * ごと止められ、返事待ちの上流の依頼は失われる（課金は済んでいる）。
+ * 依頼1本ごとに実行を分けているので、1本の締め切りをこの手前に置けば
+ * 壁には当たらない。司令役はこの手前で途中経過を保存して区切る。
  */
 export const RETRY_ALARM_WALL_MS = 15 * 60_000;
-
-/**
- * 壁の手前に残す時間。最後の1本の取り込み（画像を最大4件取りに行く）、
- * Poe の消費の突き合わせ、確定の書き込みぶん。
- */
-export const RETRY_CHUNK_TAIL_MS = 60_000;
 
 /**
  * 1本の試行に許す総時間（ヘッダ待ちも本文の無音も含む）。
@@ -369,17 +350,8 @@ export const RETRY_CHUNK_TAIL_MS = 60_000;
  * その本を待ち続けて終われなかった。
  *
  * 切るのは、課金済みの結果を捨てることでもある。だから「明らかに
- * 固まっている」と言える長さまで待つ。上限は15分の壁で決まる:
- * 壁から手前の余白を引いた残りが、1本に許せる最長になる。
+ * 固まっている」と言える長さまで待つ。上限は担当の実行の15分の壁で
+ * 決まる: 結果を書く余白を残した残りが、1本に許せる最長になる。
  */
 export const RETRY_ATTEMPT_DEADLINE_MS = 12 * 60_000;
 
-/**
- * 続きの実行の中で、新しく投げてよい時間の窓。
- *
- * この時刻より後に投げると、1本の締め切りが15分の壁を越え、締め切りの
- * 前に実行ごと止められて結果を失う。窓が閉じたら、走っている分を
- * 受け取って次のアラームへ渡す（次のアラームでは窓がまた開く）。
- */
-export const RETRY_LAUNCH_WINDOW_MS =
-  RETRY_ALARM_WALL_MS - RETRY_CHUNK_TAIL_MS - RETRY_ATTEMPT_DEADLINE_MS;

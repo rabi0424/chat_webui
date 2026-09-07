@@ -28,6 +28,18 @@ import {
   USAGE_TOTALS_SQL,
   FLUSH_GENERATION_SQL,
   FLUSH_STOP_CHECK_SQL,
+  RETRY_ATTEMPTS_COUNTS_SQL,
+  RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
+  RETRY_ATTEMPTS_LAUNCHED_SQL,
+  RETRY_ATTEMPTS_MARK_ALL_SQL,
+  RETRY_ATTEMPTS_RUNNING_SQL,
+  RETRY_ATTEMPTS_SWEEP_LOST_SQL,
+  RETRY_ATTEMPTS_UNPROCESSED_SQL,
+  RETRY_ATTEMPT_FINISH_SQL,
+  RETRY_ATTEMPT_INSERT_SQL,
+  RETRY_RUN_INSERT_SQL,
+  appendRetrySuccessStatements,
+  markRetryAttemptsProcessedSql,
   clearPendingDeletionsSql,
   generatedImagesSql,
   searchConversationsSql,
@@ -760,6 +772,11 @@ export async function deleteConversation(id: string): Promise<void> {
     .all<{ r2_key: string }>();
   await d.batch([
     d.prepare("DELETE FROM attachments WHERE conversation_id = ?").bind(id),
+    // 「成功するまで生成」の進み具合の記録。見出しが消えれば用済み
+    d.prepare(
+      "DELETE FROM retry_attempts WHERE status_id IN (SELECT status_id FROM retry_runs WHERE conversation_id = ?)",
+    ).bind(id),
+    d.prepare("DELETE FROM retry_runs WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM conversations WHERE id = ?").bind(id),
   ]);
@@ -2201,3 +2218,190 @@ export async function getMessage(
   return row;
 }
 
+// --- 「成功するまで生成」の司令役と1本担当が共有する記録 ------------------
+
+/** 1本担当の結果の種類。 */
+export type RetryAttemptKind = "success" | "refused" | "transient" | "fatal";
+
+export interface RetryAttemptRow {
+  id: string;
+  kind: RetryAttemptKind;
+  detail: string | null;
+  wait_ms: number | null;
+  message_id: string | null;
+}
+
+/** 実行の記録を作る（既にあれば何もしない。続きの実行から何度も呼ばれる）。 */
+export async function createRetryRun(params: {
+  statusId: string;
+  conversationId: string;
+  now: number;
+}): Promise<void> {
+  const d = await db();
+  await d
+    .prepare(RETRY_RUN_INSERT_SQL)
+    .bind(params.statusId, params.conversationId, params.statusId, params.now)
+    .run();
+}
+
+/** 1本を投げる前に、その行を作る（担当の実行が失われても行は残る）。 */
+export async function insertRetryAttempt(params: {
+  id: string;
+  statusId: string;
+  seq: number;
+  now: number;
+}): Promise<void> {
+  const d = await db();
+  await d
+    .prepare(RETRY_ATTEMPT_INSERT_SQL)
+    .bind(params.id, params.statusId, params.seq, params.now)
+    .run();
+}
+
+/**
+ * 司令役の毎秒の1往復。見出しの打ち直し・停止要求・決まったのにまだ
+ * 数えていない行・走っている本数を、1つの batch で取る（1サブリクエスト）。
+ * 続きの実行は最長15分で、毎秒3つ別々に取ると内部の呼び出し回数の上限に届く。
+ */
+export async function tickRetryRun(
+  statusId: string,
+  content: string,
+): Promise<{
+  stopRequested: boolean;
+  applied: boolean;
+  finished: RetryAttemptRow[];
+  running: number;
+}> {
+  const d = await db();
+  const [update, check, rows, running] = await d.batch([
+    d.prepare(FLUSH_GENERATION_SQL).bind(content, null, Date.now(), statusId),
+    d.prepare(FLUSH_STOP_CHECK_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_UNPROCESSED_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_RUNNING_SQL).bind(statusId),
+  ]);
+  return {
+    stopRequested:
+      ((check.results[0] as { stop_requested?: number } | undefined)
+        ?.stop_requested ?? 0) === 1,
+    applied: (update.meta.changes ?? 0) > 0,
+    finished: rows.results as unknown as RetryAttemptRow[],
+    running: Number(
+      (running.results[0] as { running?: number } | undefined)?.running ?? 0,
+    ),
+  };
+}
+
+/** 数え終えた行に印を付ける。バインド変数の上限に合わせて分ける。 */
+export async function markRetryAttemptsProcessed(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const d = await db();
+  const statements: D1PreparedStatement[] = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const part = ids.slice(i, i + 90);
+    statements.push(
+      d.prepare(markRetryAttemptsProcessedSql(part.length)).bind(...part),
+    );
+  }
+  await d.batch(statements);
+}
+
+/** 担当の実行が失われた行を一時的な不調として決着させる。当てた数を返す。 */
+export async function sweepLostRetryAttempts(params: {
+  statusId: string;
+  launchedBefore: number;
+  now: number;
+}): Promise<number> {
+  const d = await db();
+  const res = await d
+    .prepare(RETRY_ATTEMPTS_SWEEP_LOST_SQL)
+    .bind(
+      params.now,
+      "担当の実行が失われました（15分の壁か退避）",
+      params.statusId,
+      params.launchedBefore,
+    )
+    .run();
+  return res.meta.changes ?? 0;
+}
+
+/**
+ * 続きの実行の頭で数え直すための集計。集計に含めた行は同じ batch で
+ * 「数えた」にして、毎秒の読みで二重に数えないようにする。
+ */
+export async function retryRunSnapshot(statusId: string): Promise<{
+  counts: Record<RetryAttemptKind, number>;
+  launched: number;
+  lastSeq: number;
+  firstRefusal: string | null;
+}> {
+  const d = await db();
+  const [counts, launched, refusal] = await d.batch([
+    d.prepare(RETRY_ATTEMPTS_COUNTS_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_LAUNCHED_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_FIRST_REFUSAL_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_MARK_ALL_SQL).bind(statusId),
+  ]);
+  const out: Record<RetryAttemptKind, number> = {
+    success: 0,
+    refused: 0,
+    transient: 0,
+    fatal: 0,
+  };
+  for (const row of counts.results as { kind: RetryAttemptKind; n: number }[]) {
+    if (row.kind in out) out[row.kind] = Number(row.n);
+  }
+  const l = launched.results[0] as
+    | { launched?: number; last_seq?: number }
+    | undefined;
+  const r = refusal.results[0] as { detail?: string } | undefined;
+  return {
+    counts: out,
+    launched: Number(l?.launched ?? 0),
+    lastSeq: Number(l?.last_seq ?? 0),
+    firstRefusal: r?.detail ?? null,
+  };
+}
+
+/** 1本担当が結果を書く。既に決まっている行は上書きしない（再送に備える）。 */
+export async function finishRetryAttempt(params: {
+  id: string;
+  kind: RetryAttemptKind;
+  detail: string | null;
+  waitMs: number | null;
+  now: number;
+}): Promise<boolean> {
+  const d = await db();
+  const res = await d
+    .prepare(RETRY_ATTEMPT_FINISH_SQL)
+    .bind(params.now, params.kind, params.detail, params.waitMs, params.id)
+    .run();
+  return (res.meta.changes ?? 0) > 0;
+}
+
+/**
+ * 1本担当が成功を積む。親は retry_runs.tail_message_id から読み、同じ
+ * batch で自分へ進める（appendRetrySuccessStatements の注記）。
+ */
+export async function appendRetrySuccess(params: {
+  attemptId: string;
+  statusId: string;
+  conversationId: string;
+  modelId: string;
+  content: string;
+  usageJson: string | null;
+}): Promise<string> {
+  const d = await db();
+  const id = crypto.randomUUID();
+  const statements = appendRetrySuccessStatements({
+    id,
+    attemptId: params.attemptId,
+    statusId: params.statusId,
+    conversationId: params.conversationId,
+    modelId: params.modelId,
+    content: params.content,
+    usageJson: params.usageJson,
+    now: Date.now(),
+  });
+  await d.batch(statements.map((st) => d.prepare(st.sql).bind(...st.binds)));
+  return id;
+}

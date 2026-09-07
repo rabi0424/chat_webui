@@ -9,12 +9,24 @@ import {
   MIGRATIONS,
   PENDING_DELETION_GRACE_MS,
   QUEUE_PENDING_DELETION_SQL,
+  RETRY_ATTEMPTS_COUNTS_SQL,
+  RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
+  RETRY_ATTEMPTS_LAUNCHED_SQL,
+  RETRY_ATTEMPTS_MARK_ALL_SQL,
+  RETRY_ATTEMPTS_RUNNING_SQL,
+  RETRY_ATTEMPTS_SWEEP_LOST_SQL,
+  RETRY_ATTEMPTS_UNPROCESSED_SQL,
+  RETRY_ATTEMPT_FINISH_SQL,
+  RETRY_ATTEMPT_INSERT_SQL,
+  RETRY_RUN_INSERT_SQL,
   STALE_STREAMING_MS,
   STORAGE_STATS_SQL,
   USAGE_DAILY_SQL,
   USAGE_TOTALS_SQL,
   appendAssistantMessageStatements,
+  appendRetrySuccessStatements,
   clearPendingDeletionsSql,
+  markRetryAttemptsProcessedSql,
   generatedImagesSql,
   searchConversationsSql,
   statementsOf,
@@ -1082,5 +1094,145 @@ describe("生成中の部分保存", () => {
     expect(check("s1")).toBe(0);
     expect(check("d1")).toBe(1);
     expect(check("nope")).toBeUndefined();
+  });
+});
+
+/**
+ * 「成功するまで生成」の司令役と1本担当が共有する記録。
+ *
+ * 担当は互いに記憶を共有しないので、進み具合と「次の成功をどこへ
+ * 繋ぐか」を D1 に置く。並べ方を1つ間違えると、成功が兄弟として付いて
+ * 隠れる・同じ結果を二重に数える・失われた担当を永久に待つ、のどれかに
+ * なる。本番と同じ文を本物の SQLite に流す。
+ */
+describe("成功するまで生成の記録", () => {
+  const S = "s1";
+  beforeEach(() => {
+    migrate(db);
+    db.prepare(
+      "INSERT INTO conversations (id, title, unread, current_leaf_message_id, created_at, updated_at) VALUES ('c1', '画像', 0, 's1', 1, 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('u1', 'c1', 'user', '猫の絵', 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, parent_id, role, content, status, created_at) VALUES ('s1', 'c1', 'u1', 'assistant', '', 'streaming', 2)",
+    ).run();
+    db.prepare(RETRY_RUN_INSERT_SQL).run(S, "c1", S, 2);
+  });
+
+  const launch = (id: string, seq: number, at = 1_000) =>
+    db.prepare(RETRY_ATTEMPT_INSERT_SQL).run(id, S, seq, at);
+  const finish = (id: string, kind: string, detail: string | null = null, waitMs: number | null = null, at = 2_000) =>
+    db.prepare(RETRY_ATTEMPT_FINISH_SQL).run(at, kind, detail, waitMs, id).changes;
+  const unprocessed = () =>
+    db.prepare(RETRY_ATTEMPTS_UNPROCESSED_SQL).all(S) as { id: string; kind: string }[];
+  const running = () =>
+    (db.prepare(RETRY_ATTEMPTS_RUNNING_SQL).get(S) as { running: number }).running;
+  const succeed = (id: string, attemptId: string, content = "![](x)") => {
+    for (const st of appendRetrySuccessStatements({
+      id,
+      attemptId,
+      statusId: S,
+      conversationId: "c1",
+      modelId: "poe:Imagen",
+      content,
+      usageJson: null,
+      now: 3_000,
+    })) {
+      db.prepare(st.sql).run(...st.binds);
+    }
+  };
+  const parentOf = (id: string) =>
+    (db.prepare("SELECT parent_id FROM messages WHERE id = ?").get(id) as { parent_id: string }).parent_id;
+  const leaf = () =>
+    (db.prepare("SELECT current_leaf_message_id AS leaf FROM conversations WHERE id = 'c1'").get() as { leaf: string }).leaf;
+
+  it("実行の記録は二重に作らず、繋ぐ先は最初は見出し", () => {
+    db.prepare(RETRY_RUN_INSERT_SQL).run(S, "c1", "other", 9);
+    const row = db.prepare("SELECT tail_message_id AS tail, created_at FROM retry_runs WHERE status_id = ?").get(S) as { tail: string; created_at: number };
+    expect(row.tail).toBe(S);
+    expect(row.created_at).toBe(2);
+  });
+
+  it("成功は見出しの下へ直列に繋がり、繋ぐ先が進む", () => {
+    launch("a1", 1);
+    launch("a2", 2);
+    succeed("m1", "a1");
+    succeed("m2", "a2");
+    expect(parentOf("m1")).toBe(S);
+    expect(parentOf("m2")).toBe("m1");
+    expect((db.prepare("SELECT tail_message_id AS t FROM retry_runs WHERE status_id = ?").get(S) as { t: string }).t).toBe("m2");
+    // 担当の行にも保存先が書かれる
+    expect((db.prepare("SELECT message_id AS m FROM retry_attempts WHERE id = 'a2'").get() as { m: string }).m).toBe("m2");
+  });
+
+  it("表示中の枝は、まだ実行の枝を見ているときだけ進む", () => {
+    launch("a1", 1);
+    succeed("m1", "a1");
+    expect(leaf()).toBe("m1");
+    // 別の枝へ移った
+    db.prepare("UPDATE conversations SET current_leaf_message_id = 'u1' WHERE id = 'c1'").run();
+    launch("a2", 2);
+    succeed("m2", "a2");
+    expect(parentOf("m2")).toBe("m1");
+    expect(leaf()).toBe("u1");
+  });
+
+  it("結果は一度しか書けない（担当の再送で二重に数えない）", () => {
+    launch("a1", 1);
+    expect(finish("a1", "refused", "だめです")).toBe(1);
+    expect(finish("a1", "success")).toBe(0);
+    expect(unprocessed().map((r) => r.kind)).toEqual(["refused"]);
+  });
+
+  it("決まったのにまだ数えていない行だけを、決まった順で読む", () => {
+    launch("a1", 1);
+    launch("a2", 2);
+    launch("a3", 3);
+    finish("a2", "success", null, null, 2_000);
+    finish("a1", "transient", "混雑", 5_000, 2_500);
+    expect(unprocessed().map((r) => r.id)).toEqual(["a2", "a1"]);
+    expect(running()).toBe(1);
+    db.prepare(markRetryAttemptsProcessedSql(2)).run("a2", "a1");
+    expect(unprocessed()).toEqual([]);
+    expect(running()).toBe(1);
+  });
+
+  it("失われた担当は、古いものだけを不調として決着させる", () => {
+    launch("old", 1, 1_000);
+    launch("young", 2, 50_000);
+    const swept = db.prepare(RETRY_ATTEMPTS_SWEEP_LOST_SQL).run(60_000, "失われました", S, 10_000).changes;
+    expect(swept).toBe(1);
+    expect(unprocessed().map((r) => r.id)).toEqual(["old"]);
+    expect(running()).toBe(1);
+  });
+
+  it("続きの実行の頭の集計は、決まった行を種類ごとに数え、全部「数えた」にする", () => {
+    launch("a1", 1);
+    launch("a2", 2);
+    launch("a3", 3);
+    launch("a4", 4);
+    finish("a1", "refused", "ダメ", null, 2_000);
+    finish("a2", "refused", "", null, 2_100);
+    finish("a3", "transient", "混雑", null, 2_200);
+    const counts = db.prepare(RETRY_ATTEMPTS_COUNTS_SQL).all(S) as { kind: string; n: number }[];
+    expect(Object.fromEntries(counts.map((c) => [c.kind, c.n]))).toEqual({ refused: 2, transient: 1 });
+    const l = db.prepare(RETRY_ATTEMPTS_LAUNCHED_SQL).get(S) as { launched: number; last_seq: number };
+    expect(l).toEqual({ launched: 4, last_seq: 4 });
+    // 最初の拒否文（空は飛ばす）
+    expect((db.prepare(RETRY_ATTEMPTS_FIRST_REFUSAL_SQL).get(S) as { detail: string }).detail).toBe("ダメ");
+    db.prepare(RETRY_ATTEMPTS_MARK_ALL_SQL).run(S);
+    expect(unprocessed()).toEqual([]);
+    // 走っているものは残る
+    expect(running()).toBe(1);
+  });
+
+  it("他の実行の行は読まない", () => {
+    db.prepare(RETRY_RUN_INSERT_SQL).run("s2", "c1", "s2", 2);
+    db.prepare(RETRY_ATTEMPT_INSERT_SQL).run("b1", "s2", 1, 1_000);
+    finish("b1", "success");
+    expect(unprocessed()).toEqual([]);
+    expect(running()).toBe(0);
   });
 });

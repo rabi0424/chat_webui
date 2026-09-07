@@ -9,10 +9,15 @@ import {
   readAccessConfig,
 } from "../app/lib/access-jwt.server";
 import {
-  runGenerationJob,
+  runSingleGeneration,
   type GenerationJob,
-  type RetryRunState,
 } from "../app/lib/generation.server";
+import {
+  runAttemptJob,
+  runRetryGenerationJob,
+  type AttemptJob,
+  type RetryRunState,
+} from "../app/lib/retry-run.server";
 
 /** 途中経過の保存先。これがあれば「続きの実行」だと分かる。 */
 const STATE_KEY = "retryState";
@@ -81,7 +86,7 @@ export class GenerationRunner extends DurableObject {
   }
 
   /** 分割して置いたジョブを読み戻す。 */
-  private async getJob(): Promise<GenerationJob | null> {
+  private async getJob(): Promise<GenerationJob | AttemptJob | null> {
     const count = await this.ctx.storage.get<number>(JOB_CHUNK_COUNT_KEY);
     if (typeof count !== "number") {
       // 分割前の版が置いたジョブが残っていることがある
@@ -97,7 +102,7 @@ export class GenerationRunner extends DurableObject {
       }
     }
     try {
-      return JSON.parse(text) as GenerationJob;
+      return JSON.parse(text) as GenerationJob | AttemptJob;
     } catch {
       return null;
     }
@@ -116,8 +121,10 @@ export class GenerationRunner extends DurableObject {
   }
 
   override async fetch(request: Request): Promise<Response> {
-    const job = (await request.json()) as GenerationJob;
-    await this.putJob(job);
+    // /attempt は「成功するまで生成」の1本担当。/start は生成の開始
+    // （見出しを持つ司令役、または単発の生成）。形は job.kind で見分ける
+    const job = (await request.json()) as GenerationJob | AttemptJob;
+    await this.putJob(job as GenerationJob);
     // 新しいジョブなので、前のジョブの残骸が居たら捨てる
     await this.ctx.storage.delete(STATE_KEY);
     await this.ctx.storage.setAlarm(Date.now() + 50);
@@ -127,6 +134,13 @@ export class GenerationRunner extends DurableObject {
   override async alarm(): Promise<void> {
     const job = await this.getJob();
     if (!job) return;
+    if ("kind" in job) {
+      // 1本担当。結果は D1 に書き、例外は外へ出さない（出すとアラームが
+      // 再送され、同じ依頼をもう一度投げて二重に課金される）
+      await runAttemptJob(job);
+      await this.clearJob();
+      return;
+    }
     const state = (await this.ctx.storage.get<RetryRunState>(STATE_KEY)) ?? null;
     try {
       const row = await getMessage(job.conversationId, job.assistantMessageId);
@@ -152,7 +166,9 @@ export class GenerationRunner extends DurableObject {
               : null,
           });
         } else {
-          const outcome = await runGenerationJob(job, state);
+          const outcome = job.retry
+            ? await runRetryGenerationJob(job, job.retry, state)
+            : ((await runSingleGeneration(job)), { done: true as const });
           if (!outcome.done) {
             // サブリクエストの枠を使い切った。続きは次のアラームで
             await this.ctx.storage.put(STATE_KEY, outcome.state);
