@@ -269,6 +269,20 @@ ALTER TABLE retry_runs ADD COLUMN coordinator_ms INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_retry_attempts_finished
   ON retry_attempts(finished_at);
 `,
+  // v21: 司令役が毎秒引く「まだ数えていない行」を、数え済みの行を
+  // またがずに引けるようにする。
+  //
+  // D1 は**読んだ行数**で課金され、無料枠は1日500万行。v18 の索引
+  // (status_id, finished_at, processed) では processed が最後にあるため、
+  // 「決着済み」の範囲を全部走査してから processed を見ることになる
+  // ——実行が進むほど1回の見張りが重くなり、毎秒それを繰り返す。
+  // 本物の SQLite で測ると、決着済み1万行のとき 558マイクロ秒（並べ替えの
+  // 一時 B-tree つき）。processed を先に置くと 23マイクロ秒で、走査は
+  // 「まだ数えていない行」の数だけになる。
+  `
+CREATE INDEX IF NOT EXISTS idx_retry_attempts_unprocessed
+  ON retry_attempts(status_id, processed, finished_at, seq);
+`,
 ];
 
 /**

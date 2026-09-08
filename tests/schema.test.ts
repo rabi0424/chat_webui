@@ -1049,6 +1049,31 @@ describe("索引が効いている", () => {
     const p = plan(GENERATING_CONVERSATIONS_SQL.replace("?", "0"));
     expect(p).toContain("idx_messages_streaming");
   });
+
+  /**
+   * 司令役が毎秒引く「まだ数えていない行」。**画面には何も出ない形で
+   * 枠を食う**ので、索引で守る。
+   *
+   * D1 は読んだ行数で課金され、無料枠は1日500万行。数え済みかを最後に
+   * 置いた索引だと、決着済みの行を全部走査してから processed を見る
+   * ことになり、実行が進むほど1回の見張りが重くなる（本物の SQLite で
+   * 決着済み1万行のとき 558マイクロ秒、並べ替えの一時 B-tree つき。
+   * processed を先に置くと 23マイクロ秒）。毎秒それを繰り返す。
+   */
+  it("毎秒の見張りは、数え済みの行をまたがない", () => {
+    const p = plan(RETRY_ATTEMPTS_UNPROCESSED_SQL);
+    expect(p).toContain("idx_retry_attempts_unprocessed");
+    // 走査の入口で processed を絞れていること（後回しだと全部読む）
+    expect(p).toMatch(/status_id=\? AND processed=\?/);
+    // 並べ替えのための一時 B-tree も要らない（索引の順で出る）
+    expect(p).not.toContain("TEMP B-TREE");
+  });
+
+  it("走っている本数の数え上げは、決着済みの行をまたがない", () => {
+    const p = plan(RETRY_ATTEMPTS_RUNNING_SQL);
+    expect(p).toContain("COVERING INDEX");
+    expect(p).not.toMatch(/SCAN retry_attempts(?! USING)/);
+  });
 });
 
 /**
