@@ -903,6 +903,98 @@ describe("1日の実行体の時間の歯止め", () => {
 });
 
 /**
+ * 空いた枠を1本ずつ埋めない。
+ *
+ * 1本だけ起こすと、その担当は1本しか持たないので、生成時間まるごとが
+ * その1本の実行体の時間になる——**依頼ごとに実行体を分けるのと同じ**で、
+ * 禁じているはずの形に戻る。実測（並列8・24秒の生成）では、最初の一束の
+ * あと成功が返るたびに1本ずつ起こしていて、実効の同時数が 2.5本まで
+ * 落ちていた。
+ */
+describe("空きが溜まってから起こす", () => {
+  it(
+    "1本空いただけでは起こさず、半分空いたらまとめて起こす",
+    async () => {
+      const wide = { target: 20, maxAttempts: 50, concurrency: 8, smartPercent: null };
+      onTick = (n) => {
+        if (n === 1) return; // まだ何も走っていない
+        if (n === 2 || n === 3) {
+          // 1本だけ返った。空きは1——ここで起こすと1本持ちの担当になる
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 7,
+            finished:
+              n === 2
+                ? [{ id: "r1", kind: "refused", detail: "だめ", wait_ms: null, message_id: null }]
+                : [],
+          };
+          return;
+        }
+        if (n === 4) {
+          // さらに3本返って空きは4＝枠の半分
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 4,
+            finished: [
+              { id: "r2", kind: "refused", detail: null, wait_ms: null, message_id: null },
+              { id: "r3", kind: "refused", detail: null, wait_ms: null, message_id: null },
+              { id: "r4", kind: "refused", detail: null, wait_ms: null, message_id: null },
+            ],
+          };
+          return;
+        }
+        // 残りが全部成功して目標に届き、実行が終わる
+        tickResult = {
+          stopRequested: false,
+          applied: true,
+          running: 0,
+          finished: Array.from({ length: 20 }, (_, i) => ({
+            id: `ok${i}`,
+            kind: "success" as const,
+            detail: null,
+            wait_ms: null,
+            message_id: `m${i}`,
+          })),
+        };
+      };
+
+      await runRetryGenerationJob(job, wide, null);
+
+      // 最初の一束8本と、半分空いてからの4本。1本ずつの担当は作らない
+      expect(spawned.map((g) => g.length)).toEqual([8, 4]);
+      expect(spawned.every((g) => g.length > 1)).toBe(true);
+    },
+    30_000,
+  );
+
+  it(
+    "何も走っていなければ、1本でも起こす（待つ相手がいない）",
+    async () => {
+      // 目標まであと1本。ここで待つと実行が止まったまま終わらない
+      const nearly = { target: 1, maxAttempts: 50, concurrency: 8, smartPercent: null };
+      onTick = (n) => {
+        if (n >= 2) {
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 0,
+            finished: [
+              { id: "s1", kind: "success", detail: null, wait_ms: null, message_id: "m1" },
+            ],
+          };
+        }
+      };
+      await runRetryGenerationJob(job, nearly, null);
+      expect(spawned.length).toBeGreaterThan(0);
+      expect(finalized?.status).toBe("done");
+    },
+    30_000,
+  );
+});
+
+/**
  * 担当が書く「この依頼ぶんの取り分」。
  *
  * 課金されるのは実行体が起きていた壁時計の時間なので、ある瞬間の1秒は

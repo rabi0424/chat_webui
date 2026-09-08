@@ -31,6 +31,7 @@ import {
   readRetryConfig,
   utcDayStart,
   createDurableShare,
+  shouldLaunchWave,
 } from "../app/lib/retry";
 
 /**
@@ -709,5 +710,38 @@ describe("実行体の時間の頭割り", () => {
     s.begin("b");
     t = 5_300;
     expect(s.end("b")).toBe(300);
+  });
+});
+
+/**
+ * まとめて起こすか、1本ずつ起こすか。
+ *
+ * 依頼1本あたりの実行体の時間は「生成時間 ÷ 担当1つが同時に持つ本数」。
+ * 空いた枠を1本ずつ埋めると、その1本が生成時間まるごとを負う——依頼
+ * ごとに実行体を分けるのと同じで、禁じているはずの形に戻る。実測では
+ * これで実効の同時数が 2.5本まで落ちていた。
+ */
+describe("担当を起こすまとまり", () => {
+  it("枠の半分が空くまでは起こさない", () => {
+    // 並列8。1本返っただけでは起こさず、4本空いてから起こす
+    expect(shouldLaunchWave({ room: 1, running: 7, slots: 8 })).toBe(false);
+    expect(shouldLaunchWave({ room: 3, running: 5, slots: 8 })).toBe(false);
+    expect(shouldLaunchWave({ room: 4, running: 4, slots: 8 })).toBe(true);
+    expect(shouldLaunchWave({ room: 8, running: 0, slots: 8 })).toBe(true);
+  });
+
+  it("何も走っていなければ、1本でも起こす", () => {
+    // 待つ相手がいない。待てば実行が止まるだけ
+    expect(shouldLaunchWave({ room: 1, running: 0, slots: 8 })).toBe(true);
+    expect(shouldLaunchWave({ room: 1, running: 0, slots: 100 })).toBe(true);
+  });
+
+  it("空きが無ければ起こさない", () => {
+    expect(shouldLaunchWave({ room: 0, running: 0, slots: 8 })).toBe(false);
+    expect(shouldLaunchWave({ room: -1, running: 0, slots: 8 })).toBe(false);
+  });
+
+  it("枠が1なら、1本ずつでも起こす（半分にできない）", () => {
+    expect(shouldLaunchWave({ room: 1, running: 0, slots: 1 })).toBe(true);
   });
 });

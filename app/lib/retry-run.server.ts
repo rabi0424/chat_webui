@@ -36,6 +36,7 @@ import {
   afterAttemptSettled,
   createChunkBudget,
   createDurableShare,
+  shouldLaunchWave,
   formatRetryProgress,
   onTransientFailure,
   retryRequestCap,
@@ -460,7 +461,22 @@ export async function runRetryGenerationJob(
       } else if (await overBudget()) {
         state.lastError = "今月の使用額が上限に達したため打ち切りました";
         budgetStopped = true;
-      } else {
+      } else if (
+        /*
+         * 空きが少ないうちは起こさない。1本ずつ起こすと、その1本が生成
+         * 時間まるごとを実行体の時間として負う——依頼ごとに実行体を
+         * 分けるのと同じで、禁じているはずの形に戻る（`shouldLaunchWave`）。
+         */
+        shouldLaunchWave({
+          room: Math.min(
+            slots() - running,
+            retry.maxAttempts - state.attempts - running,
+            requestCap - state.launched,
+          ),
+          running,
+          slots: slots(),
+        })
+      ) {
         /*
          * この往復で起こす分を決める。担当1つに依頼を
          * `RETRY_WORKER_ATTEMPTS` 本まとめて持たせる——実行体を分けると
