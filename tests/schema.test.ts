@@ -11,6 +11,7 @@ import {
   QUEUE_PENDING_DELETION_SQL,
   RETRY_ATTEMPTS_COUNTS_SQL,
   RETRY_ATTEMPTS_DURATION_SQL,
+  RETRY_ATTEMPTS_HEADER_SQL,
   RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
   RETRY_ATTEMPTS_LAUNCHED_SQL,
   RETRY_ATTEMPTS_MARK_ALL_SQL,
@@ -1126,8 +1127,17 @@ describe("成功するまで生成の記録", () => {
 
   const launch = (id: string, seq: number, at = 1_000) =>
     db.prepare(RETRY_ATTEMPT_INSERT_SQL).run(id, S, seq, at);
-  const finish = (id: string, kind: string, detail: string | null = null, waitMs: number | null = null, at = 2_000) =>
-    db.prepare(RETRY_ATTEMPT_FINISH_SQL).run(at, kind, detail, waitMs, id).changes;
+  const finish = (
+    id: string,
+    kind: string,
+    detail: string | null = null,
+    waitMs: number | null = null,
+    at = 2_000,
+    headerMs: number | null = null,
+  ) =>
+    db
+      .prepare(RETRY_ATTEMPT_FINISH_SQL)
+      .run(at, kind, detail, waitMs, headerMs, id).changes;
   const unprocessed = () =>
     db.prepare(RETRY_ATTEMPTS_UNPROCESSED_SQL).all(S) as { id: string; kind: string }[];
   const running = () =>
@@ -1261,6 +1271,36 @@ describe("成功するまで生成の記録", () => {
       total: number;
     };
     expect(row).toEqual({ n: 0, total: 0 });
+  });
+
+  /**
+   * 応答ヘッダが返るまでの時間。同時に投げられているかの物差しで、
+   * かかった時間と違ってプロンプトの当たり外れに左右されない。
+   * 7本目以降が順番待ちなら、ここが「前の生成が終わるまで」に伸びる。
+   */
+  it("ヘッダまでの時間は、記録がある行だけを平均する", () => {
+    launch("a1", 1, 1_000);
+    launch("a2", 2, 1_000);
+    launch("a3", 3, 1_000);
+    finish("a1", "refused", null, null, 4_000, 1_000);
+    finish("a2", "refused", null, null, 5_000, 3_000);
+    // 起こせなかった行はヘッダを待っていないので記録が無い
+    finish("a3", "transient", "起こせません", null, 5_000, null);
+    const row = db.prepare(RETRY_ATTEMPTS_HEADER_SQL).get(S) as {
+      n: number;
+      avg_ms: number;
+      max_ms: number;
+    };
+    expect(row).toEqual({ n: 2, avg_ms: 2_000, max_ms: 3_000 });
+  });
+
+  it("記録が無ければ 0（null を返さない）", () => {
+    const row = db.prepare(RETRY_ATTEMPTS_HEADER_SQL).get("nope") as {
+      n: number;
+      avg_ms: number;
+      max_ms: number;
+    };
+    expect(row).toEqual({ n: 0, avg_ms: 0, max_ms: 0 });
   });
 
   it("他の実行の行は読まない", () => {

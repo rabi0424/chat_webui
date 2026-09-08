@@ -50,6 +50,7 @@ import {
   insertRetryAttempts,
   markRetryAttemptsProcessed,
   retryRunDurations,
+  retryRunHeaderTimes,
   retryRunSnapshot,
   rewriteMessageContent,
   sweepLostRetryAttempts,
@@ -592,6 +593,20 @@ export async function runRetryGenerationJob(
           `＝1日の無料枠の ${share.toFixed(1)}%`,
       );
     }
+    /*
+     * 応答ヘッダが返るまでの時間。**本当に同時に投げられているか**は
+     * これで分かる。かかった時間だけでは、順番待ちで遅いのか生成が
+     * 遅いのかを区別できない（拒否が速いプロンプトかどうかで変わる）。
+     * 最長がほぼ1本ぶんの生成時間なら、7本目以降が順番待ちしている。
+     */
+    const h = await retryRunHeaderTimes(statusId);
+    if (h.count > 0) {
+      lines.push(
+        `ヘッダまで 平均 ${(h.avgMs / 1000).toFixed(1)}秒・` +
+          `最長 ${(h.maxMs / 1000).toFixed(1)}秒` +
+          `（最長が生成1本ぶんに近ければ、同時数が実際には効いていません）`,
+      );
+    }
   } catch {
     // 実測が取れなくても要約は出す
   }
@@ -665,12 +680,14 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
     kind: "success" | "refused" | "transient" | "fatal",
     detail: string | null,
     waitMs: number | null = null,
+    headerMs: number | null = null,
   ) =>
     finishRetryAttempt({
       id: attemptId,
       kind,
       detail: detail ? detail.slice(0, 301) : null,
       waitMs,
+      headerMs,
       now: Date.now(),
     });
 
@@ -699,6 +716,9 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
         ),
       RETRY_ATTEMPT_DEADLINE_MS,
     );
+    // 応答ヘッダが返るまでの時間。同時に投げられているかの物差しで、
+    // かかった時間と違ってプロンプトの当たり外れに左右されない
+    const timing: { headerMs?: number } = {};
     try {
       const r = await runAttempt(
         inner,
@@ -706,6 +726,7 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
         budget.spend,
         gate,
         controller.signal,
+        timing,
       );
       if (r.kind === "success") {
         const id = await appendRetrySuccess({
@@ -716,7 +737,7 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
           content: r.content,
           usageJson: r.usageJson,
         });
-        await finish(attemptId, "success", null);
+        await finish(attemptId, "success", null, null, timing.headerMs ?? null);
         try {
           const captured = await captureGeneratedImages(
             r.content,
@@ -735,12 +756,12 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
           console.error("[gen] 画像の取り込みに失敗しました", id, e);
         }
       } else if (r.kind === "refused") {
-        await finish(attemptId, "refused", r.text);
+        await finish(attemptId, "refused", r.text, null, timing.headerMs ?? null);
         if (!isPoe) await recordRefusalUsage(job.model, r.usageJson);
       } else if (r.kind === "transient") {
-        await finish(attemptId, "transient", r.reason, r.waitMs);
+        await finish(attemptId, "transient", r.reason, r.waitMs, timing.headerMs ?? null);
       } else {
-        await finish(attemptId, "fatal", r.reason);
+        await finish(attemptId, "fatal", r.reason, null, timing.headerMs ?? null);
       }
     } catch (e) {
       await finish(

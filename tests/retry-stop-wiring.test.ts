@@ -191,11 +191,11 @@ describe("1本担当", () => {
   it("成功は保存できた時点で書き、画像の取り込みの失敗で取り消さない", () => {
     const success = w.slice(w.indexOf('if (r.kind === "success")'), w.indexOf('else if (r.kind === "refused")'));
     expect(success.indexOf("await appendRetrySuccess(")).toBeLessThan(
-      success.indexOf('await finish(attemptId, "success", null)'),
+      success.indexOf('await finish(attemptId, "success", null, null,'),
     );
-    expect(success.indexOf('await finish(attemptId, "success", null)')).toBeLessThan(
-      success.indexOf("captureGeneratedImages("),
-    );
+    expect(
+      success.indexOf('await finish(attemptId, "success", null, null,'),
+    ).toBeLessThan(success.indexOf("captureGeneratedImages("));
     expect(success).toContain("画像の取り込みに失敗しました");
   });
 
@@ -211,10 +211,20 @@ describe("1本担当", () => {
     expect(tail).toContain("await giveUp(");
   });
 
+  it("応答ヘッダまでの時間を測って、結果と一緒に書く", () => {
+    // 同時に投げられているかの物差し。測らないと、順番待ちで遅いのか
+    // 生成が遅いのかを区別できない
+    expect(w).toContain("const timing: { headerMs?: number } = {}");
+    expect(w).toContain("controller.signal,\n        timing,");
+    expect(w.match(/timing\.headerMs \?\? null/g)?.length).toBe(4);
+    const attempt = fn(gen, "runAttempt");
+    expect(attempt).toContain("if (timing) timing.headerMs = Date.now() - startedAt");
+  });
+
   it("拒否の額を台帳へ載せ（OpenRouter）、不調は待ち時間を運ぶ", () => {
     expect(w).toContain("if (!isPoe) await recordRefusalUsage(job.model, r.usageJson)");
-    expect(w).toContain('await finish(attemptId, "transient", r.reason, r.waitMs)');
-    expect(w).toContain('await finish(attemptId, "fatal", r.reason)');
+    expect(w).toContain('await finish(attemptId, "transient", r.reason, r.waitMs,');
+    expect(w).toContain('await finish(attemptId, "fatal", r.reason, null,');
   });
 
   it("1本の締め切りを signal で渡す", () => {

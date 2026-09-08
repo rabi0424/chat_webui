@@ -39,6 +39,8 @@ let finalized: { status: string; content: string; error?: string | null } | null
 let onTick: ((n: number) => void) | null = null;
 /** 決着した依頼の本数と、かかった時間の合計。 */
 let durations = { count: 0, totalMs: 0 };
+/** 応答ヘッダが返るまでの時間（同時に投げられているかの物差し）。 */
+let headerTimes = { count: 0, avgMs: 0, maxMs: 0 };
 /** 続きの実行の頭で D1 から取り直す値。 */
 let snapshot = {
   counts: { success: 0, refused: 0, transient: 0, fatal: 0 },
@@ -86,6 +88,7 @@ vi.mock("../../app/lib/db.server", () => ({
   }),
   markRetryAttemptsProcessed: vi.fn(async () => {}),
   retryRunDurations: vi.fn(async () => durations),
+  retryRunHeaderTimes: vi.fn(async () => headerTimes),
   sweepLostRetryAttempts: vi.fn(async () => 0),
   finishRetryAttempt: vi.fn(
     async (p: { id: string; kind: string; detail: string | null }) => {
@@ -195,6 +198,7 @@ beforeEach(() => {
   poePoints.mockResolvedValue(null);
   monthlyLimit.mockClear();
   durations = { count: 0, totalMs: 0 };
+  headerTimes = { count: 0, avgMs: 0, maxMs: 0 };
   snapshot = {
     counts: { success: 0, refused: 0, transient: 0, fatal: 0 },
     launched: 0,
@@ -685,6 +689,54 @@ describe("使った時間の実測", () => {
       await runRetryGenerationJob(job, retry, null);
       expect(finalized?.content).toContain("成功 2件");
       expect(finalized?.content).not.toContain("1本あたり");
+    },
+    20_000,
+  );
+});
+
+/**
+ * 応答ヘッダが返るまでの時間を要約に出す。
+ *
+ * かかった時間だけでは、順番待ちで遅いのか生成が遅いのかを区別できない
+ * （拒否が速いプロンプトと成功が混ざるプロンプトで秒数が変わる）。
+ * ヘッダまでの時間は待たされているときだけ伸びるので、プロンプトに
+ * 依らず「7本目以降が順番待ちになっているか」が読める。
+ */
+describe("ヘッダまでの時間", () => {
+  const finishAll = (n: number) => {
+    onTick = (t) => {
+      if (t >= n) {
+        tickResult = {
+          stopRequested: false,
+          applied: true,
+          running: 0,
+          finished: [
+            { id: "a1", kind: "success", detail: null, wait_ms: null, message_id: "m1" },
+            { id: "a2", kind: "success", detail: null, wait_ms: null, message_id: "m2" },
+          ],
+        };
+      }
+    };
+  };
+
+  it(
+    "平均と最長を出す",
+    async () => {
+      headerTimes = { count: 24, avgMs: 1_200, maxMs: 2_500 };
+      finishAll(2);
+      await runRetryGenerationJob(job, retry, null);
+      expect(finalized?.content).toContain("ヘッダまで 平均 1.2秒・最長 2.5秒");
+    },
+    20_000,
+  );
+
+  it(
+    "記録が無ければ出さない",
+    async () => {
+      headerTimes = { count: 0, avgMs: 0, maxMs: 0 };
+      finishAll(2);
+      await runRetryGenerationJob(job, retry, null);
+      expect(finalized?.content).not.toContain("ヘッダまで");
     },
     20_000,
   );

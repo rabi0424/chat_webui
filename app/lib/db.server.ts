@@ -33,6 +33,7 @@ import {
   RETRY_ATTEMPTS_COUNTS_SQL,
   RETRY_ATTEMPTS_DURATION_SQL,
   RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
+  RETRY_ATTEMPTS_HEADER_SQL,
   RETRY_ATTEMPTS_LAUNCHED_SQL,
   RETRY_ATTEMPTS_MARK_ALL_SQL,
   RETRY_ATTEMPTS_RUNNING_SQL,
@@ -2288,7 +2289,7 @@ export async function failRetryAttempts(params: {
     params.ids.map((id) =>
       d
         .prepare(RETRY_ATTEMPT_FINISH_SQL)
-        .bind(params.now, "transient", params.detail, null, id),
+        .bind(params.now, "transient", params.detail, null, null, id),
     ),
   );
 }
@@ -2423,14 +2424,39 @@ export async function finishRetryAttempt(params: {
   kind: RetryAttemptKind;
   detail: string | null;
   waitMs: number | null;
+  /** 応答ヘッダが返るまでの時間（同時に投げられているかの物差し）。 */
+  headerMs?: number | null;
   now: number;
 }): Promise<boolean> {
   const d = await db();
   const res = await d
     .prepare(RETRY_ATTEMPT_FINISH_SQL)
-    .bind(params.now, params.kind, params.detail, params.waitMs, params.id)
+    .bind(
+      params.now,
+      params.kind,
+      params.detail,
+      params.waitMs,
+      params.headerMs ?? null,
+      params.id,
+    )
     .run();
   return (res.meta.changes ?? 0) > 0;
+}
+
+/** 応答ヘッダが返るまでの時間（平均と最長）。 */
+export async function retryRunHeaderTimes(
+  statusId: string,
+): Promise<{ count: number; avgMs: number; maxMs: number }> {
+  const d = await db();
+  const row = await d
+    .prepare(RETRY_ATTEMPTS_HEADER_SQL)
+    .bind(statusId)
+    .first<{ n: number; avg_ms: number; max_ms: number }>();
+  return {
+    count: Number(row?.n ?? 0),
+    avgMs: Number(row?.avg_ms ?? 0),
+    maxMs: Number(row?.max_ms ?? 0),
+  };
 }
 
 /**

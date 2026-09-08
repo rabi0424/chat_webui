@@ -1227,6 +1227,14 @@ export async function runAttempt(
   gate: RateLimitGate,
   /** 外からの打ち切り（総時間の締め切り・停止後の猶予切れ）。 */
   signal: AbortSignal,
+  /**
+   * 投げてから応答ヘッダが返るまでの時間を書き戻す先。
+   *
+   * 同時に投げられているかの物差し。「1回の呼び出しで応答ヘッダを同時に
+   * 待てる接続は6本まで」に当たっていると、7本目以降はここが伸びる
+   * （かかった時間だけでは、順番待ちなのか生成が遅いのか分からない）。
+   */
+  timing?: { headerMs?: number },
 ): Promise<AttemptOutcome> {
   const isPoe = job.model.startsWith(POE_PREFIX);
   const provider = isPoe ? "poe" : "openrouter";
@@ -1242,10 +1250,12 @@ export async function runAttempt(
   try {
     // 枠は requestUpstream の中で、投げるたびに数える
     // （サーバーツールが弾かれると2件投げるため）
+    const startedAt = Date.now();
     upstream = await requestUpstream(job, messages, onRequest, {
       connectTimeoutMs: idleTimeoutMs,
       signal,
     });
+    if (timing) timing.headerMs = Date.now() - startedAt;
   } catch (e) {
     // つながらない・ヘッダが来ない・こちらで切った。状態が無いので一時的
     return {

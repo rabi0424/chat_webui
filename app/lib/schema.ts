@@ -241,6 +241,15 @@ CREATE TABLE IF NOT EXISTS retry_attempts (
 CREATE INDEX IF NOT EXISTS idx_retry_attempts_run
   ON retry_attempts(status_id, finished_at, processed);
 `,
+  // v19: 応答ヘッダが返るまでの時間。
+  //
+  // 「1回の呼び出しで応答ヘッダを同時に待てる接続は6本まで」に当たって
+  // いるかを、**プロンプトに依らず**確かめるための物差し。かかった時間
+  // だけでは、順番待ちで遅いのか生成が遅いのかを区別できない。ヘッダ
+  // までの時間なら、待たされているときだけ伸びる。
+  `
+ALTER TABLE retry_attempts ADD COLUMN header_ms INTEGER;
+`,
 ];
 
 /**
@@ -254,7 +263,7 @@ export const RETRY_ATTEMPT_INSERT_SQL =
   "INSERT OR IGNORE INTO retry_attempts (id, status_id, seq, launched_at) VALUES (?, ?, ?, ?)";
 /** 結果が決まった。既に決まっている行は上書きしない（再送で二重に数えない）。 */
 export const RETRY_ATTEMPT_FINISH_SQL =
-  "UPDATE retry_attempts SET finished_at = ?, kind = ?, detail = ?, wait_ms = ? WHERE id = ? AND finished_at IS NULL";
+  "UPDATE retry_attempts SET finished_at = ?, kind = ?, detail = ?, wait_ms = ?, header_ms = ? WHERE id = ? AND finished_at IS NULL";
 /** 司令役が毎秒読む、決まったのにまだ数えていない行。 */
 export const RETRY_ATTEMPTS_UNPROCESSED_SQL =
   "SELECT id, kind, detail, wait_ms, message_id FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND processed = 0 ORDER BY finished_at, seq";
@@ -284,6 +293,17 @@ export const RETRY_ATTEMPTS_LAUNCHED_SQL =
  */
 export const RETRY_ATTEMPTS_DURATION_SQL =
   "SELECT COUNT(*) AS n, COALESCE(SUM(finished_at - launched_at), 0) AS total FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND finished_at > launched_at";
+
+/**
+ * 応答ヘッダが返るまでの時間。**同時に投げられているかの物差し。**
+ *
+ * かかった時間だけでは、順番待ちで遅いのか生成が遅いのかを区別できない
+ * （拒否が速いプロンプトと成功が混ざるプロンプトで秒数が変わる）。
+ * ヘッダまでの時間は、待たされているときだけ伸びるので、プロンプトに
+ * 依らず「7本目以降が順番待ちになっているか」が読める。
+ */
+export const RETRY_ATTEMPTS_HEADER_SQL =
+  "SELECT COUNT(*) AS n, COALESCE(AVG(header_ms), 0) AS avg_ms, COALESCE(MAX(header_ms), 0) AS max_ms FROM retry_attempts WHERE status_id = ? AND header_ms IS NOT NULL";
 export const RETRY_RUN_STARTED_SQL =
   "SELECT created_at FROM retry_runs WHERE status_id = ?";
 export const RETRY_ATTEMPTS_FIRST_REFUSAL_SQL =
