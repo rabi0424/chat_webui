@@ -103,10 +103,17 @@ describe("1件追いのルート", () => {
   it("「成功するまで生成」の見出しは全文で返す（毎秒書き直されるため）", async () => {
     const { formatRetryProgress } = await import("../../app/lib/retry");
     state.message.content = formatRetryProgress({
+      target: 4,
       successes: 1,
       attempts: 2,
-      inflight: 1,
-      retry: { target: 4, maxAttempts: 12, concurrency: 2 } as never,
+      maxAttempts: 12,
+      refusals: 1,
+      emptyResponses: 0,
+      transients: 0,
+      running: 1,
+      slots: 2,
+      waitSeconds: 0,
+      stopping: false,
     });
     const got = await poll(5);
     expect(got.contentDelta).toBeUndefined();

@@ -621,17 +621,26 @@ async function fetchAwaitingHeaders(
   url: string,
   init: { method: string; headers: Record<string, string>; body: string },
   timeoutMs: number,
+  /**
+   * 外からの打ち切り（1本の締め切り・停止後の猶予切れ）。ヘッダを
+   * 待っているあいだだけ効かせる。本文は読み手が同じ signal で切る
+   */
+  outer?: AbortSignal,
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort(new Error("上流が応答ヘッダを返しませんでした"));
   }, timeoutMs);
+  const onOuter = () => controller.abort(outer?.reason);
+  if (outer?.aborted) onOuter();
+  outer?.addEventListener("abort", onOuter, { once: true });
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     // ヘッダが返った（または投げるのに失敗した）時点で見張りを解く。
     // 残したままだと、上の signal がそのまま本文を切りに来る
     clearTimeout(timer);
+    outer?.removeEventListener("abort", onOuter);
   }
 }
 
@@ -643,6 +652,7 @@ export async function poeChatRequest(
    * 確かめないと分からない（60秒を実時間で待つテストは書けない）。
    */
   connectTimeoutMs: number = UPSTREAM_CONNECT_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<Response> {
   return await fetchAwaitingHeaders(
     `${POE_BASE}/chat/completions`,
@@ -655,6 +665,7 @@ export async function poeChatRequest(
       body: JSON.stringify(body),
     },
     connectTimeoutMs,
+    signal,
   );
 }
 
@@ -662,6 +673,7 @@ export async function openRouterChatRequest(
   body: Record<string, unknown>,
   /** poeChatRequest と同じ。テストから縮めるために開けてある。 */
   connectTimeoutMs: number = UPSTREAM_CONNECT_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<Response> {
   return await fetchAwaitingHeaders(
     `${OPENROUTER_BASE}/chat/completions`,
@@ -677,5 +689,6 @@ export async function openRouterChatRequest(
       body: JSON.stringify(body),
     },
     connectTimeoutMs,
+    signal,
   );
 }

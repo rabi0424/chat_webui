@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { interruptedGenerationRow } from "./retry";
 import { deleteFiles } from "./r2.server";
 import {
   DEFAULT_APP_SETTINGS,
@@ -8,6 +9,8 @@ import {
   NEW_MODEL_DAYS_RANGE,
   POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
+  RETRY_WORKER_CONCURRENCY_RANGE,
+  DAILY_DO_SECONDS_RANGE,
   type AppSettings,
 } from "./settings";
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
@@ -26,6 +29,32 @@ import {
   USAGE_BY_MODEL_SQL,
   USAGE_DAILY_SQL,
   USAGE_TOTALS_SQL,
+  FLUSH_GENERATION_SQL,
+  FLUSH_STOP_CHECK_SQL,
+  RETRY_ATTEMPTS_COUNTS_SQL,
+  RETRY_ATTEMPTS_DURATION_SQL,
+  RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
+  RETRY_ATTEMPTS_HEADER_SQL,
+  RETRY_ATTEMPTS_PRUNE_SQL,
+  RETRY_PRUNE_AFTER_MS,
+  RETRY_RUN_ADD_COORDINATOR_MS_SQL,
+  RETRY_RUN_COORDINATOR_MS_SQL,
+  RETRY_RUN_OLDEST_SQL,
+  RETRY_RUN_PRUNE_SQL,
+  STOP_ALL_GENERATIONS_SQL,
+  DAILY_DO_MS_SQL,
+  RETRY_ATTEMPTS_LAUNCHED_SQL,
+  RETRY_ATTEMPTS_MARK_ALL_SQL,
+  RETRY_ATTEMPTS_RUNNING_SQL,
+  RETRY_ATTEMPTS_SWEEP_LOST_SQL,
+  RETRY_ATTEMPTS_UNPROCESSED_SQL,
+  RETRY_ATTEMPT_FINISH_SQL,
+  RETRY_ATTEMPT_INSERT_SQL,
+  RETRY_RUN_INSERT_SQL,
+  RETRY_RUN_STARTED_SQL,
+  SWEEP_STALE_STREAMING_SQL,
+  appendRetrySuccessStatements,
+  markRetryAttemptsProcessedSql,
   clearPendingDeletionsSql,
   generatedImagesSql,
   searchConversationsSql,
@@ -209,6 +238,22 @@ export async function updateAppSettings(
     );
   }
 
+  const workerConcurrency = Number(patch.retryWorkerConcurrency);
+  if (Number.isFinite(workerConcurrency)) {
+    next.retryWorkerConcurrency = Math.min(
+      Math.max(Math.round(workerConcurrency), RETRY_WORKER_CONCURRENCY_RANGE.min),
+      RETRY_WORKER_CONCURRENCY_RANGE.max,
+    );
+  }
+
+  const dailyDo = Number(patch.dailyDoSecondsBudget);
+  if (Number.isFinite(dailyDo)) {
+    next.dailyDoSecondsBudget = Math.min(
+      Math.max(Math.round(dailyDo), DAILY_DO_SECONDS_RANGE.min),
+      DAILY_DO_SECONDS_RANGE.max,
+    );
+  }
+
   const days = Number(patch.newModelDays);
   if (Number.isFinite(days)) {
     next.newModelDays = Math.min(
@@ -306,19 +351,14 @@ async function sweepStaleStreaming(rows: MessageRow[]): Promise<void> {
   const d = await db();
   const statements: D1PreparedStatement[] = [];
   for (const m of stale) {
-    if (m.content !== "") {
-      m.status = "done";
-      m.error = null;
-    } else {
-      m.status = "error";
-      m.error = "生成が中断されました。再試行してください。";
-    }
+    const next = interruptedGenerationRow(m.content);
+    m.status = next.status;
+    m.content = next.content;
+    m.error = next.error;
     statements.push(
       d
-        .prepare(
-          "UPDATE messages SET status = ?, error = ? WHERE id = ? AND status = 'streaming'",
-        )
-        .bind(m.status, m.error, m.id),
+        .prepare(SWEEP_STALE_STREAMING_SQL)
+        .bind(m.content, m.status, m.error, m.id),
     );
   }
   await d.batch(statements);
@@ -758,6 +798,11 @@ export async function deleteConversation(id: string): Promise<void> {
     .all<{ r2_key: string }>();
   await d.batch([
     d.prepare("DELETE FROM attachments WHERE conversation_id = ?").bind(id),
+    // 「成功するまで生成」の進み具合の記録。見出しが消えれば用済み
+    d.prepare(
+      "DELETE FROM retry_attempts WHERE status_id IN (SELECT status_id FROM retry_runs WHERE conversation_id = ?)",
+    ).bind(id),
+    d.prepare("DELETE FROM retry_runs WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id),
     d.prepare("DELETE FROM conversations WHERE id = ?").bind(id),
   ]);
@@ -1528,28 +1573,31 @@ export async function undoGeneration(params: {
 }
 
 /**
- * 生成中の部分保存。停止要求が入っていれば true を返す。
+ * 生成中の部分保存。停止要求が入っていれば stopRequested を返す。
  *
  * 保存と停止要求の確認は1回のbatchにまとめる。D1への呼び出しも
  * サブリクエストとして数えられ、生成中はこれが最も高い頻度で走るため
  * （1回の実行あたりの上限に一番近づくのがここ）。
+ *
+ * applied は保存が「生成中の行」に当たったか。当たらなければ行が消えたか
+ * 確定済みで、成果を受け取る先が無い。呼ぶ側は停止と同じに扱う
+ * （FLUSH_GENERATION_SQL の注記）。
  */
 export async function flushGeneration(
   messageId: string,
   partial: { content: string; reasoning: string | null },
-): Promise<{ stopRequested: boolean }> {
+): Promise<{ stopRequested: boolean; applied: boolean }> {
   const d = await db();
-  const [, check] = await d.batch<{ stop_requested: number }>([
+  const [update, check] = await d.batch<{ stop_requested: number }>([
     d
-      .prepare(
-        "UPDATE messages SET content = ?, reasoning = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'",
-      )
+      .prepare(FLUSH_GENERATION_SQL)
       .bind(partial.content, partial.reasoning, Date.now(), messageId),
-    d
-      .prepare("SELECT stop_requested FROM messages WHERE id = ?")
-      .bind(messageId),
+    d.prepare(FLUSH_STOP_CHECK_SQL).bind(messageId),
   ]);
-  return { stopRequested: (check.results[0]?.stop_requested ?? 0) === 1 };
+  return {
+    stopRequested: (check.results[0]?.stop_requested ?? 0) === 1,
+    applied: (update.meta.changes ?? 0) > 0,
+  };
 }
 
 /**
@@ -2196,3 +2244,339 @@ export async function getMessage(
   return row;
 }
 
+// --- 「成功するまで生成」の司令役と1本担当が共有する記録 ------------------
+
+/** 1本担当の結果の種類。 */
+export type RetryAttemptKind = "success" | "refused" | "transient" | "fatal";
+
+export interface RetryAttemptRow {
+  id: string;
+  kind: RetryAttemptKind;
+  detail: string | null;
+  wait_ms: number | null;
+  message_id: string | null;
+}
+
+/** 実行の記録を作る（既にあれば何もしない。続きの実行から何度も呼ばれる）。 */
+export async function createRetryRun(params: {
+  statusId: string;
+  conversationId: string;
+  now: number;
+}): Promise<void> {
+  const d = await db();
+  await d
+    .prepare(RETRY_RUN_INSERT_SQL)
+    .bind(params.statusId, params.conversationId, params.statusId, params.now)
+    .run();
+}
+
+/**
+ * 古い実行の記録を1つぶんだけ落とす。落としたら true。
+ *
+ * 新しい実行が始まるたびに1つずつ片付ける。まとめて落とすと D1 の
+ * 書き込み行数（無料枠は1日10万行）をここで使い切りかねない。
+ * 当日ぶんは残るので、1日の実行体の時間の歯止めには影響しない。
+ */
+export async function pruneOldRetryRun(now: number): Promise<boolean> {
+  const d = await db();
+  const old = await d
+    .prepare(RETRY_RUN_OLDEST_SQL)
+    .bind(now - RETRY_PRUNE_AFTER_MS)
+    .first<{ status_id: string }>();
+  if (!old) return false;
+  await d.batch([
+    d.prepare(RETRY_ATTEMPTS_PRUNE_SQL).bind(old.status_id),
+    d.prepare(RETRY_RUN_PRUNE_SQL).bind(old.status_id),
+  ]);
+  return true;
+}
+
+/**
+ * 起こす前に行をまとめて作る（担当の実行が失われても行は残る）。
+ * 1本ずつ書くと担当1本につき内部サービスを1件使う。まとめれば1件で済む
+ * （`RETRY_CHUNK_INTERNAL_LIMIT` の注記）。
+ */
+export async function insertRetryAttempts(params: {
+  statusId: string;
+  attempts: { id: string; seq: number }[];
+  now: number;
+}): Promise<void> {
+  if (params.attempts.length === 0) return;
+  const d = await db();
+  await d.batch(
+    params.attempts.map((a) =>
+      d
+        .prepare(RETRY_ATTEMPT_INSERT_SQL)
+        .bind(a.id, params.statusId, a.seq, params.now),
+    ),
+  );
+}
+
+/**
+ * 作ったが起こせなかった行を、まとめて一時的な不調として決着させる。
+ * 決着させないと、走っていない担当を待ち続けて実行が終われない。
+ */
+export async function failRetryAttempts(params: {
+  ids: string[];
+  detail: string;
+  now: number;
+}): Promise<void> {
+  if (params.ids.length === 0) return;
+  const d = await db();
+  await d.batch(
+    params.ids.map((id) =>
+      d
+        .prepare(RETRY_ATTEMPT_FINISH_SQL)
+        .bind(params.now, "transient", params.detail, null, null, null, id),
+    ),
+  );
+}
+
+/**
+ * 司令役の毎秒の1往復。見出しの打ち直し・停止要求・決まったのにまだ
+ * 数えていない行・走っている本数を、1つの batch で取る（1サブリクエスト）。
+ * 続きの実行は最長15分で、毎秒3つ別々に取ると内部の呼び出し回数の上限に届く。
+ */
+export async function tickRetryRun(
+  statusId: string,
+  content: string,
+): Promise<{
+  stopRequested: boolean;
+  applied: boolean;
+  finished: RetryAttemptRow[];
+  running: number;
+}> {
+  const d = await db();
+  const [update, check, rows, running] = await d.batch([
+    d.prepare(FLUSH_GENERATION_SQL).bind(content, null, Date.now(), statusId),
+    d.prepare(FLUSH_STOP_CHECK_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_UNPROCESSED_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_RUNNING_SQL).bind(statusId),
+  ]);
+  return {
+    stopRequested:
+      ((check.results[0] as { stop_requested?: number } | undefined)
+        ?.stop_requested ?? 0) === 1,
+    applied: (update.meta.changes ?? 0) > 0,
+    finished: rows.results as unknown as RetryAttemptRow[],
+    running: Number(
+      (running.results[0] as { running?: number } | undefined)?.running ?? 0,
+    ),
+  };
+}
+
+/** 数え終えた行に印を付ける。バインド変数の上限に合わせて分ける。 */
+export async function markRetryAttemptsProcessed(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const d = await db();
+  const statements: D1PreparedStatement[] = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const part = ids.slice(i, i + 90);
+    statements.push(
+      d.prepare(markRetryAttemptsProcessedSql(part.length)).bind(...part),
+    );
+  }
+  await d.batch(statements);
+}
+
+/** 担当の実行が失われた行を一時的な不調として決着させる。当てた数を返す。 */
+export async function sweepLostRetryAttempts(params: {
+  statusId: string;
+  launchedBefore: number;
+  now: number;
+}): Promise<number> {
+  const d = await db();
+  const res = await d
+    .prepare(RETRY_ATTEMPTS_SWEEP_LOST_SQL)
+    .bind(
+      params.now,
+      "担当の実行が失われました（15分の壁か退避）",
+      params.statusId,
+      params.launchedBefore,
+    )
+    .run();
+  return res.meta.changes ?? 0;
+}
+
+/**
+ * 続きの実行の頭で数え直すための集計。集計に含めた行は同じ batch で
+ * 「数えた」にして、毎秒の読みで二重に数えないようにする。
+ */
+export async function retryRunSnapshot(statusId: string): Promise<{
+  counts: Record<RetryAttemptKind, number>;
+  launched: number;
+  lastSeq: number;
+  firstRefusal: string | null;
+  /** 実行の開始時刻。再入しても同じ時間帯で Poe の消費を数えるため。 */
+  startedAt: number | null;
+}> {
+  const d = await db();
+  const [counts, launched, refusal, , started] = await d.batch([
+    d.prepare(RETRY_ATTEMPTS_COUNTS_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_LAUNCHED_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_FIRST_REFUSAL_SQL).bind(statusId),
+    d.prepare(RETRY_ATTEMPTS_MARK_ALL_SQL).bind(statusId),
+    d.prepare(RETRY_RUN_STARTED_SQL).bind(statusId),
+  ]);
+  const out: Record<RetryAttemptKind, number> = {
+    success: 0,
+    refused: 0,
+    transient: 0,
+    fatal: 0,
+  };
+  for (const row of counts.results as { kind: RetryAttemptKind; n: number }[]) {
+    if (row.kind in out) out[row.kind] = Number(row.n);
+  }
+  const l = launched.results[0] as
+    | { launched?: number; last_seq?: number }
+    | undefined;
+  const r = refusal.results[0] as { detail?: string } | undefined;
+  const s = started.results[0] as { created_at?: number } | undefined;
+  return {
+    counts: out,
+    launched: Number(l?.launched ?? 0),
+    lastSeq: Number(l?.last_seq ?? 0),
+    firstRefusal: r?.detail ?? null,
+    startedAt: s?.created_at != null ? Number(s.created_at) : null,
+  };
+}
+
+/** 決着した依頼の本数と、かかった時間の合計（ミリ秒）。 */
+export async function retryRunDurations(
+  statusId: string,
+): Promise<{ count: number; totalMs: number; doMs: number }> {
+  const d = await db();
+  const row = await d
+    .prepare(RETRY_ATTEMPTS_DURATION_SQL)
+    .bind(statusId)
+    .first<{ n: number; total: number; do_total: number }>();
+  return {
+    count: Number(row?.n ?? 0),
+    totalMs: Number(row?.total ?? 0),
+    // 担当が実際に書いた取り分の合計。歯止めが数えているのと同じ数字を
+    // 要約にも出す（割り算で作り直すと、担当の持ち分が同時数に満たな
+    // かったときに食い違う）
+    doMs: Number(row?.do_total ?? 0),
+  };
+}
+
+/** 1本担当が結果を書く。既に決まっている行は上書きしない（再送に備える）。 */
+export async function finishRetryAttempt(params: {
+  id: string;
+  kind: RetryAttemptKind;
+  detail: string | null;
+  waitMs: number | null;
+  /** 応答ヘッダが返るまでの時間（同時に投げられているかの物差し）。 */
+  headerMs?: number | null;
+  /** この依頼ぶんの「実行体が起きている時間」の取り分（ミリ秒）。 */
+  doMs?: number | null;
+  now: number;
+}): Promise<boolean> {
+  const d = await db();
+  const res = await d
+    .prepare(RETRY_ATTEMPT_FINISH_SQL)
+    .bind(
+      params.now,
+      params.kind,
+      params.detail,
+      params.waitMs,
+      params.headerMs ?? null,
+      params.doMs ?? null,
+      params.id,
+    )
+    .run();
+  return (res.meta.changes ?? 0) > 0;
+}
+
+/**
+ * その日（UTC）に使った「実行体が起きている時間」（ミリ秒）。
+ * 無料枠を使い切ると翌0時までどの生成も始められなくなるので、
+ * これを見て手前で止める。
+ */
+export async function dailyDurableMs(dayStart: number): Promise<number> {
+  const d = await db();
+  const row = await d
+    .prepare(DAILY_DO_MS_SQL)
+    .bind(dayStart)
+    .first<{ total: number }>();
+  return Number(row?.total ?? 0);
+}
+
+/** 司令役が起きていた時間の合計（この実行のぶん）。 */
+export async function retryRunCoordinatorMs(statusId: string): Promise<number> {
+  const d = await db();
+  const row = await d
+    .prepare(RETRY_RUN_COORDINATOR_MS_SQL)
+    .bind(statusId)
+    .first<{ ms: number }>();
+  return Number(row?.ms ?? 0);
+}
+
+/** 司令役が起きていた時間を足す。 */
+export async function noteCoordinatorMs(
+  statusId: string,
+  ms: number,
+): Promise<void> {
+  if (!(ms > 0)) return;
+  const d = await db();
+  await d
+    .prepare(RETRY_RUN_ADD_COORDINATOR_MS_SQL)
+    .bind(Math.round(ms), statusId)
+    .run();
+}
+
+/**
+ * 走っている生成をすべて止める。止めた本数を返す。
+ *
+ * 実行体のアラームは外から消せないが、司令役は毎秒この行を見るので、
+ * ここを立てれば新しく起こすのが止まる。
+ */
+export async function stopAllGenerations(): Promise<number> {
+  const d = await db();
+  const res = await d.prepare(STOP_ALL_GENERATIONS_SQL).run();
+  return res.meta.changes ?? 0;
+}
+
+/** 応答ヘッダが返るまでの時間（平均と最長）。 */
+export async function retryRunHeaderTimes(
+  statusId: string,
+): Promise<{ count: number; avgMs: number; maxMs: number }> {
+  const d = await db();
+  const row = await d
+    .prepare(RETRY_ATTEMPTS_HEADER_SQL)
+    .bind(statusId)
+    .first<{ n: number; avg_ms: number; max_ms: number }>();
+  return {
+    count: Number(row?.n ?? 0),
+    avgMs: Number(row?.avg_ms ?? 0),
+    maxMs: Number(row?.max_ms ?? 0),
+  };
+}
+
+/**
+ * 1本担当が成功を積む。親は retry_runs.tail_message_id から読み、同じ
+ * batch で自分へ進める（appendRetrySuccessStatements の注記）。
+ */
+export async function appendRetrySuccess(params: {
+  attemptId: string;
+  statusId: string;
+  conversationId: string;
+  modelId: string;
+  content: string;
+  usageJson: string | null;
+}): Promise<string> {
+  const d = await db();
+  const id = crypto.randomUUID();
+  const statements = appendRetrySuccessStatements({
+    id,
+    attemptId: params.attemptId,
+    statusId: params.statusId,
+    conversationId: params.conversationId,
+    modelId: params.modelId,
+    content: params.content,
+    usageJson: params.usageJson,
+    now: Date.now(),
+  });
+  await d.batch(statements.map((st) => d.prepare(st.sql).bind(...st.binds)));
+  return id;
+}

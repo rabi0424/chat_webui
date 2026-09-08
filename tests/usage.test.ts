@@ -9,6 +9,7 @@ import {
   monthLabelJst,
   monthStartJst,
   usageRangeStart,
+  withProvisional,
   type UsageTotals,
 } from "../app/lib/usage";
 
@@ -228,5 +229,41 @@ describe("バイト数の表示", () => {
   it("取れなかったときは数字を作らない", () => {
     expect(formatBytes(Number.NaN)).toBe("—");
     expect(formatBytes(0)).toBe("0 B");
+  });
+});
+
+/**
+ * 台帳に載る前の消費を判定に足す。Poe のリトライ生成は消費が最後に
+ * まとめて載るので、走っているあいだ月間上限が実行全体を素通しにしていた。
+ */
+describe("仮の消費を足す", () => {
+  const base: UsageTotals = {
+    ...EMPTY_TOTALS,
+    costUsd: 1,
+    points: 100,
+    pointsWithoutCost: 50,
+  };
+
+  it("額が取れていれば額に、ポイントは表示用の合計にだけ足す", () => {
+    const t = withProvisional(base, { points: 300, costUsd: 0.5 });
+    expect(t.costUsd).toBeCloseTo(1.5, 10);
+    expect(t.points).toBe(400);
+    expect(t.pointsWithoutCost).toBe(50);
+    // 判定に使う実効額に反映される
+    expect(effectiveUsd(t, 0.001)).toBeCloseTo(1.5 + 50 * 0.001, 10);
+  });
+
+  it("額が無ければ「額の無いポイント」として足し、レートで見積もる", () => {
+    const t = withProvisional(base, { points: 300, costUsd: null });
+    expect(t.costUsd).toBe(1);
+    expect(t.points).toBe(400);
+    expect(t.pointsWithoutCost).toBe(350);
+    expect(effectiveUsd(t, 0.001)).toBeCloseTo(1 + 350 * 0.001, 10);
+  });
+
+  it("無ければ何も変えない（同じオブジェクトを返す）", () => {
+    expect(withProvisional(base, null)).toBe(base);
+    expect(withProvisional(base, { points: 0, costUsd: null })).toBe(base);
+    expect(withProvisional(base, { points: 0, costUsd: 0 })).toBe(base);
   });
 });

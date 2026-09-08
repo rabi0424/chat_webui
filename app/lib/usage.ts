@@ -129,6 +129,30 @@ export const EMPTY_TOTALS: UsageTotals = {
  * 実額 + 「額が取れなかったポイント × 換算レート」。レートが 0 なら
  * ポイント分は数えない（＝見積もりを混ぜたくないときの設定）。
  */
+/**
+ * まだ台帳に載っていない消費を、判定用の合計へ足す。
+ *
+ * Poe の「成功するまで生成」は、消費ポイントが実行の最後にまとめて
+ * 載る。走っているあいだは台帳に何も無いので、発射のたびに見ている
+ * 月間上限の判定が実行全体を素通しにしていた。途中で分かっている
+ * ぶんを判定にだけ足す（台帳には書かない。最後に載る分と二重になる）。
+ * 額が取れていればそれを、無ければポイントを「額の無いポイント」として
+ * 足し、設定のレートで見積もる。
+ */
+export function withProvisional(
+  totals: UsageTotals,
+  extra: { points: number; costUsd: number | null } | null,
+): UsageTotals {
+  if (!extra || !(extra.points > 0 || (extra.costUsd ?? 0) > 0)) return totals;
+  return {
+    ...totals,
+    costUsd: totals.costUsd + (extra.costUsd ?? 0),
+    points: totals.points + extra.points,
+    pointsWithoutCost:
+      totals.pointsWithoutCost + (extra.costUsd == null ? extra.points : 0),
+  };
+}
+
 export function effectiveUsd(t: UsageTotals, pointsUsdRate: number): number {
   const est =
     pointsUsdRate > 0 ? t.pointsWithoutCost * pointsUsdRate : 0;

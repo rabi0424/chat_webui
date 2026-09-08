@@ -2,17 +2,22 @@ import { DurableObject } from "cloudflare:workers";
 import { createRequestHandler, RouterContextProvider } from "react-router";
 import { cloudflareContext } from "../app/lib/cloudflare-context";
 import { finalizeGeneration, getMessage } from "../app/lib/db.server";
-import { isRetryProgress } from "../app/lib/retry";
+import { isRetryProgress, shouldFinalizeLostRun } from "../app/lib/retry";
 import { crossSiteReason } from "../app/lib/same-origin";
 import {
   accessDenialReason,
   readAccessConfig,
 } from "../app/lib/access-jwt.server";
 import {
-  runGenerationJob,
+  runSingleGeneration,
   type GenerationJob,
-  type RetryRunState,
 } from "../app/lib/generation.server";
+import {
+  runAttemptJob,
+  runRetryGenerationJob,
+  type AttemptJob,
+  type RetryRunState,
+} from "../app/lib/retry-run.server";
 
 /** 途中経過の保存先。これがあれば「続きの実行」だと分かる。 */
 const STATE_KEY = "retryState";
@@ -81,7 +86,7 @@ export class GenerationRunner extends DurableObject {
   }
 
   /** 分割して置いたジョブを読み戻す。 */
-  private async getJob(): Promise<GenerationJob | null> {
+  private async getJob(): Promise<GenerationJob | AttemptJob | null> {
     const count = await this.ctx.storage.get<number>(JOB_CHUNK_COUNT_KEY);
     if (typeof count !== "number") {
       // 分割前の版が置いたジョブが残っていることがある
@@ -97,7 +102,7 @@ export class GenerationRunner extends DurableObject {
       }
     }
     try {
-      return JSON.parse(text) as GenerationJob;
+      return JSON.parse(text) as GenerationJob | AttemptJob;
     } catch {
       return null;
     }
@@ -115,32 +120,61 @@ export class GenerationRunner extends DurableObject {
     await this.ctx.storage.delete("job");
   }
 
+  /**
+   * ジョブを受け取ってアラームに載せる。
+   *
+   * **失敗の理由を返す。** 例外のまま外へ出すと、呼ぶ側（生成の入口）
+   * には「起動に失敗した」ことしか分からず、ストレージが一杯なのか
+   * 別の理由なのかを確かめる手立てが無かった。
+   */
   override async fetch(request: Request): Promise<Response> {
-    const job = (await request.json()) as GenerationJob;
-    await this.putJob(job);
-    // 新しいジョブなので、前のジョブの残骸が居たら捨てる
-    await this.ctx.storage.delete(STATE_KEY);
-    await this.ctx.storage.setAlarm(Date.now() + 50);
-    return Response.json({ ok: true }, { status: 202 });
+    // /attempt は「成功するまで生成」の1本担当。/start は生成の開始
+    // （見出しを持つ司令役、または単発の生成）。形は job.kind で見分ける
+    try {
+      const job = (await request.json()) as GenerationJob | AttemptJob;
+      await this.putJob(job as GenerationJob);
+      // 新しいジョブなので、前のジョブの残骸が居たら捨てる
+      await this.ctx.storage.delete(STATE_KEY);
+      await this.ctx.storage.setAlarm(Date.now() + 50);
+      return Response.json({ ok: true }, { status: 202 });
+    } catch (e) {
+      const reason = (e as Error).message ?? String(e);
+      console.error("[gen] 実行体がジョブを受け取れませんでした", reason);
+      return Response.json({ error: reason }, { status: 500 });
+    }
   }
 
   override async alarm(): Promise<void> {
     const job = await this.getJob();
     if (!job) return;
+    if ("kind" in job) {
+      // 1本担当。結果は D1 に書き、例外は外へ出さない（出すとアラームが
+      // 再送され、同じ依頼をもう一度投げて二重に課金される）
+      await runAttemptJob(job);
+      // 担当は使い捨て。**置き場を丸ごと空にする**——1本ごとに別の実行を
+      // 起こすので、依頼文の写しが積もるとアカウント全体のストレージを
+      // 食い、やがてどの生成も始められなくなる
+      await this.ctx.storage.deleteAll();
+      return;
+    }
     const state = (await this.ctx.storage.get<RetryRunState>(STATE_KEY)) ?? null;
     try {
       const row = await getMessage(job.conversationId, job.assistantMessageId);
       if (row && row.status === "streaming") {
-        // 続きの実行では見出しに進捗が入っているので、中断とは見なさない
-        if (!state && row.content !== "") {
-          // 前回の実行が途中で失われた後の再試行。二重課金を避けるため、
-          // ここまでの部分内容で確定させる。
-          //
-          // ただし本文が進捗の見出し（「生成中… 成功 x/y」）のときは、
-          // それは応答ではなく実行の途中経過なので、そのまま done に
-          // すると偽の「生成中…」が会話に残り続ける。リトライ生成では
-          // 見出しの下に成功した応答が既に積まれているので、見出しは
-          // 中断として確定させて、利用者が再試行できるようにする
+        // 前回の実行が途中で失われた後の再送か（shouldFinalizeLostRun）。
+        // 「成功するまで生成」は D1 から組み直せるので、ここでは確定させず
+        // 再入して続ける——確定させると走っている担当を残したまま実行が
+        // 終わり、「生成が中断されました」だけが残る
+        if (
+          shouldFinalizeLostRun({
+            retry: job.retry != null,
+            hasState: state != null,
+            content: row.content,
+          })
+        ) {
+          // 二重課金を避けるため、ここまでの部分内容で確定させる。
+          // 本文が進捗の見出しなら、それは応答ではなく途中経過なので
+          // done にはせず中断として確定させる（偽の「生成中…」を残さない）
           const interrupted = isRetryProgress(row.content);
           await finalizeGeneration(job.assistantMessageId, {
             content: interrupted ? "" : row.content,
@@ -152,7 +186,9 @@ export class GenerationRunner extends DurableObject {
               : null,
           });
         } else {
-          const outcome = await runGenerationJob(job, state);
+          const outcome = job.retry
+            ? await runRetryGenerationJob(job, job.retry, state)
+            : ((await runSingleGeneration(job)), { done: true as const });
           if (!outcome.done) {
             // サブリクエストの枠を使い切った。続きは次のアラームで
             await this.ctx.storage.put(STATE_KEY, outcome.state);

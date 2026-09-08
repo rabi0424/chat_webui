@@ -12,7 +12,12 @@ import {
   usageTotalsSince,
 } from "./db.server";
 import { fetchUsdJpy } from "./fx.server";
-import { checkLimit, monthStartJst, type LimitVerdict } from "./usage";
+import {
+  checkLimit,
+  monthStartJst,
+  withProvisional,
+  type LimitVerdict,
+} from "./usage";
 
 /**
  * 判定に使う為替レート。
@@ -32,9 +37,15 @@ async function rateForLimit(): Promise<number | null> {
   return live;
 }
 
-/** 今月の使用量が上限に達しているか。 */
+/**
+ * 今月の使用量が上限に達しているか。
+ *
+ * provisional は、まだ台帳に載っていないが使ったと分かっている消費
+ * （Poe のリトライ生成が途中までに使ったポイント）。判定にだけ足す。
+ */
 export async function checkMonthlyLimit(
   now = Date.now(),
+  provisional: { points: number; costUsd: number | null } | null = null,
 ): Promise<LimitVerdict> {
   const settings = await getAppSettings();
   // 上限を設けていないなら、集計も為替も要らない
@@ -54,7 +65,7 @@ export async function checkMonthlyLimit(
   return checkLimit({
     limitJpy: settings.monthlyLimitJpy,
     usdJpy,
-    totals,
+    totals: withProvisional(totals, provisional),
     pointsUsdRate: settings.poePointsUsdRate,
     overrideMonth: settings.monthlyLimitOverride,
     now,

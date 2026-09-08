@@ -208,7 +208,281 @@ CREATE INDEX IF NOT EXISTS idx_conversations_unread
 CREATE INDEX IF NOT EXISTS idx_attachments_conversation
   ON attachments(conversation_id);
 `,
+  // v18: 「成功するまで生成」を、司令役と1本担当の実行に分ける。
+  //
+  // 1つの実行の中で全部投げると、Cloudflare の「1回の呼び出しあたり」の
+  // 制限（応答ヘッダを同時に待てる接続6本・外部通信50件・15分）に
+  // 並列が縛られる。依頼1本ごとに別の実行（Durable Object）へ渡せば
+  // 縛りが外れるが、実行同士は記憶を共有しないので、進み具合と
+  // 「次の成功をどこへ繋ぐか」を D1 に置く。
+  //
+  // retry_runs.tail_message_id は成功を直列に積む先。1本担当が成功を
+  // 保存するときに、読む・繋ぐ・進めるを1つの batch（トランザクション）
+  // で行うので、同時に成功しても親が競合しない。
+  `
+CREATE TABLE IF NOT EXISTS retry_runs (
+  status_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  tail_message_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS retry_attempts (
+  id TEXT PRIMARY KEY,
+  status_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  launched_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  kind TEXT,
+  detail TEXT,
+  wait_ms INTEGER,
+  message_id TEXT,
+  processed INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_retry_attempts_run
+  ON retry_attempts(status_id, finished_at, processed);
+`,
+  // v19: 応答ヘッダが返るまでの時間。
+  //
+  // 「1回の呼び出しで応答ヘッダを同時に待てる接続は6本まで」に当たって
+  // いるかを、**プロンプトに依らず**確かめるための物差し。かかった時間
+  // だけでは、順番待ちで遅いのか生成が遅いのかを区別できない。ヘッダ
+  // までの時間なら、待たされているときだけ伸びる。
+  `
+ALTER TABLE retry_attempts ADD COLUMN header_ms INTEGER;
+`,
+  // v20: 使った「実行体が起きている時間」を数える。
+  //
+  // Durable Object の無料枠は1日 13,000 GB秒＝128MB 換算で約104,000秒。
+  // 使い切ると**どの生成も始められなくなり、翌0時（UTC）まで戻らない**。
+  // 実際に2日続けて締め出された。上流の課金と違って台帳に載らないので、
+  // 自分で数えて手前で止めるしかない。
+  //
+  // do_ms は依頼1本ぶんの取り分（かかった時間 ÷ 担当1つの同時数）。
+  // coordinator_ms は司令役が起きていた時間。
+  `
+ALTER TABLE retry_attempts ADD COLUMN do_ms INTEGER;
+`,
+  `
+ALTER TABLE retry_runs ADD COLUMN coordinator_ms INTEGER NOT NULL DEFAULT 0;
+`,
+  `
+CREATE INDEX IF NOT EXISTS idx_retry_attempts_finished
+  ON retry_attempts(finished_at);
+`,
+  // v21: 司令役が毎秒引く「まだ数えていない行」を、数え済みの行を
+  // またがずに引けるようにする。
+  //
+  // D1 は**読んだ行数**で課金され、無料枠は1日500万行。v18 の索引
+  // (status_id, finished_at, processed) では processed が最後にあるため、
+  // 「決着済み」の範囲を全部走査してから processed を見ることになる
+  // ——実行が進むほど1回の見張りが重くなり、毎秒それを繰り返す。
+  // 本物の SQLite で測ると、決着済み1万行のとき 558マイクロ秒（並べ替えの
+  // 一時 B-tree つき）。processed を先に置くと 23マイクロ秒で、走査は
+  // 「まだ数えていない行」の数だけになる。
+  `
+CREATE INDEX IF NOT EXISTS idx_retry_attempts_unprocessed
+  ON retry_attempts(status_id, processed, finished_at, seq);
+`,
 ];
+
+/**
+ * 「成功するまで生成」の1本担当が、司令役へ渡すために書く行と、
+ * 司令役が毎秒読む問い合わせ。production とテストで同じ文を使う
+ * （書き写すと JOIN の落とし忘れのような食い違いを検出できない）。
+ */
+export const RETRY_RUN_INSERT_SQL =
+  "INSERT OR IGNORE INTO retry_runs (status_id, conversation_id, tail_message_id, created_at) VALUES (?, ?, ?, ?)";
+export const RETRY_ATTEMPT_INSERT_SQL =
+  "INSERT OR IGNORE INTO retry_attempts (id, status_id, seq, launched_at) VALUES (?, ?, ?, ?)";
+/** 結果が決まった。既に決まっている行は上書きしない（再送で二重に数えない）。 */
+export const RETRY_ATTEMPT_FINISH_SQL =
+  "UPDATE retry_attempts SET finished_at = ?, kind = ?, detail = ?, wait_ms = ?, header_ms = ?, do_ms = ? WHERE id = ? AND finished_at IS NULL";
+/** 司令役が毎秒読む、決まったのにまだ数えていない行。 */
+export const RETRY_ATTEMPTS_UNPROCESSED_SQL =
+  "SELECT id, kind, detail, wait_ms, message_id FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND processed = 0 ORDER BY finished_at, seq";
+/** 続きの実行の頭で、集計に含めた行を全部「数えた」にする。 */
+export const RETRY_ATTEMPTS_MARK_ALL_SQL =
+  "UPDATE retry_attempts SET processed = 1 WHERE status_id = ? AND finished_at IS NOT NULL";
+export const RETRY_ATTEMPTS_RUNNING_SQL =
+  "SELECT COUNT(*) AS running FROM retry_attempts WHERE status_id = ? AND finished_at IS NULL";
+/**
+ * 1本担当の実行が失われた（15分の壁・退避）行を、一時的な不調として
+ * 決着させる。決まらないままだと司令役が永久に待つ。
+ */
+export const RETRY_ATTEMPTS_SWEEP_LOST_SQL =
+  "UPDATE retry_attempts SET finished_at = ?, kind = 'transient', detail = ? WHERE status_id = ? AND finished_at IS NULL AND launched_at < ?";
+/** 司令役が続きの実行の頭で数え直すための集計。 */
+export const RETRY_ATTEMPTS_COUNTS_SQL =
+  "SELECT kind, COUNT(*) AS n FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL GROUP BY kind";
+export const RETRY_ATTEMPTS_LAUNCHED_SQL =
+  "SELECT COUNT(*) AS launched, COALESCE(MAX(seq), 0) AS last_seq FROM retry_attempts WHERE status_id = ?";
+/** 実行の開始時刻。再入しても Poe の消費を同じ時間帯で数えるため。 */
+/**
+ * 決着した依頼の本数と、かかった時間の合計。
+ *
+ * 依頼1本あたりの実行体の時間は「かかった時間 ÷ 担当1つの同時数」で
+ * 決まり、それがそのまま無料枠の消費になる。要約に出して、同時数を
+ * いくつにすべきかを実測から決められるようにする。
+ */
+export const RETRY_ATTEMPTS_DURATION_SQL =
+  "SELECT COUNT(*) AS n, COALESCE(SUM(finished_at - launched_at), 0) AS total, COALESCE(SUM(do_ms), 0) AS do_total FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND finished_at > launched_at";
+
+/**
+ * その日に使った「実行体が起きている時間」。
+ *
+ * 無料枠（1日 約104,000秒）を使い切ると、どの生成も始められなくなり
+ * 翌0時（UTC）まで戻らない。上流の課金と違って台帳に載らないので、
+ * 自分で数えて手前で止める。担当のぶん（依頼ごとの取り分）と司令役の
+ * ぶんを足す。日をまたいだ実行の司令役は、始めた日に数える（近似）。
+ */
+export const DAILY_DO_MS_SQL = `SELECT
+  (SELECT COALESCE(SUM(do_ms), 0) FROM retry_attempts WHERE finished_at >= ?1)
+  + (SELECT COALESCE(SUM(coordinator_ms), 0) FROM retry_runs WHERE created_at >= ?1)
+  AS total`;
+
+/** 司令役が起きていた時間を足す。 */
+export const RETRY_RUN_ADD_COORDINATOR_MS_SQL =
+  "UPDATE retry_runs SET coordinator_ms = coordinator_ms + ? WHERE status_id = ?";
+
+/**
+ * 古い実行の記録を掃除する。
+ *
+ * 1日1万本なら1年で365万行になる。D1 の無料枠はアカウント全体で 5GB、
+ * 1データベース 500MB。会話を消せば一緒に消えるが、実行が終わっただけ
+ * では残るので、**放っておくと誰も見ない行で枠が埋まる**。
+ *
+ * 実測の数字は要約に書き終えているので、行そのものは要らなくなる。
+ * ただし当日ぶんは残す——`DAILY_DO_MS_SQL` がこの行を足して1日の
+ * 実行体の時間を出しているので、消すと歯止めが緩む。
+ *
+ * 一度に1実行ぶんだけ落とす（1実行は最大でも上限試行回数の3倍＝3,000行）。
+ * まとめて落とすと、D1 の書き込み行数（無料枠は1日10万行）をここで
+ * 使い切りかねない。新しい実行が始まるたびに1つずつ片付ける。
+ */
+export const RETRY_PRUNE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+export const RETRY_RUN_OLDEST_SQL =
+  "SELECT status_id FROM retry_runs WHERE created_at < ? ORDER BY created_at LIMIT 1";
+export const RETRY_ATTEMPTS_PRUNE_SQL =
+  "DELETE FROM retry_attempts WHERE status_id = ?";
+export const RETRY_RUN_PRUNE_SQL = "DELETE FROM retry_runs WHERE status_id = ?";
+
+/**
+ * 走っている生成をすべて止める。
+ *
+ * 実行体のアラームは外から消せないが、司令役は毎秒この行を見て
+ * 「停止」を拾うので、ここを立てれば新しく起こすのが止まる。
+ * 枠を使い切って締め出されたあと、溜まったアラームが一斉に動き出すのを
+ * 止める手立てとして要る（実際に、枠が戻った30分後にまた使い切った）。
+ */
+export const STOP_ALL_GENERATIONS_SQL =
+  "UPDATE messages SET stop_requested = 1 WHERE status = 'streaming'";
+
+/**
+ * 応答ヘッダが返るまでの時間。**同時に投げられているかの物差し。**
+ *
+ * かかった時間だけでは、順番待ちで遅いのか生成が遅いのかを区別できない
+ * （拒否が速いプロンプトと成功が混ざるプロンプトで秒数が変わる）。
+ * ヘッダまでの時間は、待たされているときだけ伸びるので、プロンプトに
+ * 依らず「7本目以降が順番待ちになっているか」が読める。
+ */
+export const RETRY_ATTEMPTS_HEADER_SQL =
+  "SELECT COUNT(*) AS n, COALESCE(AVG(header_ms), 0) AS avg_ms, COALESCE(MAX(header_ms), 0) AS max_ms FROM retry_attempts WHERE status_id = ? AND header_ms IS NOT NULL";
+export const RETRY_RUN_STARTED_SQL =
+  "SELECT created_at FROM retry_runs WHERE status_id = ?";
+/**
+ * 司令役が起きていた時間の合計。
+ *
+ * 無料枠の消費は「担当のぶん＋司令役のぶん」。要約に担当のぶんだけ出して
+ * いると、枠の半分近くが見えないまま消えることがある——司令役は実行の
+ * あいだずっと起きているので、並列数が小さいと担当と同じだけ食う
+ * （割合は およそ 12 ÷ 並列数）。
+ */
+export const RETRY_RUN_COORDINATOR_MS_SQL =
+  "SELECT COALESCE(coordinator_ms, 0) AS ms FROM retry_runs WHERE status_id = ?";
+export const RETRY_ATTEMPTS_FIRST_REFUSAL_SQL =
+  "SELECT detail FROM retry_attempts WHERE status_id = ? AND kind = 'refused' AND detail IS NOT NULL AND detail != '' ORDER BY finished_at, seq LIMIT 1";
+
+/** 1本の担当が何本まで、を司令役が引く id の並び。100個のバインド上限に収める。 */
+export function markRetryAttemptsProcessedSql(count: number): string {
+  return `UPDATE retry_attempts SET processed = 1 WHERE id IN (${Array.from({ length: count }, () => "?").join(", ")})`;
+}
+
+/**
+ * 1本担当が成功を保存する文の束。1つの batch で流すこと。
+ *
+ * 親（繋ぐ先）は retry_runs.tail_message_id から読み、同じ束の中で
+ * 自分へ進める。別の担当が同時に成功しても、batch はトランザクション
+ * なので割り込まれない。表示中の枝を進めるのは、まだこの実行の枝を
+ * 見ているとき（葉が古い親と一致するとき）だけで、tail を進める前に
+ * 判定する（appendAssistantMessageStatements と同じ理由）。
+ */
+export function appendRetrySuccessStatements(params: {
+  id: string;
+  attemptId: string;
+  statusId: string;
+  conversationId: string;
+  modelId: string;
+  content: string;
+  usageJson: string | null;
+  now: number;
+}): Statement[] {
+  const statements: Statement[] = [
+    {
+      sql: `INSERT INTO messages (id, conversation_id, parent_id, role, content, model_id, usage_json, status, flushed_at, created_at)
+        SELECT ?, ?, tail_message_id, 'assistant', ?, ?, ?, 'done', ?, ?
+          FROM retry_runs WHERE status_id = ?`,
+      binds: [
+        params.id,
+        params.conversationId,
+        params.content,
+        params.modelId,
+        params.usageJson,
+        params.now,
+        params.now,
+        params.statusId,
+      ],
+    },
+    {
+      sql: "UPDATE conversations SET updated_at = ?, unread = 1 WHERE id = ?",
+      binds: [params.now, params.conversationId],
+    },
+    {
+      sql: `UPDATE conversations SET current_leaf_message_id = ?
+        WHERE id = ? AND current_leaf_message_id = (SELECT tail_message_id FROM retry_runs WHERE status_id = ?)`,
+      binds: [params.id, params.conversationId, params.statusId],
+    },
+    {
+      sql: "UPDATE retry_runs SET tail_message_id = ? WHERE status_id = ?",
+      binds: [params.id, params.statusId],
+    },
+    {
+      sql: "UPDATE retry_attempts SET message_id = ? WHERE id = ?",
+      binds: [params.id, params.attemptId],
+    },
+  ];
+  const usage = usageForLedger(params.usageJson);
+  if (usage) {
+    statements.push({
+      sql: `INSERT OR IGNORE INTO usage_events
+         (id, at, kind, provider, model_id, cost_usd, points,
+          prompt_tokens, completion_tokens, conversation_id, message_id)
+       VALUES (?, ?, 'retry', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      binds: [
+        crypto.randomUUID(),
+        params.now,
+        isPoeModel(params.modelId) ? "poe" : "openrouter",
+        params.modelId,
+        usage.cost,
+        usage.points,
+        usage.promptTokens,
+        usage.completionTokens,
+        params.conversationId,
+        params.id,
+      ],
+    });
+  }
+  return statements;
+}
 
 /**
  * 消す候補を控えてから、実際に落とすまでの猶予。
@@ -486,6 +760,27 @@ export const USAGE_BY_MODEL_SQL = `SELECT model_id,
  * 依頼で何十枚も生成する、最も高額になりうるモードの支出だけが抜けていた。
  * message_id の一意索引があるので、二度流しても二重には数えない。
  */
+/**
+ * 生成中の部分保存と、停止要求の確認。
+ *
+ * 保存は「まだ生成中の行」にだけ当てる。当たらなかった（changes = 0）と
+ * いうことは、行が消えたか、中断とみなされて確定済みになったかで、
+ * どちらにせよこの実行の成果を受け取る先が無い。呼ぶ側はそれを
+ * 停止要求と同じに扱う——扱わないと、会話を消しても発射ループが
+ * チャンクの終わりまで投げ続け、課金だけが残る。
+ */
+export const FLUSH_GENERATION_SQL =
+  "UPDATE messages SET content = ?, reasoning = ?, flushed_at = ? WHERE id = ? AND status = 'streaming'";
+export const FLUSH_STOP_CHECK_SQL =
+  "SELECT stop_requested FROM messages WHERE id = ?";
+/**
+ * 中断とみなした「生成中」の行を確定させる。本文も書き換える——
+ * 「成功するまで生成」の見出しは進捗の表示なので、残すと止まった数字の
+ * まま会話に居座る（`interruptedGenerationRow`）。
+ */
+export const SWEEP_STALE_STREAMING_SQL =
+  "UPDATE messages SET content = ?, status = ?, error = ? WHERE id = ? AND status = 'streaming'";
+
 export function appendAssistantMessageStatements(params: {
   id: string;
   conversationId: string;

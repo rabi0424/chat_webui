@@ -7,8 +7,15 @@ import {
   RETRY_DEFAULT_TARGET,
   RETRY_ENABLED_KEY,
   RETRY_MAX_KEY,
+  RETRY_SMART_KEY,
+  RETRY_SMART_PERCENT_KEY,
   RETRY_TARGET_KEY,
 } from "../lib/retry";
+import {
+  RETRY_SMART_MAX_PERCENT,
+  RETRY_SMART_MIN_PERCENT,
+  RETRY_SMART_WARMUP_ATTEMPTS,
+} from "../lib/retry-slots";
 
 /** リトライ設定の1項目。未入力なら既定値がプレースホルダに出る。 */
 function RetryField({
@@ -72,6 +79,7 @@ export function RetrySettings({
   ceiling: number;
 }) {
   const config = readRetryConfig(value, ceiling);
+  const smart = config?.smartPercent != null;
 
   /** 実際に入力されている値（未入力は undefined）。 */
   const field = (key: string): number | undefined => {
@@ -150,9 +158,54 @@ export function RetrySettings({
             onChange={(v) => set(RETRY_MAX_KEY, v)}
             onClear={() => set(RETRY_MAX_KEY, null)}
           />
+          <div className="flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm">スマート生成</p>
+              <p className="truncate text-xs text-ink-3">
+                並列数を固定せず、その実行の成功率から決め直す
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={smart}
+              aria-label="スマート生成"
+              onClick={() => {
+                const params = { ...value };
+                if (smart) delete params[RETRY_SMART_KEY];
+                else params[RETRY_SMART_KEY] = "on";
+                onChange(params);
+              }}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                smart ? "bg-accent" : "bg-neutral-300 dark:bg-neutral-600"
+              }`}
+            >
+              <span
+                className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                  smart ? "translate-x-[22px]" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </div>
+          {config.smartPercent != null && (
+            <RetryField
+              label="はずれ／あたりの割合（%）"
+              hint={`これまでを下位n%のはずれ、次を上位n%のあたりと見なす。${RETRY_SMART_WARMUP_ATTEMPTS}回溜まるまでは目標を超えない`}
+              value={field(RETRY_SMART_PERCENT_KEY)}
+              effective={config.smartPercent}
+              min={RETRY_SMART_MIN_PERCENT}
+              max={RETRY_SMART_MAX_PERCENT}
+              onChange={(v) => set(RETRY_SMART_PERCENT_KEY, v)}
+              onClear={() => set(RETRY_SMART_PERCENT_KEY, null)}
+            />
+          )}
           <RetryField
-            label="並列数"
-            hint="同時に走らせる数。未入力なら目標数と同じ"
+            label={smart ? "並列数の上限" : "並列数"}
+            hint={
+              smart
+                ? "枠はここまでしか広げない。未入力なら上限の試行回数と同じ"
+                : "同時に走らせる数。未入力なら目標数と同じ"
+            }
             value={field(RETRY_CONCURRENCY_KEY)}
             effective={config.concurrency}
             min={1}

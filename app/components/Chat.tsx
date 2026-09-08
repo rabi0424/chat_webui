@@ -1992,10 +1992,14 @@ export function Chat({
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-ink-2">
-                  並列数
+                  {pendingRun.config.smartPercent != null
+                    ? "並列数の上限"
+                    : "並列数"}
                 </dt>
                 <dd className="font-medium">
-                  {pendingRun.config.concurrency}
+                  {pendingRun.config.smartPercent != null
+                    ? `スマート ${pendingRun.config.smartPercent}%（最大 ${pendingRun.config.concurrency}）`
+                    : pendingRun.config.concurrency}
                 </dd>
               </div>
               <div className="flex justify-between gap-3">
@@ -2008,8 +2012,10 @@ export function Chat({
               </div>
             </dl>
             <p className="mt-2 text-xs text-ink-3">
-              最大 {pendingRun.config.maxAttempts}回ぶんの生成が行われます。並列数が
-              目標を超える場合、成功が目標より多くなることがあります（受け取ります）。
+              最大 {pendingRun.config.maxAttempts}回ぶんの生成が行われます。
+              {pendingRun.config.smartPercent != null
+                ? "並列数は成功率に合わせて増減します。それでも成功が目標より多くなることがあります（受け取ります）。"
+                : "並列数が目標を超える場合、成功が目標より多くなることがあります（受け取ります）。"}
             </p>
             <div className="mt-3 flex justify-end gap-2">
               <button
