@@ -2418,15 +2418,19 @@ export async function retryRunSnapshot(statusId: string): Promise<{
 /** 決着した依頼の本数と、かかった時間の合計（ミリ秒）。 */
 export async function retryRunDurations(
   statusId: string,
-): Promise<{ count: number; totalMs: number }> {
+): Promise<{ count: number; totalMs: number; doMs: number }> {
   const d = await db();
   const row = await d
     .prepare(RETRY_ATTEMPTS_DURATION_SQL)
     .bind(statusId)
-    .first<{ n: number; total: number }>();
+    .first<{ n: number; total: number; do_total: number }>();
   return {
     count: Number(row?.n ?? 0),
     totalMs: Number(row?.total ?? 0),
+    // 担当が実際に書いた取り分の合計。歯止めが数えているのと同じ数字を
+    // 要約にも出す（割り算で作り直すと、担当の持ち分が同時数に満たな
+    // かったときに食い違う）
+    doMs: Number(row?.do_total ?? 0),
   };
 }
 

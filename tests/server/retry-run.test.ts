@@ -220,7 +220,7 @@ beforeEach(() => {
   poePoints.mockClear();
   poePoints.mockResolvedValue(null);
   monthlyLimit.mockClear();
-  durations = { count: 0, totalMs: 0 };
+  durations = { count: 0, totalMs: 0, doMs: 0 };
   headerTimes = { count: 0, avgMs: 0, maxMs: 0 };
   dailyDoMs = 0;
   dailyChecks = 0;
@@ -673,7 +673,7 @@ describe("使った時間の実測", () => {
     "1本あたりの秒数と、無料枠に対する割合を要約に出す",
     async () => {
       // 20本・合計3600秒 → 1本180秒。同時6本なら実行体の時間は600秒
-      durations = { count: 20, totalMs: 3_600_000 };
+      durations = { count: 20, totalMs: 3_600_000, doMs: 0 };
       onTick = (n) => {
         if (n >= 2) {
           tickResult = {
@@ -696,9 +696,36 @@ describe("使った時間の実測", () => {
   );
 
   it(
+    "担当が書いた取り分があれば、それをそのまま出す（割り直さない）",
+    async () => {
+      // 並列数が担当の同時数より小さいと、担当は同時数より少ない依頼しか
+      // 引き受けない。ここで同時数で割り直すと消費を少なく見積もる
+      durations = { count: 20, totalMs: 3_600_000, doMs: 1_200_000 };
+      onTick = (n) => {
+        if (n >= 2) {
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 0,
+            finished: [
+              { id: "a1", kind: "success", detail: null, wait_ms: null, message_id: "m1" },
+              { id: "a2", kind: "success", detail: null, wait_ms: null, message_id: "m2" },
+            ],
+          };
+        }
+      };
+      await runRetryGenerationJob(job, retry, null);
+      // 3,600秒 ÷ 6 = 600秒 ではなく、記録された 1,200秒
+      expect(finalized?.content).toContain("実行体の時間の目安 1,200秒");
+      expect(finalized?.content).not.toContain("実行体の時間の目安 600秒");
+    },
+    20_000,
+  );
+
+  it(
     "実測が取れなくても要約は出す",
     async () => {
-      durations = { count: 0, totalMs: 0 };
+      durations = { count: 0, totalMs: 0, doMs: 0 };
       onTick = (n) => {
         if (n >= 2) {
           tickResult = {
@@ -891,27 +918,46 @@ describe("依頼1本ぶんの実行体の時間", () => {
     }) as never;
 
   it(
-    "同時数で割ったものを書く",
+    "引き受けた本数が同時数に満たなければ、その本数で割る",
     async () => {
-      // 上流は1本1.5秒。同時3本なら1本あたり約500ミリ秒の取り分
-      await runAttemptJob(attemptJob(["a1", "a2", "a3"], 3));
+      // 司令役の並列数が担当の同時数より小さいと、こうなる（並列数2・
+      // 同時数24なら2本）。同時数24で割ると消費を12分の1に見積もり、
+      // 歯止めが効かないまま枠を使い切る
+      await runAttemptJob(attemptJob(["s1", "s2"], 24));
+      const ms = finished.map((f) => f.doMs ?? 0);
+      expect(ms).toHaveLength(2);
+      // 1.5秒 ÷ 2本 = 約750ミリ秒（÷24 なら約62ミリ秒）
+      for (const v of ms) {
+        expect(v).toBeGreaterThan(600);
+        expect(v).toBeLessThan(1_100);
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "引き受けた本数のほうが多ければ、同時数で割る",
+    async () => {
+      // 6本を同時3本ずつ2波。上流は1本1.5秒なので取り分は約500ミリ秒
+      const ids = ["a1", "a2", "a3", "a4", "a5", "a6"];
+      await runAttemptJob(attemptJob(ids, 3));
       const few = finished.map((f) => f.doMs ?? 0);
-      expect(few).toHaveLength(3);
+      expect(few).toHaveLength(6);
       for (const ms of few) {
         expect(ms).toBeGreaterThan(400);
         expect(ms).toBeLessThan(800);
       }
 
       finished.length = 0;
-      // 同じ1.5秒でも、同時30本なら取り分は10分の1
-      await runAttemptJob(attemptJob(["b1", "b2", "b3"], 30));
+      // 同じ6本でも、同時6本なら1波で済み、取り分は半分
+      await runAttemptJob(attemptJob(["b1", "b2", "b3", "b4", "b5", "b6"], 6));
       const many = finished.map((f) => f.doMs ?? 0);
-      expect(many).toHaveLength(3);
+      expect(many).toHaveLength(6);
       for (const ms of many) {
-        expect(ms).toBeGreaterThan(20);
-        expect(ms).toBeLessThan(150);
+        expect(ms).toBeGreaterThan(150);
+        expect(ms).toBeLessThan(380);
       }
     },
-    30_000,
+    60_000,
   );
 });

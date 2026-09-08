@@ -311,7 +311,7 @@ export const RETRY_ATTEMPTS_LAUNCHED_SQL =
  * いくつにすべきかを実測から決められるようにする。
  */
 export const RETRY_ATTEMPTS_DURATION_SQL =
-  "SELECT COUNT(*) AS n, COALESCE(SUM(finished_at - launched_at), 0) AS total FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND finished_at > launched_at";
+  "SELECT COUNT(*) AS n, COALESCE(SUM(finished_at - launched_at), 0) AS total, COALESCE(SUM(do_ms), 0) AS do_total FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND finished_at > launched_at";
 
 /**
  * その日に使った「実行体が起きている時間」。

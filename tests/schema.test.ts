@@ -1255,26 +1255,31 @@ describe("成功するまで生成の記録", () => {
    * 「かかった時間 ÷ 担当1つの同時数」で、無料枠の消費がこれで決まる。
    * 決着していない行や、時計が巻き戻った行を混ぜると数字が狂う。
    */
-  it("かかった時間は、決着した行だけを足す", () => {
+  it("かかった時間と、実行体の時間の取り分は、決着した行だけを足す", () => {
     launch("a1", 1, 1_000);
     launch("a2", 2, 1_000);
     launch("a3", 3, 1_000);
-    finish("a1", "refused", null, null, 4_000); // 3秒
-    finish("a2", "success", null, null, 6_000); // 5秒
+    finish("a1", "refused", null, null, 4_000, null, 500); // 3秒・取り分0.5秒
+    finish("a2", "success", null, null, 6_000, null, 800); // 5秒・取り分0.8秒
     // a3 は走ったまま
     const row = db.prepare(RETRY_ATTEMPTS_DURATION_SQL).get(S) as {
       n: number;
       total: number;
+      do_total: number;
     };
-    expect(row).toEqual({ n: 2, total: 8_000 });
+    // 取り分は「かかった時間 ÷ 同時に走った本数」で担当が書いた値。
+    // ここで割り直すと、担当の持ち分が同時数に満たなかったときに
+    // 歯止めの数字と食い違う
+    expect(row).toEqual({ n: 2, total: 8_000, do_total: 1_300 });
   });
 
   it("行が無ければ 0（null を返さない）", () => {
     const row = db.prepare(RETRY_ATTEMPTS_DURATION_SQL).get("nope") as {
       n: number;
       total: number;
+      do_total: number;
     };
-    expect(row).toEqual({ n: 0, total: 0 });
+    expect(row).toEqual({ n: 0, total: 0, do_total: 0 });
   });
 
   /**

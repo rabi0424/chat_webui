@@ -650,7 +650,10 @@ export async function runRetryGenerationJob(
     const d = await retryRunDurations(statusId);
     if (d.count > 0) {
       const perAttempt = d.totalMs / d.count / 1000;
-      const doSeconds = d.totalMs / 1000 / plan.concurrency;
+      // 担当が書いた取り分の合計をそのまま出す（歯止めが数えているのと
+      // 同じ数字）。古い行には取り分が無いので、そのときだけ割って作る
+      const doSeconds =
+        d.doMs > 0 ? d.doMs / 1000 : d.totalMs / 1000 / plan.concurrency;
       const share = (doSeconds / RETRY_FREE_DO_SECONDS_PER_DAY) * 100;
       lines.push(
         `\n1本あたり ${perAttempt.toFixed(1)}秒（同時 ${plan.concurrency}本）` +
@@ -772,12 +775,21 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
     return;
   }
 
+  /*
+   * この依頼ぶんの「実行体が起きている時間」の取り分を割る数。
+   *
+   * 同時に走る分は1つの実行体の中で重なるので、かかった時間を同時に
+   * 走った本数で割る。**同時数ではなく、実際に重なった本数で割る**——
+   * 司令役の並列数が担当の同時数より小さいと、担当は同時数より少ない
+   * 依頼しか引き受けない（並列数10・同時数24なら10本）。それを24で
+   * 割ると消費を2倍以上に少なく見積もり、歯止めが効かないまま枠を
+   * 使い切る。
+   */
+  const wave = Math.max(1, Math.min(plan.concurrency, job.attemptIds.length));
+
   const runOne = async (attemptId: string): Promise<void> => {
-    // この依頼ぶんの「実行体が起きている時間」の取り分。同時に走る分は
-    // 1つの実行体の中で重なるので、かかった時間を同時数で割る
     const attemptStartedAt = Date.now();
-    const doMs = () =>
-      Math.round((Date.now() - attemptStartedAt) / plan.concurrency);
+    const doMs = () => Math.round((Date.now() - attemptStartedAt) / wave);
     // 1本の総時間の締め切り。担当の実行そのものは15分で止められるので、
     // その手前で必ず結果を書けるようにする
     const controller = new AbortController();
