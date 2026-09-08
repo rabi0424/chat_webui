@@ -32,6 +32,7 @@ import {
   RETRY_WORKER_LAUNCH_WINDOW_MS,
   RETRY_FREE_DO_SECONDS_PER_DAY,
   retryWorkerPlan,
+  utcDayStart,
   afterAttemptSettled,
   createChunkBudget,
   formatRetryProgress,
@@ -44,11 +45,13 @@ import { checkMonthlyLimit } from "./limit.server";
 import {
   appendRetrySuccess,
   createRetryRun,
+  dailyDurableMs,
   failRetryAttempts,
   finalizeGeneration,
   finishRetryAttempt,
   insertRetryAttempts,
   markRetryAttemptsProcessed,
+  noteCoordinatorMs,
   retryRunDurations,
   retryRunHeaderTimes,
   retryRunSnapshot,
@@ -222,6 +225,8 @@ export async function runRetryGenerationJob(
   let lost = false;
   let touchFailed = false;
   let budgetStopped = false;
+  /** 1日の実行体の時間の上限に達した。 */
+  let doBudgetStopped = false;
   let running = 0;
   let ticks = 0;
   /** 続けて失敗した往復の数。続くなら区切って次のアラームへ渡す。 */
@@ -274,6 +279,40 @@ export async function runRetryGenerationJob(
       return limitBlocked;
     } catch {
       // 判定できないことを理由に、走っている生成を止めはしない
+      return false;
+    }
+  };
+
+  /**
+   * 1日に使ってよい「実行体が起きている時間」を超えたか。
+   *
+   * 無料枠を使い切ると**どの生成も始められなくなり、翌0時（UTC）まで
+   * 戻らない**。上流の課金と違って台帳に載らないので、自分で数えて
+   * 手前で止める。判定は D1 を1件使うので、月間上限と同じ間隔で見る。
+   */
+  let doCheckedAt = 0;
+  const overDailyDoBudget = async (): Promise<boolean> => {
+    const limit = job.dailyDoSecondsBudget ?? 0;
+    if (!(limit > 0)) return false;
+    // 一度あきらめたら、間隔を空けずにそのまま真を返す。ここを外すと
+    // 30秒の間隔のあいだだけ判定が偽に戻り、走っている担当を待つ往復で
+    // 新しい担当を起こしてしまう
+    if (doBudgetStopped) return true;
+    if (Date.now() - doCheckedAt < RETRY_LIMIT_CHECK_INTERVAL_MS) return false;
+    doCheckedAt = Date.now();
+    try {
+      budget.spend();
+      const usedMs = await dailyDurableMs(utcDayStart(Date.now()));
+      if (usedMs / 1000 >= limit) {
+        doBudgetStopped = true;
+        state.lastError =
+          `1日の実行体の時間の上限（${limit.toLocaleString()}秒）に達したため打ち切りました。` +
+          `UTCの0時に戻ります`;
+        return true;
+      }
+      return false;
+    } catch {
+      // 数えられないことを理由に、走っている生成を止めはしない
       return false;
     }
   };
@@ -400,7 +439,11 @@ export async function runRetryGenerationJob(
     if (ticks % SWEEP_EVERY_TICKS === 0) await sweep();
 
     const canLaunch =
-      !stopped && !lost && !touchFailed && !state.fatal && !budgetStopped;
+      !stopped &&
+      !lost &&
+      !touchFailed &&
+      !state.fatal &&
+      !budgetStopped;
     const wantMore =
       state.successes < retry.target &&
       state.attempts + running < retry.maxAttempts &&
@@ -408,7 +451,12 @@ export async function runRetryGenerationJob(
 
     // 目標に届くまで、上限と並列数の範囲で担当を起こし続ける
     if (canLaunch && wantMore && Date.now() >= waitUntil()) {
-      if (await overBudget()) {
+      // 日の枠の判定を先に置く。一度あきらめたあとは即座に真を返すので、
+      // 走っている担当を待つあいだ月間上限の問い合わせ（D1 を3件）を
+      // 繰り返さずに済む
+      if (await overDailyDoBudget()) {
+        // 打ち切る理由は overDailyDoBudget が lastError に書く
+      } else if (await overBudget()) {
         state.lastError = "今月の使用額が上限に達したため打ち切りました";
         budgetStopped = true;
       } else {
@@ -492,6 +540,7 @@ export async function runRetryGenerationJob(
       lost ||
       state.fatal ||
       budgetStopped ||
+      doBudgetStopped ||
       state.successes >= retry.target ||
       state.attempts >= retry.maxAttempts ||
       state.launched >= requestCap;
@@ -517,6 +566,11 @@ export async function runRetryGenerationJob(
         break;
       }
       if (lost) break;
+      // 司令役が起きていた時間も無料枠を食う。数えておかないと
+      // 歯止めが担当のぶんしか見ない
+      await noteCoordinatorMs(statusId, Date.now() - chunkStartedAt).catch(
+        () => {},
+      );
       console.log(
         `[gen] retry chunk paused: internal=${budget.spent()} attempts=${state.attempts} successes=${state.successes} running=${running} launched=${state.launched} tickFailures=${tickFailures}`,
       );
@@ -525,6 +579,8 @@ export async function runRetryGenerationJob(
 
     await sleep(ticks < TICK_FAST_COUNT ? TICK_MS : TICK_SLOW_MS);
   }
+
+  await noteCoordinatorMs(statusId, Date.now() - chunkStartedAt).catch(() => {});
 
   if (lost) {
     console.log(
@@ -550,7 +606,12 @@ export async function runRetryGenerationJob(
   }
 
   const lines: string[] = [];
-  const cutShort = budgetStopped || state.fatal || requestsExhausted || stalled;
+  const cutShort =
+    budgetStopped ||
+    doBudgetStopped ||
+    state.fatal ||
+    requestsExhausted ||
+    stalled;
   lines.push(
     cutShort
       ? `**打ち切りました** — 成功 ${state.successes}件（目標 ${retry.target}件）・試行 ${state.attempts}回`
@@ -561,6 +622,10 @@ export async function runRetryGenerationJob(
   if (budgetStopped) {
     lines.push(
       "今月の使用額が上限に達しました。設定画面から上限を変えるか、今月だけ一時解除できます。",
+    );
+  } else if (doBudgetStopped) {
+    lines.push(
+      "1日に使ってよい実行体の時間の上限に達しました。UTCの0時（日本時間の朝9時）に戻ります。",
     );
   } else if (state.fatal) {
     lines.push("直らないエラーを受けたので、その場で止めました。");
@@ -681,6 +746,7 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
     detail: string | null,
     waitMs: number | null = null,
     headerMs: number | null = null,
+    doMs: number | null = null,
   ) =>
     finishRetryAttempt({
       id: attemptId,
@@ -688,6 +754,7 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
       detail: detail ? detail.slice(0, 301) : null,
       waitMs,
       headerMs,
+      doMs,
       now: Date.now(),
     });
 
@@ -706,6 +773,11 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
   }
 
   const runOne = async (attemptId: string): Promise<void> => {
+    // この依頼ぶんの「実行体が起きている時間」の取り分。同時に走る分は
+    // 1つの実行体の中で重なるので、かかった時間を同時数で割る
+    const attemptStartedAt = Date.now();
+    const doMs = () =>
+      Math.round((Date.now() - attemptStartedAt) / plan.concurrency);
     // 1本の総時間の締め切り。担当の実行そのものは15分で止められるので、
     // その手前で必ず結果を書けるようにする
     const controller = new AbortController();
@@ -737,7 +809,7 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
           content: r.content,
           usageJson: r.usageJson,
         });
-        await finish(attemptId, "success", null, null, timing.headerMs ?? null);
+        await finish(attemptId, "success", null, null, timing.headerMs ?? null, doMs());
         try {
           const captured = await captureGeneratedImages(
             r.content,
@@ -756,18 +828,21 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
           console.error("[gen] 画像の取り込みに失敗しました", id, e);
         }
       } else if (r.kind === "refused") {
-        await finish(attemptId, "refused", r.text, null, timing.headerMs ?? null);
+        await finish(attemptId, "refused", r.text, null, timing.headerMs ?? null, doMs());
         if (!isPoe) await recordRefusalUsage(job.model, r.usageJson);
       } else if (r.kind === "transient") {
-        await finish(attemptId, "transient", r.reason, r.waitMs, timing.headerMs ?? null);
+        await finish(attemptId, "transient", r.reason, r.waitMs, timing.headerMs ?? null, doMs());
       } else {
-        await finish(attemptId, "fatal", r.reason, null, timing.headerMs ?? null);
+        await finish(attemptId, "fatal", r.reason, null, timing.headerMs ?? null, doMs());
       }
     } catch (e) {
       await finish(
         attemptId,
         "transient",
         `担当の実行が失敗しました: ${(e as Error).message}`,
+        null,
+        null,
+        doMs(),
       ).catch(() => {});
     } finally {
       clearTimeout(deadline);

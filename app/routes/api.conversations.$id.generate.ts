@@ -148,6 +148,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         imageOutput: body.imageOutput === true,
         retry: retry ?? undefined,
         workerConcurrency: settings.retryWorkerConcurrency,
+        dailyDoSecondsBudget: settings.dailyDoSecondsBudget,
         paramsState: body.params ?? null,
         messages: body.messages.map((m) => ({
           role: m.role,

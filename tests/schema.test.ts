@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   CONVERSATIONS_SIDEBAR_SQL,
+  DAILY_DO_MS_SQL,
   DUE_PENDING_DELETIONS_SQL,
   FLUSH_GENERATION_SQL,
   FLUSH_STOP_CHECK_SQL,
@@ -20,8 +21,10 @@ import {
   RETRY_ATTEMPTS_UNPROCESSED_SQL,
   RETRY_ATTEMPT_FINISH_SQL,
   RETRY_ATTEMPT_INSERT_SQL,
+  RETRY_RUN_ADD_COORDINATOR_MS_SQL,
   RETRY_RUN_INSERT_SQL,
   RETRY_RUN_STARTED_SQL,
+  STOP_ALL_GENERATIONS_SQL,
   STALE_STREAMING_MS,
   SWEEP_STALE_STREAMING_SQL,
   STORAGE_STATS_SQL,
@@ -1134,10 +1137,11 @@ describe("成功するまで生成の記録", () => {
     waitMs: number | null = null,
     at = 2_000,
     headerMs: number | null = null,
+    doMs: number | null = null,
   ) =>
     db
       .prepare(RETRY_ATTEMPT_FINISH_SQL)
-      .run(at, kind, detail, waitMs, headerMs, id).changes;
+      .run(at, kind, detail, waitMs, headerMs, doMs, id).changes;
   const unprocessed = () =>
     db.prepare(RETRY_ATTEMPTS_UNPROCESSED_SQL).all(S) as { id: string; kind: string }[];
   const running = () =>
@@ -1309,6 +1313,120 @@ describe("成功するまで生成の記録", () => {
     finish("b1", "success");
     expect(unprocessed()).toEqual([]);
     expect(running()).toBe(0);
+  });
+});
+
+/**
+ * その日に使った「実行体が起きている時間」の集計。
+ *
+ * 無料枠を使い切ると**どの生成も始められなくなり、翌0時（UTC）まで
+ * 戻らない**。上流の課金と違って台帳に載らないので、この足し算だけが
+ * 歯止めの根拠になる。担当のぶんと司令役のぶんの**両方**を足していない
+ * と、実際の消費より小さく見えて素通りする。
+ */
+describe("1日に使った実行体の時間", () => {
+  const DAY = 1_800_000_000_000;
+  beforeEach(() => {
+    migrate(db);
+    db.prepare(
+      "INSERT INTO conversations (id, title, unread, created_at, updated_at) VALUES ('c1', 't', 0, 1, 1)",
+    ).run();
+  });
+
+  const run = (statusId: string, createdAt: number) => {
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, status, created_at) VALUES (?, 'c1', 'assistant', '', 'streaming', ?)",
+    ).run(statusId, createdAt);
+    db.prepare(RETRY_RUN_INSERT_SQL).run(statusId, "c1", statusId, createdAt);
+  };
+  const attempt = (
+    id: string,
+    statusId: string,
+    finishedAt: number,
+    doMs: number | null,
+  ) => {
+    db.prepare(RETRY_ATTEMPT_INSERT_SQL).run(id, statusId, 1, finishedAt - 1);
+    db.prepare(RETRY_ATTEMPT_FINISH_SQL).run(
+      finishedAt,
+      "refused",
+      null,
+      null,
+      null,
+      doMs,
+      id,
+    );
+  };
+  const total = () =>
+    (db.prepare(DAILY_DO_MS_SQL).get(DAY) as { total: number }).total;
+
+  it("担当のぶんと司令役のぶんを足す", () => {
+    run("s1", DAY + 1_000);
+    attempt("a1", "s1", DAY + 2_000, 3_000);
+    attempt("a2", "s1", DAY + 3_000, 4_000);
+    db.prepare(RETRY_RUN_ADD_COORDINATOR_MS_SQL).run(5_000, "s1");
+    db.prepare(RETRY_RUN_ADD_COORDINATOR_MS_SQL).run(1_000, "s1");
+    // 担当 3,000 + 4,000、司令役 5,000 + 1,000
+    expect(total()).toBe(13_000);
+  });
+
+  it("前の日のぶんは数えない（0時に戻るため）", () => {
+    run("old", DAY - 60_000);
+    attempt("a1", "old", DAY - 30_000, 9_000);
+    db.prepare(RETRY_RUN_ADD_COORDINATOR_MS_SQL).run(8_000, "old");
+    run("today", DAY + 1_000);
+    attempt("a2", "today", DAY + 2_000, 100);
+    expect(total()).toBe(100);
+  });
+
+  it("記録が無い行を混ぜても null にならない", () => {
+    run("s1", DAY + 1_000);
+    attempt("a1", "s1", DAY + 2_000, null);
+    expect(total()).toBe(0);
+  });
+});
+
+/**
+ * 走っている生成をすべて止める。枠を使い切って締め出されたあと、
+ * 溜まったアラームが一斉に動き出すのを止める最後の手立て。
+ * 確定済みの行まで触ると、済んだ会話に停止の跡が残る。
+ */
+describe("すべて止める", () => {
+  beforeEach(() => {
+    migrate(db);
+    db.prepare(
+      "INSERT INTO conversations (id, title, unread, created_at, updated_at) VALUES ('c1', 't', 0, 1, 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, status, created_at) VALUES ('s1', 'c1', 'assistant', '', 'streaming', 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, status, created_at) VALUES ('s2', 'c1', 'assistant', '', 'streaming', 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, status, created_at) VALUES ('d1', 'c1', 'assistant', '猫', 'done', 1)",
+    ).run();
+  });
+
+  const flagOf = (id: string) =>
+    (
+      db
+        .prepare("SELECT stop_requested AS f FROM messages WHERE id = ?")
+        .get(id) as { f: number }
+    ).f;
+
+  it("生成中の行だけに停止の印が立つ", () => {
+    expect(db.prepare(STOP_ALL_GENERATIONS_SQL).run().changes).toBe(2);
+    expect(flagOf("s1")).toBe(1);
+    expect(flagOf("s2")).toBe(1);
+    expect(flagOf("d1")).toBe(0);
+  });
+
+  it("立てた印は、司令役が毎秒読む問い合わせに出る", () => {
+    db.prepare(STOP_ALL_GENERATIONS_SQL).run();
+    const row = db.prepare(FLUSH_STOP_CHECK_SQL).get("s1") as {
+      stop_requested: number;
+    };
+    expect(row.stop_requested).toBe(1);
   });
 });
 

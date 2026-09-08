@@ -24,6 +24,14 @@ export interface AppSettings {
    */
   retryWorkerConcurrency: number;
   /**
+   * 1日に使ってよい「実行体が起きている時間」（秒）。0 なら歯止めなし。
+   *
+   * Durable Object の無料枠は1日 13,000 GB秒＝128MB 換算で約104,000秒。
+   * 使い切ると**どの生成も始められなくなり、翌0時（UTC）まで戻らない**。
+   * 上流の課金と違って台帳に載らないので、自分で数えて手前で止める。
+   */
+  dailyDoSecondsBudget: number;
+  /**
    * モデル一覧で「NEW」を出す日数（公開日からの経過日数）。
    * 0 にすると新着の強調をしない。
    */
@@ -79,6 +87,9 @@ export interface AppSettings {
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   retryAttemptCeiling: 100,
   retryWorkerConcurrency: 0,
+  // 無料枠（約104,000秒）の手前で止める。使い切ると翌0時まで
+  // どの生成も始められなくなるので、既定で歯止めを入れておく
+  dailyDoSecondsBudget: 90_000,
   newModelDays: 3,
   // 既定は上限なし。実際に使う額を見てから決められるよう、
   // こちらで勝手な数字を入れて生成を止めることはしない
@@ -103,6 +114,9 @@ export const RETRY_CEILING_RANGE = { min: 1, max: 1000 };
  * 成功したときの画像の取り込みにも使うため。
  */
 export const RETRY_WORKER_CONCURRENCY_RANGE = { min: 0, max: 30 };
+
+/** 1日の実行体の時間として受け付ける範囲（0 = 歯止めなし）。 */
+export const DAILY_DO_SECONDS_RANGE = { min: 0, max: 1_000_000 };
 
 /** 新着表示の日数として受け付ける範囲（0 = 表示しない）。 */
 export const NEW_MODEL_DAYS_RANGE = { min: 0, max: 90 };

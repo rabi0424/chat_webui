@@ -10,6 +10,7 @@ import {
   POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
   RETRY_WORKER_CONCURRENCY_RANGE,
+  DAILY_DO_SECONDS_RANGE,
   type AppSettings,
 } from "./settings";
 import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
@@ -34,6 +35,9 @@ import {
   RETRY_ATTEMPTS_DURATION_SQL,
   RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
   RETRY_ATTEMPTS_HEADER_SQL,
+  RETRY_RUN_ADD_COORDINATOR_MS_SQL,
+  STOP_ALL_GENERATIONS_SQL,
+  DAILY_DO_MS_SQL,
   RETRY_ATTEMPTS_LAUNCHED_SQL,
   RETRY_ATTEMPTS_MARK_ALL_SQL,
   RETRY_ATTEMPTS_RUNNING_SQL,
@@ -234,6 +238,14 @@ export async function updateAppSettings(
     next.retryWorkerConcurrency = Math.min(
       Math.max(Math.round(workerConcurrency), RETRY_WORKER_CONCURRENCY_RANGE.min),
       RETRY_WORKER_CONCURRENCY_RANGE.max,
+    );
+  }
+
+  const dailyDo = Number(patch.dailyDoSecondsBudget);
+  if (Number.isFinite(dailyDo)) {
+    next.dailyDoSecondsBudget = Math.min(
+      Math.max(Math.round(dailyDo), DAILY_DO_SECONDS_RANGE.min),
+      DAILY_DO_SECONDS_RANGE.max,
     );
   }
 
@@ -2289,7 +2301,7 @@ export async function failRetryAttempts(params: {
     params.ids.map((id) =>
       d
         .prepare(RETRY_ATTEMPT_FINISH_SQL)
-        .bind(params.now, "transient", params.detail, null, null, id),
+        .bind(params.now, "transient", params.detail, null, null, null, id),
     ),
   );
 }
@@ -2426,6 +2438,8 @@ export async function finishRetryAttempt(params: {
   waitMs: number | null;
   /** 応答ヘッダが返るまでの時間（同時に投げられているかの物差し）。 */
   headerMs?: number | null;
+  /** この依頼ぶんの「実行体が起きている時間」の取り分（ミリ秒）。 */
+  doMs?: number | null;
   now: number;
 }): Promise<boolean> {
   const d = await db();
@@ -2437,10 +2451,50 @@ export async function finishRetryAttempt(params: {
       params.detail,
       params.waitMs,
       params.headerMs ?? null,
+      params.doMs ?? null,
       params.id,
     )
     .run();
   return (res.meta.changes ?? 0) > 0;
+}
+
+/**
+ * その日（UTC）に使った「実行体が起きている時間」（ミリ秒）。
+ * 無料枠を使い切ると翌0時までどの生成も始められなくなるので、
+ * これを見て手前で止める。
+ */
+export async function dailyDurableMs(dayStart: number): Promise<number> {
+  const d = await db();
+  const row = await d
+    .prepare(DAILY_DO_MS_SQL)
+    .bind(dayStart)
+    .first<{ total: number }>();
+  return Number(row?.total ?? 0);
+}
+
+/** 司令役が起きていた時間を足す。 */
+export async function noteCoordinatorMs(
+  statusId: string,
+  ms: number,
+): Promise<void> {
+  if (!(ms > 0)) return;
+  const d = await db();
+  await d
+    .prepare(RETRY_RUN_ADD_COORDINATOR_MS_SQL)
+    .bind(Math.round(ms), statusId)
+    .run();
+}
+
+/**
+ * 走っている生成をすべて止める。止めた本数を返す。
+ *
+ * 実行体のアラームは外から消せないが、司令役は毎秒この行を見るので、
+ * ここを立てれば新しく起こすのが止まる。
+ */
+export async function stopAllGenerations(): Promise<number> {
+  const d = await db();
+  const res = await d.prepare(STOP_ALL_GENERATIONS_SQL).run();
+  return res.meta.changes ?? 0;
 }
 
 /** 応答ヘッダが返るまでの時間（平均と最長）。 */

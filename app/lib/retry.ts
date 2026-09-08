@@ -399,6 +399,15 @@ export const RETRY_WORKER_STREAMING_CONCURRENCY = 24;
  */
 export const RETRY_FREE_DO_SECONDS_PER_DAY = 104_000;
 
+/**
+ * その日（UTC）の始まり。無料枠は UTC の0時に戻るので、数える区切りも
+ * そこに合わせる（JST の暦日で数えると、朝9時に枠が戻ったあと同じ日の
+ * 分として数え続けてしまう）。
+ */
+export function utcDayStart(now: number): number {
+  return Math.floor(now / 86_400_000) * 86_400_000;
+}
+
 export interface RetryWorkerPlan {
   /** 担当1つが引き受ける依頼の数。 */
   attempts: number;

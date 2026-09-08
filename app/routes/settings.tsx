@@ -11,6 +11,7 @@ import {
   POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
   RETRY_WORKER_CONCURRENCY_RANGE,
+  DAILY_DO_SECONDS_RANGE,
   type AppSettings,
 } from "../lib/settings";
 import { monthLabelJst } from "../lib/usage";
@@ -263,6 +264,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const [savedKeys, setSavedKeys] = useState<Set<keyof AppSettings>>(new Set());
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [stopping, setStopping] = useState<string | null>(null);
 
   // 端末ごとの設定は localStorage。保存値を購読するので、
   // 別の場所で変えた分もここに出る（SSRでは既定値）
@@ -282,6 +284,19 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
     },
     [],
   );
+
+  /** 走っている生成をすべて止める（溜まったアラームの一斉起動を断つ）。 */
+  async function stopAll() {
+    setStopping("止めています…");
+    try {
+      const res = await fetch("/api/generations/stop-all", { method: "POST" });
+      const body = (await res.json()) as { stopped?: number };
+      if (!res.ok) throw new Error();
+      setStopping(`${body.stopped ?? 0}件に止まるよう伝えました`);
+    } catch {
+      setStopping("止められませんでした");
+    }
+  }
 
   async function save(patch: Partial<AppSettings>) {
     const next = { ...settings, ...patch };
@@ -472,6 +487,33 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 onChange={(v) => void save({ retryWorkerConcurrency: v })}
                 width="w-14"
               />
+            </Row>
+            <Row
+              label="1日の実行体の時間"
+              description="秒。0 で歯止めなし。Cloudflare の無料枠は1日 約104,000秒で、使い切ると翌0時（UTC・日本時間の朝9時）までどの生成も始められなくなります"
+              saved={saved("dailyDoSecondsBudget")}
+            >
+              <Stepper
+                label="1日の実行体の時間"
+                value={settings.dailyDoSecondsBudget}
+                min={DAILY_DO_SECONDS_RANGE.min}
+                max={DAILY_DO_SECONDS_RANGE.max}
+                step={5_000}
+                onChange={(v) => void save({ dailyDoSecondsBudget: v })}
+                width="w-24"
+              />
+            </Row>
+            <Row
+              label="走っている生成をすべて止める"
+              description="溜まった実行が一斉に動き出して枠を使い切るのを止めます。走り出している分は最後まで受け取ります"
+            >
+              <button
+                type="button"
+                onClick={() => void stopAll()}
+                className="rounded-lg border border-line px-3 py-1.5 text-sm hover:bg-hover"
+              >
+                {stopping ?? "すべて止める"}
+              </button>
             </Row>
           </Group>
 

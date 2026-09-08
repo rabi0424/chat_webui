@@ -250,6 +250,25 @@ CREATE INDEX IF NOT EXISTS idx_retry_attempts_run
   `
 ALTER TABLE retry_attempts ADD COLUMN header_ms INTEGER;
 `,
+  // v20: 使った「実行体が起きている時間」を数える。
+  //
+  // Durable Object の無料枠は1日 13,000 GB秒＝128MB 換算で約104,000秒。
+  // 使い切ると**どの生成も始められなくなり、翌0時（UTC）まで戻らない**。
+  // 実際に2日続けて締め出された。上流の課金と違って台帳に載らないので、
+  // 自分で数えて手前で止めるしかない。
+  //
+  // do_ms は依頼1本ぶんの取り分（かかった時間 ÷ 担当1つの同時数）。
+  // coordinator_ms は司令役が起きていた時間。
+  `
+ALTER TABLE retry_attempts ADD COLUMN do_ms INTEGER;
+`,
+  `
+ALTER TABLE retry_runs ADD COLUMN coordinator_ms INTEGER NOT NULL DEFAULT 0;
+`,
+  `
+CREATE INDEX IF NOT EXISTS idx_retry_attempts_finished
+  ON retry_attempts(finished_at);
+`,
 ];
 
 /**
@@ -263,7 +282,7 @@ export const RETRY_ATTEMPT_INSERT_SQL =
   "INSERT OR IGNORE INTO retry_attempts (id, status_id, seq, launched_at) VALUES (?, ?, ?, ?)";
 /** 結果が決まった。既に決まっている行は上書きしない（再送で二重に数えない）。 */
 export const RETRY_ATTEMPT_FINISH_SQL =
-  "UPDATE retry_attempts SET finished_at = ?, kind = ?, detail = ?, wait_ms = ?, header_ms = ? WHERE id = ? AND finished_at IS NULL";
+  "UPDATE retry_attempts SET finished_at = ?, kind = ?, detail = ?, wait_ms = ?, header_ms = ?, do_ms = ? WHERE id = ? AND finished_at IS NULL";
 /** 司令役が毎秒読む、決まったのにまだ数えていない行。 */
 export const RETRY_ATTEMPTS_UNPROCESSED_SQL =
   "SELECT id, kind, detail, wait_ms, message_id FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND processed = 0 ORDER BY finished_at, seq";
@@ -293,6 +312,34 @@ export const RETRY_ATTEMPTS_LAUNCHED_SQL =
  */
 export const RETRY_ATTEMPTS_DURATION_SQL =
   "SELECT COUNT(*) AS n, COALESCE(SUM(finished_at - launched_at), 0) AS total FROM retry_attempts WHERE status_id = ? AND finished_at IS NOT NULL AND finished_at > launched_at";
+
+/**
+ * その日に使った「実行体が起きている時間」。
+ *
+ * 無料枠（1日 約104,000秒）を使い切ると、どの生成も始められなくなり
+ * 翌0時（UTC）まで戻らない。上流の課金と違って台帳に載らないので、
+ * 自分で数えて手前で止める。担当のぶん（依頼ごとの取り分）と司令役の
+ * ぶんを足す。日をまたいだ実行の司令役は、始めた日に数える（近似）。
+ */
+export const DAILY_DO_MS_SQL = `SELECT
+  (SELECT COALESCE(SUM(do_ms), 0) FROM retry_attempts WHERE finished_at >= ?1)
+  + (SELECT COALESCE(SUM(coordinator_ms), 0) FROM retry_runs WHERE created_at >= ?1)
+  AS total`;
+
+/** 司令役が起きていた時間を足す。 */
+export const RETRY_RUN_ADD_COORDINATOR_MS_SQL =
+  "UPDATE retry_runs SET coordinator_ms = coordinator_ms + ? WHERE status_id = ?";
+
+/**
+ * 走っている生成をすべて止める。
+ *
+ * 実行体のアラームは外から消せないが、司令役は毎秒この行を見て
+ * 「停止」を拾うので、ここを立てれば新しく起こすのが止まる。
+ * 枠を使い切って締め出されたあと、溜まったアラームが一斉に動き出すのを
+ * 止める手立てとして要る（実際に、枠が戻った30分後にまた使い切った）。
+ */
+export const STOP_ALL_GENERATIONS_SQL =
+  "UPDATE messages SET stop_requested = 1 WHERE status = 'streaming'";
 
 /**
  * 応答ヘッダが返るまでの時間。**同時に投げられているかの物差し。**

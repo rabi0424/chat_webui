@@ -18,7 +18,12 @@ const spawnedJobs: { attemptIds: string[]; workerConcurrency?: number }[] = [];
 const inserted: { id: string; seq: number }[] = [];
 const failed: string[] = [];
 /** 担当が書いた結果。 */
-const finished: { id: string; kind: string; detail: string | null }[] = [];
+const finished: {
+  id: string;
+  kind: string;
+  detail: string | null;
+  doMs?: number | null;
+}[] = [];
 /** tickRetryRun が返す値。テストごとに差し替える。 */
 let tickResult: {
   stopRequested: boolean;
@@ -39,6 +44,12 @@ let finalized: { status: string; content: string; error?: string | null } | null
 let onTick: ((n: number) => void) | null = null;
 /** 決着した依頼の本数と、かかった時間の合計。 */
 let durations = { count: 0, totalMs: 0 };
+/** その日に使った「実行体が起きている時間」（ミリ秒）。 */
+let dailyDoMs = 0;
+/** その集計を何回読んだか（設定が0のときは読まないこと）。 */
+let dailyChecks = 0;
+/** 司令役が自分の起きていた時間として書き足したぶん。 */
+const coordinatorMs: number[] = [];
 /** 応答ヘッダが返るまでの時間（同時に投げられているかの物差し）。 */
 let headerTimes = { count: 0, avgMs: 0, maxMs: 0 };
 /** 続きの実行の頭で D1 から取り直す値。 */
@@ -88,10 +99,22 @@ vi.mock("../../app/lib/db.server", () => ({
   }),
   markRetryAttemptsProcessed: vi.fn(async () => {}),
   retryRunDurations: vi.fn(async () => durations),
+  dailyDurableMs: vi.fn(async () => {
+    dailyChecks++;
+    return dailyDoMs;
+  }),
+  noteCoordinatorMs: vi.fn(async (_id: string, ms: number) => {
+    coordinatorMs.push(ms);
+  }),
   retryRunHeaderTimes: vi.fn(async () => headerTimes),
   sweepLostRetryAttempts: vi.fn(async () => 0),
   finishRetryAttempt: vi.fn(
-    async (p: { id: string; kind: string; detail: string | null }) => {
+    async (p: {
+      id: string;
+      kind: string;
+      detail: string | null;
+      doMs?: number | null;
+    }) => {
       finished.push(p);
       return true;
     },
@@ -199,6 +222,9 @@ beforeEach(() => {
   monthlyLimit.mockClear();
   durations = { count: 0, totalMs: 0 };
   headerTimes = { count: 0, avgMs: 0, maxMs: 0 };
+  dailyDoMs = 0;
+  dailyChecks = 0;
+  coordinatorMs.length = 0;
   snapshot = {
     counts: { success: 0, refused: 0, transient: 0, fatal: 0 },
     launched: 0,
@@ -739,5 +765,153 @@ describe("ヘッダまでの時間", () => {
       expect(finalized?.content).not.toContain("ヘッダまで");
     },
     20_000,
+  );
+});
+
+/**
+ * 1日に使ってよい「実行体が起きている時間」の歯止め。
+ *
+ * Durable Object の無料枠を使い切ると**どの生成も始められなくなり、
+ * 翌0時（UTC）まで戻らない**。実際に2日続けて締め出された。上流の課金と
+ * 違って台帳に載らないので、自分で数えて手前で止めるしかない。
+ */
+describe("1日の実行体の時間の歯止め", () => {
+  const finishAll = (n: number) => {
+    onTick = (t) => {
+      if (t >= n) {
+        tickResult = {
+          stopRequested: false,
+          applied: true,
+          running: 0,
+          finished: [
+            { id: "a1", kind: "success", detail: null, wait_ms: null, message_id: "m1" },
+            { id: "a2", kind: "success", detail: null, wait_ms: null, message_id: "m2" },
+          ],
+        };
+      }
+    };
+  };
+
+  it(
+    "上限に達していたら、1本も起こさずに打ち切る",
+    async () => {
+      dailyDoMs = 95_000_000; // 95,000秒
+      // 前の区切りで起こした担当がまだ走っている（＝すぐには終われない）。
+      // この往復のあいだ、新しく起こさないことを見る
+      snapshot = { ...snapshot, launched: 4, lastSeq: 4 };
+      tickResult = { ...idle, running: 4 };
+      onTick = (n) => {
+        if (n >= 4) tickResult = { ...idle, running: 0 };
+      };
+      const out = await runRetryGenerationJob(
+        { ...(job as unknown as Record<string, unknown>), dailyDoSecondsBudget: 90_000 } as never,
+        retry,
+        null,
+      );
+      expect(spawned).toEqual([]);
+      expect(inserted).toEqual([]);
+      expect(out).toEqual({ done: true });
+      // 成功0件なので要約はエラー欄に載る
+      expect(finalized?.status).toBe("error");
+      expect(finalized?.error).toContain("打ち切りました");
+      expect(finalized?.error).toContain(
+        "1日に使ってよい実行体の時間の上限に達しました",
+      );
+      expect(finalized?.error).toContain("1日の実行体の時間の上限（90,000秒）");
+    },
+    20_000,
+  );
+
+  it(
+    "上限に届いていなければ、いつも通り起こす",
+    async () => {
+      dailyDoMs = 10_000_000; // 10,000秒
+      finishAll(2);
+      await runRetryGenerationJob(
+        { ...(job as unknown as Record<string, unknown>), dailyDoSecondsBudget: 90_000 } as never,
+        retry,
+        null,
+      );
+      expect(spawned.flat()).toHaveLength(4);
+      expect(dailyChecks).toBeGreaterThan(0);
+      expect(finalized?.content).not.toContain("1日に使ってよい実行体の時間");
+    },
+    20_000,
+  );
+
+  it(
+    "上限を 0（切）にしたら、集計そのものを読まない",
+    async () => {
+      // D1 を1件使う問い合わせなので、使わない設定では投げない
+      dailyDoMs = 95_000_000;
+      finishAll(2);
+      await runRetryGenerationJob(
+        { ...(job as unknown as Record<string, unknown>), dailyDoSecondsBudget: 0 } as never,
+        retry,
+        null,
+      );
+      expect(dailyChecks).toBe(0);
+      expect(spawned.flat()).toHaveLength(4);
+    },
+    20_000,
+  );
+
+  it(
+    "司令役が起きていた時間も数に入れる",
+    async () => {
+      // 担当のぶんだけ数えると、司令役が起きている時間（無料枠を同じだけ
+      // 食う）が丸ごと帳簿から漏れる
+      finishAll(2);
+      await runRetryGenerationJob(job, retry, null);
+      expect(coordinatorMs.length).toBeGreaterThan(0);
+      expect(coordinatorMs.reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+    },
+    20_000,
+  );
+});
+
+/**
+ * 担当が書く「この依頼ぶんの取り分」。同時に走る分は1つの実行体の中で
+ * 重なるので、かかった時間を同時数で割ったものが無料枠の消費になる。
+ * 割らずにそのまま書くと、歯止めが実際の数倍で効いて早々に止まる。
+ */
+describe("依頼1本ぶんの実行体の時間", () => {
+  const attemptJob = (ids: string[], workerConcurrency: number) =>
+    ({
+      kind: "attempt",
+      attemptIds: ids,
+      statusId: "s1",
+      conversationId: "c1",
+      model: "poe:Imagen",
+      web: false,
+      imageOutput: true,
+      paramsState: null,
+      messages: [],
+      workerConcurrency,
+    }) as never;
+
+  it(
+    "同時数で割ったものを書く",
+    async () => {
+      // 上流は1本1.5秒。同時3本なら1本あたり約500ミリ秒の取り分
+      await runAttemptJob(attemptJob(["a1", "a2", "a3"], 3));
+      const few = finished.map((f) => f.doMs ?? 0);
+      expect(few).toHaveLength(3);
+      for (const ms of few) {
+        expect(ms).toBeGreaterThan(400);
+        expect(ms).toBeLessThan(800);
+      }
+
+      finished.length = 0;
+      // 同じ1.5秒でも、同時30本なら取り分は10分の1
+      await runAttemptJob(attemptJob(["b1", "b2", "b3"], 30));
+      const many = finished.map((f) => f.doMs ?? 0);
+      expect(many).toHaveLength(3);
+      for (const ms of many) {
+        expect(ms).toBeGreaterThan(20);
+        expect(ms).toBeLessThan(150);
+      }
+    },
+    30_000,
   );
 });

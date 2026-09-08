@@ -29,6 +29,7 @@ import {
   RETRY_STALLED_CHUNK_LIMIT,
   onTransientFailure,
   readRetryConfig,
+  utcDayStart,
 } from "../app/lib/retry";
 
 /**
@@ -617,5 +618,28 @@ describe("retryWorkerPlan", () => {
   it("同時数は、1回の呼び出しで出せる外部の通信（50件）を超えない", () => {
     // 成功したときの画像の取り込みにも使うので、余裕を残す
     expect(RETRY_WORKER_STREAMING_CONCURRENCY).toBeLessThanOrEqual(30);
+  });
+});
+
+/**
+ * 数える区切り。Durable Object の無料枠は **UTC の0時**に戻る。
+ * JST の暦日で数えると、朝9時に枠が戻ったあとも前日ぶんを引きずり、
+ * 使えるのに止まったまま／使い切っているのに走り続ける、の両方が起きる。
+ */
+describe("1日の区切り", () => {
+  it("UTC の0時で切る（JST の0時ではない）", () => {
+    const noonUtc = Date.UTC(2026, 8, 8, 12, 0, 0);
+    expect(utcDayStart(noonUtc)).toBe(Date.UTC(2026, 8, 8, 0, 0, 0));
+    // JST の朝9時＝UTC の0時。ここで日が変わる
+    expect(utcDayStart(Date.UTC(2026, 8, 8, 0, 0, 0))).toBe(
+      Date.UTC(2026, 8, 8, 0, 0, 0),
+    );
+    expect(utcDayStart(Date.UTC(2026, 8, 7, 23, 59, 59))).toBe(
+      Date.UTC(2026, 8, 7, 0, 0, 0),
+    );
+    // JST の0時（＝UTC の前日15時）ではまだ日が変わらない
+    expect(utcDayStart(Date.UTC(2026, 8, 7, 15, 0, 0))).toBe(
+      Date.UTC(2026, 8, 7, 0, 0, 0),
+    );
   });
 });

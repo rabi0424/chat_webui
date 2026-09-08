@@ -573,6 +573,11 @@ export interface GenerationJob {
    * ここが依頼1本あたりの実行体の時間＝無料枠の消費を決める。
    */
   workerConcurrency?: number;
+  /**
+   * 1日に使ってよい「実行体が起きている時間」（秒。0/未指定で歯止めなし）。
+   * 使い切ると翌0時（UTC）までどの生成も始められなくなるので、手前で止める。
+   */
+  dailyDoSecondsBudget?: number;
   paramsState: ParamsState | null;
   messages: ChatMessage[];
 }
