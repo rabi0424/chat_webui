@@ -52,6 +52,8 @@ let dailyChecks = 0;
 const coordinatorMs: number[] = [];
 /** 要約に出す、司令役の起きていた時間の合計。 */
 let coordinatorTotalMs = 0;
+/** 古い記録の掃除を何回頼んだか。 */
+let pruned = 0;
 /** 応答ヘッダが返るまでの時間（同時に投げられているかの物差し）。 */
 let headerTimes = { count: 0, avgMs: 0, maxMs: 0 };
 /** 続きの実行の頭で D1 から取り直す値。 */
@@ -85,6 +87,10 @@ vi.mock("cloudflare:workers", () => ({
 
 vi.mock("../../app/lib/db.server", () => ({
   createRetryRun: vi.fn(async () => {}),
+  pruneOldRetryRun: vi.fn(async () => {
+    pruned++;
+    return true;
+  }),
   retryRunSnapshot: vi.fn(async () => snapshot),
   tickRetryRun: vi.fn(async (_id: string, content: string) => {
     tickCalls.push(content);
@@ -229,6 +235,7 @@ beforeEach(() => {
   dailyChecks = 0;
   coordinatorMs.length = 0;
   coordinatorTotalMs = 0;
+  pruned = 0;
   snapshot = {
     counts: { success: 0, refused: 0, transient: 0, fatal: 0 },
     launched: 0,
@@ -239,6 +246,31 @@ beforeEach(() => {
 });
 
 describe("司令役を回す", () => {
+  it(
+    "実行のたびに、古い記録を片付ける",
+    async () => {
+      // 1日1万本なら1年で365万行。誰も見ない行で D1 の枠が埋まる
+      onTick = (n) => {
+        if (n >= 2) {
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 0,
+            finished: [
+              { id: "a1", kind: "success", detail: null, wait_ms: null, message_id: "m1" },
+              { id: "a2", kind: "success", detail: null, wait_ms: null, message_id: "m2" },
+            ],
+          };
+        }
+      };
+      await runRetryGenerationJob(job, retry, null);
+      expect(pruned).toBeGreaterThan(0);
+      // 掃除は本題ではないので、実行そのものは通常どおり終わる
+      expect(finalized?.status).toBe("done");
+    },
+    20_000,
+  );
+
   it(
     "担当を起こし、結果が届いたら数え、目標に届いたら要約を確定する",
     async () => {

@@ -22,7 +22,10 @@ import {
   RETRY_ATTEMPT_FINISH_SQL,
   RETRY_ATTEMPT_INSERT_SQL,
   RETRY_RUN_ADD_COORDINATOR_MS_SQL,
+  RETRY_ATTEMPTS_PRUNE_SQL,
   RETRY_RUN_COORDINATOR_MS_SQL,
+  RETRY_RUN_OLDEST_SQL,
+  RETRY_RUN_PRUNE_SQL,
   RETRY_RUN_INSERT_SQL,
   RETRY_RUN_STARTED_SQL,
   STOP_ALL_GENERATIONS_SQL,
@@ -1427,6 +1430,80 @@ describe("1日に使った実行体の時間", () => {
     run("s1", DAY + 1_000);
     attempt("a1", "s1", DAY + 2_000, null);
     expect(total()).toBe(0);
+  });
+});
+
+/**
+ * 古い実行の記録の掃除。1日1万本なら1年で365万行になり、誰も見ない行で
+ * D1 の枠（アカウント全体で 5GB）が埋まる。ただし当日ぶんを消すと、
+ * 1日の実行体の時間の歯止めが緩む。
+ */
+describe("古い実行の記録を片付ける", () => {
+  const DAY = 1_800_000_000_000;
+  const CUTOFF = DAY - 7 * 24 * 60 * 60 * 1000;
+  beforeEach(() => {
+    migrate(db);
+    db.prepare(
+      "INSERT INTO conversations (id, title, unread, created_at, updated_at) VALUES ('c1', 't', 0, 1, 1)",
+    ).run();
+  });
+  const run = (id: string, createdAt: number, attempts: number) => {
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, status, created_at) VALUES (?, 'c1', 'assistant', '', 'done', ?)",
+    ).run(id, createdAt);
+    db.prepare(RETRY_RUN_INSERT_SQL).run(id, "c1", id, createdAt);
+    for (let i = 0; i < attempts; i++) {
+      db.prepare(RETRY_ATTEMPT_INSERT_SQL).run(`${id}-${i}`, id, i, createdAt);
+    }
+  };
+  const oldest = () =>
+    (
+      db.prepare(RETRY_RUN_OLDEST_SQL).get(CUTOFF) as
+        | { status_id: string }
+        | undefined
+    )?.status_id;
+  const countAttempts = (id: string) =>
+    (
+      db
+        .prepare("SELECT COUNT(*) AS n FROM retry_attempts WHERE status_id = ?")
+        .get(id) as { n: number }
+    ).n;
+
+  it("期限を過ぎたものだけ、古い順に1つ選ぶ", () => {
+    run("today", DAY, 3);
+    run("older", CUTOFF - 10_000, 2);
+    run("oldest", CUTOFF - 90_000, 2);
+    expect(oldest()).toBe("oldest");
+    db.prepare(RETRY_RUN_PRUNE_SQL).run("oldest");
+    expect(oldest()).toBe("older");
+    db.prepare(RETRY_RUN_PRUNE_SQL).run("older");
+    // 当日ぶんは選ばれない（消すと1日の実行体の時間の歯止めが緩む）
+    expect(oldest()).toBeUndefined();
+  });
+
+  it("選んだ実行の行だけ落とす", () => {
+    run("old", CUTOFF - 10_000, 4);
+    run("today", DAY, 3);
+    expect(db.prepare(RETRY_ATTEMPTS_PRUNE_SQL).run("old").changes).toBe(4);
+    expect(countAttempts("old")).toBe(0);
+    // 巻き添えにしない
+    expect(countAttempts("today")).toBe(3);
+    expect(
+      db.prepare("SELECT COUNT(*) AS n FROM retry_runs").get() as { n: number },
+    ).toEqual({ n: 2 });
+  });
+
+  it("落としても、当日の実行体の時間の集計は変わらない", () => {
+    run("old", CUTOFF - 10_000, 1);
+    run("today", DAY + 1_000, 1);
+    db.prepare(RETRY_ATTEMPT_FINISH_SQL).run(DAY + 2_000, "refused", null, null, null, 700, "today-0");
+    db.prepare(RETRY_RUN_ADD_COORDINATOR_MS_SQL).run(300, "today");
+    const total = () =>
+      (db.prepare(DAILY_DO_MS_SQL).get(DAY) as { total: number }).total;
+    expect(total()).toBe(1_000);
+    db.prepare(RETRY_ATTEMPTS_PRUNE_SQL).run("old");
+    db.prepare(RETRY_RUN_PRUNE_SQL).run("old");
+    expect(total()).toBe(1_000);
   });
 });
 

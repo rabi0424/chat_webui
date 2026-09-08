@@ -345,6 +345,28 @@ export const RETRY_RUN_ADD_COORDINATOR_MS_SQL =
   "UPDATE retry_runs SET coordinator_ms = coordinator_ms + ? WHERE status_id = ?";
 
 /**
+ * 古い実行の記録を掃除する。
+ *
+ * 1日1万本なら1年で365万行になる。D1 の無料枠はアカウント全体で 5GB、
+ * 1データベース 500MB。会話を消せば一緒に消えるが、実行が終わっただけ
+ * では残るので、**放っておくと誰も見ない行で枠が埋まる**。
+ *
+ * 実測の数字は要約に書き終えているので、行そのものは要らなくなる。
+ * ただし当日ぶんは残す——`DAILY_DO_MS_SQL` がこの行を足して1日の
+ * 実行体の時間を出しているので、消すと歯止めが緩む。
+ *
+ * 一度に1実行ぶんだけ落とす（1実行は最大でも上限試行回数の3倍＝3,000行）。
+ * まとめて落とすと、D1 の書き込み行数（無料枠は1日10万行）をここで
+ * 使い切りかねない。新しい実行が始まるたびに1つずつ片付ける。
+ */
+export const RETRY_PRUNE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+export const RETRY_RUN_OLDEST_SQL =
+  "SELECT status_id FROM retry_runs WHERE created_at < ? ORDER BY created_at LIMIT 1";
+export const RETRY_ATTEMPTS_PRUNE_SQL =
+  "DELETE FROM retry_attempts WHERE status_id = ?";
+export const RETRY_RUN_PRUNE_SQL = "DELETE FROM retry_runs WHERE status_id = ?";
+
+/**
  * 走っている生成をすべて止める。
  *
  * 実行体のアラームは外から消せないが、司令役は毎秒この行を見て

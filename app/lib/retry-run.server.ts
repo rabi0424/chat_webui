@@ -47,6 +47,7 @@ import { checkMonthlyLimit } from "./limit.server";
 import {
   appendRetrySuccess,
   createRetryRun,
+  pruneOldRetryRun,
   dailyDurableMs,
   failRetryAttempts,
   finalizeGeneration,
@@ -241,6 +242,13 @@ export async function runRetryGenerationJob(
   // 「数えた」にして、この後の毎秒の読みで二重に数えない
   budget.spend(2);
   await createRetryRun({ statusId, conversationId: job.conversationId, now: state.startedAt });
+  /*
+   * 実行が始まるたびに、古い記録を1つぶんだけ片付ける。1日1万本なら
+   * 1年で365万行になり、誰も見ない行で D1 の枠（5GB）が埋まる。
+   * 掃除できなくても実行は続ける（本題ではない）。
+   */
+  budget.spend(3);
+  await pruneOldRetryRun(Date.now()).catch(() => {});
   const snapshot = await retryRunSnapshot(statusId);
   state.successes = snapshot.counts.success;
   state.refusals = snapshot.counts.refused;

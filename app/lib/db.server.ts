@@ -35,8 +35,12 @@ import {
   RETRY_ATTEMPTS_DURATION_SQL,
   RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
   RETRY_ATTEMPTS_HEADER_SQL,
+  RETRY_ATTEMPTS_PRUNE_SQL,
+  RETRY_PRUNE_AFTER_MS,
   RETRY_RUN_ADD_COORDINATOR_MS_SQL,
   RETRY_RUN_COORDINATOR_MS_SQL,
+  RETRY_RUN_OLDEST_SQL,
+  RETRY_RUN_PRUNE_SQL,
   STOP_ALL_GENERATIONS_SQL,
   DAILY_DO_MS_SQL,
   RETRY_ATTEMPTS_LAUNCHED_SQL,
@@ -2264,6 +2268,27 @@ export async function createRetryRun(params: {
     .prepare(RETRY_RUN_INSERT_SQL)
     .bind(params.statusId, params.conversationId, params.statusId, params.now)
     .run();
+}
+
+/**
+ * 古い実行の記録を1つぶんだけ落とす。落としたら true。
+ *
+ * 新しい実行が始まるたびに1つずつ片付ける。まとめて落とすと D1 の
+ * 書き込み行数（無料枠は1日10万行）をここで使い切りかねない。
+ * 当日ぶんは残るので、1日の実行体の時間の歯止めには影響しない。
+ */
+export async function pruneOldRetryRun(now: number): Promise<boolean> {
+  const d = await db();
+  const old = await d
+    .prepare(RETRY_RUN_OLDEST_SQL)
+    .bind(now - RETRY_PRUNE_AFTER_MS)
+    .first<{ status_id: string }>();
+  if (!old) return false;
+  await d.batch([
+    d.prepare(RETRY_ATTEMPTS_PRUNE_SQL).bind(old.status_id),
+    d.prepare(RETRY_RUN_PRUNE_SQL).bind(old.status_id),
+  ]);
+  return true;
 }
 
 /**
