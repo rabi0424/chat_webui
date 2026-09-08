@@ -22,6 +22,7 @@ import {
   RETRY_ATTEMPT_FINISH_SQL,
   RETRY_ATTEMPT_INSERT_SQL,
   RETRY_RUN_ADD_COORDINATOR_MS_SQL,
+  RETRY_RUN_COORDINATOR_MS_SQL,
   RETRY_RUN_INSERT_SQL,
   RETRY_RUN_STARTED_SQL,
   STOP_ALL_GENERATIONS_SQL,
@@ -1381,6 +1382,20 @@ describe("1日に使った実行体の時間", () => {
     run("today", DAY + 1_000);
     attempt("a2", "today", DAY + 2_000, 100);
     expect(total()).toBe(100);
+  });
+
+  it("司令役のぶんは、実行ごとに読み出せる（要約に出す）", () => {
+    run("s1", DAY + 1_000);
+    run("s2", DAY + 1_000);
+    db.prepare(RETRY_RUN_ADD_COORDINATOR_MS_SQL).run(5_000, "s1");
+    db.prepare(RETRY_RUN_ADD_COORDINATOR_MS_SQL).run(9_000, "s2");
+    const of = (id: string) =>
+      (db.prepare(RETRY_RUN_COORDINATOR_MS_SQL).get(id) as { ms: number }).ms;
+    expect(of("s1")).toBe(5_000);
+    expect(of("s2")).toBe(9_000);
+    // まだ何も足していない実行は 0（null を返さない）
+    run("s3", DAY + 1_000);
+    expect(of("s3")).toBe(0);
   });
 
   it("記録が無い行を混ぜても null にならない", () => {

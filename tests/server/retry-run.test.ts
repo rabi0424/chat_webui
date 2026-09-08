@@ -50,6 +50,8 @@ let dailyDoMs = 0;
 let dailyChecks = 0;
 /** 司令役が自分の起きていた時間として書き足したぶん。 */
 const coordinatorMs: number[] = [];
+/** 要約に出す、司令役の起きていた時間の合計。 */
+let coordinatorTotalMs = 0;
 /** 応答ヘッダが返るまでの時間（同時に投げられているかの物差し）。 */
 let headerTimes = { count: 0, avgMs: 0, maxMs: 0 };
 /** 続きの実行の頭で D1 から取り直す値。 */
@@ -99,6 +101,7 @@ vi.mock("../../app/lib/db.server", () => ({
   }),
   markRetryAttemptsProcessed: vi.fn(async () => {}),
   retryRunDurations: vi.fn(async () => durations),
+  retryRunCoordinatorMs: vi.fn(async () => coordinatorTotalMs),
   dailyDurableMs: vi.fn(async () => {
     dailyChecks++;
     return dailyDoMs;
@@ -225,6 +228,7 @@ beforeEach(() => {
   dailyDoMs = 0;
   dailyChecks = 0;
   coordinatorMs.length = 0;
+  coordinatorTotalMs = 0;
   snapshot = {
     counts: { success: 0, refused: 0, transient: 0, fatal: 0 },
     launched: 0,
@@ -672,8 +676,11 @@ describe("使った時間の実測", () => {
   it(
     "1本あたりの秒数と、無料枠に対する割合を要約に出す",
     async () => {
-      // 20本・合計3600秒 → 1本180秒。同時6本なら実行体の時間は600秒
+      // 20本・合計3600秒 → 1本180秒。同時6本なら担当のぶんは600秒
       durations = { count: 20, totalMs: 3_600_000, doMs: 0 };
+      // 司令役も400秒起きていた。歯止めはこれも数えているので、
+      // 担当のぶんだけ見せると枠の4割が見えないまま消える
+      coordinatorTotalMs = 400_000;
       onTick = (n) => {
         if (n >= 2) {
           tickResult = {
@@ -691,8 +698,11 @@ describe("使った時間の実測", () => {
       // 取り分の記録が無い古い実行では、実効は出せないので出さない
       expect(finalized?.content).toContain("1本あたり 180.0秒（同時 6本）");
       expect(finalized?.content).not.toContain("実効");
-      expect(finalized?.content).toContain("実行体の時間の目安 600秒");
-      expect(finalized?.content).toContain("1日の無料枠の 0.6%");
+      expect(finalized?.content).toContain(
+        "実行体の時間 1,000秒（担当 600秒＋司令役 400秒）",
+      );
+      // 割合も合計で出す（600秒ぶんの 0.6% ではない）
+      expect(finalized?.content).toContain("1日の無料枠の 1.0%");
     },
     20_000,
   );
@@ -718,8 +728,8 @@ describe("使った時間の実測", () => {
       };
       await runRetryGenerationJob(job, retry, null);
       // 3,600秒 ÷ 6 = 600秒 ではなく、記録された 1,200秒
-      expect(finalized?.content).toContain("実行体の時間の目安 1,200秒");
-      expect(finalized?.content).not.toContain("実行体の時間の目安 600秒");
+      expect(finalized?.content).toContain("実行体の時間 1,200秒");
+      expect(finalized?.content).not.toContain("実行体の時間 600秒");
       // 実効の同時数＝かかった時間 ÷ 実行体の時間。設定が6でも実際に
       // 重なっていたのは3本、と読める（ヘッダまでの時間より直に答える）
       expect(finalized?.content).toContain("同時 6本・実効 3.0本");

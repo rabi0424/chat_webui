@@ -36,6 +36,7 @@ import {
   RETRY_ATTEMPTS_FIRST_REFUSAL_SQL,
   RETRY_ATTEMPTS_HEADER_SQL,
   RETRY_RUN_ADD_COORDINATOR_MS_SQL,
+  RETRY_RUN_COORDINATOR_MS_SQL,
   STOP_ALL_GENERATIONS_SQL,
   DAILY_DO_MS_SQL,
   RETRY_ATTEMPTS_LAUNCHED_SQL,
@@ -2474,6 +2475,16 @@ export async function dailyDurableMs(dayStart: number): Promise<number> {
     .bind(dayStart)
     .first<{ total: number }>();
   return Number(row?.total ?? 0);
+}
+
+/** 司令役が起きていた時間の合計（この実行のぶん）。 */
+export async function retryRunCoordinatorMs(statusId: string): Promise<number> {
+  const d = await db();
+  const row = await d
+    .prepare(RETRY_RUN_COORDINATOR_MS_SQL)
+    .bind(statusId)
+    .first<{ ms: number }>();
+  return Number(row?.ms ?? 0);
 }
 
 /** 司令役が起きていた時間を足す。 */

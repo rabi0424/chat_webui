@@ -54,6 +54,7 @@ import {
   insertRetryAttempts,
   markRetryAttemptsProcessed,
   noteCoordinatorMs,
+  retryRunCoordinatorMs,
   retryRunDurations,
   retryRunHeaderTimes,
   retryRunSnapshot,
@@ -669,8 +670,16 @@ export async function runRetryGenerationJob(
       const perAttempt = d.totalMs / d.count / 1000;
       // 担当が書いた取り分の合計をそのまま出す（歯止めが数えているのと
       // 同じ数字）。古い行には取り分が無いので、そのときだけ割って作る
-      const doSeconds =
+      const workerSeconds =
         d.doMs > 0 ? d.doMs / 1000 : d.totalMs / 1000 / plan.concurrency;
+      /*
+       * 司令役のぶんも足して出す。**歯止めはこの合計で数えている**ので、
+       * 担当のぶんだけ見せると枠の半分近くが見えないまま消える。司令役は
+       * 実行のあいだずっと起きているので、割合はおよそ 12 ÷ 並列数——
+       * 並列数を上げるほど、担当のぶんに対して薄まる。
+       */
+      const coordinatorSeconds = (await retryRunCoordinatorMs(statusId)) / 1000;
+      const doSeconds = workerSeconds + coordinatorSeconds;
       const share = (doSeconds / RETRY_FREE_DO_SECONDS_PER_DAY) * 100;
       /*
        * 実効の同時数＝かかった時間の合計 ÷ 実行体の時間。**本当に何本
@@ -682,7 +691,8 @@ export async function runRetryGenerationJob(
       lines.push(
         `\n1本あたり ${perAttempt.toFixed(1)}秒（同時 ${plan.concurrency}本` +
           `${effective ? `・実効 ${effective.toFixed(1)}本` : ""}）` +
-          `・実行体の時間の目安 ${Math.round(doSeconds).toLocaleString()}秒` +
+          `・実行体の時間 ${Math.round(doSeconds).toLocaleString()}秒` +
+          `（担当 ${Math.round(workerSeconds).toLocaleString()}秒＋司令役 ${Math.round(coordinatorSeconds).toLocaleString()}秒）` +
           `＝1日の無料枠の ${share.toFixed(1)}%`,
       );
     }

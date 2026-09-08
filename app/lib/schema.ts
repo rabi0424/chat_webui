@@ -353,6 +353,16 @@ export const RETRY_ATTEMPTS_HEADER_SQL =
   "SELECT COUNT(*) AS n, COALESCE(AVG(header_ms), 0) AS avg_ms, COALESCE(MAX(header_ms), 0) AS max_ms FROM retry_attempts WHERE status_id = ? AND header_ms IS NOT NULL";
 export const RETRY_RUN_STARTED_SQL =
   "SELECT created_at FROM retry_runs WHERE status_id = ?";
+/**
+ * 司令役が起きていた時間の合計。
+ *
+ * 無料枠の消費は「担当のぶん＋司令役のぶん」。要約に担当のぶんだけ出して
+ * いると、枠の半分近くが見えないまま消えることがある——司令役は実行の
+ * あいだずっと起きているので、並列数が小さいと担当と同じだけ食う
+ * （割合は およそ 12 ÷ 並列数）。
+ */
+export const RETRY_RUN_COORDINATOR_MS_SQL =
+  "SELECT COALESCE(coordinator_ms, 0) AS ms FROM retry_runs WHERE status_id = ?";
 export const RETRY_ATTEMPTS_FIRST_REFUSAL_SQL =
   "SELECT detail FROM retry_attempts WHERE status_id = ? AND kind = 'refused' AND detail IS NOT NULL AND detail != '' ORDER BY finished_at, seq LIMIT 1";
 
