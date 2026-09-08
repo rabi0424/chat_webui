@@ -408,6 +408,52 @@ export function utcDayStart(now: number): number {
   return Math.floor(now / 86_400_000) * 86_400_000;
 }
 
+/**
+ * 実行体の起きていた時間を、走っていた依頼で頭割りする帳簿。
+ *
+ * 課金されるのは実行体が起きていた壁時計の時間なので、**ある瞬間の1秒は
+ * その瞬間に走っていた本数で頭割りする**のが正しい。走る本数は実行の
+ * あいだ変わり続けるので、変わるたびにそこまでを締めて配る。合計は必ず
+ * 実際の壁時計の時間と一致する。
+ *
+ * 固定の数（設定の同時数・引き受けた本数）で割ると合わない。起こす間隔を
+ * 空けているので全部が重なるとは限らず、終わりぎわに1本だけ残れば、その
+ * 1本がその間の時間を丸ごと負う。実際、拒否が3.4秒で返る依頼を24本
+ * 投げた実行では、重なっていたのは常時17本ほどだった。少なく見積もる
+ * 向きに外すと、歯止めが効かないまま枠を使い切る。
+ */
+export function createDurableShare(now: () => number = Date.now) {
+  /** 走っている依頼と、そこまでに負った時間。 */
+  const open = new Map<string, number>();
+  let sliceStart = now();
+  /**
+   * いまの区間を締めて、走っていた本数で頭割りする。**本数が変わる前に**
+   * 呼ぶ（後で呼ぶと、まだ始まっていない依頼にも過去の時間が配られる）。
+   */
+  const settle = () => {
+    const t = now();
+    if (open.size > 0) {
+      const per = (t - sliceStart) / open.size;
+      for (const [id, ms] of open) open.set(id, ms + per);
+    }
+    sliceStart = t;
+  };
+  return {
+    /** 依頼を投げ始めた。 */
+    begin(id: string): void {
+      settle();
+      open.set(id, 0);
+    },
+    /** 依頼が決着した。その取り分（ミリ秒）を返し、帳簿から外す。 */
+    end(id: string): number {
+      settle();
+      const ms = open.get(id) ?? 0;
+      open.delete(id);
+      return Math.round(ms);
+    },
+  };
+}
+
 export interface RetryWorkerPlan {
   /** 担当1つが引き受ける依頼の数。 */
   attempts: number;

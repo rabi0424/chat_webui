@@ -35,6 +35,7 @@ import {
   utcDayStart,
   afterAttemptSettled,
   createChunkBudget,
+  createDurableShare,
   formatRetryProgress,
   onTransientFailure,
   retryRequestCap,
@@ -655,8 +656,16 @@ export async function runRetryGenerationJob(
       const doSeconds =
         d.doMs > 0 ? d.doMs / 1000 : d.totalMs / 1000 / plan.concurrency;
       const share = (doSeconds / RETRY_FREE_DO_SECONDS_PER_DAY) * 100;
+      /*
+       * 実効の同時数＝かかった時間の合計 ÷ 実行体の時間。**本当に何本
+       * 重なっていたか**がそのまま出るので、ヘッダまでの時間より直に
+       * 「同時数が効いているか」を答える。設定が24でも実効が6なら、
+       * どこかで順番待ちしている。
+       */
+      const effective = d.doMs > 0 ? d.totalMs / d.doMs : null;
       lines.push(
-        `\n1本あたり ${perAttempt.toFixed(1)}秒（同時 ${plan.concurrency}本）` +
+        `\n1本あたり ${perAttempt.toFixed(1)}秒（同時 ${plan.concurrency}本` +
+          `${effective ? `・実効 ${effective.toFixed(1)}本` : ""}）` +
           `・実行体の時間の目安 ${Math.round(doSeconds).toLocaleString()}秒` +
           `＝1日の無料枠の ${share.toFixed(1)}%`,
       );
@@ -775,21 +784,16 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
     return;
   }
 
-  /*
-   * この依頼ぶんの「実行体が起きている時間」の取り分を割る数。
-   *
-   * 同時に走る分は1つの実行体の中で重なるので、かかった時間を同時に
-   * 走った本数で割る。**同時数ではなく、実際に重なった本数で割る**——
-   * 司令役の並列数が担当の同時数より小さいと、担当は同時数より少ない
-   * 依頼しか引き受けない（並列数10・同時数24なら10本）。それを24で
-   * 割ると消費を2倍以上に少なく見積もり、歯止めが効かないまま枠を
-   * 使い切る。
+  /**
+   * 依頼1本ぶんの「実行体が起きている時間」の取り分（`createDurableShare`）。
+   * 無料枠の消費はこれで数える。
    */
-  const wave = Math.max(1, Math.min(plan.concurrency, job.attemptIds.length));
+  const share = createDurableShare();
 
   const runOne = async (attemptId: string): Promise<void> => {
-    const attemptStartedAt = Date.now();
-    const doMs = () => Math.round((Date.now() - attemptStartedAt) / wave);
+    share.begin(attemptId);
+    /** この依頼の取り分。結果を書くときに1度だけ呼ぶ。 */
+    const doMs = () => share.end(attemptId);
     // 1本の総時間の締め切り。担当の実行そのものは15分で止められるので、
     // その手前で必ず結果を書けるようにする
     const controller = new AbortController();

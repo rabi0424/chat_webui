@@ -688,7 +688,9 @@ describe("使った時間の実測", () => {
         }
       };
       await runRetryGenerationJob(job, retry, null);
+      // 取り分の記録が無い古い実行では、実効は出せないので出さない
       expect(finalized?.content).toContain("1本あたり 180.0秒（同時 6本）");
+      expect(finalized?.content).not.toContain("実効");
       expect(finalized?.content).toContain("実行体の時間の目安 600秒");
       expect(finalized?.content).toContain("1日の無料枠の 0.6%");
     },
@@ -718,6 +720,9 @@ describe("使った時間の実測", () => {
       // 3,600秒 ÷ 6 = 600秒 ではなく、記録された 1,200秒
       expect(finalized?.content).toContain("実行体の時間の目安 1,200秒");
       expect(finalized?.content).not.toContain("実行体の時間の目安 600秒");
+      // 実効の同時数＝かかった時間 ÷ 実行体の時間。設定が6でも実際に
+      // 重なっていたのは3本、と読める（ヘッダまでの時間より直に答える）
+      expect(finalized?.content).toContain("同時 6本・実効 3.0本");
     },
     20_000,
   );
@@ -898,9 +903,14 @@ describe("1日の実行体の時間の歯止め", () => {
 });
 
 /**
- * 担当が書く「この依頼ぶんの取り分」。同時に走る分は1つの実行体の中で
- * 重なるので、かかった時間を同時数で割ったものが無料枠の消費になる。
- * 割らずにそのまま書くと、歯止めが実際の数倍で効いて早々に止まる。
+ * 担当が書く「この依頼ぶんの取り分」。
+ *
+ * 課金されるのは実行体が起きていた壁時計の時間なので、ある瞬間の1秒は
+ * その瞬間に走っていた本数で頭割りするのが正しい。固定の数（設定の
+ * 同時数・引き受けた本数）で割ると合わない——起こす間隔を空けているので
+ * 全部が重なるとは限らず、終わりぎわに1本だけ残ればその1本がその間を
+ * 丸ごと負う。少なく見積もる向きに外すと、歯止めが効かないまま枠を
+ * 使い切る。
  */
 describe("依頼1本ぶんの実行体の時間", () => {
   const attemptJob = (ids: string[], workerConcurrency: number) =>
@@ -917,46 +927,46 @@ describe("依頼1本ぶんの実行体の時間", () => {
       workerConcurrency,
     }) as never;
 
+  const takes = (ms: number) =>
+    upstream.mockImplementationOnce(async () => {
+      await new Promise((r) => setTimeout(r, ms));
+      return { kind: "refused" as const, text: "だめです", usageJson: null };
+    });
+
   it(
-    "引き受けた本数が同時数に満たなければ、その本数で割る",
+    "取り分の合計は、実行体が起きていた時間と一致する",
     async () => {
-      // 司令役の並列数が担当の同時数より小さいと、こうなる（並列数2・
-      // 同時数24なら2本）。同時数24で割ると消費を12分の1に見積もり、
-      // 歯止めが効かないまま枠を使い切る
-      await runAttemptJob(attemptJob(["s1", "s2"], 24));
-      const ms = finished.map((f) => f.doMs ?? 0);
-      expect(ms).toHaveLength(2);
-      // 1.5秒 ÷ 2本 = 約750ミリ秒（÷24 なら約62ミリ秒）
-      for (const v of ms) {
-        expect(v).toBeGreaterThan(600);
-        expect(v).toBeLessThan(1_100);
-      }
+      // ここが合っていることだけが、歯止めの根拠になる。合計が壁時計より
+      // 小さければ、その差はそのまま「数えずに使った枠」になる
+      const t0 = Date.now();
+      await runAttemptJob(
+        attemptJob(["a1", "a2", "a3", "a4", "a5", "a6"], 6),
+      );
+      const wall = Date.now() - t0;
+      const sum = finished.reduce((a, f) => a + (f.doMs ?? 0), 0);
+      expect(finished).toHaveLength(6);
+      expect(sum).toBeGreaterThan(wall * 0.85);
+      expect(sum).toBeLessThan(wall * 1.05);
     },
-    30_000,
+    60_000,
   );
 
   it(
-    "引き受けた本数のほうが多ければ、同時数で割る",
+    "終わりぎわに1本だけ残ったら、その間はその1本が丸ごと負う",
     async () => {
-      // 6本を同時3本ずつ2波。上流は1本1.5秒なので取り分は約500ミリ秒
-      const ids = ["a1", "a2", "a3", "a4", "a5", "a6"];
-      await runAttemptJob(attemptJob(ids, 3));
-      const few = finished.map((f) => f.doMs ?? 0);
-      expect(few).toHaveLength(6);
-      for (const ms of few) {
-        expect(ms).toBeGreaterThan(400);
-        expect(ms).toBeLessThan(800);
-      }
-
-      finished.length = 0;
-      // 同じ6本でも、同時6本なら1波で済み、取り分は半分
-      await runAttemptJob(attemptJob(["b1", "b2", "b3", "b4", "b5", "b6"], 6));
-      const many = finished.map((f) => f.doMs ?? 0);
-      expect(many).toHaveLength(6);
-      for (const ms of many) {
-        expect(ms).toBeGreaterThan(150);
-        expect(ms).toBeLessThan(380);
-      }
+      // 同時数6で割ると、この居残りを6分の1にしか数えない
+      takes(2_500); // slow
+      takes(500); // f1
+      takes(500); // f2
+      await runAttemptJob(attemptJob(["slow", "f1", "f2"], 6));
+      const by = new Map(finished.map((f) => [f.id, f.doMs ?? 0]));
+      expect(by.size).toBe(3);
+      // 重なっていたのは最初の1秒足らずだけ。残り1.6秒は slow が全部負う
+      expect(by.get("slow")!).toBeGreaterThan(1_800);
+      expect(by.get("slow")!).toBeLessThan(2_500);
+      // 速い2本は重なっていた分だけ
+      expect(by.get("f1")!).toBeLessThan(400);
+      expect(by.get("f2")!).toBeLessThan(400);
     },
     60_000,
   );

@@ -30,6 +30,7 @@ import {
   onTransientFailure,
   readRetryConfig,
   utcDayStart,
+  createDurableShare,
 } from "../app/lib/retry";
 
 /**
@@ -641,5 +642,72 @@ describe("1日の区切り", () => {
     expect(utcDayStart(Date.UTC(2026, 8, 7, 15, 0, 0))).toBe(
       Date.UTC(2026, 8, 7, 0, 0, 0),
     );
+  });
+});
+
+/**
+ * 実行体の起きていた時間の頭割り。**歯止めの根拠がここ1点に載る**ので、
+ * 偽の時計で正確な数を検査する（壁時計に頼ると、誤りと揺らぎの区別が
+ * つかない差しか出ない）。
+ *
+ * 課金されるのは実行体が起きていた壁時計の時間。ある瞬間の1秒はその
+ * 瞬間に走っていた本数で頭割りするのが正しく、合計は必ず壁時計と一致
+ * する。固定の数で割ると、終わりぎわに1本だけ残った時間を数え落とす。
+ */
+describe("実行体の時間の頭割り", () => {
+  it("本数が変わるたびに締めて配る（合計は壁時計と一致）", () => {
+    let t = 0;
+    const s = createDurableShare(() => t);
+    s.begin("slow"); // 0
+    t = 200;
+    s.begin("f1");
+    t = 400;
+    s.begin("f2");
+    // 0-200 は slow 単独、200-400 は2本、400-700 は3本
+    t = 700;
+    expect(s.end("f1")).toBe(200); // 100 + 100
+    t = 900;
+    expect(s.end("f2")).toBe(200); // 100 + 100（700-900 は2本）
+    t = 2_500;
+    // 200 + 100 + 100 + 100 + 1600（900 以降は単独）
+    expect(s.end("slow")).toBe(2_100);
+    // 合計 2,500 ＝ 実行体が起きていた時間そのもの
+    expect(200 + 200 + 2_100).toBe(2_500);
+  });
+
+  it("始まる前の時間は負わない", () => {
+    // 締めずに増やすと、後から入った依頼へ過去の時間まで配られる
+    let t = 0;
+    const s = createDurableShare(() => t);
+    s.begin("a");
+    t = 1_000;
+    s.begin("b");
+    t = 1_200;
+    expect(s.end("b")).toBe(100); // 1,000-1,200 の半分だけ
+    expect(s.end("a")).toBe(1_100); // 1,000 + 100
+  });
+
+  it("決着した依頼は、その後の時間を負わない", () => {
+    let t = 0;
+    const s = createDurableShare(() => t);
+    s.begin("a");
+    s.begin("b");
+    t = 100;
+    expect(s.end("a")).toBe(50);
+    t = 1_100;
+    // a を外していなければ、ここが半分になる
+    expect(s.end("b")).toBe(1_050);
+  });
+
+  it("走っているものが無い時間は誰にも配らない", () => {
+    let t = 0;
+    const s = createDurableShare(() => t);
+    s.begin("a");
+    t = 100;
+    expect(s.end("a")).toBe(100);
+    t = 5_000; // 何も走っていない
+    s.begin("b");
+    t = 5_300;
+    expect(s.end("b")).toBe(300);
   });
 });
