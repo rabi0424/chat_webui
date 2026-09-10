@@ -39,6 +39,7 @@ import {
   clearPendingDeletionsSql,
   markRetryAttemptsProcessedSql,
   generatedImagesSql,
+  MARK_THUMBNAIL_SQL,
   searchConversationsSql,
   statementsOf,
   stillReferencedSql,
@@ -368,6 +369,40 @@ describe("画像一覧のページ送り", () => {
     addImage("x1", "shared", 100);
     addImage("x2", "shared", 200);
     expect(page(Number.MAX_SAFE_INTEGER, 10)).toHaveLength(1);
+  });
+
+  /**
+   * 縮小版（サムネイル）の印。一覧は thumb_at を見て縮小版と原寸を
+   * 使い分けるので、ここが列に無い・まとめた行に出ない・共有する行に
+   * 付かない、のどれでも「原寸を読み続けて毎回作り直す」になる。
+   *
+   * 一覧の id は最新の行（f2）のものであること。MAX() を2つ並べると
+   * 素の列がどの行のものか決まらなくなり、id が f1 で返った——会話へ
+   * 戻るときに古い枝を開くことになる。
+   */
+  it("縮小版の印は、実体を共有する行にまとめて付き、一覧に出る", () => {
+    addImage("f1", "shared", 100);
+    addImage("f2", "shared", 200);
+    addImage("o1", "other", 300);
+    db.prepare(MARK_THUMBNAIL_SQL).run(999, "f1");
+
+    const rows = db
+      .prepare("SELECT id, thumb_at FROM attachments ORDER BY id")
+      .all() as { id: string; thumb_at: number | null }[];
+    expect(rows).toEqual([
+      { id: "f1", thumb_at: 999 },
+      { id: "f2", thumb_at: 999 },
+      { id: "o1", thumb_at: null },
+    ]);
+
+    const listed = db.prepare(generatedImagesSql([])).all(
+      Number.MAX_SAFE_INTEGER,
+      10,
+    ) as { id: string; thumb_at: number | null }[];
+    expect(listed.map((r) => [r.id, r.thumb_at])).toEqual([
+      ["o1", null],
+      ["f2", 999],
+    ]);
   });
 
   /** これが直したかったところ。 */

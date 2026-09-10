@@ -1,9 +1,15 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createRoutesStub, Outlet, useLocation } from "react-router";
 import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Images from "../../app/routes/images";
+import { ensureThumbnail } from "../../app/lib/thumbnail";
+
+// 縮小版の作成は canvas が要る（jsdom には無い）。呼ばれたかだけを見る
+vi.mock("../../app/lib/thumbnail", () => ({
+  ensureThumbnail: vi.fn(() => Promise.resolve()),
+}));
 import type { GeneratedImageRow } from "../../app/lib/db.server";
 
 /**
@@ -54,6 +60,7 @@ function image(
     prompt: `${id} の依頼文`,
     title: "絵を描く会話",
     model_id: "poe:Imagen-4",
+    thumb_at: null,
     ...extra,
   };
 }
@@ -303,6 +310,33 @@ describe("拡大表示の操作", () => {
  * タップ（＝閉じる）、縦向きは払いにしない、端では戻すだけ——ここが崩れると
  * 見比べている最中に画面が閉じたり、行き止まりで空振りしたりする。
  */
+/**
+ * 縮小版（サムネイル）。モバイル回線で一覧を開くと原寸 30 枚（数十MB）を
+ * 読んでいた。縮小版がある画像はそれを読み、無い画像は原寸を出しつつ
+ * 読み終わった画像からその場で作って置く。
+ */
+describe("一覧の縮小版", () => {
+  beforeEach(() => vi.mocked(ensureThumbnail).mockClear());
+
+  it("縮小版がある画像はそれを、無い画像は原寸を読む", () => {
+    renderImages([image("t1", { thumb_at: 1 }), image("f1")]);
+    expect(screen.getByAltText("t1 の依頼文").getAttribute("src")).toBe(
+      "/api/files/t1/thumb",
+    );
+    expect(screen.getByAltText("f1 の依頼文").getAttribute("src")).toBe(
+      "/api/files/f1",
+    );
+  });
+
+  it("原寸を読み終えたら、その画像からだけ縮小版を作る", () => {
+    renderImages([image("t1", { thumb_at: 1 }), image("f1")]);
+    fireEvent.load(screen.getByAltText("t1 の依頼文"));
+    fireEvent.load(screen.getByAltText("f1 の依頼文"));
+    expect(vi.mocked(ensureThumbnail)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(ensureThumbnail).mock.calls[0][0]).toBe("f1");
+  });
+});
+
 describe("拡大表示を左右に払う", () => {
   const three = [image("i1"), image("i2"), image("i3")];
 

@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { parseRetryProgress } from "../../lib/retry";
 import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
+import { ensureThumbnail } from "../../lib/thumbnail";
 import { GLASS_PANEL, MSG_ICON_ACTION } from "../../lib/ui";
 import { faviconUrl } from "../../lib/csp";
 import {
@@ -69,7 +70,17 @@ export function MessageImages({
             src={`/api/files/${a.id}`}
             alt={a.name ?? "添付画像"}
             loading="lazy"
-            onLoad={onLoad}
+            /*
+              生成画像は、たいてい最初にここで（作った端末で）表示される。
+              このとき縮小版を作って置けば、あとで開く画像一覧は最初から
+              軽い（lib/thumbnail.ts）。
+            */
+            onLoad={(e) => {
+              onLoad?.();
+              if (a.kind === "generated" && !a.hasThumb) {
+                void ensureThumbnail(a.id, e.currentTarget);
+              }
+            }}
             className="max-h-56 max-w-[min(16rem,60vw)] object-contain"
           />
         </button>

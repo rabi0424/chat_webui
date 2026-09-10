@@ -52,6 +52,8 @@ export function toUiMessage(m: PathMessage): UiMessage {
             mimeType: a.mime_type,
             name: a.name,
             size: a.size,
+            kind: a.kind,
+            hasThumb: a.thumb_at != null,
           }))
         : undefined,
   };
