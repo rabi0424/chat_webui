@@ -1880,9 +1880,17 @@ export function Chat({
         </button>
       )}
 
+      {/*
+        下の余白は safe-area から 0.75rem 差し引く。ホーム画面から開くと
+        inset が 34px になり、そのまま余白にすると入力欄の下に白い帯が
+        できて浮いて見えた（Safari ではツールバーが下端を覆うので inset は
+        0 で、この差が出ない）。iOS 純正の入力欄はホームインジケータの
+        少し上に置かれているので、それに合わせる。inset が無いときは
+        0.75rem のまま。
+      */}
       <footer
         ref={footerRef}
-        className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/80 to-transparent px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-6 dark:from-neutral-950 dark:via-neutral-950/80"
+        className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/80 to-transparent px-3 pb-[max(calc(env(safe-area-inset-bottom)_-_0.75rem),0.75rem)] pt-6 dark:from-neutral-950 dark:via-neutral-950/80"
       >
         {selecting ? (
           <SelectionBar
