@@ -38,6 +38,11 @@ import {
   IconX,
 } from "../icons";
 import type { PendingAttachment } from "./use-attachments";
+import {
+  countLines,
+  splitByPasteTokens,
+  type CollapsedPaste,
+} from "../../lib/paste";
 
 /** 入力欄の中の丸いアイコンボタン。指で押せる大きさ（36px）を確保する。 */
 const TOOL_BUTTON =
@@ -63,6 +68,9 @@ export function Composer({
   onOpenFilePicker,
   input,
   onChangeInput,
+  pastes,
+  onExpandPaste,
+  onRemovePaste,
   onSend,
   onPaste,
   textareaRef,
@@ -91,6 +99,12 @@ export function Composer({
   onOpenFilePicker: () => void;
   input: string;
   onChangeInput: (value: string) => void;
+  /** 畳んだ貼り付け（本文の札が指す中身）。 */
+  pastes: CollapsedPaste[];
+  /** 札を本文に戻す。 */
+  onExpandPaste: (paste: CollapsedPaste) => void;
+  /** 札ごと捨てる。 */
+  onRemovePaste: (paste: CollapsedPaste) => void;
   onSend: () => void;
   onPaste: (e: ClipboardEvent<HTMLTextAreaElement>) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -237,6 +251,44 @@ export function Composer({
             ))}
           </div>
         )}
+        {pastes.length > 0 && (
+          /*
+            畳んだ貼り付けの一覧。本文の札は文字なので中身が見えない。
+            ここで行数と字数を示し、「展開」で本文に戻して編集できる
+            ようにする（添付にする各社のアプリで「編集できない」が
+            いちばんの不満だった）。
+          */
+          <div className="flex flex-wrap gap-1.5 px-3 pt-3">
+            {pastes.map((p) => (
+              <div
+                key={p.n}
+                className="flex items-center gap-1 rounded-lg border border-line bg-neutral-50 py-1 pl-2.5 pr-1 text-xs text-ink-2 dark:bg-white/5"
+              >
+                <span className="font-medium text-ink">貼り付け #{p.n}</span>
+                <span className="tabular-nums">
+                  {countLines(p.text)}行・{p.text.length.toLocaleString()}字
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onExpandPaste(p)}
+                  aria-label={`貼り付け #${p.n} を本文に展開`}
+                  title="本文に展開して編集する"
+                  className="ml-1 rounded px-1.5 py-0.5 hover:bg-hover hover:text-ink"
+                >
+                  展開
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRemovePaste(p)}
+                  aria-label={`貼り付け #${p.n} を削除`}
+                  className="grid h-6 w-6 place-items-center rounded-full hover:bg-hover hover:text-ink"
+                >
+                  <IconX className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {pending.length > 0 && !supportsImages && (
           <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">
             このモデルは画像入力に対応していません。画像は無視されるか、エラーになる場合があります。
@@ -295,7 +347,21 @@ export function Composer({
             >
               {addressee ? mentionText : ""}
             </span>
-            {addressee ? input.slice(mention.replaceEnd) : input}
+            {/* 貼り付けの札にも薄く色を付け、文字ではなく「札」だと分かるようにする */}
+            {splitByPasteTokens(
+              addressee ? input.slice(mention.replaceEnd) : input,
+            ).map((seg, i) =>
+              seg.token ? (
+                <span
+                  key={i}
+                  className="rounded bg-neutral-500/15 [box-decoration-break:clone]"
+                >
+                  {seg.text}
+                </span>
+              ) : (
+                seg.text
+              ),
+            )}
           </div>
           <textarea
             ref={textareaRef}

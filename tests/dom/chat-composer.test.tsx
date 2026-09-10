@@ -82,3 +82,67 @@ describe("入力欄の添付", () => {
     );
   });
 });
+
+/**
+ * 長い貼り付けは畳む（lib/paste.ts）。
+ *
+ * 本文には札だけが入り、送るときに中身へ戻す。ここが崩れると、札の
+ * まま送られて貼った内容がモデルへ届かないか、短い貼り付けまで札に
+ * なる。畳むのは見た目だけなので、届く本文で確かめる。
+ */
+describe("長い貼り付け", () => {
+  const LONG = Array.from({ length: 30 }, (_, i) => `行 ${i + 1}`).join("\n");
+
+  async function paste(text: string) {
+    const box = await screen.findByRole("textbox");
+    fireEvent.paste(box, {
+      clipboardData: { getData: () => text, files: [] },
+    });
+    return box as HTMLTextAreaElement;
+  }
+
+  it("長い文は札に畳まれ、送ると中身が届く", async () => {
+    const { user } = renderChat({});
+    const box = await paste(LONG);
+    expect(box.value).toBe("[貼り付け #1: 30行]");
+    expect(screen.getByText(/30行・/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "送信" }));
+    await waitFor(() => expect(server.lastBody("/generate")).toBeTruthy());
+    const body = server.lastBody("/generate") as { userContent: string };
+    expect(body.userContent).toBe(LONG);
+  });
+
+  it("短い文は畳まない（ブラウザにそのまま入れさせる）", async () => {
+    renderChat({});
+    const box = await paste("短い\n文");
+    // preventDefault していないので jsdom では何も入らないが、札も出ない
+    expect(box.value).toBe("");
+    expect(screen.queryByText(/行・/)).toBeNull();
+  });
+
+  it("「展開」で本文に戻り、札の一覧から消える", async () => {
+    const { user } = renderChat({});
+    const box = await paste(LONG);
+    await user.click(
+      screen.getByRole("button", { name: "貼り付け #1 を本文に展開" }),
+    );
+    expect(box.value).toBe(LONG);
+    expect(screen.queryByText(/行・/)).toBeNull();
+  });
+
+  it("札を削除すると本文からも消える", async () => {
+    const { user } = renderChat({});
+    const box = await paste(LONG);
+    await user.click(screen.getByRole("button", { name: "貼り付け #1 を削除" }));
+    expect(box.value).toBe("");
+    expect(screen.queryByText(/行・/)).toBeNull();
+  });
+
+  it("本文から札を消せば、貼り付けも捨てられる", async () => {
+    const { user } = renderChat({});
+    const box = await paste(LONG);
+    await user.clear(box);
+    expect(screen.queryByText(/行・/)).toBeNull();
+  });
+});

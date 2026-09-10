@@ -11,6 +11,16 @@ import { useLocation, useNavigate, useOutletContext, useRevalidator } from "reac
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import {
+  expandOnePaste,
+  expandPastes,
+  insertPasteToken,
+  nextPasteNumber,
+  pasteNumbersIn,
+  removePasteToken,
+  shouldCollapsePaste,
+  type CollapsedPaste,
+} from "../lib/paste";
+import {
   DEFAULT_MODEL,
   isPoeModel,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
@@ -150,6 +160,12 @@ export function Chat({
   const [messages, setMessages] = useState<UiMessage[]>(initialMessages);
   const [input, setInput] = useState("");
   /**
+   * 畳んだ貼り付け（lib/paste.ts）。本文には札だけが入り、中身はここ。
+   * 下書きと一緒に端末へ持つ——本文だけ戻ると、札が指す先の無い
+   * 文字として残る。
+   */
+  const [pastes, setPastes] = useState<CollapsedPaste[]>([]);
+  /**
    * 未送信の下書きを端末に保存する（リロード・ページ遷移後に復元）。
    *
    * 新規チャットは会話IDが無いので "new" を使うが、最初の送信でIDが
@@ -162,6 +178,7 @@ export function Chat({
   const draftKey = `chat-webui:draft:${draftScope}`;
   /** 未送信の添付。本文と同じく端末に残し、画面の作り直しでも失わない。 */
   const attachKey = `chat-webui:draft-files:${draftScope}`;
+  const pasteKey = `chat-webui:draft-pastes:${draftScope}`;
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 分岐直後などの控えめなトースト。数秒で自動的に消える。 */
@@ -356,6 +373,7 @@ export function Chat({
     };
     move("chat-webui:draft");
     move("chat-webui:draft-files");
+    move("chat-webui:draft-pastes");
     setDraftScope(convId);
   }
 
@@ -478,6 +496,17 @@ export function Chat({
     if (draft) setInput(draft);
     try {
       const saved = JSON.parse(
+        localStorage.getItem(pasteKey) ?? "[]",
+      ) as CollapsedPaste[];
+      const restored = saved.filter(
+        (p) => p && typeof p.n === "number" && typeof p.text === "string",
+      );
+      if (restored.length > 0) setPastes(restored);
+    } catch {
+      // 壊れていれば無視する
+    }
+    try {
+      const saved = JSON.parse(
         localStorage.getItem(attachKey) ?? "[]",
       ) as { id: string; name: string; size: number }[];
       const restored = saved
@@ -545,14 +574,47 @@ export function Chat({
     if (input) el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input, isNarrow]);
 
-  const changeInput = (value: string) => {
+  const savePastes = (next: CollapsedPaste[]) => {
+    setPastes(next);
+    try {
+      if (next.length > 0) localStorage.setItem(pasteKey, JSON.stringify(next));
+      else localStorage.removeItem(pasteKey);
+    } catch {
+      // ストレージ不可でも入力自体は妨げない
+    }
+  };
+
+  const changeInput = (value: string, withPastes: CollapsedPaste[] = pastes) => {
     setInput(value);
+    // 札を消したら貼り付けも捨てる（送るときに無いものは無い）
+    const present = pasteNumbersIn(value);
+    const kept = withPastes.filter((p) => present.has(p.n));
+    if (kept.length !== pastes.length || withPastes !== pastes) savePastes(kept);
     try {
       if (value) localStorage.setItem(draftKey, value);
       else localStorage.removeItem(draftKey);
     } catch {
       // ストレージ不可でも入力自体は妨げない
     }
+  };
+
+  /** 札の直後へキャレットを置く（値が反映されてからでないと動かせない）。 */
+  const placeCaret = (at: number) => {
+    const el = textareaRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(at, at);
+    });
+  };
+
+  /** 札を本文に戻す（利用者が中身を編集したいとき）。 */
+  const expandPaste = (p: CollapsedPaste) => {
+    changeInput(expandOnePaste(input, p), pastes.filter((x) => x.n !== p.n));
+  };
+  /** 札ごと捨てる。 */
+  const removePaste = (p: CollapsedPaste) => {
+    changeInput(removePasteToken(input, p), pastes.filter((x) => x.n !== p.n));
   };
 
   /**
@@ -916,7 +978,24 @@ export function Chat({
     if (files.some(isAcceptedImage)) {
       e.preventDefault();
       void addFiles(files);
+      return;
     }
+    /*
+     * 長い文は畳む（lib/paste.ts）。本文には札だけを入れ、中身は別に
+     * 持って送るときに戻す。短い文はブラウザにそのまま入れさせる。
+     */
+    const text = e.clipboardData.getData("text/plain");
+    if (!text || !shouldCollapsePaste(text)) return;
+    e.preventDefault();
+    const el = textareaRef.current;
+    const selection = {
+      start: el?.selectionStart ?? input.length,
+      end: el?.selectionEnd ?? input.length,
+    };
+    const paste = { n: nextPasteNumber(pastes), text };
+    const next = insertPasteToken(input, selection, paste);
+    changeInput(next.text, [...pastes, paste]);
+    placeCaret(next.caret);
   }
 
   /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */
@@ -1151,7 +1230,8 @@ export function Chat({
       askRetry(() => send(true), willRetry, addressee?.model_id ?? model);
       return;
     }
-    const text = input.trim();
+    // 畳んだ貼り付けは本文へ戻してから送る（畳むのは見た目だけ）
+    const text = expandPastes(input, pastes).trim();
     // 画像だけの送信も許す。アップロード中は完了を待つ
     if ((!text && readyAttachmentIds.length === 0) || isStreaming || uploading) {
       return;
@@ -1167,6 +1247,7 @@ export function Chat({
     const attachmentIds = attachments.map((a) => a.id);
 
     setInput("");
+    savePastes([]);
     localStorage.removeItem(draftKey); // 送信したら下書きは破棄
     localStorage.removeItem(attachKey);
     // プレビューURLは以降 /api/files/:id で表示するため解放してよい
@@ -1923,6 +2004,9 @@ export function Chat({
             onOpenFilePicker={openFilePicker}
             input={input}
             onChangeInput={changeInput}
+            pastes={pastes}
+            onExpandPaste={expandPaste}
+            onRemovePaste={removePaste}
             onSend={() => send()}
             onPaste={onPaste}
             textareaRef={textareaRef}
