@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { installServer, msg, renderChat, type ServerStub } from "./helpers/chat-harness";
+import { savePasteThreshold } from "../../app/lib/paste";
 
 /**
  * 入力欄まわり。
@@ -111,6 +112,21 @@ describe("長い貼り付け", () => {
     await waitFor(() => expect(server.lastBody("/generate")).toBeTruthy());
     const body = server.lastBody("/generate") as { userContent: string };
     expect(body.userContent).toBe(LONG);
+  });
+
+  it("しきい値は端末の設定に従う", async () => {
+    savePasteThreshold({ chars: 0, lines: 3 });
+    renderChat({});
+    const box = await paste("a\nb\nc");
+    expect(box.value).toBe("[貼り付け #1: 3行]");
+  });
+
+  it("両方 0 なら畳まない", async () => {
+    savePasteThreshold({ chars: 0, lines: 0 });
+    renderChat({});
+    const box = await paste(LONG);
+    expect(box.value).toBe("");
+    expect(screen.queryByText(/行・/)).toBeNull();
   });
 
   it("短い文は畳まない（ブラウザにそのまま入れさせる）", async () => {

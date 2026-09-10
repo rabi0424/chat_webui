@@ -22,6 +22,12 @@ import {
   useChatFontSize,
 } from "../lib/chat-font";
 import { HOME_STYLES, saveHomeStyle, useHomeStyle } from "../lib/home-style";
+import {
+  PASTE_CHARS_RANGE,
+  PASTE_LINES_RANGE,
+  savePasteThreshold,
+  usePasteThreshold,
+} from "../lib/paste";
 import { AccentPicker } from "../components/ThemeToggle";
 import { ModelPicker } from "../components/ModelPicker";
 import { ParamsEditor } from "../components/ParamsEditor";
@@ -271,6 +277,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const theme = useTheme();
   const chatFont = useChatFontSize();
   const homeStyle = useHomeStyle();
+  const pasteThreshold = usePasteThreshold();
 
   /*
    * この端末で最後に使ったモデル。設定の既定より優先されるので、
@@ -585,6 +592,40 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 step={1}
                 onChange={(v) => void save({ newModelDays: v })}
                 width="w-14"
+              />
+            </Row>
+          </Group>
+
+          <Group
+            title="入力欄"
+            note="この端末にのみ適用されます。長い貼り付けは本文に札だけを置き、送るときに中身へ戻します（モデルには全文が届きます）。"
+          >
+            <Row
+              label="貼り付けを畳む字数"
+              description={`この字数以上の貼り付けを札に畳む（0 で字数では畳まない・最大${PASTE_CHARS_RANGE.max.toLocaleString()}）`}
+            >
+              <Stepper
+                label="貼り付けを畳む字数"
+                value={pasteThreshold.chars}
+                min={PASTE_CHARS_RANGE.min}
+                max={PASTE_CHARS_RANGE.max}
+                step={100}
+                onChange={(v) => savePasteThreshold({ ...pasteThreshold, chars: v })}
+                width="w-24"
+              />
+            </Row>
+            <Row
+              label="貼り付けを畳む行数"
+              description={`この行数以上の貼り付けを札に畳む（0 で行数では畳まない・最大${PASTE_LINES_RANGE.max.toLocaleString()}）`}
+            >
+              <Stepper
+                label="貼り付けを畳む行数"
+                value={pasteThreshold.lines}
+                min={PASTE_LINES_RANGE.min}
+                max={PASTE_LINES_RANGE.max}
+                step={1}
+                onChange={(v) => savePasteThreshold({ ...pasteThreshold, lines: v })}
+                width="w-20"
               />
             </Row>
           </Group>

@@ -13,9 +13,77 @@
  * 足せる。札を消せば貼り付けも消える（送るときに無いものは無い）。
  */
 
-/** これ以上の文字数か行数なら畳む。 */
-export const PASTE_COLLAPSE_CHARS = 1000;
-export const PASTE_COLLAPSE_LINES = 12;
+import { notifyChanged, readRaw, usePersisted, writeRaw } from "./persisted";
+
+/**
+ * 畳むしきい値。これ以上の文字数か行数なら畳む（0 はその条件では畳まない。
+ * 両方 0 なら畳まない）。
+ *
+ * 打ち心地の好みなので端末ごと（localStorage）。スマホでは短めに、
+ * Mac では長めに、という使い分けができる。設定画面の「入力欄」で変える。
+ */
+export interface PasteThreshold {
+  chars: number;
+  lines: number;
+}
+
+export const DEFAULT_PASTE_THRESHOLD: PasteThreshold = { chars: 1000, lines: 12 };
+export const PASTE_CHARS_RANGE = { min: 0, max: 100_000 };
+export const PASTE_LINES_RANGE = { min: 0, max: 1000 };
+export const PASTE_THRESHOLD_STORAGE_KEY = "chat-webui:paste-threshold";
+
+/** 範囲に収めた整数（範囲外や数でないものは既定へ）。 */
+function clampInt(v: unknown, range: { min: number; max: number }, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(range.max, Math.max(range.min, Math.round(n)));
+}
+
+/*
+ * 読んだ値は生の文字列ごとに使い回す。useSyncExternalStore は同じ
+ * スナップショットには同じ参照を返す必要があり、毎回新しいオブジェクトを
+ * 作ると描画が止まらなくなる。
+ */
+let cached: { raw: string | null; value: PasteThreshold } | null = null;
+
+export function readPasteThreshold(): PasteThreshold {
+  const raw = readRaw(PASTE_THRESHOLD_STORAGE_KEY);
+  if (cached && cached.raw === raw) return cached.value;
+  let value = DEFAULT_PASTE_THRESHOLD;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<PasteThreshold>;
+      value = {
+        chars: clampInt(parsed.chars, PASTE_CHARS_RANGE, DEFAULT_PASTE_THRESHOLD.chars),
+        lines: clampInt(parsed.lines, PASTE_LINES_RANGE, DEFAULT_PASTE_THRESHOLD.lines),
+      };
+    } catch {
+      // 壊れていれば既定
+    }
+  }
+  cached = { raw, value };
+  return value;
+}
+
+export function savePasteThreshold(next: PasteThreshold): void {
+  writeRaw(
+    PASTE_THRESHOLD_STORAGE_KEY,
+    JSON.stringify({
+      chars: clampInt(next.chars, PASTE_CHARS_RANGE, DEFAULT_PASTE_THRESHOLD.chars),
+      lines: clampInt(next.lines, PASTE_LINES_RANGE, DEFAULT_PASTE_THRESHOLD.lines),
+    }),
+  );
+  notifyChanged(PASTE_THRESHOLD_STORAGE_KEY);
+}
+
+/** いまのしきい値を購読する（サーバー側では既定）。 */
+export function usePasteThreshold(): PasteThreshold {
+  return usePersisted(
+    PASTE_THRESHOLD_STORAGE_KEY,
+    readPasteThreshold,
+    DEFAULT_PASTE_THRESHOLD,
+  );
+}
 
 export interface CollapsedPaste {
   /** 札の番号（1から。同じ入力欄の中で一意）。 */
@@ -23,9 +91,12 @@ export interface CollapsedPaste {
   text: string;
 }
 
-export function shouldCollapsePaste(text: string): boolean {
-  if (text.length >= PASTE_COLLAPSE_CHARS) return true;
-  return countLines(text) >= PASTE_COLLAPSE_LINES;
+export function shouldCollapsePaste(
+  text: string,
+  threshold: PasteThreshold = DEFAULT_PASTE_THRESHOLD,
+): boolean {
+  if (threshold.chars > 0 && text.length >= threshold.chars) return true;
+  return threshold.lines > 0 && countLines(text) >= threshold.lines;
 }
 
 export function countLines(text: string): number {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  PASTE_COLLAPSE_CHARS,
-  PASTE_COLLAPSE_LINES,
+  DEFAULT_PASTE_THRESHOLD,
+  PASTE_CHARS_RANGE,
+  readPasteThreshold,
+  savePasteThreshold,
   expandOnePaste,
   expandPastes,
   insertPasteToken,
@@ -18,11 +20,42 @@ import {
  * 短い貼り付けまで札になって打ち心地が変わる。
  */
 describe("畳むかどうか", () => {
+  const { chars, lines } = DEFAULT_PASTE_THRESHOLD;
+
   it("文字数か行数のどちらかが上限に届けば畳む", () => {
-    expect(shouldCollapsePaste("a".repeat(PASTE_COLLAPSE_CHARS))).toBe(true);
-    expect(shouldCollapsePaste("a".repeat(PASTE_COLLAPSE_CHARS - 1))).toBe(false);
-    expect(shouldCollapsePaste("x\n".repeat(PASTE_COLLAPSE_LINES - 1) + "x")).toBe(true);
-    expect(shouldCollapsePaste("x\n".repeat(PASTE_COLLAPSE_LINES - 2) + "x")).toBe(false);
+    expect(shouldCollapsePaste("a".repeat(chars))).toBe(true);
+    expect(shouldCollapsePaste("a".repeat(chars - 1))).toBe(false);
+    expect(shouldCollapsePaste("x\n".repeat(lines - 1) + "x")).toBe(true);
+    expect(shouldCollapsePaste("x\n".repeat(lines - 2) + "x")).toBe(false);
+  });
+
+  it("しきい値は設定で変えられ、0 はその条件で畳まない", () => {
+    const t = { chars: 0, lines: 3 };
+    expect(shouldCollapsePaste("a".repeat(5000), t)).toBe(false);
+    expect(shouldCollapsePaste("a\nb\nc", t)).toBe(true);
+    expect(shouldCollapsePaste("a\nb\nc", { chars: 0, lines: 0 })).toBe(false);
+  });
+});
+
+/**
+ * しきい値の保存。壊れた値や範囲外は既定へ戻す（0 が「畳まない」を
+ * 意味するので、NaN を 0 にしてしまうと黙って畳まなくなる）。
+ */
+describe("しきい値の保存", () => {
+  it("保存した値を読み戻し、範囲に収める", () => {
+    localStorage.clear();
+    expect(readPasteThreshold()).toEqual(DEFAULT_PASTE_THRESHOLD);
+    savePasteThreshold({ chars: 500, lines: 4 });
+    expect(readPasteThreshold()).toEqual({ chars: 500, lines: 4 });
+    savePasteThreshold({ chars: 10 ** 9, lines: -5 });
+    expect(readPasteThreshold()).toEqual({ chars: PASTE_CHARS_RANGE.max, lines: 0 });
+  });
+
+  it("壊れた保存値は既定へ", () => {
+    localStorage.setItem("chat-webui:paste-threshold", "{not json");
+    expect(readPasteThreshold()).toEqual(DEFAULT_PASTE_THRESHOLD);
+    localStorage.setItem("chat-webui:paste-threshold", JSON.stringify({ chars: "abc" }));
+    expect(readPasteThreshold()).toEqual(DEFAULT_PASTE_THRESHOLD);
   });
 });
 

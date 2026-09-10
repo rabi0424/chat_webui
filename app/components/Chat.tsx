@@ -18,6 +18,7 @@ import {
   pasteNumbersIn,
   removePasteToken,
   shouldCollapsePaste,
+  usePasteThreshold,
   type CollapsedPaste,
 } from "../lib/paste";
 import {
@@ -165,6 +166,7 @@ export function Chat({
    * 文字として残る。
    */
   const [pastes, setPastes] = useState<CollapsedPaste[]>([]);
+  const pasteThreshold = usePasteThreshold();
   /**
    * 未送信の下書きを端末に保存する（リロード・ページ遷移後に復元）。
    *
@@ -985,7 +987,7 @@ export function Chat({
      * 持って送るときに戻す。短い文はブラウザにそのまま入れさせる。
      */
     const text = e.clipboardData.getData("text/plain");
-    if (!text || !shouldCollapsePaste(text)) return;
+    if (!text || !shouldCollapsePaste(text, pasteThreshold)) return;
     e.preventDefault();
     const el = textareaRef.current;
     const selection = {
