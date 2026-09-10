@@ -631,6 +631,16 @@ export default function Images({ loaderData }: Route.ComponentProps) {
       {current && (
         <Lightbox
           src={`/api/files/${current.id}`}
+          prevSrc={
+            images[currentIndex - 1]
+              ? `/api/files/${images[currentIndex - 1].id}`
+              : undefined
+          }
+          nextSrc={
+            images[currentIndex + 1]
+              ? `/api/files/${images[currentIndex + 1].id}`
+              : undefined
+          }
           onClose={() => setLightbox(null)}
           /*
             端では渡さない。渡さないほうへ払うと戻るだけになるので、

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useEscapeToClose } from "../lib/dismiss";
 import { IconX } from "./icons";
 
@@ -7,7 +14,8 @@ import { IconX } from "./icons";
  * ダブルタップ（ダブルクリック）でタップ位置を中心に拡大/等倍へ切替、
  * 拡大中はドラッグで移動できる。等倍時のシングルタップ・×・Escで閉じる
  * （シングルタップはダブルタップ猶予の後に確定させる）。
- * 等倍のときは左右に払う（または ← → ）と隣の画像へ移る。
+ * 等倍のときは左右に払う（または ← → ）と隣の画像へ移る。払っている
+ * あいだは隣の画像が指に付いて現れ、離すとそのまま中央へ滑り込む。
  *
  * 出す画像は URL で受け取る。添付のIDだけを受け取る作りだと、本文の
  * 中の画像（モデルが返した `![](…)`）を開けない——「成功するまで生成」で
@@ -15,6 +23,8 @@ import { IconX } from "./icons";
  */
 export function Lightbox({
   src,
+  prevSrc,
+  nextSrc,
   onPrev,
   onNext,
   footer,
@@ -22,6 +32,12 @@ export function Lightbox({
 }: {
   /** 表示する画像のURL。 */
   src: string;
+  /**
+   * 隣の画像のURL。払っているあいだ、指に付いて横から現れる。
+   * 渡さなくても払いは効く（隣は見えないまま移る）。
+   */
+  prevSrc?: string;
+  nextSrc?: string;
   /**
    * 隣へ移る。渡されたぶんだけ、その向きへの払いと矢印キーが効く。
    *
@@ -47,10 +63,30 @@ export function Lightbox({
   /** 払いと縦の動きを見分ける最小の傾き。 */
   const SWIPE_RATIO = 1.2;
   const [t, setT] = useState({ scale: 1, x: 0, y: 0 });
-  /** 等倍のときの、指に付いてくる横の移動量。 */
+  /** 等倍のときの、指に付いてくる横の移動量（3枚並べた帯ごと動く）。 */
   const [swipeX, setSwipeX] = useState(0);
   const [dragging, setDragging] = useState(false);
+  /**
+   * 画像が差し替わった直後の1描画だけ、帯をアニメーション無しで置く
+   * （下の「継ぎ目」の説明）。次のフレームで 0 へ滑らせる。
+   */
+  const [jump, setJump] = useState(false);
+  /**
+   * 差し替わった画像を最初に置く位置。
+   *
+   * 隣へ移るときの継ぎ目。払いの最中は隣の画像が帯の隣のマスに見えて
+   * いる。指を離して親が src を差し替えると、その画像は中央のマスへ
+   * 移るので、帯を「隣のマスがあった位置」までずらして置き直せば、
+   * 見た目は一切動かない。そこから 0 へ滑らせると、隣の画像が指の
+   * 位置から中央へ滑り込む。
+   *
+   * 以前はここを 0 に戻すだけで、同じ img の src だけ差し替えていた。
+   * すると transform が「払った位置 → 0」へ遷移し、左へ払ったのに新しい
+   * 画像が左から現れた。
+   */
+  const pendingJump = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{
     pointerId: number;
     startX: number;
@@ -75,8 +111,40 @@ export function Lightbox({
   if (shownSrc !== src) {
     setShownSrc(src);
     setT({ scale: 1, x: 0, y: 0 });
-    setSwipeX(0);
+    setSwipeX(pendingJump.current ?? 0);
+    setJump(pendingJump.current != null);
+    pendingJump.current = null;
   }
+
+  /*
+   * 置き直した位置を一度ブラウザに確定させてから、次のフレームで 0 へ。
+   * 確定させずに 0 にすると、置き直しが描かれないまま遷移が始まらず、
+   * 新しい画像がその場に出るだけになる。
+   */
+  useLayoutEffect(() => {
+    if (!jump) return;
+    void stripRef.current?.getBoundingClientRect();
+    const id = requestAnimationFrame(() => {
+      setSwipeX(0);
+      setJump(false);
+    });
+    return () => cancelAnimationFrame(id);
+  }, [jump]);
+
+  /** 帯の幅（＝画像1枚ぶんの横の距離）。 */
+  const paneWidth = () => containerRef.current?.clientWidth ?? 0;
+
+  /** 隣へ移る。差し替わった画像を、その向きの隣のマスの位置から滑らせる。 */
+  const goPrev = () => {
+    if (!onPrev) return;
+    pendingJump.current = swipeX - paneWidth();
+    onPrev();
+  };
+  const goNext = () => {
+    if (!onNext) return;
+    pendingJump.current = swipeX + paneWidth();
+    onNext();
+  };
 
   /*
    * Escape は共通の重なり順（dismiss の openLayers）へ預ける。
@@ -99,12 +167,12 @@ export function Lightbox({
     const onKey = (e: KeyboardEvent) => {
       // 拡大中の矢印は画像を動かすためのものではないので、等倍のときだけ
       if (t.scale !== 1) return;
-      if (e.key === "ArrowLeft") onPrev?.();
-      if (e.key === "ArrowRight") onNext?.();
+      if (e.key === "ArrowLeft") goPrev();
+      if (e.key === "ArrowRight") goNext();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onPrev, onNext, t.scale]);
+  });
 
   // 閉じるのを待っている時計（シングルタップの猶予）は、外れるときに畳む
   useEffect(
@@ -148,6 +216,7 @@ export function Lightbox({
       closeTimer.current = null;
     }
     if (drag.current) return; // 2本目以降の指は無視（ピンチは未対応）
+    pendingJump.current = null;
     e.currentTarget.setPointerCapture(e.pointerId);
     drag.current = {
       pointerId: e.pointerId,
@@ -197,12 +266,15 @@ export function Lightbox({
       if (
         t.scale === 1 &&
         Math.abs(dx) >= SWIPE_COMMIT_PX &&
-        Math.abs(dx) > Math.abs(dy) * SWIPE_RATIO
+        Math.abs(dx) > Math.abs(dy) * SWIPE_RATIO &&
+        (dx > 0 ? onPrev : onNext)
       ) {
-        if (dx > 0) onPrev?.();
-        else onNext?.();
+        // 隣へ。src が差し替わる描画で帯が置き直され、そこから滑る
+        if (dx > 0) goPrev();
+        else goNext();
+      } else {
+        setSwipeX(0);
       }
-      setSwipeX(0);
       return; // ドラッグはタップとして扱わない
     }
 
@@ -226,7 +298,7 @@ export function Lightbox({
   return (
     <div
       ref={containerRef}
-      className="fixed inset-0 z-50 flex animate-fade touch-none select-none items-center justify-center overflow-hidden bg-black/80 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 animate-fade touch-none select-none overflow-hidden bg-black/80 backdrop-blur-sm"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -239,18 +311,60 @@ export function Lightbox({
       onTouchMove={(e) => e.stopPropagation()}
       onTouchEnd={(e) => e.stopPropagation()}
     >
-      <img
-        src={src}
-        alt="添付画像"
-        draggable={false}
+      {/*
+        3枚を横に並べた帯。中央がいまの画像、左右のマスに隣の画像。
+        払うと帯ごと動くので、隣の画像が指に付いて現れる。拡大中は
+        隣を消す（拡大した画像が隣のマスまで広がって重なる）。
+      */}
+      <div
+        ref={stripRef}
+        className="absolute inset-0"
         style={{
-          transform: `translate(${t.x + swipeX}px, ${t.y}px) scale(${t.scale})`,
-          transition: dragging ? "none" : "transform 0.2s ease-out",
+          transform: `translateX(${swipeX}px)`,
+          transition: dragging || jump ? "none" : "transform 0.2s ease-out",
         }}
-        className={`max-h-full max-w-full object-contain ${
-          t.scale > 1 ? "cursor-grab" : ""
-        }`}
-      />
+      >
+        {prevSrc && t.scale === 1 && (
+          <div
+            aria-hidden
+            className="absolute inset-y-0 right-full flex w-full items-center justify-center p-4"
+          >
+            <img
+              src={prevSrc}
+              alt=""
+              draggable={false}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
+        )}
+        <div className="absolute inset-0 flex items-center justify-center p-4">
+          <img
+            src={src}
+            alt="添付画像"
+            draggable={false}
+            style={{
+              transform: `translate(${t.x}px, ${t.y}px) scale(${t.scale})`,
+              transition: dragging ? "none" : "transform 0.2s ease-out",
+            }}
+            className={`max-h-full max-w-full object-contain ${
+              t.scale > 1 ? "cursor-grab" : ""
+            }`}
+          />
+        </div>
+        {nextSrc && t.scale === 1 && (
+          <div
+            aria-hidden
+            className="absolute inset-y-0 left-full flex w-full items-center justify-center p-4"
+          >
+            <img
+              src={nextSrc}
+              alt=""
+              draggable={false}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
+        )}
+      </div>
       {footer && (
         <div
           onPointerDown={(e) => e.stopPropagation()}

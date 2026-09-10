@@ -377,6 +377,47 @@ describe("拡大表示を左右に払う", () => {
     expect(openedId()).toBe("i1");
   });
 
+  /** 3枚を横に並べた帯（中央の img の2つ上）。 */
+  function strip(): HTMLElement {
+    return screen.getByAltText("添付画像").parentElement!.parentElement!;
+  }
+
+  it("払っているあいだ、隣の画像が帯の隣のマスに並んでいる", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i2");
+    const srcs = [...strip().querySelectorAll("img")].map((el) =>
+      el.getAttribute("src"),
+    );
+    expect(srcs).toEqual(["/api/files/i1", "/api/files/i2", "/api/files/i3"]);
+  });
+
+  it("端では、無い側のマスは空", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i1");
+    const srcs = [...strip().querySelectorAll("img")].map((el) =>
+      el.getAttribute("src"),
+    );
+    expect(srcs).toEqual(["/api/files/i1", "/api/files/i2"]);
+  });
+
+  /*
+   * 継ぎ目。指を離して画像が差し替わった描画では、帯は「隣のマスがあった
+   * 位置」（＝指の位置。jsdom はマスの幅が 0 なので払った距離そのもの）に
+   * 置かれ、次のフレームで 0 へ滑る。ここを最初から 0 に戻すと、同じ帯の
+   * 位置が「払った位置 → 0」へ遷移し、左へ払ったのに新しい画像が左から
+   * 現れる（実際に起きていた）。
+   */
+  it("差し替わった画像は指の位置に置かれてから中央へ滑る", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i1");
+    swipe(-120);
+    expect(openedId()).toBe("i2");
+    expect(strip().style.transform).toBe("translateX(-120px)");
+    expect(strip().style.transition).toBe("none");
+    await waitFor(() => expect(strip().style.transform).toBe("translateX(0px)"));
+    expect(strip().style.transition).not.toBe("none");
+  });
+
   it("矢印キーでも隣へ移る", async () => {
     const { user } = renderImages(three);
     await openLightbox(user, "i2");
