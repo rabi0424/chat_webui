@@ -77,7 +77,7 @@ function ModelRow({
 }: {
   model: ModelInfo;
   selected: boolean;
-  /** 公開されたばかり。左端のバーと NEW バッジで目立たせる。 */
+  /** 公開されたばかり。左端のバーで目立たせる。 */
   isNew: boolean;
   onSelect: (id: string) => void;
 }) {
@@ -90,12 +90,20 @@ function ModelRow({
           selected ? "bg-neutral-100 dark:bg-white/10" : ""
         } ${isNew ? "pl-4" : ""}`}
       >
-        {/* 新着の印。行の左端に立てたアクセントのバー */}
+        {/*
+          新着の印。行の左端に立てたアクセントのバー。以前は右端にも
+          NEW バッジを出していたが、同じ条件で必ず両方付くので、印は
+          バーだけにした（バッジの分、名前の幅が縮んでいた）。
+          読み上げには文字を残す。
+        */}
         {isNew && (
-          <span
-            aria-hidden
-            className="absolute inset-y-1.5 left-1 w-1 rounded-full bg-accent"
-          />
+          <>
+            <span
+              aria-hidden
+              className="absolute inset-y-1.5 left-1 w-1 rounded-full bg-accent"
+            />
+            <span className="sr-only">新着 </span>
+          </>
         )}
         <div className="flex items-baseline justify-between gap-2">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -109,11 +117,6 @@ function ModelRow({
             </span>
           </span>
           <span className="flex shrink-0 gap-1">
-            {isNew && (
-              <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-accent-fg">
-                NEW
-              </span>
-            )}
             {m.provider === "poe" && (
               <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-2 dark:bg-neutral-800">
                 Poe

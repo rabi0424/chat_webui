@@ -574,7 +574,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
           >
             <Row
               label="新着として出す日数"
-              description={`公開からこの日数だけ NEW を表示（0 で表示しない・最大${NEW_MODEL_DAYS_RANGE.max}）`}
+              description={`公開からこの日数だけ、モデル一覧の左端に印を付ける（0 で付けない・最大${NEW_MODEL_DAYS_RANGE.max}）`}
               saved={saved("newModelDays")}
             >
               <Stepper
