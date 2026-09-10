@@ -340,7 +340,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             <IconMenu className="h-5 w-5" />
           </button>
         </div>
-        <h1 className="font-display min-w-0 flex-1 truncate text-center text-[0.9375rem] font-bold tracking-tight">
+        <h1 className="min-w-0 flex-1 truncate text-center text-[0.9375rem] font-semibold">
           設定
         </h1>
         <div className="flex w-9 shrink-0 justify-end" />
@@ -590,7 +590,11 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
           </Group>
 
           <Group title="外観" note="この端末にのみ適用されます。">
-            <Row label="テーマ" description="端末の設定に追従するときは「自動」">
+            <Row
+              label="テーマ"
+              description="端末の設定に追従するときは「自動」"
+              stack="narrow"
+            >
               <Segmented
                 label="テーマ"
                 value={theme}
@@ -598,7 +602,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 onChange={(t) => saveTheme(t)}
               />
             </Row>
-            <Row label="アクセント色" description="ボタンや強調表示の色">
+            <Row label="アクセント色" description="ボタンや強調表示の色" stack="narrow">
               <AccentPicker />
             </Row>
             <Row

@@ -154,7 +154,7 @@ export default function Bots() {
         >
           <IconMenu className="h-5 w-5" />
         </button>
-        <h1 className="font-display px-1 text-sm font-bold tracking-tight">ボット管理</h1>
+        <h1 className="px-1 text-sm font-semibold tracking-tight">ボット管理</h1>
         <div className="ml-auto">
           <button
             type="button"

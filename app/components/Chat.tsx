@@ -1644,20 +1644,14 @@ export function Chat({
   /** 表示中の枝にコンテキストの区切りがあるか（入力欄のアイコンの色）。 */
   const hasContextBoundary = messages.some((m) => m.contextBoundary);
   /**
-   * ツールバーの副題（ターン数と、表示中の枝の累計）。各応答の下に並んで
-   * いた数字をここへ引き上げ、本文の脇には額と秒だけを残す。
+   * ツールバーの副題（表示中の枝の累計額）。各応答の下に並んでいた数字を
+   * ここへ引き上げ、本文の脇には額と秒だけを残す。ターン数は出さない——
+   * 会話を見れば分かる数で、額の前に置くと肝心の額が読みにくかった。
    */
   const conversationSummary = (() => {
-    if (messages.length === 0) return null;
-    const turns = messages.filter((m) => m.role === "user").length;
     const cost = messages.reduce((sum, m) => sum + (m.usage?.cost ?? 0), 0);
-    const parts = [`${turns}ターン`];
-    if (cost > 0) {
-      parts.push(
-        usdJpy != null ? formatJpy(cost * usdJpy) : `$${cost.toFixed(4)}`,
-      );
-    }
-    return parts.join(" · ");
+    if (cost <= 0) return null;
+    return usdJpy != null ? formatJpy(cost * usdJpy) : `$${cost.toFixed(4)}`;
   })();
 
   return (
@@ -1706,7 +1700,7 @@ export function Chat({
           </button>
         </div>
         <div className="min-w-0 flex-1 text-center">
-          <p className="font-display truncate text-[0.9375rem] font-bold leading-tight tracking-tight">
+          <p className="truncate text-[0.9375rem] font-semibold leading-tight">
             {title ?? (bot ? bot.name : "新規チャット")}
           </p>
           {conversationSummary && (

@@ -122,7 +122,7 @@ export function BotForm({
             キャンセル
           </button>
         </div>
-        <h1 className="font-display min-w-0 flex-1 truncate text-center text-[0.9375rem] font-bold tracking-tight">
+        <h1 className="min-w-0 flex-1 truncate text-center text-[0.9375rem] font-semibold">
           {initial ? "ボットを編集" : "新しいボット"}
         </h1>
         <div className="flex w-24 shrink-0 justify-end">
