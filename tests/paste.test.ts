@@ -5,6 +5,8 @@ import {
   readPasteThreshold,
   savePasteThreshold,
   expandOnePaste,
+  keepPasteTokensWhole,
+  snapSelectionOutsideTokens,
   expandPastes,
   insertPasteToken,
   nextPasteNumber,
@@ -91,5 +93,71 @@ describe("札の出し入れ", () => {
     const p2 = { n: 2, text: "b" };
     const text = `${pasteToken(paste)}|${pasteToken(p2)}`;
     expect(expandOnePaste(text, p2)).toBe(`${pasteToken(paste)}|b`);
+  });
+});
+
+/**
+ * 札は塊。1文字でも消したら「ただの文字列」に戻って貼り付けとの
+ * 結び付きが切れる（送るときに戻らない）ので、札に食い込む編集は
+ * 札ごと消す。端に触れるだけの編集は素通し。
+ */
+describe("札を塊として扱う", () => {
+  const paste = { n: 1, text: "a\nb" };
+  const token = pasteToken(paste); // [貼り付け #1: 2行]
+  const text = `前${token}後`;
+
+  it("札の末尾の1文字を消したら、札ごと消える", () => {
+    const after = `前${token.slice(0, -1)}後`;
+    expect(keepPasteTokensWhole(text, after)).toEqual({ text: "前後", caret: 1 });
+  });
+
+  it("札の先頭の1文字を消しても同じ", () => {
+    const after = `前${token.slice(1)}後`;
+    expect(keepPasteTokensWhole(text, after)).toEqual({ text: "前後", caret: 1 });
+  });
+
+  it("札の途中に文字を打ったら、札が消えて打った文字が残る", () => {
+    const after = `前${token.slice(0, 3)}X${token.slice(3)}後`;
+    expect(keepPasteTokensWhole(text, after)).toEqual({ text: "前X後", caret: 2 });
+  });
+
+  it("札にまたがる選択を置き換えたら、札全体が置き換わる", () => {
+    const after = `前${token.slice(0, 4)}Y`;
+    // 「札の途中〜末尾の『後』」を Y に置き換えた
+    expect(keepPasteTokensWhole(text, after)).toEqual({ text: "前Y", caret: 2 });
+  });
+
+  it("札の直前・直後の編集は札に触れていない", () => {
+    expect(keepPasteTokensWhole(text, `${token}後`)).toBeNull(); // 「前」を消す
+    expect(keepPasteTokensWhole(text, `前${token}`)).toBeNull(); // 「後」を消す
+    expect(keepPasteTokensWhole(text, `前${token}X後`)).toBeNull(); // 直後に打つ
+    expect(keepPasteTokensWhole(text, `前X${token}後`)).toBeNull(); // 直前に打つ
+  });
+
+  it("札ごと選んで消すのは、そのまま", () => {
+    expect(keepPasteTokensWhole(text, "前後")).toBeNull();
+  });
+});
+
+describe("キャレットは札の外へ", () => {
+  const token = pasteToken({ n: 1, text: "a\nb" });
+  const text = `前${token}後`;
+  const ts = 1;
+  const te = 1 + token.length;
+
+  it("札の中に置かれた点は近いほうの端へ", () => {
+    expect(snapSelectionOutsideTokens(text, { start: ts + 1, end: ts + 1 })).toEqual({ start: ts, end: ts });
+    expect(snapSelectionOutsideTokens(text, { start: te - 1, end: te - 1 })).toEqual({ start: te, end: te });
+  });
+
+  it("札にまたがる範囲は外側へ広がる", () => {
+    expect(snapSelectionOutsideTokens(text, { start: 0, end: ts + 2 })).toEqual({ start: 0, end: te });
+    expect(snapSelectionOutsideTokens(text, { start: te - 2, end: te + 1 })).toEqual({ start: ts, end: te + 1 });
+  });
+
+  it("端に居るなら動かさない", () => {
+    expect(snapSelectionOutsideTokens(text, { start: ts, end: ts })).toBeNull();
+    expect(snapSelectionOutsideTokens(text, { start: te, end: te })).toBeNull();
+    expect(snapSelectionOutsideTokens(text, { start: ts, end: te })).toBeNull();
   });
 });

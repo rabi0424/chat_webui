@@ -40,6 +40,7 @@ import {
 import type { PendingAttachment } from "./use-attachments";
 import {
   countLines,
+  snapSelectionOutsideTokens,
   splitByPasteTokens,
   type CollapsedPaste,
 } from "../../lib/paste";
@@ -367,6 +368,20 @@ export function Composer({
             ref={textareaRef}
             value={input}
             onChange={(e) => onChangeInput(e.target.value)}
+            /*
+              キャレットは札の中に入れない（近いほうの端へ寄せる）。
+              札の途中に文字を打てると、その瞬間に札が壊れて貼り付け
+              との結び付きが切れる。端に居れば、消す操作は札ごと消える
+              （Chat の editInput）。
+            */
+            onSelect={(e) => {
+              const el = e.currentTarget;
+              const snapped = snapSelectionOutsideTokens(el.value, {
+                start: el.selectionStart,
+                end: el.selectionEnd,
+              });
+              if (snapped) el.setSelectionRange(snapped.start, snapped.end);
+            }}
             onScroll={syncOverlay}
             onKeyDown={(e) => {
               if (e.nativeEvent.isComposing) return;

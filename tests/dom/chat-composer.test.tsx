@@ -155,6 +155,36 @@ describe("長い貼り付け", () => {
     expect(screen.queryByText(/行・/)).toBeNull();
   });
 
+  it("札の末尾で Backspace を押すと、札ごと消える", async () => {
+    const { user } = renderChat({});
+    const box = await paste(LONG);
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+    await user.keyboard("{Backspace}");
+    expect(box.value).toBe("");
+    expect(screen.queryByText(/行・/)).toBeNull();
+  });
+
+  it("札の途中の文字を消しても、札ごと消える", async () => {
+    renderChat({});
+    const box = await paste(LONG);
+    const damaged = box.value.slice(0, 5) + box.value.slice(6);
+    fireEvent.change(box, { target: { value: damaged } });
+    expect(box.value).toBe("");
+    expect(screen.queryByText(/行・/)).toBeNull();
+  });
+
+  it("札の中を押しても、キャレットは端へ寄る", async () => {
+    renderChat({});
+    const box = await paste(LONG);
+    box.setSelectionRange(3, 3);
+    fireEvent.select(box);
+    expect(box.selectionStart).toBe(0);
+    box.setSelectionRange(box.value.length - 2, box.value.length - 2);
+    fireEvent.select(box);
+    expect(box.selectionStart).toBe(box.value.length);
+  });
+
   it("本文から札を消せば、貼り付けも捨てられる", async () => {
     const { user } = renderChat({});
     const box = await paste(LONG);

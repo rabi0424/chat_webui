@@ -14,6 +14,7 @@ import {
   expandOnePaste,
   expandPastes,
   insertPasteToken,
+  keepPasteTokensWhole,
   nextPasteNumber,
   pasteNumbersIn,
   removePasteToken,
@@ -608,6 +609,20 @@ export function Chat({
       el.focus();
       el.setSelectionRange(at, at);
     });
+  };
+
+  /**
+   * 入力欄で打った・消したとき。札の一部にかかる編集は札ごと消す
+   * （lib/paste.ts の keepPasteTokensWhole）。
+   */
+  const editInput = (value: string) => {
+    const fixed = keepPasteTokensWhole(input, value);
+    if (!fixed) {
+      changeInput(value);
+      return;
+    }
+    changeInput(fixed.text);
+    placeCaret(fixed.caret);
   };
 
   /** 札を本文に戻す（利用者が中身を編集したいとき）。 */
@@ -2005,7 +2020,7 @@ export function Chat({
             onPickFiles={(files) => void addFiles(files)}
             onOpenFilePicker={openFilePicker}
             input={input}
-            onChangeInput={changeInput}
+            onChangeInput={editInput}
             pastes={pastes}
             onExpandPaste={expandPaste}
             onRemovePaste={removePaste}
