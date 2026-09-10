@@ -1677,13 +1677,27 @@ export function Chat({
         void addFiles([...e.dataTransfer.files]);
       }}
     >
-      <header
-        className={`absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] transition-colors duration-200 ${
-          scrolled
-            ? "border-neutral-200/60 bg-white/60 backdrop-blur-xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-950/55"
-            : "border-transparent"
-        }`}
-      >
+      <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-1 px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
+        {/*
+          背景。上端（ステータスバー側）は地の色で、下へ向けて透明に抜ける。
+          ぼかしも同じ形で薄める。以前は上下とも同じ濃さの半透明の板に
+          下線を引いていて、明るい色の吹き出しが下をくぐると、板の下端で
+          色が急に切り替わって境界が目立った（黄色のアクセントで顕著）。
+          フッター（入力欄の背景）と同じ作りにして、上下を揃える。
+          彩度の強調（saturate）もやめる——くぐる色をさらに濃くしていた。
+          スクロールしていないときは消す（ホームの光を隠さない）。
+          箱はヘッダーより下へ少し伸ばし、題の行の中でぼかしが切れない
+          ようにする。
+        */}
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-x-0 -bottom-14 top-0 -z-10 transition-opacity duration-200 ${
+            scrolled ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <div className="header-veil-blur absolute inset-0" />
+          <div className="header-veil absolute inset-0" />
+        </div>
         {/*
           3列。左＝サイドバーの開閉（iPhone だけ）、中央＝いまの会話、
           右＝この会話の操作。左右を同じ幅にして中央を本当の中央に置く。

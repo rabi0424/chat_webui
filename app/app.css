@@ -894,3 +894,40 @@ body {
 .prose.chat-bubble :where(thead) {
   border-color: color-mix(in srgb, currentColor 28%, transparent);
 }
+
+/*
+ * 会話画面のヘッダーの背景（Chat.tsx）。上端は地の色、下へ向けて透明に
+ * 抜ける。ぼかしも同じ形で薄める。
+ *
+ * 直線のグラデーションだと、抜けきる位置で明るさの変化率が急に変わり、
+ * そこに線があるように見える（マッハバンド）。段を刻んで終わりぎわを
+ * なだらかにし、ぼかしの終わりは色の終わりより手前にずらす——2つの
+ * 終わりが同じ高さに重なると、その高さがまた線に見える。
+ * 色は --surface（テーマで変わる）から作るので、ダークの指定は要らない。
+ */
+.header-veil {
+  background: linear-gradient(
+    to bottom,
+    var(--surface) 30%,
+    color-mix(in srgb, var(--surface) 85%, transparent) 50%,
+    color-mix(in srgb, var(--surface) 50%, transparent) 70%,
+    color-mix(in srgb, var(--surface) 18%, transparent) 88%,
+    transparent 100%
+  );
+}
+.header-veil-blur {
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 40%,
+    rgb(0 0 0 / 0.5) 68%,
+    transparent 90%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black 40%,
+    rgb(0 0 0 / 0.5) 68%,
+    transparent 90%
+  );
+}
