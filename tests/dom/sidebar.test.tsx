@@ -542,6 +542,24 @@ describe("操作の失敗（続き）", () => {
  * 遅いと、後の語の結果が先に返る）。古いほうが後に返ると、いま入って
  * いる語と合わない結果が残る。
  */
+/**
+ * 虫眼鏡を押した直後、待たずに検索欄へフォーカスが入っているか。
+ *
+ * iPhone は利用者の操作の中で呼ばれた focus() でしかキーボードを出さない。
+ * 描画を待ってから（requestAnimationFrame で）フォーカスすると、押した
+ * 操作の外になってキーボードが出なかった。ここでは「クリックが返った
+ * 時点で」入っていることを見る——フレームを待つ実装なら、この時点では
+ * まだ入っていない。
+ */
+describe("検索欄を開く", () => {
+  it("押した操作の中で検索欄にフォーカスが入る", async () => {
+    const { user } = renderSidebar({ conversations: [] });
+    await user.click(screen.getByLabelText("会話を検索"));
+    const box = screen.getByRole("textbox", { name: "会話を検索" });
+    expect(document.activeElement).toBe(box);
+  });
+});
+
 describe("検索の順序", () => {
   it("古い結果が後から返っても、最新の語の結果が残る", async () => {
     const { user } = renderSidebar({ conversations: [] });
