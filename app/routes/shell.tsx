@@ -400,6 +400,15 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
    * （スクロールすると再計算されて直る）。実測値をCSS変数 --app-height で
    * 渡すことで初期表示から正しい高さになり、ツールバーの伸縮や
    * ソフトキーボードの表示にも追従する。
+   *
+   * ただし実測値をそのまま信じない。ホーム画面から開いたとき
+   * （ステータスバーの背後まで描く全画面表示）は、visualViewport の
+   * 高さがステータスバーぶん（Dynamic Island 機で 59pt）短く報告される
+   * のに、描画の領域は画面の上端からで、100dvh は画面いっぱいになる。
+   * 短い値で高さを決めると箱が画面の下端より 59pt 上で終わり、入力欄が
+   * 浮いて見えた。root 要素の clientHeight は描画の領域（＝100dvh の
+   * 元）なので、大きいほうを取る。Safari で 100dvh が短いままの場合は
+   * 実測値のほうが大きく、こちらが選ばれる。
    */
   useEffect(() => {
     const vv = window.visualViewport;
@@ -420,10 +429,11 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       // キーボードが残したページのパンを戻す（このアプリのbodyは
       // 本来スクロールしないため、scrollY > 0 はSafariのパンの残骸）
       if (window.scrollY > 0) window.scrollTo(0, 0);
-      document.documentElement.style.setProperty(
-        "--app-height",
-        `${vv.height}px`,
+      const height = Math.max(
+        vv.height,
+        document.documentElement.clientHeight,
       );
+      document.documentElement.style.setProperty("--app-height", `${height}px`);
     };
     update();
     vv.addEventListener("resize", update);
