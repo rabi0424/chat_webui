@@ -11,6 +11,7 @@ import type { Route } from "./+types/images";
 import type { ShellContext } from "./shell";
 import { listGeneratedImages, type GeneratedImageRow } from "../lib/db.server";
 import { Lightbox } from "../components/Lightbox";
+import { ensureThumbnail } from "../lib/thumbnail";
 import type { ImagesResponse } from "../lib/api-types";
 import { invalidateChat } from "../lib/chat-cache";
 import {
@@ -112,12 +113,24 @@ function ImageTile({
         title={img.prompt ?? undefined}
         className="block h-full w-full overflow-hidden bg-sunken"
       >
+        {/*
+          縮小版があればそれを、無ければ原寸を出す。原寸を出したときは
+          読み終わった画像からその場で縮小版を作って置く（lib/thumbnail.ts）
+          ので、次からはこの端末でも他の端末でも軽い。
+        */}
         <img
-          src={`/api/files/${img.id}`}
+          src={
+            img.thumb_at != null
+              ? `/api/files/${img.id}/thumb`
+              : `/api/files/${img.id}`
+          }
           alt={img.prompt ?? "生成画像"}
           loading="lazy"
-          // 復号を本筋から外す。原寸を並べるので1枚が重い
+          // 復号を本筋から外す。縮小版が無い画像は原寸で1枚が重い
           decoding="async"
+          onLoad={(e) => {
+            if (img.thumb_at == null) void ensureThumbnail(img.id, e.currentTarget);
+          }}
           className="h-full w-full object-cover transition-opacity group-hover/img:opacity-90"
         />
       </button>
@@ -631,6 +644,16 @@ export default function Images({ loaderData }: Route.ComponentProps) {
       {current && (
         <Lightbox
           src={`/api/files/${current.id}`}
+          prevSrc={
+            images[currentIndex - 1]
+              ? `/api/files/${images[currentIndex - 1].id}`
+              : undefined
+          }
+          nextSrc={
+            images[currentIndex + 1]
+              ? `/api/files/${images[currentIndex + 1].id}`
+              : undefined
+          }
           onClose={() => setLightbox(null)}
           /*
             端では渡さない。渡さないほうへ払うと戻るだけになるので、

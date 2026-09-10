@@ -4,6 +4,10 @@ export interface UiAttachment {
   mimeType: string;
   name: string | null;
   size: number;
+  /** upload = 添付した画像 / generated = モデルが生成した画像。 */
+  kind?: "upload" | "generated";
+  /** 縮小版（一覧のサムネイル）が R2 にあるか。無ければ表示側で作る。 */
+  hasThumb?: boolean;
 }
 
 /**

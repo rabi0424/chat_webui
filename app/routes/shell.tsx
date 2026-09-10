@@ -50,6 +50,7 @@ import {
 } from "../lib/shortcuts";
 import { dispatchShortcut, isMacLike } from "../lib/use-shortcut";
 import { useSidebarCollapsed, writeSidebarCollapsed } from "../lib/persisted";
+import { appHeightValue, isStandaloneDisplay } from "../lib/app-height";
 
 /** 変わらない値の購読（useSyncExternalStore の形を借りるためだけ）。 */
 const subscribeNothing = () => () => {};
@@ -400,6 +401,9 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
    * （スクロールすると再計算されて直る）。実測値をCSS変数 --app-height で
    * 渡すことで初期表示から正しい高さになり、ツールバーの伸縮や
    * ソフトキーボードの表示にも追従する。
+   *
+   * ホーム画面から開いた全画面表示では実測値を使わず 100vh にする
+   * （理由は lib/app-height.ts）。
    */
   useEffect(() => {
     const vv = window.visualViewport;
@@ -422,7 +426,10 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       if (window.scrollY > 0) window.scrollTo(0, 0);
       document.documentElement.style.setProperty(
         "--app-height",
-        `${vv.height}px`,
+        appHeightValue({
+          standalone: isStandaloneDisplay(window),
+          measured: vv.height,
+        }),
       );
     };
     update();

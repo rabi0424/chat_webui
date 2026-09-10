@@ -22,6 +22,30 @@ export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 /** 1メッセージに添付できる枚数の上限。 */
 export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 
+/*
+ * 生成画像の縮小版（一覧のサムネイル）。
+ *
+ * 作るのはブラウザ。Workers は無料プランの CPU 上限が1回 10ms で
+ * 1024px の画像のデコードと縮小には足りず、Cloudflare のリサイズは
+ * 有料。原寸を最初に表示したブラウザは既にデコード済みの画像を
+ * 持っているので、そこから縮小して R2 へ置く（lib/thumbnail.ts）。
+ *
+ * 大きさは短い辺を 512px にする。一覧のマスは iPhone で 130pt × 3倍
+ * ＝ 390px、Mac で 200px × 2倍 ＝ 400px の正方形（中央を切り出す）
+ * なので、短い辺が 512px あれば 1.3 倍の余裕がある。長い辺は
+ * 横長の画像で無駄に大きくならないよう 1536px で切る。
+ */
+export const THUMBNAIL_SHORT_SIDE = 512;
+export const THUMBNAIL_LONG_SIDE_MAX = 1536;
+/** 縮小版の圧縮の品質（0〜1）。一覧で粗さが見えない水準。 */
+export const THUMBNAIL_QUALITY = 0.88;
+/** 縮小版として受け付ける形式（ブラウザの canvas が出せるもの）。 */
+export const THUMBNAIL_TYPES = ["image/webp", "image/jpeg"];
+/** 縮小版の上限。512×1536 の WebP でも 300KB には届かない。 */
+export const THUMBNAIL_MAX_BYTES = 600 * 1024;
+/** 縮小版の R2 キー。原寸のキーから機械的に決まる（列を増やさない）。 */
+export const thumbnailKeyOf = (r2Key: string): string => `${r2Key}.thumb`;
+
 /**
  * 会話のタイトルに使う長さの上限。
  * 保存する側（API）と、送信時に仮のタイトルを作る側で揃える。

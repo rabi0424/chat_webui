@@ -11,6 +11,18 @@ import { useLocation, useNavigate, useOutletContext, useRevalidator } from "reac
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import {
+  expandOnePaste,
+  expandPastes,
+  insertPasteToken,
+  keepPasteTokensWhole,
+  nextPasteNumber,
+  pasteNumbersIn,
+  removePasteToken,
+  shouldCollapsePaste,
+  usePasteThreshold,
+  type CollapsedPaste,
+} from "../lib/paste";
+import {
   DEFAULT_MODEL,
   isPoeModel,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
@@ -150,6 +162,13 @@ export function Chat({
   const [messages, setMessages] = useState<UiMessage[]>(initialMessages);
   const [input, setInput] = useState("");
   /**
+   * 畳んだ貼り付け（lib/paste.ts）。本文には札だけが入り、中身はここ。
+   * 下書きと一緒に端末へ持つ——本文だけ戻ると、札が指す先の無い
+   * 文字として残る。
+   */
+  const [pastes, setPastes] = useState<CollapsedPaste[]>([]);
+  const pasteThreshold = usePasteThreshold();
+  /**
    * 未送信の下書きを端末に保存する（リロード・ページ遷移後に復元）。
    *
    * 新規チャットは会話IDが無いので "new" を使うが、最初の送信でIDが
@@ -162,6 +181,7 @@ export function Chat({
   const draftKey = `chat-webui:draft:${draftScope}`;
   /** 未送信の添付。本文と同じく端末に残し、画面の作り直しでも失わない。 */
   const attachKey = `chat-webui:draft-files:${draftScope}`;
+  const pasteKey = `chat-webui:draft-pastes:${draftScope}`;
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 分岐直後などの控えめなトースト。数秒で自動的に消える。 */
@@ -356,6 +376,7 @@ export function Chat({
     };
     move("chat-webui:draft");
     move("chat-webui:draft-files");
+    move("chat-webui:draft-pastes");
     setDraftScope(convId);
   }
 
@@ -478,6 +499,17 @@ export function Chat({
     if (draft) setInput(draft);
     try {
       const saved = JSON.parse(
+        localStorage.getItem(pasteKey) ?? "[]",
+      ) as CollapsedPaste[];
+      const restored = saved.filter(
+        (p) => p && typeof p.n === "number" && typeof p.text === "string",
+      );
+      if (restored.length > 0) setPastes(restored);
+    } catch {
+      // 壊れていれば無視する
+    }
+    try {
+      const saved = JSON.parse(
         localStorage.getItem(attachKey) ?? "[]",
       ) as { id: string; name: string; size: number }[];
       const restored = saved
@@ -545,14 +577,61 @@ export function Chat({
     if (input) el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input, isNarrow]);
 
-  const changeInput = (value: string) => {
+  const savePastes = (next: CollapsedPaste[]) => {
+    setPastes(next);
+    try {
+      if (next.length > 0) localStorage.setItem(pasteKey, JSON.stringify(next));
+      else localStorage.removeItem(pasteKey);
+    } catch {
+      // ストレージ不可でも入力自体は妨げない
+    }
+  };
+
+  const changeInput = (value: string, withPastes: CollapsedPaste[] = pastes) => {
     setInput(value);
+    // 札を消したら貼り付けも捨てる（送るときに無いものは無い）
+    const present = pasteNumbersIn(value);
+    const kept = withPastes.filter((p) => present.has(p.n));
+    if (kept.length !== pastes.length || withPastes !== pastes) savePastes(kept);
     try {
       if (value) localStorage.setItem(draftKey, value);
       else localStorage.removeItem(draftKey);
     } catch {
       // ストレージ不可でも入力自体は妨げない
     }
+  };
+
+  /** 札の直後へキャレットを置く（値が反映されてからでないと動かせない）。 */
+  const placeCaret = (at: number) => {
+    const el = textareaRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(at, at);
+    });
+  };
+
+  /**
+   * 入力欄で打った・消したとき。札の一部にかかる編集は札ごと消す
+   * （lib/paste.ts の keepPasteTokensWhole）。
+   */
+  const editInput = (value: string) => {
+    const fixed = keepPasteTokensWhole(input, value);
+    if (!fixed) {
+      changeInput(value);
+      return;
+    }
+    changeInput(fixed.text);
+    placeCaret(fixed.caret);
+  };
+
+  /** 札を本文に戻す（利用者が中身を編集したいとき）。 */
+  const expandPaste = (p: CollapsedPaste) => {
+    changeInput(expandOnePaste(input, p), pastes.filter((x) => x.n !== p.n));
+  };
+  /** 札ごと捨てる。 */
+  const removePaste = (p: CollapsedPaste) => {
+    changeInput(removePasteToken(input, p), pastes.filter((x) => x.n !== p.n));
   };
 
   /**
@@ -916,7 +995,24 @@ export function Chat({
     if (files.some(isAcceptedImage)) {
       e.preventDefault();
       void addFiles(files);
+      return;
     }
+    /*
+     * 長い文は畳む（lib/paste.ts）。本文には札だけを入れ、中身は別に
+     * 持って送るときに戻す。短い文はブラウザにそのまま入れさせる。
+     */
+    const text = e.clipboardData.getData("text/plain");
+    if (!text || !shouldCollapsePaste(text, pasteThreshold)) return;
+    e.preventDefault();
+    const el = textareaRef.current;
+    const selection = {
+      start: el?.selectionStart ?? input.length,
+      end: el?.selectionEnd ?? input.length,
+    };
+    const paste = { n: nextPasteNumber(pastes), text };
+    const next = insertPasteToken(input, selection, paste);
+    changeInput(next.text, [...pastes, paste]);
+    placeCaret(next.caret);
   }
 
   /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */
@@ -1151,7 +1247,8 @@ export function Chat({
       askRetry(() => send(true), willRetry, addressee?.model_id ?? model);
       return;
     }
-    const text = input.trim();
+    // 畳んだ貼り付けは本文へ戻してから送る（畳むのは見た目だけ）
+    const text = expandPastes(input, pastes).trim();
     // 画像だけの送信も許す。アップロード中は完了を待つ
     if ((!text && readyAttachmentIds.length === 0) || isStreaming || uploading) {
       return;
@@ -1167,6 +1264,7 @@ export function Chat({
     const attachmentIds = attachments.map((a) => a.id);
 
     setInput("");
+    savePastes([]);
     localStorage.removeItem(draftKey); // 送信したら下書きは破棄
     localStorage.removeItem(attachKey);
     // プレビューURLは以降 /api/files/:id で表示するため解放してよい
@@ -1644,20 +1742,14 @@ export function Chat({
   /** 表示中の枝にコンテキストの区切りがあるか（入力欄のアイコンの色）。 */
   const hasContextBoundary = messages.some((m) => m.contextBoundary);
   /**
-   * ツールバーの副題（ターン数と、表示中の枝の累計）。各応答の下に並んで
-   * いた数字をここへ引き上げ、本文の脇には額と秒だけを残す。
+   * ツールバーの副題（表示中の枝の累計額）。各応答の下に並んでいた数字を
+   * ここへ引き上げ、本文の脇には額と秒だけを残す。ターン数は出さない——
+   * 会話を見れば分かる数で、額の前に置くと肝心の額が読みにくかった。
    */
   const conversationSummary = (() => {
-    if (messages.length === 0) return null;
-    const turns = messages.filter((m) => m.role === "user").length;
     const cost = messages.reduce((sum, m) => sum + (m.usage?.cost ?? 0), 0);
-    const parts = [`${turns}ターン`];
-    if (cost > 0) {
-      parts.push(
-        usdJpy != null ? formatJpy(cost * usdJpy) : `$${cost.toFixed(4)}`,
-      );
-    }
-    return parts.join(" · ");
+    if (cost <= 0) return null;
+    return usdJpy != null ? formatJpy(cost * usdJpy) : `$${cost.toFixed(4)}`;
   })();
 
   return (
@@ -1683,13 +1775,27 @@ export function Chat({
         void addFiles([...e.dataTransfer.files]);
       }}
     >
-      <header
-        className={`absolute inset-x-0 top-0 z-20 flex items-center gap-1 border-b px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] transition-colors duration-200 ${
-          scrolled
-            ? "border-neutral-200/60 bg-white/60 backdrop-blur-xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-950/55"
-            : "border-transparent"
-        }`}
-      >
+      <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-1 px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
+        {/*
+          背景。上端（ステータスバー側）は地の色で、下へ向けて透明に抜ける。
+          ぼかしも同じ形で薄める。以前は上下とも同じ濃さの半透明の板に
+          下線を引いていて、明るい色の吹き出しが下をくぐると、板の下端で
+          色が急に切り替わって境界が目立った（黄色のアクセントで顕著）。
+          フッター（入力欄の背景）と同じ作りにして、上下を揃える。
+          彩度の強調（saturate）もやめる——くぐる色をさらに濃くしていた。
+          スクロールしていないときは消す（ホームの光を隠さない）。
+          箱はヘッダーより下へ少し伸ばし、題の行の中でぼかしが切れない
+          ようにする。
+        */}
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-x-0 -bottom-14 top-0 -z-10 transition-opacity duration-200 ${
+            scrolled ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <div className="header-veil-blur absolute inset-0" />
+          <div className="header-veil absolute inset-0" />
+        </div>
         {/*
           3列。左＝サイドバーの開閉（iPhone だけ）、中央＝いまの会話、
           右＝この会話の操作。左右を同じ幅にして中央を本当の中央に置く。
@@ -1706,7 +1812,7 @@ export function Chat({
           </button>
         </div>
         <div className="min-w-0 flex-1 text-center">
-          <p className="font-display truncate text-[0.9375rem] font-bold leading-tight tracking-tight">
+          <p className="truncate text-[0.9375rem] font-semibold leading-tight">
             {title ?? (bot ? bot.name : "新規チャット")}
           </p>
           {conversationSummary && (
@@ -1886,6 +1992,14 @@ export function Chat({
         </button>
       )}
 
+      {/*
+        下の余白は safe-area の inset をそのまま使う（ホーム画面から開くと
+        34px、Safari ではツールバーが下端を覆うので 0 → 0.75rem）。
+        「浮いて見える」を inset から差し引いて直そうとしたことがあるが、
+        浮きの原因は別（lib/app-height.ts）で、差し引くと今度は
+        ホームインジケータに近すぎた。Claude の iOS アプリも inset
+        ちょうどに置いている。
+      */}
       <footer
         ref={footerRef}
         className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-white via-white/80 to-transparent px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-6 dark:from-neutral-950 dark:via-neutral-950/80"
@@ -1906,7 +2020,10 @@ export function Chat({
             onPickFiles={(files) => void addFiles(files)}
             onOpenFilePicker={openFilePicker}
             input={input}
-            onChangeInput={changeInput}
+            onChangeInput={editInput}
+            pastes={pastes}
+            onExpandPaste={expandPaste}
+            onRemovePaste={removePaste}
             onSend={() => send()}
             onPaste={onPaste}
             textareaRef={textareaRef}

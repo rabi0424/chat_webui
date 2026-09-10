@@ -204,7 +204,11 @@ export function Group({
  * 一覧の1行。左に項目名と説明、右に操作。
  *
  * iPhone では行の高さを 44px 以上にする。`stack` は操作が横に収まらない
- * もの（文字欄・パラメータ一覧）で、操作を下の段に置く。
+ * もの（文字欄・パラメータ一覧）で、操作を下の段に置く。`"narrow"` は
+ * iPhone の幅でだけ下の段に置き、Mac では右に並べる——アクセント色の
+ * 丸9つのように、幅は決まっているが右側の6割には収まらないもの。
+ * 横に並べたままだと丸が行からはみ出し、設定画面全体が横に
+ * スクロールできてしまう（縦スクロールの箱は横のはみ出しも隠さない）。
  */
 export function Row({
   label,
@@ -218,11 +222,21 @@ export function Row({
   children?: React.ReactNode;
   /** この行の値を保存したばかり。右端に印を出す。 */
   saved?: boolean;
-  stack?: boolean;
+  stack?: boolean | "narrow";
 }) {
+  const narrow = stack === "narrow";
+  const stacked = stack === true;
   return (
-    <div className={`px-4 py-3 ${stack ? "" : "flex min-h-[3.25rem] items-center gap-4"}`}>
-      <div className={`min-w-0 ${stack ? "" : "flex-1"}`}>
+    <div
+      className={`px-4 py-3 ${
+        stacked
+          ? ""
+          : narrow
+            ? "sm:flex sm:min-h-[3.25rem] sm:items-center sm:gap-4"
+            : "flex min-h-[3.25rem] items-center gap-4"
+      }`}
+    >
+      <div className={`min-w-0 ${stacked ? "" : narrow ? "sm:flex-1" : "flex-1"}`}>
         <p className="text-sm font-medium">{label}</p>
         {description && (
           <p className="text-xs leading-relaxed text-ink-2">
@@ -236,7 +250,13 @@ export function Row({
            * 横並びのときも、狭い画面では右側を6割までに抑える。抑えないと
            * 長いモデル名の欄が幅を取り、左の見出しが1文字ずつ折れる。
            */
-          className={`flex items-center gap-3 ${stack ? "mt-2" : "shrink-0 max-w-[60%] sm:max-w-none"}`}
+          className={`flex items-center gap-3 ${
+            stacked
+              ? "mt-2"
+              : narrow
+                ? "mt-2 sm:mt-0 sm:shrink-0"
+                : "shrink-0 max-w-[60%] sm:max-w-none"
+          }`}
         >
           <SavedMark shown={saved} />
           {children}

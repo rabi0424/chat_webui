@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
 import type {
   ConversationListRow,
@@ -247,9 +248,15 @@ export function Sidebar({
   const searchInput = useRef<HTMLInputElement>(null);
 
   const openSearch = () => {
-    setSearchOpen(true);
-    // 描画後にフォーカスするとモバイルでもキーボードが上がる
-    requestAnimationFrame(() => searchInput.current?.focus());
+    /*
+     * 入力欄をその場で描いてから、同じイベントの中でフォーカスする。
+     * iPhone は利用者の操作の中で呼ばれた focus() でしかキーボードを
+     * 出さない。描画を待ってから（requestAnimationFrame で）フォーカス
+     * すると操作の外になり、カーソルは入るのにキーボードが出ず、
+     * もう一度欄を押す羽目になっていた。
+     */
+    flushSync(() => setSearchOpen(true));
+    searchInput.current?.focus();
   };
   const closeSearch = () => {
     setSearchOpen(false);

@@ -1,9 +1,15 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createRoutesStub, Outlet, useLocation } from "react-router";
 import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Images from "../../app/routes/images";
+import { ensureThumbnail } from "../../app/lib/thumbnail";
+
+// 縮小版の作成は canvas が要る（jsdom には無い）。呼ばれたかだけを見る
+vi.mock("../../app/lib/thumbnail", () => ({
+  ensureThumbnail: vi.fn(() => Promise.resolve()),
+}));
 import type { GeneratedImageRow } from "../../app/lib/db.server";
 
 /**
@@ -54,6 +60,7 @@ function image(
     prompt: `${id} の依頼文`,
     title: "絵を描く会話",
     model_id: "poe:Imagen-4",
+    thumb_at: null,
     ...extra,
   };
 }
@@ -303,6 +310,33 @@ describe("拡大表示の操作", () => {
  * タップ（＝閉じる）、縦向きは払いにしない、端では戻すだけ——ここが崩れると
  * 見比べている最中に画面が閉じたり、行き止まりで空振りしたりする。
  */
+/**
+ * 縮小版（サムネイル）。モバイル回線で一覧を開くと原寸 30 枚（数十MB）を
+ * 読んでいた。縮小版がある画像はそれを読み、無い画像は原寸を出しつつ
+ * 読み終わった画像からその場で作って置く。
+ */
+describe("一覧の縮小版", () => {
+  beforeEach(() => vi.mocked(ensureThumbnail).mockClear());
+
+  it("縮小版がある画像はそれを、無い画像は原寸を読む", () => {
+    renderImages([image("t1", { thumb_at: 1 }), image("f1")]);
+    expect(screen.getByAltText("t1 の依頼文").getAttribute("src")).toBe(
+      "/api/files/t1/thumb",
+    );
+    expect(screen.getByAltText("f1 の依頼文").getAttribute("src")).toBe(
+      "/api/files/f1",
+    );
+  });
+
+  it("原寸を読み終えたら、その画像からだけ縮小版を作る", () => {
+    renderImages([image("t1", { thumb_at: 1 }), image("f1")]);
+    fireEvent.load(screen.getByAltText("t1 の依頼文"));
+    fireEvent.load(screen.getByAltText("f1 の依頼文"));
+    expect(vi.mocked(ensureThumbnail)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(ensureThumbnail).mock.calls[0][0]).toBe("f1");
+  });
+});
+
 describe("拡大表示を左右に払う", () => {
   const three = [image("i1"), image("i2"), image("i3")];
 
@@ -375,6 +409,47 @@ describe("拡大表示を左右に払う", () => {
     // 横に十分動いていても、縦のほうが大きければ払いではない
     swipe(-120, 300);
     expect(openedId()).toBe("i1");
+  });
+
+  /** 3枚を横に並べた帯（中央の img の2つ上）。 */
+  function strip(): HTMLElement {
+    return screen.getByAltText("添付画像").parentElement!.parentElement!;
+  }
+
+  it("払っているあいだ、隣の画像が帯の隣のマスに並んでいる", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i2");
+    const srcs = [...strip().querySelectorAll("img")].map((el) =>
+      el.getAttribute("src"),
+    );
+    expect(srcs).toEqual(["/api/files/i1", "/api/files/i2", "/api/files/i3"]);
+  });
+
+  it("端では、無い側のマスは空", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i1");
+    const srcs = [...strip().querySelectorAll("img")].map((el) =>
+      el.getAttribute("src"),
+    );
+    expect(srcs).toEqual(["/api/files/i1", "/api/files/i2"]);
+  });
+
+  /*
+   * 継ぎ目。指を離して画像が差し替わった描画では、帯は「隣のマスがあった
+   * 位置」（＝指の位置。jsdom はマスの幅が 0 なので払った距離そのもの）に
+   * 置かれ、次のフレームで 0 へ滑る。ここを最初から 0 に戻すと、同じ帯の
+   * 位置が「払った位置 → 0」へ遷移し、左へ払ったのに新しい画像が左から
+   * 現れる（実際に起きていた）。
+   */
+  it("差し替わった画像は指の位置に置かれてから中央へ滑る", async () => {
+    const { user } = renderImages(three);
+    await openLightbox(user, "i1");
+    swipe(-120);
+    expect(openedId()).toBe("i2");
+    expect(strip().style.transform).toBe("translateX(-120px)");
+    expect(strip().style.transition).toBe("none");
+    await waitFor(() => expect(strip().style.transform).toBe("translateX(0px)"));
+    expect(strip().style.transition).not.toBe("none");
   });
 
   it("矢印キーでも隣へ移る", async () => {

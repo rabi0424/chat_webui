@@ -283,7 +283,23 @@ CREATE INDEX IF NOT EXISTS idx_retry_attempts_finished
 CREATE INDEX IF NOT EXISTS idx_retry_attempts_unprocessed
   ON retry_attempts(status_id, processed, finished_at, seq);
 `,
+  // v22: 縮小版（一覧のサムネイル）を置いた時刻。NULL なら無い。
+  // 縮小版の R2 キーは原寸のキーから決まる（constants.thumbnailKeyOf）
+  // ので、キーの列は持たない。時刻にしておくと、作り直しが要るとき
+  // （縮小の仕方を変えたとき）に古いものだけ選べる。
+  `
+ALTER TABLE attachments ADD COLUMN thumb_at INTEGER;
+`,
 ];
+
+/**
+ * 縮小版を置いたことを記す。実体を共有する行（フォーク先）にもまとめて
+ * 付ける——縮小版のキーは原寸のキーから決まるので、共有する行すべてに
+ * とって「ある」状態になる。片方だけ付けると、もう片方の会話から
+ * 開いた一覧では原寸を読み続け、また縮小版を作って送り直す。
+ */
+export const MARK_THUMBNAIL_SQL =
+  "UPDATE attachments SET thumb_at = ? WHERE r2_key = (SELECT r2_key FROM attachments WHERE id = ?)";
 
 /**
  * 「成功するまで生成」の1本担当が、司令役へ渡すために書く行と、
@@ -551,10 +567,13 @@ export function statementsOf(sql: string): string[] {
 export function generatedImagesSql(conditions: string[]): string {
   const where = ["a.kind = 'generated'", ...conditions].join(" AND ");
   // MAX() と併記した列はその最大行の値になる（SQLiteの規定の挙動）ので、
-  // まとめたあとに残るのは最新の1行
+  // まとめたあとに残るのは最新の1行。**この挙動は MAX/MIN が1つのとき
+  // だけ**——thumb_at を MAX() で取ろうとしたら id や message_id が
+  // どの行のものか決まらなくなった（テストで捕まえた）。thumb_at は
+  // 共有する行にまとめて付ける（MARK_THUMBNAIL_SQL）ので素の列でよい
   return `SELECT a.id, a.conversation_id, a.message_id,
               MAX(a.created_at) AS created_at,
-              a.favorite, a.prompt,
+              a.favorite, a.prompt, a.thumb_at,
               c.title AS title, m.model_id AS model_id
          FROM attachments a
          LEFT JOIN conversations c ON c.id = a.conversation_id

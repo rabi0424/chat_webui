@@ -7,6 +7,7 @@ import { IconChevronDown, IconX } from "./icons";
 import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
 import { rankedModelIds } from "../lib/recent-models";
 import { isPoeModel, POE_PREFIX } from "../lib/constants";
+import { placeModelPanel, type PanelPlacement } from "../lib/model-panel";
 
 function formatPricePerMillion(perToken: string): string {
   const n = Number(perToken) * 1_000_000;
@@ -76,7 +77,7 @@ function ModelRow({
 }: {
   model: ModelInfo;
   selected: boolean;
-  /** 公開されたばかり。左端のバーと NEW バッジで目立たせる。 */
+  /** 公開されたばかり。左端のバーで目立たせる。 */
   isNew: boolean;
   onSelect: (id: string) => void;
 }) {
@@ -89,12 +90,20 @@ function ModelRow({
           selected ? "bg-neutral-100 dark:bg-white/10" : ""
         } ${isNew ? "pl-4" : ""}`}
       >
-        {/* 新着の印。行の左端に立てたアクセントのバー */}
+        {/*
+          新着の印。行の左端に立てたアクセントのバー。以前は右端にも
+          NEW バッジを出していたが、同じ条件で必ず両方付くので、印は
+          バーだけにした（バッジの分、名前の幅が縮んでいた）。
+          読み上げには文字を残す。
+        */}
         {isNew && (
-          <span
-            aria-hidden
-            className="absolute inset-y-1.5 left-1 w-1 rounded-full bg-accent"
-          />
+          <>
+            <span
+              aria-hidden
+              className="absolute inset-y-1.5 left-1 w-1 rounded-full bg-accent"
+            />
+            <span className="sr-only">新着 </span>
+          </>
         )}
         <div className="flex items-baseline justify-between gap-2">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -108,11 +117,6 @@ function ModelRow({
             </span>
           </span>
           <span className="flex shrink-0 gap-1">
-            {isNew && (
-              <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-accent-fg">
-                NEW
-              </span>
-            )}
             {m.provider === "poe" && (
               <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-2 dark:bg-neutral-800">
                 Poe
@@ -147,8 +151,24 @@ function ModelRow({
   );
 }
 
-/** 一覧の高さの上限（画面の比率）。上に開くか下に開くかの判断にも使う。 */
-const PANEL_MAX_RATIO = 0.6;
+/**
+ * パネルの位置を測って決める（計算は lib/model-panel.ts）。
+ * visualViewport が無い環境（古いブラウザ・jsdom）では画面全体が見えて
+ * いるものとして扱う。
+ */
+function measurePanel(container: HTMLElement | null): PanelPlacement {
+  const rect = container?.getBoundingClientRect();
+  const vv = window.visualViewport;
+  return placeModelPanel(
+    { top: rect?.top ?? 0, bottom: rect?.bottom ?? 56, left: rect?.left ?? 8 },
+    {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      visualTop: vv?.offsetTop ?? 0,
+      visualHeight: vv?.height ?? window.innerHeight,
+    },
+  );
+}
 
 export function ModelPicker({
   models,
@@ -188,15 +208,10 @@ export function ModelPicker({
    *
    * 上下どちらへ開くかもここで決める。入力欄の中のチップは画面の下端に
    * 居るので、下へ開くと一覧が画面の外へ出る。下に余裕が無ければ
-   * ボタンの上へ開く（bottom を基準にする）。
+   * ボタンの上へ開く（bottom を基準にする）。ソフトキーボードが
+   * 上がったら測り直して、見えている範囲の中へ収める。
    */
-  const [pos, setPos] = useState<{
-    left: number;
-    width: number;
-    top?: number;
-    bottom?: number;
-    maxHeight: number;
-  } | null>(null);
+  const [pos, setPos] = useState<PanelPlacement | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -204,34 +219,7 @@ export function ModelPicker({
   const selected = models.find((m) => m.id === value);
 
   const openPicker = () => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    const margin = 8;
-    const width =
-      window.innerWidth < 640
-        ? window.innerWidth - margin * 2
-        : Math.min(window.innerWidth * 0.9, 416); // 26rem
-    const left = Math.max(
-      margin,
-      Math.min(rect?.left ?? margin, window.innerWidth - width - margin),
-    );
-    const wanted = window.innerHeight * PANEL_MAX_RATIO;
-    const below = window.innerHeight - (rect?.bottom ?? 56) - margin;
-    const above = (rect?.top ?? 0) - margin;
-    if (below >= wanted || below >= above) {
-      setPos({
-        left,
-        width,
-        top: (rect?.bottom ?? 56) + 6,
-        maxHeight: Math.min(wanted, below - 6),
-      });
-    } else {
-      setPos({
-        left,
-        width,
-        bottom: window.innerHeight - (rect?.top ?? 0) + 6,
-        maxHeight: Math.min(wanted, above - 6),
-      });
-    }
+    setPos(measurePanel(containerRef.current));
     setRecentIds(rankedModelIds());
     setOpen(true);
   };
@@ -305,6 +293,27 @@ export function ModelPicker({
   }, [open]);
 
   /*
+   * ソフトキーボードの出入りに追従する。iPhone で検索欄を押すと
+   * キーボードが上がるが、fixed の板はレイアウトビューポート基準のまま
+   * 動かず、下半分がキーボードの下に隠れていた（検索結果が1件だと
+   * まるごと隠れる）。visualViewport の変化のたびに測り直し、板を
+   * 見えている範囲の中へ収める。Safari がページをずらしたとき
+   * （scroll）も同じ。
+   */
+  useEffect(() => {
+    if (!open) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const refit = () => setPos(measurePanel(containerRef.current));
+    vv.addEventListener("resize", refit);
+    vv.addEventListener("scroll", refit);
+    return () => {
+      vv.removeEventListener("resize", refit);
+      vv.removeEventListener("scroll", refit);
+    };
+  }, [open]);
+
+  /*
    * Escape は共通の重なり順（dismiss の openLayers）へ預ける。
    *
    * 自前で keydown を見ていたころは、この一覧の上に何か重なっていても
@@ -326,6 +335,25 @@ export function ModelPicker({
       : variant === "field"
         ? "flex max-w-full items-center gap-2 rounded-lg border border-line bg-neutral-50 py-1.5 pl-2.5 pr-2 text-sm text-neutral-800 transition-colors hover:bg-hover active:scale-[0.98] dark:bg-white/5 dark:text-neutral-100"
         : "flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-hover active:scale-[0.98] dark:text-neutral-200";
+
+  const search = (
+    <div
+      className={`shrink-0 p-2 ${
+        pos?.bottom != null ? "border-t border-line" : "border-b border-line"
+      }`}
+    >
+      <input
+        ref={searchRef}
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="モデルを検索…"
+        aria-label="モデルを検索"
+        {...TERSE_INPUT}
+        className="w-full rounded-lg bg-neutral-100 px-3 py-2 text-base outline-none placeholder:text-neutral-400 sm:text-sm dark:bg-white/10 dark:text-neutral-100"
+      />
+    </div>
+  );
 
   return (
     <div ref={containerRef} className="relative flex min-w-0 items-center">
@@ -379,18 +407,12 @@ export function ModelPicker({
             pos.bottom != null ? "origin-bottom" : "origin-top"
           } ${GLASS_PANEL}`}
         >
-          <div className="border-b border-line p-2">
-            <input
-              ref={searchRef}
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="モデルを検索…"
-              aria-label="モデルを検索"
-              {...TERSE_INPUT}
-              className="w-full rounded-lg bg-neutral-100 px-3 py-2 text-base outline-none placeholder:text-neutral-400 sm:text-sm dark:bg-white/10 dark:text-neutral-100"
-            />
-          </div>
+          {/*
+            検索欄は、上へ開くとき（入力欄のチップから）は板の下に置く。
+            キーボードと親指に近く、結果の一覧がその上に積み上がる。
+            下へ開くとき（設定画面の欄から）は今までどおり上。
+          */}
+          {pos.bottom == null && search}
           {/* min-h-0: これが無いとflex子はコンテンツ高さより縮めず、
               一覧自体がスクロール不能になってタッチが背面へ抜ける。
               onTouchMove: 検索中に一覧をスクロールし始めたら
@@ -439,6 +461,7 @@ export function ModelPicker({
               />
             ))}
           </ul>
+          {pos.bottom != null && search}
         </div>,
         document.body,
       )}

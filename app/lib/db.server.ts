@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { interruptedGenerationRow } from "./retry";
 import { deleteFiles } from "./r2.server";
+import { thumbnailKeyOf } from "./constants";
 import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_SYSTEM_PROMPT_MAX,
@@ -61,6 +62,7 @@ import {
   statementsOf,
   stillReferencedSql,
   undoGenerationStatements,
+  MARK_THUMBNAIL_SQL,
 } from "./schema";
 import {
   EMPTY_TOTALS,
@@ -330,6 +332,8 @@ export interface AttachmentRow {
   favorite: number;
   /** 生成画像のみ。生成時の依頼文（検索用の写し）。 */
   prompt: string | null;
+  /** 縮小版（一覧のサムネイル）を置いた時刻。無ければ NULL。 */
+  thumb_at: number | null;
 }
 
 /**
@@ -1075,6 +1079,7 @@ export async function createAttachment(params: {
     kind: "upload",
     favorite: 0,
     prompt: null,
+    thumb_at: null,
   };
   await d
     .prepare(
@@ -1268,6 +1273,14 @@ export interface GeneratedImageRow {
   title: string | null;
   /** 生成に使ったモデル。 */
   model_id: string | null;
+  /** 縮小版を置いた時刻。NULL なら一覧は原寸を出し、その場で作る。 */
+  thumb_at: number | null;
+}
+
+/** 縮小版を置いたことを記す（実体を共有する行にもまとめて）。 */
+export async function markThumbnail(id: string, at: number): Promise<void> {
+  const d = await db();
+  await d.prepare(MARK_THUMBNAIL_SQL).bind(at, id).run();
 }
 
 /**
@@ -1371,7 +1384,10 @@ export async function sweepPendingFileDeletions(): Promise<void> {
     for (const r of results) stillUsed.add(r.r2_key);
   }
 
-  await deleteFiles(keys.filter((k) => !stillUsed.has(k)));
+  // 縮小版も道連れにする（キーは原寸から決まる。無ければ無いで済む）
+  await deleteFiles(
+    keys.filter((k) => !stillUsed.has(k)).flatMap((k) => [k, thumbnailKeyOf(k)]),
+  );
   // 生き残ったぶんも控えから外す。用済みになれば削除の側がまた控える
   for (const part of chunked(keys)) {
     await d
