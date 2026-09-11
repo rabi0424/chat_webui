@@ -3,3 +3,8 @@
 OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # 任意: Poe API（poe.com/api_key で取得。設定するとPoeモデルが使える）
 # POE_API_KEY=poe-xxxxxxxxxxxx
+# 任意: API易（api.apiyi.com/token で取得）。
+# APIYI_MODELS に並べた名前だけが一覧に出る（カンマか空白区切り）。
+# キーだけ設定して APIYI_MODELS が空だと、モデルは1本も出ない。
+# APIYI_API_KEY=sk-xxxxxxxxxxxx
+# APIYI_MODELS=

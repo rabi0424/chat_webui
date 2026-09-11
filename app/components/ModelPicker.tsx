@@ -6,7 +6,11 @@ import { useEscapeToClose } from "../lib/dismiss";
 import { IconChevronDown, IconX } from "./icons";
 import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
 import { rankedModelIds } from "../lib/recent-models";
-import { isPoeModel, POE_PREFIX } from "../lib/constants";
+import {
+  PROVIDER_LABELS,
+  bareModelName,
+  providerOf,
+} from "../lib/constants";
 import { placeModelPanel, type PanelPlacement } from "../lib/model-panel";
 
 function formatPricePerMillion(perToken: string): string {
@@ -48,8 +52,7 @@ function isNewModel(m: ModelInfo, now: number, windowDays: number): boolean {
  * プロバイダは灰。
  */
 export function providerColor(modelId: string): string {
-  const bare = isPoeModel(modelId) ? modelId.slice(POE_PREFIX.length) : modelId;
-  const vendor = bare.split("/")[0]?.toLowerCase() ?? "";
+  const vendor = bareModelName(modelId).split("/")[0]?.toLowerCase() ?? "";
   if (vendor.startsWith("anthropic")) return "#d97757";
   if (vendor.startsWith("openai")) return "#10a37f";
   if (vendor.startsWith("google")) return "#4285f4";
@@ -57,7 +60,10 @@ export function providerColor(modelId: string): string {
   if (vendor.startsWith("meta")) return "#0668e1";
   if (vendor.startsWith("mistral")) return "#ff7000";
   if (vendor.startsWith("deepseek")) return "#4d6bfe";
-  if (isPoeModel(modelId)) return "#7c3aed";
+  // 窓口そのものの色。ベンダ名から分からないものはここへ落ちる
+  const upstream = providerOf(modelId);
+  if (upstream === "poe") return "#7c3aed";
+  if (upstream === "apiyi") return "#e8590c";
   return "#8e8e93";
 }
 
@@ -117,9 +123,9 @@ function ModelRow({
             </span>
           </span>
           <span className="flex shrink-0 gap-1">
-            {m.provider === "poe" && (
+            {m.provider !== "openrouter" && (
               <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-2 dark:bg-neutral-800">
-                Poe
+                {PROVIDER_LABELS[m.provider]}
               </span>
             )}
             {m.inputModalities.includes("image") && (
@@ -136,9 +142,11 @@ function ModelRow({
           {m.contextLength > 0 && (
             <span>{formatContext(m.contextLength)} ctx</span>
           )}
-          {/* Poeは価格を返さないことがある。その場合は課金方法だけ示す */}
-          {m.provider === "poe" && Number(m.promptPrice) === 0 ? (
-            <span>ポイントで課金</span>
+          {/* 価格が取れないことがある。その場合は課金の形だけ示す */}
+          {m.perCallUsd != null ? (
+            <span>1回 ${m.perCallUsd}</span>
+          ) : m.provider !== "openrouter" && Number(m.promptPrice) === 0 ? (
+            <span>{m.provider === "poe" ? "ポイントで課金" : "価格不明"}</span>
           ) : (
             <span>
               入 {formatPricePerMillion(m.promptPrice)}/M · 出{" "}

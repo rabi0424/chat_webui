@@ -242,7 +242,7 @@ describe("runAttempt（上流1本）", () => {
     const http = attempt.slice(attempt.indexOf("if (!upstream.ok || !upstream.body)"));
     expect(http).toContain("classifyUpstreamFailure({");
     expect(http).toContain("status: upstream.status");
-    expect(http).toContain("upstreamErrorMessage(upstream, isPoe, body)");
+    expect(http).toContain("upstreamErrorMessage(upstream, provider, body)");
     const mid = attempt.slice(attempt.indexOf("if (!hasImage && result.error)"));
     expect(mid).toContain("classifyUpstreamFailure({");
     expect(mid).toContain("status: result.error.code");

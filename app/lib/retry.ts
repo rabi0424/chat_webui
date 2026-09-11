@@ -17,7 +17,7 @@
  * buildGenerationPayload からは読まれない）。
  */
 
-import { isPoeModel } from "./constants";
+import { providerOf } from "./constants";
 import {
   RETRY_SMART_DEFAULT_PERCENT,
   RETRY_SMART_MAX_PERCENT,
@@ -484,6 +484,17 @@ export function createDurableShare(now: () => number = Date.now) {
   };
 }
 
+/**
+ * 待っているあいだも何か送ってくる窓口か。
+ *
+ * OpenRouter はプロバイダを待つあいだ「処理中」のコメント行を送る＝
+ * 応答ヘッダはすぐ返るので、同時に待てる接続数の縛りに当たらない。
+ * Poe と API易 の画像モデルは画像ができるまで黙るので当たる。
+ */
+function streamsWhileWaiting(model: string): boolean {
+  return providerOf(model) === "openrouter";
+}
+
 export interface RetryWorkerPlan {
   /** 担当1つが引き受ける依頼の数。 */
   attempts: number;
@@ -497,15 +508,21 @@ export interface RetryWorkerPlan {
  * Poe は画像ができるまで応答ヘッダを返さないので6本まで。引き受けるのは
  * 12本（6本ずつ2波）。同時数を超えて引き受けても費用は変わらないが、
  * 担当が失われたときに決着しないまま残る数が増えるので、2波までにする。
+ *
+ * API易の画像モデルも同じ側に置く。こちらは stream に対応せず1回ぶんを
+ * まとめて返すので、ヘッダが返るのは画像ができたあと——「1回の呼び出しで
+ * 応答ヘッダを同時に待てる接続は6本まで」に正面から当たる。24本で投げると
+ * 7本目以降がこちらで順番待ちになり、待っているあいだも実行体の時間は
+ * 課金され続ける（費用だけが増えて速くならない）。
  */
 export function retryWorkerPlan(
   model: string,
   /** 設定の上書き（0 か未指定なら自動）。 */
   override?: number | null,
 ): RetryWorkerPlan {
-  const auto = isPoeModel(model)
-    ? RETRY_WORKER_CONCURRENCY
-    : RETRY_WORKER_STREAMING_CONCURRENCY;
+  const auto = streamsWhileWaiting(model)
+    ? RETRY_WORKER_STREAMING_CONCURRENCY
+    : RETRY_WORKER_CONCURRENCY;
   const concurrency =
     override != null && override > 0 ? Math.round(override) : auto;
   // 引き受けるのは同時数の2波ぶんまで。多く持たせても費用は変わらないが、

@@ -20,7 +20,8 @@
  * 区切りで何も失わない。途中経過を保存して次のアラームで続ける。
  */
 import { env } from "cloudflare:workers";
-import { POE_PREFIX, fetchPoeRunPoints, type ChatMessage } from "./openrouter.server";
+import { fetchPoeRunPoints, type ChatMessage } from "./openrouter.server";
+import { bareModelName, providerOf } from "./constants";
 import type { ParamsState } from "./params";
 import {
   RETRY_ALARM_WALL_MS,
@@ -209,8 +210,8 @@ export async function runRetryGenerationJob(
   retry: RetryConfig,
   previous: RetryRunState | null,
 ): Promise<JobOutcome> {
-  const isPoe = job.model.startsWith(POE_PREFIX);
-  const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
+  const isPoe = providerOf(job.model) === "poe";
+  const modelName = bareModelName(job.model);
   const statusId = job.assistantMessageId;
   const state: RetryRunState = { ...initialState(), ...(previous ?? {}) };
   const requestCap = retryRequestCap(retry.maxAttempts);
@@ -776,7 +777,9 @@ export async function runRetryGenerationJob(
  * 画像の取り込みで失敗しても行は木に残り、画像は元の URL で見える。
  */
 export async function runAttemptJob(job: AttemptJob): Promise<void> {
-  const isPoe = job.model.startsWith(POE_PREFIX);
+  // Poe だけは応答にも拒否文にも額が載らず、実行の最後にまとめて
+  // 突き合わせる。他の窓口は1本ごとに台帳へ載せる
+  const isPoe = providerOf(job.model) === "poe";
   const plan = retryWorkerPlan(job.model, job.workerConcurrency);
   // 外部の通信の枠（1回の呼び出しで50件）は担当の中で共有する。
   // 成功すると画像の取り込みにも使うので、投げる側は手前で切り上げる

@@ -2,9 +2,20 @@ import {
   fetchPoeRecentPoints,
   openRouterChatRequest,
   poeChatRequest,
-  POE_PREFIX,
   type ChatMessage,
 } from "./openrouter.server";
+import {
+  apiyiChatRequest,
+  apiyiImageRequest,
+  applyApiyiCost,
+  type ApiyiInputImage,
+} from "./apiyi.server";
+import {
+  PROVIDER_LABELS,
+  bareModelName,
+  providerOf,
+  type ModelProvider,
+} from "./constants";
 import { buildGenerationPayload, type ParamsState } from "./params";
 import { RETRY_ATTEMPT_DEADLINE_MS, type RetryConfig } from "./retry";
 import { classifyUpstreamFailure } from "./upstream-outcome";
@@ -159,6 +170,40 @@ function applyPromptCaching(
   });
 }
 
+/**
+ * 送信するメッセージ列から、Images API へ渡す依頼文と画像を取り出す。
+ *
+ * Images API は会話を受け取らない。`prompt` 1本と `image[]` だけなので、
+ * **直近のユーザー発言だけ**を使う。過去のやり取りを連ねて1本の依頼文に
+ * するやり方も採れるが、それだと前の依頼文が今回の絵に混ざる（上流は
+ * 全部を1つの指示として読む）。連なりを期待させないほうが、結果を
+ * 説明できる。
+ *
+ * 画像は既に data: URL へ展開済み（expandAttachments）。読めないものは
+ * 落とす——1枚欠けても依頼自体は成立させる。
+ */
+export function imageRequestOf(messages: OutgoingMessage[]): {
+  prompt: string;
+  images: ApiyiInputImage[];
+} {
+  const last = [...messages].reverse().find((m) => m.role === "user");
+  if (!last) return { prompt: "", images: [] };
+  if (typeof last.content === "string") {
+    return { prompt: last.content, images: [] };
+  }
+  const texts: string[] = [];
+  const images: ApiyiInputImage[] = [];
+  for (const part of last.content) {
+    if (part.type === "text") {
+      if (part.text) texts.push(part.text);
+      continue;
+    }
+    const decoded = decodeDataUrl(part.image_url.url);
+    if (decoded) images.push({ data: decoded.buffer, mimeType: decoded.mimeType });
+  }
+  return { prompt: texts.join("\n"), images };
+}
+
 /** 画像一覧の検索に使う、この生成の依頼文（直近のユーザー発言）。 */
 export function promptOf(job: GenerationJob): string | null {
   for (let i = job.messages.length - 1; i >= 0; i--) {
@@ -175,6 +220,24 @@ export function promptOf(job: GenerationJob): string | null {
  * ここで打ち切ってその時点の内容で確定させる。
  */
 const UPSTREAM_IDLE_TIMEOUT_MS = 120_000;
+
+/**
+ * 画像を出すモデルを待つ上限（ヘッダも本文の無音も）。
+ *
+ * 画像生成の上流は、画像ができるまで1バイトも返さないことがある。
+ * API易の公式チャネルは同期呼び出しで、上流の文書は品質を上げると
+ * 3〜5分かかるとして**600秒以上のタイムアウト**を勧めている。短く
+ * 切ると、上流では完成して課金されているのにこちらには何も残らない。
+ *
+ * 生存確認（heartbeat）は30分まで打ち続けるので、この待ちのあいだに
+ * 行が中断とみなされることはない。
+ *
+ * 「成功するまで生成」の1本はこれを使わない。あちらは担当の実行体が
+ * 15分で止められる壁の内側で決着させる必要があり、発射の窓（7分）＋
+ * 1本の締め切り（`RETRY_ATTEMPT_DEADLINE_MS` = 6分）で13分に収めて
+ * ある。ここを10分にすると17分になり、**壁を越えて結果ごと失われる**。
+ */
+const IMAGE_UPSTREAM_TIMEOUT_MS = 10 * 60_000;
 
 const MAX_CAPTURED_IMAGES = 8;
 const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
@@ -599,11 +662,11 @@ export async function requestUpstream(
   /** ヘッダを待つ時間と、外からの打ち切り。省けば既定。 */
   opts: { connectTimeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<Response> {
-  const isPoe = job.model.startsWith(POE_PREFIX);
-  const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
+  const provider = providerOf(job.model);
+  const modelName = bareModelName(job.model);
 
   // Webの扱いはOpenRouter専用。Poeは素のモデル名で投げる
-  if (isPoe) {
+  if (provider === "poe") {
     onRequest();
     return await poeChatRequest(
       {
@@ -612,6 +675,40 @@ export async function requestUpstream(
         stream: true,
         stream_options: { include_usage: true },
         ...buildGenerationPayload(job.paramsState, "poe"),
+      },
+      opts.connectTimeoutMs,
+      opts.signal,
+    );
+  }
+
+  if (provider === "apiyi") {
+    onRequest();
+    /*
+     * 画像のモデルは chat/completions では呼べない。この窓口の公式
+     * チャネルが受け付けるのは Images API の2本だけで、そちらには
+     * 会話という概念が無い——**送れるのは依頼文1本と画像だけ**なので、
+     * これまでのやり取りは画像モデルには渡らない（渡せない）。
+     */
+    if (job.imageOutput) {
+      const { prompt, images } = imageRequestOf(messages);
+      return await apiyiImageRequest(
+        {
+          model: modelName,
+          prompt,
+          images,
+          params: buildGenerationPayload(job.paramsState, "apiyi"),
+        },
+        opts.connectTimeoutMs,
+        opts.signal,
+      );
+    }
+    return await apiyiChatRequest(
+      {
+        model: modelName,
+        messages,
+        stream: true,
+        stream_options: { include_usage: true },
+        ...buildGenerationPayload(job.paramsState, "apiyi"),
       },
       opts.connectTimeoutMs,
       opts.signal,
@@ -721,7 +818,7 @@ function describeUpstreamError(error: unknown): {
 
 async function upstreamErrorMessage(
   upstream: Response,
-  isPoe: boolean,
+  provider: ModelProvider,
   body?: { detail: string },
 ): Promise<string> {
   const detail = (body ?? (await readUpstreamError(upstream))).detail;
@@ -742,8 +839,8 @@ async function upstreamErrorMessage(
     }`;
   }
   return (
-    (detail || `${isPoe ? "Poe" : "OpenRouter"} APIエラー (${upstream.status})`) +
-    hint
+    (detail ||
+      `${PROVIDER_LABELS[provider]} APIエラー (${upstream.status})`) + hint
   );
 }
 
@@ -797,42 +894,26 @@ interface StreamResult {
 }
 
 /**
- * SSEを読み切る。
+ * 1回の read() を、無音の見張りと外からの打ち切りの下で行う関数を作る。
  *
- * onProgress は一定間隔で呼ばれ、true を返すと（停止要求）読み取りを
- * 打ち切る。リトライ生成では途中経過を保存しないので渡さない。
+ * 上流が1バイトも送ってこないまま経過してよい時間（idleTimeoutMs）を
+ * 読むたびに張り直す。応答が始まったあとに黙り込む上流もあり、その場合
+ * read() は永久に返らない——実行（DOのアラーム）がそこで固まる。
  *
- * signal で外から打ち切れる（総時間の締め切り、停止後の猶予切れ）。
- * 打ち切りは interrupted に理由を残して、ここまでの内容で返す。
+ * ただし、これだけでは「処理中」のコメント行を送り続ける上流
+ * （OpenRouter）を切れない。1バイトでも来れば時計が戻るため。
+ * そちらは signal（総時間の締め切り）で切る。
  */
-export async function readUpstreamStream(
-  body: ReadableStream<Uint8Array>,
-  onProgress?: (partial: {
-    content: string;
-    reasoning: string;
-  }) => Promise<boolean>,
-  opts: { idleTimeoutMs?: number; signal?: AbortSignal } = {},
-): Promise<StreamResult> {
-  const idleTimeoutMs = opts.idleTimeoutMs ?? UPSTREAM_IDLE_TIMEOUT_MS;
-  const signal = opts.signal;
+function idleGuardedReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleTimeoutMs: number,
+  signal?: AbortSignal,
+): () => Promise<ReadableStreamReadResult<Uint8Array>> {
   const abortReason = () =>
     typeof signal?.reason === "string"
       ? signal.reason
       : ((signal?.reason as Error | undefined)?.message ?? "打ち切りました");
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  /**
-   * 上流が1バイトも送ってこないまま経過してよい時間。
-   *
-   * 応答が始まったあとに黙り込む上流もあり、その場合 read() は永久に
-   * 返らない。読むたびに時計を張り直し、超えたら打ち切って
-   * ここまでの内容で確定させる（実行が固まったままにならないように）。
-   *
-   * ただし、これだけでは「処理中」のコメント行を送り続ける上流
-   * （OpenRouter）を切れない。1バイトでも来れば時計が戻るため。
-   * そちらは signal（総時間の締め切り）で切る。
-   */
-  const readOnce = async () => {
+  return async () => {
     if (signal?.aborted) throw new Error(abortReason());
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
@@ -851,6 +932,30 @@ export async function readUpstreamStream(
       if (onAbort) signal?.removeEventListener("abort", onAbort);
     }
   };
+}
+
+/**
+ * SSEを読み切る。
+ *
+ * onProgress は一定間隔で呼ばれ、true を返すと（停止要求）読み取りを
+ * 打ち切る。リトライ生成では途中経過を保存しないので渡さない。
+ *
+ * signal で外から打ち切れる（総時間の締め切り、停止後の猶予切れ）。
+ * 打ち切りは interrupted に理由を残して、ここまでの内容で返す。
+ */
+export async function readUpstreamStream(
+  body: ReadableStream<Uint8Array>,
+  onProgress?: (partial: {
+    content: string;
+    reasoning: string;
+  }) => Promise<boolean>,
+  opts: { idleTimeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<StreamResult> {
+  const idleTimeoutMs = opts.idleTimeoutMs ?? UPSTREAM_IDLE_TIMEOUT_MS;
+  const signal = opts.signal;
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const readOnce = idleGuardedReader(reader, idleTimeoutMs, signal);
   let buffer = "";
   let content = "";
   let reasoning = "";
@@ -997,11 +1102,216 @@ export async function readUpstreamStream(
   };
 }
 
+/**
+ * 本文の中身（string か、部品の配列）を文字列へ。
+ *
+ * OpenAI互換を名乗る上流でも、非ストリームの応答では content が
+ * `[{type:"text",text:"…"}, {type:"image_url",image_url:{url:"…"}}]`
+ * の形で来ることがある。文字列としてだけ読むと、そこに入っている
+ * 画像も文章も丸ごと落ちて「本文のない応答」に見える。
+ */
+function flattenContent(value: unknown, imageUrls: string[]): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  let out = "";
+  for (const part of value) {
+    const p = part as Record<string, unknown> | null;
+    if (typeof p?.text === "string") out += p.text;
+    else if (typeof p === "string") out += p;
+    const url = (p?.image_url as { url?: unknown } | undefined)?.url;
+    if (typeof url === "string" && url) imageUrls.push(url);
+  }
+  return out;
+}
+
+/**
+ * SSEではなく JSON を1つ返す上流を読む。
+ *
+ * 画像生成のモデルには stream に対応しないものがあり（API易の画像系は
+ * 上流の文書で明言されている）、`stream: true` を付けても中継は普通の
+ * JSON を返す。SSE として読むと `data: ` で始まる行が1つも無いまま
+ * 終わるため、**本文も画像も使用量も全部落ちて「本文のない応答」**に
+ * なる。画面には「モデルから本文のない応答が返りました」とだけ出て、
+ * 上流では生成が終わって課金されている。
+ */
+export async function readUpstreamJson(
+  body: ReadableStream<Uint8Array>,
+  opts: { idleTimeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<StreamResult> {
+  const reader = body.getReader();
+  const readOnce = idleGuardedReader(
+    reader,
+    opts.idleTimeoutMs ?? UPSTREAM_IDLE_TIMEOUT_MS,
+    opts.signal,
+  );
+  const decoder = new TextDecoder();
+  const imageUrls: string[] = [];
+  const citations: UiCitation[] = [];
+  let text = "";
+  let interrupted: string | undefined;
+
+  try {
+    for (;;) {
+      const { done, value } = await readOnce();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch (e) {
+    interrupted = (e as Error).message || "接続が途中で切れました";
+    try {
+      await reader.cancel();
+    } catch {
+      // 既に閉じていれば何もしない
+    }
+  }
+  text += decoder.decode();
+
+  const empty: StreamResult = {
+    content: "",
+    reasoning: "",
+    usageJson: null,
+    imageUrls,
+    citations,
+    stopped: false,
+    interrupted,
+  };
+  if (text.trim() === "") return empty;
+
+  let parsed: {
+    error?: unknown;
+    /** Images API はここに画像を入れて返す（chat の choices は無い）。 */
+    data?: { b64_json?: unknown; url?: unknown }[];
+    choices?: {
+      message?: { content?: unknown; reasoning?: unknown; images?: unknown; annotations?: unknown };
+      finish_reason?: string | null;
+    }[];
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      cost?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
+      completion_tokens_details?: { reasoning_tokens?: number };
+      /** Images API はトークン数の名前が違う。 */
+      input_tokens?: number;
+      output_tokens?: number;
+      input_tokens_details?: { image_tokens?: number; text_tokens?: number };
+    };
+  };
+  try {
+    parsed = JSON.parse(text) as typeof parsed;
+  } catch {
+    // JSONでもSSEでもない本文（手前のプロキシのHTMLなど）。何が返って
+    // きたのか分からないまま「空の応答」にせず、先頭だけ理由に添える
+    return {
+      ...empty,
+      interrupted:
+        interrupted ??
+        `上流の応答を解釈できませんでした: ${text.trim().slice(0, 200)}`,
+    };
+  }
+
+  /*
+   * Images API の応答（chat とは形が違う）。画像は base64 で、
+   * **`data:image/...;base64,` の接頭辞が付かない**（付く場合もあると
+   * 上流の文書が言っているので、両方を見る）。ここで data: URL の形に
+   * してしまえば、あとは他の窓口の生成画像と同じ経路で取り込める。
+   * 申告する型は仮のもので、R2 へ入れる型は中身から決め直される
+   * （captureImagePayload）。
+   */
+  for (const item of parsed.data ?? []) {
+    if (typeof item?.url === "string" && item.url) {
+      imageUrls.push(item.url);
+      continue;
+    }
+    const b64 = item?.b64_json;
+    if (typeof b64 !== "string" || b64 === "") continue;
+    imageUrls.push(
+      b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`,
+    );
+  }
+
+  const choice = parsed.choices?.[0];
+  const content = flattenContent(choice?.message?.content, imageUrls);
+  collectImageUrls(choice?.message?.images, imageUrls);
+  collectCitations(choice?.message?.annotations, citations);
+
+  return {
+    content,
+    reasoning:
+      typeof choice?.message?.reasoning === "string"
+        ? choice.message.reasoning
+        : "",
+    usageJson: parsed.usage
+      ? JSON.stringify({
+          // Images API は input/output、chat は prompt/completion。
+          // 拾い損ねると額が0になり、台帳から丸ごと落ちる
+          promptTokens:
+            parsed.usage.prompt_tokens ?? parsed.usage.input_tokens ?? 0,
+          completionTokens:
+            parsed.usage.completion_tokens ?? parsed.usage.output_tokens ?? 0,
+          cost: parsed.usage.cost,
+          cachedTokens:
+            parsed.usage.prompt_tokens_details?.cached_tokens ?? undefined,
+          reasoningTokens:
+            parsed.usage.completion_tokens_details?.reasoning_tokens ??
+            undefined,
+          // 見積もりと実際の請求を後から突き合わせるために残す
+          imageTokens: parsed.usage.input_tokens_details?.image_tokens,
+        })
+      : null,
+    imageUrls,
+    citations,
+    finishReason: choice?.finish_reason ?? undefined,
+    stopped: false,
+    interrupted,
+    error:
+      parsed.error && typeof parsed.error === "object"
+        ? describeUpstreamError(parsed.error)
+        : undefined,
+  };
+}
+
+/**
+ * 上流の応答を読む。SSEでも、JSONを1つ返す上流でも同じ形で返す。
+ *
+ * 見分けは Content-Type。分からないときは SSE として読む（今まで
+ * 通っていた窓口の動きを変えないため）。
+ */
+export async function readUpstreamResponse(
+  upstream: Response,
+  onProgress?: (partial: {
+    content: string;
+    reasoning: string;
+  }) => Promise<boolean>,
+  opts: { idleTimeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<StreamResult> {
+  const body = upstream.body;
+  if (!body) {
+    return {
+      content: "",
+      reasoning: "",
+      usageJson: null,
+      imageUrls: [],
+      citations: [],
+      stopped: false,
+      interrupted: "上流が本文を返しませんでした",
+    };
+  }
+  const contentType = upstream.headers.get("content-type") ?? "";
+  if (/json/i.test(contentType) && !/event-stream/i.test(contentType)) {
+    return await readUpstreamJson(body, opts);
+  }
+  return await readUpstreamStream(body, onProgress, opts);
+}
+
 /** 例外を投げず、必ずメッセージ行を確定させて終了する。 */
 export async function runSingleGeneration(job: GenerationJob): Promise<void> {
   const startedAt = Date.now();
-  const isPoe = job.model.startsWith(POE_PREFIX);
-  const modelName = isPoe ? job.model.slice(POE_PREFIX.length) : job.model;
+  const provider = providerOf(job.model);
+  const isPoe = provider === "poe";
+  const modelName = bareModelName(job.model);
+  // 画像を出すモデルは、応答ヘッダも本文の無音も長く待つ（上の注記）
+  const imageTimeoutMs = job.imageOutput ? IMAGE_UPSTREAM_TIMEOUT_MS : undefined;
   // 1応答ぶんなので枠には十分収まるが、取り込む画像の枚数だけは
   // 上流しだいなので、リトライ生成と同じ数え方で歯止めをかけておく
   const budget = createBudget();
@@ -1014,6 +1324,7 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
       job,
       await expandAttachments(job.messages),
       budget.spend,
+      { connectTimeoutMs: imageTimeoutMs },
     );
   } catch (e) {
     await finalizeGeneration(job.assistantMessageId, {
@@ -1021,7 +1332,7 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
       reasoning: null,
       usageJson: null,
       status: "error",
-      error: `${isPoe ? "Poe" : "OpenRouter"}への接続に失敗しました: ${(e as Error).message}`,
+      error: `${PROVIDER_LABELS[provider]}への接続に失敗しました: ${(e as Error).message}`,
     });
     return;
   }
@@ -1032,7 +1343,7 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
       reasoning: null,
       usageJson: null,
       status: "error",
-      error: await upstreamErrorMessage(upstream, isPoe),
+      error: await upstreamErrorMessage(upstream, provider),
     });
     return;
   }
@@ -1077,10 +1388,17 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
     }
   })();
 
-  const result = await readUpstreamStream(upstream.body, async (partial) => {
-    latest = { content: partial.content, reasoning: partial.reasoning || null };
-    return await write();
-  });
+  const result = await readUpstreamResponse(
+    upstream,
+    async (partial) => {
+      latest = {
+        content: partial.content,
+        reasoning: partial.reasoning || null,
+      };
+      return await write();
+    },
+    { idleTimeoutMs: imageTimeoutMs },
+  );
   streamDone = true;
   wakeHeartbeat();
   await heartbeat;
@@ -1106,6 +1424,11 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
       }
     }
   }
+
+  // API易: 額は応答に載らない。価格表から見積もって台帳へ載せる
+  // （足さないと cost も points も無い記録として丸ごと捨てられ、
+  // 使用量の画面にも月間上限にも出てこない）
+  usageJson = await applyApiyiCost(job.model, usageJson, budget.spend);
 
   // 画像はここで自前のストレージへ移す（本文のURLも差し替わる）
   const finalContent =
@@ -1241,8 +1564,7 @@ export async function runAttempt(
    */
   timing?: { headerMs?: number },
 ): Promise<AttemptOutcome> {
-  const isPoe = job.model.startsWith(POE_PREFIX);
-  const provider = isPoe ? "poe" : "openrouter";
+  const provider = providerOf(job.model);
   // 画像を出すモデルは、ヘッダも本文の無音も1本の締め切りまで待つ。
   // 画像生成は最初の1バイトまで長く黙る上流があり、Poe は画像ができ
   // 始めるまで応答ヘッダも返さない。短く切ると上流側では完了して課金
@@ -1265,7 +1587,7 @@ export async function runAttempt(
     // つながらない・ヘッダが来ない・こちらで切った。状態が無いので一時的
     return {
       kind: "transient",
-      reason: `${isPoe ? "Poe" : "OpenRouter"}への接続に失敗しました: ${(e as Error).message}`,
+      reason: `${PROVIDER_LABELS[provider]}への接続に失敗しました: ${(e as Error).message}`,
       waitMs: null,
     };
   }
@@ -1274,7 +1596,7 @@ export async function runAttempt(
 
   if (!upstream.ok || !upstream.body) {
     const body = await readUpstreamError(upstream);
-    const message = await upstreamErrorMessage(upstream, isPoe, body);
+    const message = await upstreamErrorMessage(upstream, provider, body);
     const verdict = classifyUpstreamFailure({
       provider,
       status: upstream.status,
@@ -1295,10 +1617,13 @@ export async function runAttempt(
     return { kind: "fatal", reason: message };
   }
 
-  const result = await readUpstreamStream(upstream.body, undefined, {
+  const result = await readUpstreamResponse(upstream, undefined, {
     idleTimeoutMs,
     signal,
   });
+  // 額が応答に載らない窓口ぶんを、ここで見積もって足す。拒否の応答にも
+  // 課金されており、リトライ生成では拒否が試行の大半を占める
+  result.usageJson = await applyApiyiCost(job.model, result.usageJson, onRequest);
   const hasImage =
     result.imageUrls.length > 0 || extractImageUrls(result.content).length > 0;
   // 画像が揃っているなら、途中で切れていても成果は成果なので受け取る
@@ -1313,7 +1638,7 @@ export async function runAttempt(
     });
     const message =
       result.error.detail ||
-      `${isPoe ? "Poe" : "OpenRouter"}が応答の途中でエラーを返しました`;
+      `${PROVIDER_LABELS[provider]}が応答の途中でエラーを返しました`;
     if (verdict.kind === "refused") {
       return { kind: "refused", text: message, usageJson: result.usageJson };
     }

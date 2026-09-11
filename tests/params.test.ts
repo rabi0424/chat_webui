@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  APIYI_IMAGE_PARAM_KEYS,
   buildGenerationPayload,
+  paramsForModel,
   parseParamsJson,
   PARAM_DEFS,
   POE_EXTRA_PREFIX,
@@ -159,6 +161,95 @@ describe("buildGenerationPayload（Poe）", () => {
 
   it("OpenRouter専用の思考指定はPoeへ混ぜない", () => {
     expect(poe({ [REASONING_KEY]: "high" })).not.toHaveProperty("reasoning");
+  });
+});
+
+describe("buildGenerationPayload（API易）", () => {
+  /*
+   * この窓口の画像モデルは Images API しか受け付けず、名前も値も
+   * OpenAI の Images API のもの。上流は「この値だけ」と文書で決めて
+   * いて、外れた値は 400 で弾く——1本まるごと失う。
+   */
+  it("文書にある値だけを送る", () => {
+    expect(
+      buildGenerationPayload(
+        { size: "2048x1152", quality: "max", output_format: "webp" },
+        "apiyi",
+      ),
+    ).toEqual({ size: "2048x1152", quality: "max", output_format: "webp" });
+  });
+
+  it("選択肢に無い値は捨てる", () => {
+    /*
+     * 保存済みの設定には、別のモデル向けの値や、上流が仕様を変える前の
+     * 値が残る。素通しにすると 400 になる。
+     */
+    expect(
+      buildGenerationPayload(
+        { size: "512x512", quality: "ultra", background: "transparent" },
+        "apiyi",
+      ),
+    ).toEqual({});
+  });
+
+  it("圧縮率は 0〜100 に収める", () => {
+    expect(buildGenerationPayload({ output_compression: 999 }, "apiyi")).toEqual({
+      output_compression: 100,
+    });
+    expect(buildGenerationPayload({ output_compression: -5 }, "apiyi")).toEqual({
+      output_compression: 0,
+    });
+    // 空欄は「自動」。0 として送ると挙動が黙って変わる
+    expect(buildGenerationPayload({ output_compression: "" }, "apiyi")).toEqual({});
+  });
+
+  it("他の窓口向けの設定値は漏らさない", () => {
+    /*
+     * パラメータは会話に付いたままモデルを乗り換えられる。漏らすと
+     * 中継が知らないフィールドとして弾く。
+     */
+    expect(
+      buildGenerationPayload(
+        {
+          temperature: 0.5,
+          [REASONING_KEY]: "high",
+          [POE_THINKING_BUDGET_KEY]: 2048,
+          web: "on",
+          size: "1024x1024",
+        },
+        "apiyi",
+      ),
+    ).toEqual({ size: "1024x1024" });
+  });
+});
+
+describe("paramsForModel（API易）", () => {
+  const model = (supported: string[]) =>
+    ({
+      id: "apiyi:m",
+      name: "m",
+      description: "",
+      contextLength: 0,
+      promptPrice: "0",
+      completionPrice: "0",
+      inputModalities: ["text", "image"],
+      outputModalities: ["text", "image"],
+      supportedParameters: supported,
+      provider: "apiyi" as const,
+      createdAt: 0,
+    });
+
+  it("申告した項目だけを出す", () => {
+    const defs = paramsForModel(model([...APIYI_IMAGE_PARAM_KEYS]));
+    expect(defs.map((d) => d.key)).toEqual([...APIYI_IMAGE_PARAM_KEYS]);
+  });
+
+  it("申告が無ければ何も出さない（OpenRouter の項目を借りない）", () => {
+    /*
+     * 画像を出さないモデルについて中継は何も申告しない。ここで
+     * OpenRouter の一覧へ落ちると、効かない入力欄が並ぶ。
+     */
+    expect(paramsForModel(model([]))).toEqual([]);
   });
 });
 

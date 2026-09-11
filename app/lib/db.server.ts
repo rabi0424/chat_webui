@@ -14,7 +14,7 @@ import {
   DAILY_DO_SECONDS_RANGE,
   type AppSettings,
 } from "./settings";
-import { MAX_TITLE_LENGTH, POE_PREFIX } from "./constants";
+import { MAX_TITLE_LENGTH, providerOf } from "./constants";
 import {
   CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
@@ -62,6 +62,7 @@ import {
   statementsOf,
   stillReferencedSql,
   undoGenerationStatements,
+  recordUsageStatement,
   MARK_THUMBNAIL_SQL,
 } from "./schema";
 import {
@@ -1688,29 +1689,18 @@ export async function recordMessageUsage(
   // 額もポイントも無いなら、支出としては記録するものが無い
   if (cost == null && points == null) return;
 
+  const statement = recordUsageStatement({
+    id: crypto.randomUUID(),
+    at: Date.now(),
+    kind,
+    cost,
+    points,
+    promptTokens: usageNumber(u.promptTokens),
+    completionTokens: usageNumber(u.completionTokens),
+    messageId,
+  });
   const d = await db();
-  await d
-    .prepare(
-      `INSERT OR IGNORE INTO usage_events
-         (id, at, kind, provider, model_id, cost_usd, points,
-          prompt_tokens, completion_tokens, conversation_id, message_id)
-       SELECT ?, ?, ?,
-              CASE WHEN model_id LIKE ? THEN 'poe' ELSE 'openrouter' END,
-              model_id, ?, ?, ?, ?, conversation_id, id
-         FROM messages WHERE id = ?`,
-    )
-    .bind(
-      crypto.randomUUID(),
-      Date.now(),
-      kind,
-      `${POE_PREFIX}%`,
-      cost,
-      points,
-      usageNumber(u.promptTokens),
-      usageNumber(u.completionTokens),
-      messageId,
-    )
-    .run();
+  await d.prepare(statement.sql).bind(...statement.binds).run();
 }
 
 /**
@@ -1737,7 +1727,7 @@ export async function recordStandaloneUsage(entry: {
       crypto.randomUUID(),
       Date.now(),
       entry.kind,
-      entry.modelId.startsWith(POE_PREFIX) ? "poe" : "openrouter",
+      providerOf(entry.modelId),
       entry.modelId,
       entry.costUsd,
       entry.points ?? null,

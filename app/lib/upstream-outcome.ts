@@ -1,11 +1,12 @@
 /**
  * 上流の失敗を「どうするか」で分ける。
  *
- * このアプリはモデルに直接は話しかけず、OpenRouter と Poe という2つの
+ * このアプリはモデルに直接は話しかけず、OpenRouter・Poe・API易 という
  * 窓口を通す。状態コードを決めるのは窓口なので、分け方の根拠は窓口の
  * 文書に置く（モデルごとの仕様ではない）:
  *   - OpenRouter: https://openrouter.ai/docs/api-reference/errors
  *   - Poe: https://creator.poe.com/docs/external-applications/openai-compatible-api
+ *   - API易: https://docs.apiyi.com/api-manual
  *
  * 分けるのは3つ。
  *   - refused（断られた）: セーフティ判定。想定内なので投げ直し、
@@ -15,6 +16,10 @@
  *     出すかどうかとは関係ないため）。続けば打ち切る。
  *   - fatal（直らない）: 認証・残高・不正な依頼。投げ直しても同じなので
  *     その場で止める。
+ *
+ * 窓口は3つ目（API易）も同じ分け方で扱う。OpenAI互換の中継なので
+ * 状態コードの意味は揃っており、上流（各社）の失敗も同じコードに
+ * 包まれて届く。
  *
  * 状態コードだけで決められないものが2つある。どの設計でも避けられない。
  *   1. 200 の中身に画像があるか（断りの文章も 200 で返る）。ここでは
@@ -27,7 +32,14 @@
  *      だけ（4xx は課金されずに即座に返る）。
  */
 
-export type UpstreamProvider = "poe" | "openrouter";
+import type { ModelProvider } from "./constants";
+
+/**
+ * 窓口。分け方そのものは窓口によらず同じ（状態コードの意味は
+ * OpenAI互換のどの中継でも揃っている）ので、判定には使っていない。
+ * 窓口を足したときに取り違えないよう、型だけ共有する。
+ */
+export type UpstreamProvider = ModelProvider;
 
 export type UpstreamVerdict =
   | { kind: "refused" }

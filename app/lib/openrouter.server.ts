@@ -1,6 +1,11 @@
 import { env } from "cloudflare:workers";
 import { poeSupportedParameters } from "./params";
-import { MAX_TITLE_LENGTH, TITLE_MODEL } from "./constants";
+import { MAX_TITLE_LENGTH, TITLE_MODEL, type ModelProvider } from "./constants";
+import {
+  UPSTREAM_CONNECT_TIMEOUT_MS,
+  fetchAwaitingHeaders,
+} from "./upstream-fetch.server";
+import { fetchApiyiModels } from "./apiyi.server";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const POE_BASE = "https://api.poe.com/v1";
@@ -60,7 +65,14 @@ export interface ModelInfo {
   /** Poe: このボット固有のパラメータ（画像サイズなど）。 */
   botParameters?: PoeBotParameter[];
   /** 提供元。poe はサブスクのポイントで課金される。 */
-  provider: "openrouter" | "poe";
+  provider: ModelProvider;
+  /**
+   * API易: 1回いくらで課金されるモデルの単価（USD）。
+   *
+   * トークン単価と違い、応答のトークン数から額を出せない。ここに額が
+   * 入っているモデルは、成功1回につきこの額を台帳へ載せる。
+   */
+  perCallUsd?: number;
   createdAt: number;
 }
 
@@ -261,9 +273,10 @@ export async function fetchModels(): Promise<ModelInfo[]> {
 }
 
 async function fetchModelsUncached(): Promise<ModelInfo[]> {
-  const [res, poeModels] = await Promise.all([
+  const [res, poeModels, apiyiModels] = await Promise.all([
     fetch(`${OPENROUTER_BASE}/models`),
     fetchPoeModels(),
+    fetchApiyiModels(),
   ]);
   if (!res.ok) {
     throw new Error(`OpenRouterのモデル一覧取得に失敗しました (${res.status})`);
@@ -295,6 +308,8 @@ async function fetchModelsUncached(): Promise<ModelInfo[]> {
   const merged = [
     ...models,
     ...poeModels.sort((a, b) => a.name.localeCompare(b.name)),
+    // API易は選んだ数本しか載らないので、名前の順で末尾へ足す
+    ...apiyiModels.sort((a, b) => a.name.localeCompare(b.name)),
   ];
   modelsCache = { models: merged, fetchedAt: Date.now() };
   return merged;
@@ -326,7 +341,11 @@ function redactSecrets(value: unknown): unknown {
  */
 function redactRawText(text: string): string {
   let out = text;
-  for (const secret of [env.POE_API_KEY, env.OPENROUTER_API_KEY]) {
+  for (const secret of [
+    env.POE_API_KEY,
+    env.OPENROUTER_API_KEY,
+    env.APIYI_API_KEY,
+  ]) {
     // 短すぎる値で置換すると、無関係な文字列まで塗り潰してしまう
     if (typeof secret === "string" && secret.length >= 8) {
       out = out.split(secret).join("***");
@@ -594,56 +613,6 @@ export async function fetchPoeRunPoints(
  * OpenRouterの chat/completions へのリクエスト。APIキーはサーバー側のみ。
  */
 /** Poeの chat/completions（OpenAI互換）へのリクエスト。 */
-/**
- * 上流が応答ヘッダを返すまでの猶予。
- *
- * これが無いと、接続だけ張って何も返さない上流に当たったとき、
- * 生成の実行（DOのアラーム）がそこで永久に止まる。
- */
-const UPSTREAM_CONNECT_TIMEOUT_MS = 60_000;
-
-/**
- * ヘッダが返るまでだけを見張って投げる。
- *
- * 素直に `signal: AbortSignal.timeout(...)` と書きたくなるが、それだと
- * 壊れる。fetch へ渡した signal はヘッダを受け取っても外れず、返って
- * きた**本文のストリームにも効いたまま**になる。そのため生成がこの猶予を
- * 超えると、トークンが順調に流れている最中でも body が TimeoutError で
- * 切られ、利用者には「応答が途中で終わりました（The operation was
- * aborted due to timeout）」と見えていた。長考するモデルや長い応答は
- * 60秒を普通に超えるので、これは日常的に起きていた。
- *
- * 時計はヘッダが返った時点で止める。ヘッダ以降の無音は読み手側の
- * idle timeout（generation.server.ts の UPSTREAM_IDLE_TIMEOUT_MS）が
- * 拾うので、ここで見張り続ける必要はない。
- */
-async function fetchAwaitingHeaders(
-  url: string,
-  init: { method: string; headers: Record<string, string>; body: string },
-  timeoutMs: number,
-  /**
-   * 外からの打ち切り（1本の締め切り・停止後の猶予切れ）。ヘッダを
-   * 待っているあいだだけ効かせる。本文は読み手が同じ signal で切る
-   */
-  outer?: AbortSignal,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort(new Error("上流が応答ヘッダを返しませんでした"));
-  }, timeoutMs);
-  const onOuter = () => controller.abort(outer?.reason);
-  if (outer?.aborted) onOuter();
-  outer?.addEventListener("abort", onOuter, { once: true });
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    // ヘッダが返った（または投げるのに失敗した）時点で見張りを解く。
-    // 残したままだと、上の signal がそのまま本文を切りに来る
-    clearTimeout(timer);
-    outer?.removeEventListener("abort", onOuter);
-  }
-}
-
 export async function poeChatRequest(
   body: Record<string, unknown>,
   /**
