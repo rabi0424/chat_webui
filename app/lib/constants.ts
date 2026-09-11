@@ -85,10 +85,80 @@ export const TITLE_MODEL = "openai/gpt-4o-mini";
  */
 export const POE_PREFIX = "poe:";
 
+/** API易（apiyi）のモデルも同じく接頭辞で分ける。 */
+export const APIYI_PREFIX = "apiyi:";
+
+/**
+ * 窓口（上流のサービス）。
+ *
+ * 接頭辞の付かないIDは OpenRouter。窓口が2つだったころは
+ * `isPoeModel(id) ? "poe" : "openrouter"` という二分岐が台帳の記録・
+ * 画面の出し分け・パラメータの組み立てに散らばっていて、3つ目を足すと
+ * **どこか1つを直し忘れても型では気づけない**（どちらも文字列を返す
+ * ので、足りない分岐は黙って "openrouter" に落ちる）。判定はここだけに
+ * 置き、呼ぶ側は必ずこの関数を通す。
+ */
+export type ModelProvider = "openrouter" | "poe" | "apiyi";
+
+/**
+ * 接頭辞と窓口の対応。増やすときはここだけを足す。
+ *
+ * 台帳の provider 列も同じ表から組み立てる（schema.ts の
+ * providerCaseSql）。SQL 側に書き写すと、接頭辞を足しても列だけが
+ * 古いまま——**画面にはエラーが出ず、使用量の内訳だけが静かに
+ * 間違う**という壊れ方をする。
+ */
+export const MODEL_PREFIXES: readonly (readonly [ModelProvider, string])[] = [
+  ["poe", POE_PREFIX],
+  ["apiyi", APIYI_PREFIX],
+];
+
+/** そのモデルIDがどの窓口のものか。 */
+export function providerOf(modelId: string | null | undefined): ModelProvider {
+  if (typeof modelId === "string") {
+    for (const [provider, prefix] of MODEL_PREFIXES) {
+      if (modelId.startsWith(prefix)) return provider;
+    }
+  }
+  return "openrouter";
+}
+
+/** 接頭辞を外した、上流へそのまま投げるモデル名。 */
+export function bareModelName(modelId: string): string {
+  for (const [, prefix] of MODEL_PREFIXES) {
+    if (modelId.startsWith(prefix)) return modelId.slice(prefix.length);
+  }
+  return modelId;
+}
+
 /** そのモデルIDが Poe のものか。 */
 export function isPoeModel(modelId: string | null | undefined): boolean {
-  return typeof modelId === "string" && modelId.startsWith(POE_PREFIX);
+  return providerOf(modelId) === "poe";
 }
+
+/** そのモデルIDが API易 のものか。 */
+export function isApiyiModel(modelId: string | null | undefined): boolean {
+  return providerOf(modelId) === "apiyi";
+}
+
+/**
+ * Web検索・URLの読み取りを使えるモデルか。
+ *
+ * これは OpenRouter 固有の機能（検索プラグインとサーバーツール）で、
+ * 他の窓口には相当するものが無い。「Poe ではない」で判定していると、
+ * 窓口が増えたときに**送っても効かないフラグが立ち**、上流によっては
+ * 知らないフィールドとして 400 になる。
+ */
+export function supportsWebSearch(modelId: string | null | undefined): boolean {
+  return providerOf(modelId) === "openrouter";
+}
+
+/** 窓口の表示名。エラー文言と画面の両方で使う。 */
+export const PROVIDER_LABELS: Record<ModelProvider, string> = {
+  openrouter: "OpenRouter",
+  poe: "Poe",
+  apiyi: "API易",
+};
 
 /**
  * この端末で最後に使ったモデル（localStorage の鍵）。

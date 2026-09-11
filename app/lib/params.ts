@@ -402,9 +402,15 @@ export function buildGenerationPayload(
   provider: ModelInfo["provider"] = "openrouter",
 ): Record<string, unknown> {
   if (!state || typeof state !== "object") return {};
-  return provider === "poe"
-    ? buildPoePayload(state)
-    : buildOpenRouterPayload(state);
+  if (provider === "poe") return buildPoePayload(state);
+  /*
+   * API易（中継）は、どのパラメータがそのモデルへ通るかを申告しない。
+   * 申告が無いものを推測で送ると、効かないだけでなく中継が知らない
+   * フィールドとして 400 を返すことがある。会話に残っている他の窓口
+   * 向けの設定値がそのまま漏れるのも同じ経路なので、ここで落とす。
+   */
+  if (provider === "apiyi") return {};
+  return buildOpenRouterPayload(state);
 }
 
 /**

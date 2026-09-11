@@ -7,7 +7,70 @@
  * （壊れたマイグレーションはアプリ全体を起動不能にするため）。
  */
 
-import { isPoeModel } from "./constants";
+import { MODEL_PREFIXES, providerOf } from "./constants";
+
+/**
+ * 台帳の provider 列を、行の model_id から決める CASE 式。
+ *
+ * 記録するモデルIDが呼び出し側の手元にある場合は `providerOf()` の
+ * 結果をそのまま束縛すればよいが、messages 行から写して記録する経路
+ * （recordUsage）だけは、列の値が SQL の中でしか分からない。
+ *
+ * 接頭辞の表は constants.ts の1か所だけに置き、この式もそこから
+ * 組み立てる。SQL に書き写すと、窓口を足したときに列だけが古いまま
+ * 残り、**画面には何も出ないのに使用量の内訳だけが間違う**。
+ */
+export function providerCaseSql(column: string): {
+  sql: string;
+  binds: string[];
+} {
+  const whens = MODEL_PREFIXES.map(
+    ([provider]) => `WHEN ${column} LIKE ? THEN '${provider}'`,
+  ).join(" ");
+  return {
+    sql: `CASE ${whens} ELSE 'openrouter' END`,
+    binds: MODEL_PREFIXES.map(([, prefix]) => `${prefix}%`),
+  };
+}
+
+/**
+ * メッセージ行に紐づく支出を台帳へ載せる。
+ *
+ * provider 列は上の CASE で決まるため、束縛の並びは
+ * 「id・時刻・種類 → CASE のぶん → 額…」になる。並びを間違えると
+ * 型の合う別の値が黙って入るので、文と束縛の組み立ては1か所に置く。
+ */
+export function recordUsageStatement(params: {
+  id: string;
+  at: number;
+  kind: string;
+  cost: number | null;
+  points: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  messageId: string;
+}): { sql: string; binds: (string | number | null)[] } {
+  const provider = providerCaseSql("model_id");
+  return {
+    sql: `INSERT OR IGNORE INTO usage_events
+         (id, at, kind, provider, model_id, cost_usd, points,
+          prompt_tokens, completion_tokens, conversation_id, message_id)
+       SELECT ?, ?, ?, ${provider.sql},
+              model_id, ?, ?, ?, ?, conversation_id, id
+         FROM messages WHERE id = ?`,
+    binds: [
+      params.id,
+      params.at,
+      params.kind,
+      ...provider.binds,
+      params.cost,
+      params.points,
+      params.promptTokens,
+      params.completionTokens,
+      params.messageId,
+    ],
+  };
+}
 
 /**
  * バージョン管理付きのランタイムマイグレーション。配列に追記していく。
@@ -486,7 +549,7 @@ export function appendRetrySuccessStatements(params: {
       binds: [
         crypto.randomUUID(),
         params.now,
-        isPoeModel(params.modelId) ? "poe" : "openrouter",
+        providerOf(params.modelId),
         params.modelId,
         usage.cost,
         usage.points,
@@ -854,7 +917,7 @@ export function appendAssistantMessageStatements(params: {
       binds: [
         crypto.randomUUID(),
         params.now,
-        isPoeModel(params.modelId) ? "poe" : "openrouter",
+        providerOf(params.modelId),
         params.modelId,
         usage.cost,
         usage.points,

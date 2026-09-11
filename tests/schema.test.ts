@@ -38,6 +38,7 @@ import {
   appendRetrySuccessStatements,
   clearPendingDeletionsSql,
   markRetryAttemptsProcessedSql,
+  recordUsageStatement,
   generatedImagesSql,
   MARK_THUMBNAIL_SQL,
   searchConversationsSql,
@@ -45,6 +46,7 @@ import {
   stillReferencedSql,
   undoGenerationStatements,
 } from "../app/lib/schema";
+import { MODEL_PREFIXES, providerOf } from "../app/lib/constants";
 
 /**
  * スキーマを本物の SQLite に流す。
@@ -108,24 +110,32 @@ describe("使用量の台帳", () => {
       )
       .run(id, conv, model);
 
-  /** 本番と同じ INSERT ... SELECT で載せる。 */
+  /**
+   * 本番と同じ文で載せる。
+   *
+   * 以前はここに INSERT ... SELECT を書き写していた。写した側は provider
+   * 列を `poe か、さもなくば openrouter` で決めており、**窓口を足しても
+   * このテストは緑のまま**だった（本番の文だけが古いか、あるいはその逆
+   * でも気づけない）。文は schema.ts から取る。
+   */
   const record = (
     eventId: string,
     messageId: string,
     cost: number | null,
     points: number | null,
-  ) =>
-    db
-      .prepare(
-        `INSERT OR IGNORE INTO usage_events
-           (id, at, kind, provider, model_id, cost_usd, points,
-            prompt_tokens, completion_tokens, conversation_id, message_id)
-         SELECT ?, ?, 'chat',
-                CASE WHEN model_id LIKE 'poe:%' THEN 'poe' ELSE 'openrouter' END,
-                model_id, ?, ?, NULL, NULL, conversation_id, id
-           FROM messages WHERE id = ?`,
-      )
-      .run(eventId, 1000, cost, points, messageId);
+  ) => {
+    const st = recordUsageStatement({
+      id: eventId,
+      at: 1000,
+      kind: "chat",
+      cost,
+      points,
+      promptTokens: null,
+      completionTokens: null,
+      messageId,
+    });
+    db.prepare(st.sql).run(...st.binds);
+  };
 
   const totals = (since = 0) =>
     db.prepare(USAGE_TOTALS_SQL).get(since) as Record<string, number>;
@@ -176,13 +186,32 @@ describe("使用量の台帳", () => {
     expect(row.provider).toBe("openrouter");
   });
 
-  it("Poe のモデルは provider が poe になる", () => {
-    addMessage("m1", "c1", "poe:Claude-Sonnet");
-    record("e1", "m1", null, 300);
-    const row = db
-      .prepare("SELECT provider FROM usage_events WHERE id = 'e1'")
-      .get() as { provider: string };
-    expect(row.provider).toBe("poe");
+  /**
+   * provider 列と providerOf の結び付き。
+   *
+   * 列の値はここでしか決まらない（記録は messages 行から写すので、
+   * モデルIDが呼ぶ側の手元に無い）。接頭辞を足したのに SQL 側が古い
+   * ままだと、その窓口の支出が全部 openrouter として積まれる——
+   * **画面にはエラーが出ず、使用量の内訳と色分けだけが静かに間違う**。
+   * 窓口の表を回して、全部の窓口で一致することを見る。
+   */
+  it("provider 列は、どの窓口でも providerOf と同じ値になる", () => {
+    const cases = [
+      ["openai/gpt-4o", "openrouter"],
+      ...MODEL_PREFIXES.map(([provider, prefix]) => [`${prefix}some-model`, provider]),
+    ];
+    for (const [modelId] of cases) expect(providerOf(modelId)).toBeTruthy();
+
+    cases.forEach(([modelId, expected], i) => {
+      addMessage(`m${i}`, "c1", modelId);
+      record(`e${i}`, `m${i}`, 0.5, null);
+      const row = db
+        .prepare("SELECT provider, model_id FROM usage_events WHERE id = ?")
+        .get(`e${i}`) as { provider: string; model_id: string };
+      expect(row.model_id).toBe(modelId);
+      expect(row.provider).toBe(expected);
+      expect(row.provider).toBe(providerOf(modelId));
+    });
   });
 
   it("同じ応答を二度確定しても二重に数えない", () => {

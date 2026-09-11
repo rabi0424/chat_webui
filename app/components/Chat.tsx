@@ -24,9 +24,10 @@ import {
 } from "../lib/paste";
 import {
   DEFAULT_MODEL,
-  isPoeModel,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
   MAX_TITLE_LENGTH,
+  PROVIDER_LABELS,
+  supportsWebSearch,
 } from "../lib/constants";
 import {
   PULL_IGNORE_SELECTOR,
@@ -1109,12 +1110,12 @@ export function Chat({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: gen.model,
-          web: gen.web && !isPoeModel(gen.model),
+          web: gen.web && supportsWebSearch(gen.model),
           // サーバーツールは tool calling 対応モデルだけ。非対応なら
           // web だけが立ち、サーバー側で :online へ落ちる
           webTools:
             gen.web &&
-            !isPoeModel(gen.model) &&
+            supportsWebSearch(gen.model) &&
             (genInfo?.supportedParameters.includes("tools") ?? false),
           imageOutput: genInfo?.outputModalities.includes("image") ?? false,
           params: gen.params,
@@ -1861,7 +1862,7 @@ export function Chat({
                 {/* 対応パラメータも送信形式もプロバイダで異なるため明示する */}
                 {selectedModel && (
                   <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-ink-2 dark:bg-neutral-800">
-                    {selectedModel.provider === "poe" ? "Poe" : "OpenRouter"}
+                    {PROVIDER_LABELS[selectedModel.provider]}
                   </span>
                 )}
               </div>
@@ -1877,7 +1878,7 @@ export function Chat({
               この会話にのみ適用されます
               {bot ? "（ボットの設定が初期状態です）" : ""}
             </p>
-            {!isPoeModel(model) && (
+            {supportsWebSearch(model) && (
               <div className="mb-3 flex items-center gap-3 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
                 <IconGlobe className="h-5 w-5 shrink-0 text-ink-3" />
                 <div className="min-w-0 flex-1">

@@ -617,6 +617,20 @@ describe("retryWorkerPlan", () => {
     expect(plan.attempts).toBe(plan.concurrency);
   });
 
+  /**
+   * API易 の画像モデルは stream に対応せず、1回ぶんをまとめて返す。
+   * つまりヘッダが返るのは画像ができたあとで、Poe と同じ側——
+   * 「同時にヘッダを待てるのは6本」に正面から当たる。OpenRouter と
+   * 同じ24本で投げると、7本目以降がこちらで順番待ちになり、待っている
+   * あいだも実行体の時間が課金される（費用だけ増えて速くならない）。
+   */
+  it("API易 も6本まで（ヘッダを返すのは画像ができたあと）", () => {
+    expect(retryWorkerPlan("apiyi:some-image-model")).toEqual({
+      attempts: 12,
+      concurrency: RETRY_WORKER_CONCURRENCY,
+    });
+  });
+
   it("同時数は、1回の呼び出しで出せる外部の通信（50件）を超えない", () => {
     // 成功したときの画像の取り込みにも使うので、余裕を残す
     expect(RETRY_WORKER_STREAMING_CONCURRENCY).toBeLessThanOrEqual(30);

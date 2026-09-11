@@ -11,7 +11,7 @@ import {
   effectiveUsd,
   monthStartJst,
 } from "./usage";
-import { isPoeModel } from "./constants";
+import { providerOf } from "./constants";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -44,12 +44,15 @@ export interface DailyChartData {
 
 /**
  * 色分けの単位。OpenRouter は `anthropic/claude-…` の先頭の名前、
- * Poe はモデルごとに分けても意味が薄い（同じ財布から出る）ので
- * ひとまとめ。モデルIDが無い行は provider の名前で括る。
+ * 中継（Poe・API易）はモデルごとに分けても意味が薄い（同じ財布から
+ * 出る）のでひとまとめ。モデルIDが無い行は provider の名前で括る。
  */
 export function vendorOf(modelId: string | null, provider: string): string {
   if (!modelId) return provider;
-  if (isPoeModel(modelId)) return "poe";
+  // 中継（Poe・API易）はモデルごとに分けても意味が薄い。同じ財布から
+  // 出るので、窓口ごとにひとまとめにする
+  const upstream = providerOf(modelId);
+  if (upstream !== "openrouter") return upstream;
   const head = modelId.split("/")[0];
   return head && head !== modelId ? head.toLowerCase() : provider;
 }
