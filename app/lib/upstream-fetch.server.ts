@@ -33,7 +33,13 @@ export const UPSTREAM_CONNECT_TIMEOUT_MS = 60_000;
  */
 export async function fetchAwaitingHeaders(
   url: string,
-  init: { method: string; headers: Record<string, string>; body: string },
+  /**
+   * body は文字列とは限らない（画像の編集は multipart で送る）。
+   * FormData を渡すときは Content-Type を**自分で付けない**こと——
+   * 境界文字列は fetch が決めるので、手で付けると本文と食い違って
+   * 上流がパースに失敗する。
+   */
+  init: { method: string; headers: Record<string, string>; body: BodyInit },
   timeoutMs: number,
   /**
    * 外からの打ち切り（1本の締め切り・停止後の猶予切れ）。ヘッダを

@@ -9,10 +9,12 @@
  * - モデル情報の対応パラメータ一覧と突き合わせ、
  *   モデルが対応するものだけをフォームに表示する。
  *
- * OpenRouterとPoeでは対応パラメータもリクエストの形式も異なるため、
- * 定義（PARAM_DEFS / POE_*）と組み立て（buildGenerationPayload）の
- * 両方をプロバイダで分ける。一方の設定値がもう一方へ漏れないよう、
- * 組み立て時にプロバイダ側の許可リストで必ず絞る。
+ * 窓口ごとに対応パラメータもリクエストの形式も異なるため、定義
+ * （PARAM_DEFS / POE_* / APIYI_*）と組み立て（buildGenerationPayload）の
+ * 両方を窓口で分ける。一方の設定値がもう一方へ漏れないよう、組み立て時に
+ * 窓口側の許可リストで必ず絞る。パラメータは会話に付いたままモデルを
+ * 乗り換えられるので、漏れは「たまたま前に使っていたモデルによって
+ * 400 になる」という形で出る。
  */
 
 import type { ModelInfo, PoeBotParameter } from "./openrouter.server";
@@ -379,6 +381,131 @@ function botParamDef(p: PoeBotParameter): ParamDef {
   };
 }
 
+// --- API易（画像） ---------------------------------------------------------
+
+/**
+ * API易の公式チャネルの画像モデルが受け付けるパラメータ。
+ *
+ * これは chat/completions のパラメータではない——このチャネルは
+ * `/v1/images/generations` と `/v1/images/edits` しか受け付けず、
+ * 名前も値も OpenAI の Images API のもの。上流が値の一覧を申告して
+ * くれないので（中継の /v1/models はモデル名しか返さない）、**文書に
+ * 書かれている値だけ**をここに置き、それ以外は送らない。知らない値を
+ * 送ると 400 で弾かれ、1本まるごと失う。
+ *
+ * `auto` は選択肢に入れない。⚙の「自動」＝送らない＝上流の既定（auto）
+ * なので、同じ意味の選び方が2つあると迷うだけになる。
+ */
+export const APIYI_IMAGE_PARAM_KEYS = [
+  "size",
+  "quality",
+  "output_format",
+  "output_compression",
+  "background",
+  "moderation",
+] as const;
+
+/** 値の一覧（文書に載っているものだけ）。 */
+const APIYI_ENUMS: Record<string, string[]> = {
+  size: [
+    "1024x1024",
+    "1536x1024",
+    "1024x1536",
+    "2048x2048",
+    "2048x1152",
+    "3840x2160",
+    "2160x3840",
+  ],
+  // xhigh と max は 2.5 で増えた段。上の段ほど遅く、高い
+  quality: ["low", "medium", "high", "xhigh", "max"],
+  output_format: ["png", "jpeg", "webp"],
+  // transparent は 400 になるので出さない
+  background: ["opaque"],
+  moderation: ["low"],
+};
+
+const APIYI_IMAGE_PARAM_DEFS: ParamDef[] = [
+  {
+    kind: "select",
+    key: "size",
+    label: "サイズ",
+    description: "出力の縦横（自動なら上流が依頼文から決める）",
+    options: APIYI_ENUMS.size.map((v) => ({ value: v, label: v })),
+    defaultValue: "1024x1024",
+  },
+  {
+    kind: "select",
+    key: "quality",
+    label: "品質",
+    description:
+      "上げるほど時間も額も増える（max と 4K の組み合わせは数分かかる）",
+    options: APIYI_ENUMS.quality.map((v) => ({ value: v, label: v })),
+    defaultValue: "high",
+  },
+  {
+    kind: "select",
+    key: "output_format",
+    label: "形式",
+    description: "画像の形式",
+    options: APIYI_ENUMS.output_format.map((v) => ({ value: v, label: v })),
+    defaultValue: "png",
+  },
+  {
+    kind: "number",
+    key: "output_compression",
+    label: "圧縮率",
+    description: "jpeg・webp のときだけ効く（0〜100）",
+    min: 0,
+    max: 100,
+    step: 1,
+    integer: true,
+    hint: "例: 85",
+    defaultValue: 85,
+  },
+  {
+    kind: "select",
+    key: "background",
+    label: "背景",
+    description: "opaque は透過を作らせない（transparent は上流が弾く）",
+    options: [{ value: "opaque", label: "不透過 (opaque)" }],
+    defaultValue: "opaque",
+  },
+  {
+    kind: "select",
+    key: "moderation",
+    label: "審査の強さ",
+    description: "low は上流の判定を緩める",
+    options: [{ value: "low", label: "低 (low)" }],
+    defaultValue: "low",
+  },
+];
+
+/**
+ * API易向けのリクエストボディ。
+ *
+ * 送るのは上の一覧にある名前と値だけ。会話には他の窓口向けの設定値が
+ * 残っているので（モデルを乗り換えてもパラメータは会話に付いたまま）、
+ * ここを素通しにすると知らないフィールドとして 400 になる。
+ */
+function buildApiyiPayload(state: ParamsState): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of APIYI_IMAGE_PARAM_KEYS) {
+    const raw = state[key];
+    if (raw == null) continue;
+    if (key === "output_compression") {
+      const n = toNumber(raw);
+      if (n === undefined) continue;
+      out[key] = Math.min(Math.max(Math.round(n), 0), 100);
+      continue;
+    }
+    // 選択肢に無い値は捨てる（保存済みの古い設定や手書きの値が混ざる）
+    if (typeof raw === "string" && APIYI_ENUMS[key]?.includes(raw)) {
+      out[key] = raw;
+    }
+  }
+  return out;
+}
+
 // --- 共通 ------------------------------------------------------------------
 
 /** モデルが対応するパラメータ定義だけを返す。 */
@@ -386,6 +513,9 @@ export function paramsForModel(model: ModelInfo | undefined): ParamDef[] {
   if (!model) return [];
   if (model.provider === "poe") return poeParamDefs(model);
   const supported = new Set(model.supportedParameters);
+  if (model.provider === "apiyi") {
+    return APIYI_IMAGE_PARAM_DEFS.filter((p) => supported.has(p.key));
+  }
   return PARAM_DEFS.filter((p) => supported.has(p.key));
 }
 
@@ -403,13 +533,7 @@ export function buildGenerationPayload(
 ): Record<string, unknown> {
   if (!state || typeof state !== "object") return {};
   if (provider === "poe") return buildPoePayload(state);
-  /*
-   * API易（中継）は、どのパラメータがそのモデルへ通るかを申告しない。
-   * 申告が無いものを推測で送ると、効かないだけでなく中継が知らない
-   * フィールドとして 400 を返すことがある。会話に残っている他の窓口
-   * 向けの設定値がそのまま漏れるのも同じ経路なので、ここで落とす。
-   */
-  if (provider === "apiyi") return {};
+  if (provider === "apiyi") return buildApiyiPayload(state);
   return buildOpenRouterPayload(state);
 }
 

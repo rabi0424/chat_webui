@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * 丸ごと捨てられる）ので、変換の式を実際の行で見る。
  */
 const {
+  apiyiImageRequestInit,
   applyApiyiCost,
   buildApiyiModelInfo,
   estimateApiyiCost,
@@ -104,9 +105,27 @@ describe("一覧の1本", () => {
     expect(info.provider).toBe("apiyi");
     expect(info.outputModalities).toContain("image");
     expect(info.inputModalities).toContain("image");
-    // 中継はコンテキスト長も対応パラメータも申告しない。推測で
-    // 埋めず、画面が「出さない」と判断できる値にする
+    // 中継はコンテキスト長を申告しない。推測で埋めず、画面が
+    // 「出さない」と判断できる値にする
     expect(info.contextLength).toBe(0);
+    // 画像モデルが受け付ける名前は上流の文書にあるので、それだけ出す
+    expect(info.supportedParameters).toContain("size");
+    expect(info.supportedParameters).toContain("quality");
+  });
+
+  it("画像を出さないモデルには、対応パラメータを申告しない", () => {
+    /*
+     * 画像モデル以外について中継は何も申告しない。推測で入力欄を
+     * 並べると「効くように見えて効かない」設定になり、知らない名前を
+     * 送れば 400 で1本まるごと失う。
+     */
+    const info = buildApiyiModelInfo(
+      "some-text-model",
+      parseApiyiPricingRow({
+        ...perTokenRow,
+        supported_endpoint_types: ["openai"],
+      }),
+    );
     expect(info.supportedParameters).toEqual([]);
   });
 
@@ -217,5 +236,66 @@ describe("applyApiyiCost", () => {
     });
     const before = JSON.stringify({ promptTokens: 10, completionTokens: 10 });
     expect(await applyApiyiCost("apiyi:some-image-model", before)).toBe(before);
+  });
+});
+
+/**
+ * Images API への組み立て。
+ *
+ * この窓口の公式チャネルは chat/completions を受け付けない
+ * （上流の文書に明記）。名前を1つ間違えても返ってくるのは 400 だけで、
+ * 画面からは「エラーが出た」以上のことが分からないので、組み立てを
+ * ここで見る。
+ */
+describe("apiyiImageRequestInit", () => {
+  const png = { data: new Uint8Array([1, 2, 3]).buffer, mimeType: "image/png" };
+  const jpg = { data: new Uint8Array([4, 5]).buffer, mimeType: "image/jpeg" };
+
+  it("添付が無ければ生成（JSON）", () => {
+    const init = apiyiImageRequestInit({
+      model: "m",
+      prompt: "赤い円",
+      images: [],
+      params: { size: "1024x1024", quality: "high" },
+    });
+    expect(init.url).toBe("https://api.apiyi.com/v1/images/generations");
+    expect(init.json).toBe(true);
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: "m",
+      prompt: "赤い円",
+      size: "1024x1024",
+      quality: "high",
+    });
+  });
+
+  it("添付があれば編集（multipart）", () => {
+    const init = apiyiImageRequestInit({
+      model: "m",
+      prompt: "図1を明るく",
+      images: [png, jpg],
+      params: { quality: "low" },
+    });
+    expect(init.url).toBe("https://api.apiyi.com/v1/images/edits");
+    expect(init.json).toBe(false);
+    const form = init.body as FormData;
+    expect(form.get("model")).toBe("m");
+    expect(form.get("prompt")).toBe("図1を明るく");
+    // パラメータは文字列にして載せる（multipart は文字列しか運べない）
+    expect(form.get("quality")).toBe("low");
+    const files = form.getAll("image") as File[];
+    expect(files).toHaveLength(2);
+    // 拡張子が無いと上流が形式を判別できない。並び順は「図1／図2」に対応する
+    expect(files.map((f) => f.name)).toEqual(["image1.png", "image2.jpg"]);
+    expect(files[0].type).toBe("image/png");
+  });
+
+  it("画像は上流の上限（16枚）で切る", () => {
+    const init = apiyiImageRequestInit({
+      model: "m",
+      prompt: "p",
+      images: Array.from({ length: 20 }, () => png),
+      params: {},
+    });
+    expect((init.body as FormData).getAll("image")).toHaveLength(16);
   });
 });

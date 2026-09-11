@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
  * 生成が終わって課金されている——気づく手立てが無い壊れ方なので、
  * 見分けと読み取りの両方をここで見る。
  */
-const { readUpstreamJson, readUpstreamResponse } = await import(
+const { imageRequestOf, readUpstreamJson, readUpstreamResponse } = await import(
   "../../app/lib/generation.server"
 );
 
@@ -184,5 +184,136 @@ describe("readUpstreamResponse の見分け", () => {
     const result = await readUpstreamResponse(res);
     expect(result.interrupted).toBeTruthy();
     expect(result.content).toBe("");
+  });
+});
+
+/**
+ * Images API の応答。
+ *
+ * この窓口の公式チャネルは chat/completions を受け付けず、返ってくるのは
+ * chat とは別の形（`choices` が無く `data` に画像、トークン数の名前も
+ * 違う）。chat の形だけを見ていると、**画像も使用量も丸ごと落ちて**
+ * 「本文のない応答」になる。上流では生成が終わって課金されている。
+ */
+describe("Images API の応答", () => {
+  const b64 = "iVBORw0KGgo=";
+
+  it("接頭辞の付かない base64 を data: URL にして返す", async () => {
+    /*
+     * 上流は素の base64 を返す（`data:image/png;base64,` は付かない）。
+     * そのまま取り込みへ回すと URL として解釈できず、1枚も残らない。
+     */
+    const result = await readUpstreamJson(
+      bodyOf(JSON.stringify({ created: 1, data: [{ b64_json: b64 }] })),
+    );
+    expect(result.imageUrls).toEqual([`data:image/png;base64,${b64}`]);
+    expect(result.interrupted).toBeUndefined();
+  });
+
+  it("接頭辞が付いて返ってきたら二重に付けない", async () => {
+    // 文書は「付く場合もある」と言っている。二重に付けると壊れる
+    const withPrefix = `data:image/webp;base64,${b64}`;
+    const result = await readUpstreamJson(
+      bodyOf(JSON.stringify({ data: [{ b64_json: withPrefix }] })),
+    );
+    expect(result.imageUrls).toEqual([withPrefix]);
+  });
+
+  it("URL で返る形にも対応する", async () => {
+    const result = await readUpstreamJson(
+      bodyOf(JSON.stringify({ data: [{ url: "https://cdn.example/z.png" }] })),
+    );
+    expect(result.imageUrls).toEqual(["https://cdn.example/z.png"]);
+  });
+
+  it("複数枚を並び順のまま返す", async () => {
+    const result = await readUpstreamJson(
+      bodyOf(JSON.stringify({ data: [{ b64_json: "AAA" }, { b64_json: "BBB" }] })),
+    );
+    expect(result.imageUrls).toEqual([
+      "data:image/png;base64,AAA",
+      "data:image/png;base64,BBB",
+    ]);
+  });
+
+  it("トークン数の別名（input/output）を拾う", async () => {
+    /*
+     * Images API は input_tokens / output_tokens。chat の
+     * prompt_tokens / completion_tokens だけを見ていると 0 になり、
+     * 額が出ず、台帳から丸ごと落ちる。
+     */
+    const result = await readUpstreamJson(
+      bodyOf(
+        JSON.stringify({
+          data: [{ b64_json: b64 }],
+          usage: {
+            input_tokens: 27,
+            output_tokens: 4160,
+            input_tokens_details: { image_tokens: 20, text_tokens: 7 },
+          },
+        }),
+      ),
+    );
+    expect(JSON.parse(result.usageJson ?? "{}")).toMatchObject({
+      promptTokens: 27,
+      completionTokens: 4160,
+      imageTokens: 20,
+    });
+  });
+});
+
+describe("imageRequestOf", () => {
+  /*
+   * Images API は会話を受け取らない。prompt 1本と画像だけなので、
+   * どのメッセージを使うかをここで決め切る。
+   */
+  it("直近のユーザー発言だけを使う（過去の依頼文を混ぜない）", () => {
+    expect(
+      imageRequestOf([
+        { role: "system", content: "あなたは絵を描く" },
+        { role: "user", content: "前の依頼" },
+        { role: "assistant", content: "できました" },
+        { role: "user", content: "赤い円" },
+      ]),
+    ).toEqual({ prompt: "赤い円", images: [] });
+  });
+
+  it("添付は data: URL から実体へ戻し、並び順を保つ", () => {
+    const one = "data:image/png;base64,iVBORw0KGgo=";
+    const two = "data:image/jpeg;base64,/9j/4AAQ";
+    const { prompt, images } = imageRequestOf([
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: one } },
+          { type: "image_url", image_url: { url: two } },
+          { type: "text", text: "図1を図2の色で" },
+        ],
+      },
+    ]);
+    expect(prompt).toBe("図1を図2の色で");
+    expect(images.map((i) => i.mimeType)).toEqual(["image/png", "image/jpeg"]);
+    expect(images[0].data.byteLength).toBeGreaterThan(0);
+  });
+
+  it("読めない添付は落とすが、依頼自体は成立させる", () => {
+    const { prompt, images } = imageRequestOf([
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: "https://example.com/x.png" } },
+          { type: "text", text: "赤い円" },
+        ],
+      },
+    ]);
+    expect(prompt).toBe("赤い円");
+    expect(images).toEqual([]);
+  });
+
+  it("ユーザー発言が無ければ空（例外にしない）", () => {
+    expect(imageRequestOf([{ role: "system", content: "x" }])).toEqual({
+      prompt: "",
+      images: [],
+    });
   });
 });

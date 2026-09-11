@@ -16,6 +16,7 @@
  */
 import { env } from "cloudflare:workers";
 import { APIYI_PREFIX, bareModelName, isApiyiModel } from "./constants";
+import { APIYI_IMAGE_PARAM_KEYS } from "./params";
 import type { ModelInfo } from "./openrouter.server";
 import {
   UPSTREAM_CONNECT_TIMEOUT_MS,
@@ -24,6 +25,23 @@ import {
 
 /** OpenAI互換のエンドポイント。Claude系・Gemini系もここから呼べる。 */
 const APIYI_BASE = "https://api.apiyi.com/v1";
+
+/**
+ * 画像モデルは chat/completions では呼べない。
+ *
+ * 公式チャネル（素の名前）が受け付けるのは Images API の2本だけで、
+ * 上流の文書は chat 形式を「非対応」と明記している（chat で呼べるのは
+ * 逆向チャネルの副経路だけ）。価格表の `openai` という項目はこれと
+ * 食い違うが、こちらは中継全体の分類でしかない。
+ *
+ * 添付が無ければ生成、あれば編集。編集は multipart で、画像の並び順が
+ * 依頼文の中の「図1／図2」に対応する。
+ */
+const APIYI_IMAGE_GENERATIONS = `${APIYI_BASE}/images/generations`;
+const APIYI_IMAGE_EDITS = `${APIYI_BASE}/images/edits`;
+
+/** 編集に渡せる画像の上限（上流の制限）。 */
+const MAX_EDIT_IMAGES = 16;
 
 /** 価格表。鍵が要らないので、キー未設定でも取れる。 */
 const APIYI_PRICING_URL = "https://api.apiyi.com/api/pricing";
@@ -195,9 +213,14 @@ export function buildApiyiModelInfo(
     // 画像を出すモデルにだけ「画像」を付ける
     inputModalities: spec?.imageOutput ? ["text", "image"] : ["text"],
     outputModalities: spec?.imageOutput ? ["text", "image"] : ["text"],
-    // 中継は対応パラメータを申告しない。推測で並べると「効くように
-    // 見えて効かない」入力欄になるので、確かめられるまで出さない
-    supportedParameters: [],
+    /*
+     * 中継は対応パラメータを申告しない（/v1/models はモデル名だけ）。
+     * 画像モデルが受け付ける名前と値は上流の文書に載っているので、
+     * それだけを出す（params.ts）。文章のモデルは申告が無いため空に
+     * する——推測で並べると「効くように見えて効かない」入力欄になり、
+     * 知らない名前を送れば 400 で1本まるごと失う。
+     */
+    supportedParameters: spec?.imageOutput ? [...APIYI_IMAGE_PARAM_KEYS] : [],
     provider: "apiyi",
     perCallUsd: spec?.perCallUsd,
     createdAt: 0,
@@ -218,8 +241,103 @@ export async function fetchApiyiModels(): Promise<ModelInfo[]> {
   return names.map((name) => buildApiyiModelInfo(name, specs.get(name)));
 }
 
+/** 編集のときに渡す入力画像。 */
+export interface ApiyiInputImage {
+  data: ArrayBuffer;
+  mimeType: string;
+}
+
+/** multipart に載せる名前（拡張子が無いと上流が形式を判別できない）。 */
+function fileNameFor(mimeType: string, index: number): string {
+  const ext = mimeType.split("/")[1]?.split("+")[0] ?? "png";
+  return `image${index + 1}.${ext === "jpeg" ? "jpg" : ext}`;
+}
+
+/**
+ * Images API へのリクエスト。添付があれば編集、無ければ生成。
+ *
+ * `stream` は付けない。このチャネルの画像生成は同期呼び出しで、
+ * 途中経過を流すには `partial_images` が要り、そのぶん追加の
+ * トークンが課金される。1枚を確実に受け取るほうを採る。
+ */
+export interface ApiyiImageRequest {
+  model: string;
+  prompt: string;
+  images: ApiyiInputImage[];
+  /** ⚙で手動にしたパラメータ（size・quality など）。 */
+  params: Record<string, unknown>;
+}
+
+/**
+ * 投げ先と本文を組み立てる（鍵には触らない）。
+ *
+ * 鍵を足すところと分けてあるのは、ここだけをテストから通せるように
+ * するため。multipart の組み立ては目で見ても正しさが分からない
+ * （名前を1つ間違えても 400 が返るだけ）。
+ */
+export function apiyiImageRequestInit(req: ApiyiImageRequest): {
+  url: string;
+  body: BodyInit;
+  /** JSON として送るか（multipart なら false）。 */
+  json: boolean;
+} {
+  if (req.images.length === 0) {
+    return {
+      url: APIYI_IMAGE_GENERATIONS,
+      json: true,
+      body: JSON.stringify({
+        model: req.model,
+        prompt: req.prompt,
+        ...req.params,
+      }),
+    };
+  }
+
+  const form = new FormData();
+  form.set("model", req.model);
+  form.set("prompt", req.prompt);
+  for (const [key, value] of Object.entries(req.params)) {
+    form.set(key, String(value));
+  }
+  // 並び順が依頼文の「図1／図2」に対応するので、順番を崩さない
+  req.images.slice(0, MAX_EDIT_IMAGES).forEach((img, i) => {
+    form.append(
+      "image",
+      new Blob([img.data], { type: img.mimeType }),
+      fileNameFor(img.mimeType, i),
+    );
+  });
+  return { url: APIYI_IMAGE_EDITS, json: false, body: form };
+}
+
+export async function apiyiImageRequest(
+  req: ApiyiImageRequest,
+  connectTimeoutMs: number = UPSTREAM_CONNECT_TIMEOUT_MS,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const init = apiyiImageRequestInit(req);
+  return await fetchAwaitingHeaders(
+    init.url,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.APIYI_API_KEY}`,
+        // multipart のときは付けない（境界文字列は fetch が決める。
+        // 手で付けると本文と食い違って上流がパースに失敗する）
+        ...(init.json ? { "Content-Type": "application/json" } : {}),
+      },
+      body: init.body,
+    },
+    connectTimeoutMs,
+    signal,
+  );
+}
+
 /**
  * API易の chat/completions（OpenAI互換）へのリクエスト。
+ *
+ * 画像モデルはこの経路では呼べない（上の注記）。文章のモデルを
+ * `APIYI_MODELS` に足したときのための経路。
  */
 export async function apiyiChatRequest(
   body: Record<string, unknown>,

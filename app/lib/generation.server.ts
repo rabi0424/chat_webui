@@ -4,7 +4,12 @@ import {
   poeChatRequest,
   type ChatMessage,
 } from "./openrouter.server";
-import { apiyiChatRequest, applyApiyiCost } from "./apiyi.server";
+import {
+  apiyiChatRequest,
+  apiyiImageRequest,
+  applyApiyiCost,
+  type ApiyiInputImage,
+} from "./apiyi.server";
 import {
   PROVIDER_LABELS,
   bareModelName,
@@ -165,6 +170,40 @@ function applyPromptCaching(
   });
 }
 
+/**
+ * 送信するメッセージ列から、Images API へ渡す依頼文と画像を取り出す。
+ *
+ * Images API は会話を受け取らない。`prompt` 1本と `image[]` だけなので、
+ * **直近のユーザー発言だけ**を使う。過去のやり取りを連ねて1本の依頼文に
+ * するやり方も採れるが、それだと前の依頼文が今回の絵に混ざる（上流は
+ * 全部を1つの指示として読む）。連なりを期待させないほうが、結果を
+ * 説明できる。
+ *
+ * 画像は既に data: URL へ展開済み（expandAttachments）。読めないものは
+ * 落とす——1枚欠けても依頼自体は成立させる。
+ */
+export function imageRequestOf(messages: OutgoingMessage[]): {
+  prompt: string;
+  images: ApiyiInputImage[];
+} {
+  const last = [...messages].reverse().find((m) => m.role === "user");
+  if (!last) return { prompt: "", images: [] };
+  if (typeof last.content === "string") {
+    return { prompt: last.content, images: [] };
+  }
+  const texts: string[] = [];
+  const images: ApiyiInputImage[] = [];
+  for (const part of last.content) {
+    if (part.type === "text") {
+      if (part.text) texts.push(part.text);
+      continue;
+    }
+    const decoded = decodeDataUrl(part.image_url.url);
+    if (decoded) images.push({ data: decoded.buffer, mimeType: decoded.mimeType });
+  }
+  return { prompt: texts.join("\n"), images };
+}
+
 /** 画像一覧の検索に使う、この生成の依頼文（直近のユーザー発言）。 */
 export function promptOf(job: GenerationJob): string | null {
   for (let i = job.messages.length - 1; i >= 0; i--) {
@@ -181,6 +220,24 @@ export function promptOf(job: GenerationJob): string | null {
  * ここで打ち切ってその時点の内容で確定させる。
  */
 const UPSTREAM_IDLE_TIMEOUT_MS = 120_000;
+
+/**
+ * 画像を出すモデルを待つ上限（ヘッダも本文の無音も）。
+ *
+ * 画像生成の上流は、画像ができるまで1バイトも返さないことがある。
+ * API易の公式チャネルは同期呼び出しで、上流の文書は品質を上げると
+ * 3〜5分かかるとして**600秒以上のタイムアウト**を勧めている。短く
+ * 切ると、上流では完成して課金されているのにこちらには何も残らない。
+ *
+ * 生存確認（heartbeat）は30分まで打ち続けるので、この待ちのあいだに
+ * 行が中断とみなされることはない。
+ *
+ * 「成功するまで生成」の1本はこれを使わない。あちらは担当の実行体が
+ * 15分で止められる壁の内側で決着させる必要があり、発射の窓（7分）＋
+ * 1本の締め切り（`RETRY_ATTEMPT_DEADLINE_MS` = 6分）で13分に収めて
+ * ある。ここを10分にすると17分になり、**壁を越えて結果ごと失われる**。
+ */
+const IMAGE_UPSTREAM_TIMEOUT_MS = 10 * 60_000;
 
 const MAX_CAPTURED_IMAGES = 8;
 const MAX_CAPTURED_BYTES = 20 * 1024 * 1024;
@@ -624,16 +681,27 @@ export async function requestUpstream(
     );
   }
 
-  /*
-   * API易は OpenAI 互換の中継。画像を出すモデルは stream に対応せず、
-   * SSE ではなく JSON を1つ返す（上流の文書に明記がある）。それでも
-   * `stream: true` を付けて投げるのは、対応しているモデルでは流れて
-   * きてほしいからで、対応しないモデルでは中継が黙って JSON を返す。
-   * 返ってきた形は読み手（readUpstreamResponse）が Content-Type で
-   * 見分ける。
-   */
   if (provider === "apiyi") {
     onRequest();
+    /*
+     * 画像のモデルは chat/completions では呼べない。この窓口の公式
+     * チャネルが受け付けるのは Images API の2本だけで、そちらには
+     * 会話という概念が無い——**送れるのは依頼文1本と画像だけ**なので、
+     * これまでのやり取りは画像モデルには渡らない（渡せない）。
+     */
+    if (job.imageOutput) {
+      const { prompt, images } = imageRequestOf(messages);
+      return await apiyiImageRequest(
+        {
+          model: modelName,
+          prompt,
+          images,
+          params: buildGenerationPayload(job.paramsState, "apiyi"),
+        },
+        opts.connectTimeoutMs,
+        opts.signal,
+      );
+    }
     return await apiyiChatRequest(
       {
         model: modelName,
@@ -1111,6 +1179,8 @@ export async function readUpstreamJson(
 
   let parsed: {
     error?: unknown;
+    /** Images API はここに画像を入れて返す（chat の choices は無い）。 */
+    data?: { b64_json?: unknown; url?: unknown }[];
     choices?: {
       message?: { content?: unknown; reasoning?: unknown; images?: unknown; annotations?: unknown };
       finish_reason?: string | null;
@@ -1121,6 +1191,10 @@ export async function readUpstreamJson(
       cost?: number;
       prompt_tokens_details?: { cached_tokens?: number };
       completion_tokens_details?: { reasoning_tokens?: number };
+      /** Images API はトークン数の名前が違う。 */
+      input_tokens?: number;
+      output_tokens?: number;
+      input_tokens_details?: { image_tokens?: number; text_tokens?: number };
     };
   };
   try {
@@ -1136,6 +1210,26 @@ export async function readUpstreamJson(
     };
   }
 
+  /*
+   * Images API の応答（chat とは形が違う）。画像は base64 で、
+   * **`data:image/...;base64,` の接頭辞が付かない**（付く場合もあると
+   * 上流の文書が言っているので、両方を見る）。ここで data: URL の形に
+   * してしまえば、あとは他の窓口の生成画像と同じ経路で取り込める。
+   * 申告する型は仮のもので、R2 へ入れる型は中身から決め直される
+   * （captureImagePayload）。
+   */
+  for (const item of parsed.data ?? []) {
+    if (typeof item?.url === "string" && item.url) {
+      imageUrls.push(item.url);
+      continue;
+    }
+    const b64 = item?.b64_json;
+    if (typeof b64 !== "string" || b64 === "") continue;
+    imageUrls.push(
+      b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`,
+    );
+  }
+
   const choice = parsed.choices?.[0];
   const content = flattenContent(choice?.message?.content, imageUrls);
   collectImageUrls(choice?.message?.images, imageUrls);
@@ -1149,14 +1243,20 @@ export async function readUpstreamJson(
         : "",
     usageJson: parsed.usage
       ? JSON.stringify({
-          promptTokens: parsed.usage.prompt_tokens ?? 0,
-          completionTokens: parsed.usage.completion_tokens ?? 0,
+          // Images API は input/output、chat は prompt/completion。
+          // 拾い損ねると額が0になり、台帳から丸ごと落ちる
+          promptTokens:
+            parsed.usage.prompt_tokens ?? parsed.usage.input_tokens ?? 0,
+          completionTokens:
+            parsed.usage.completion_tokens ?? parsed.usage.output_tokens ?? 0,
           cost: parsed.usage.cost,
           cachedTokens:
             parsed.usage.prompt_tokens_details?.cached_tokens ?? undefined,
           reasoningTokens:
             parsed.usage.completion_tokens_details?.reasoning_tokens ??
             undefined,
+          // 見積もりと実際の請求を後から突き合わせるために残す
+          imageTokens: parsed.usage.input_tokens_details?.image_tokens,
         })
       : null,
     imageUrls,
@@ -1210,16 +1310,8 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
   const provider = providerOf(job.model);
   const isPoe = provider === "poe";
   const modelName = bareModelName(job.model);
-  /*
-   * 画像を出すモデルは、応答ヘッダも本文の無音も長く待つ。
-   *
-   * 画像生成の上流は、画像ができるまでヘッダを返さないものがある
-   * （Poe は実測で生成時間とほぼ同じ、API易の画像系は stream 自体に
-   * 対応せず1回分をまとめて返す）。既定の60秒で切ると、上流では
-   * 完了して課金されているのにこちらには何も残らない。生存確認
-   * （heartbeat）は別に打っているので、待っても中断とはみなされない。
-   */
-  const imageTimeoutMs = job.imageOutput ? RETRY_ATTEMPT_DEADLINE_MS : undefined;
+  // 画像を出すモデルは、応答ヘッダも本文の無音も長く待つ（上の注記）
+  const imageTimeoutMs = job.imageOutput ? IMAGE_UPSTREAM_TIMEOUT_MS : undefined;
   // 1応答ぶんなので枠には十分収まるが、取り込む画像の枚数だけは
   // 上流しだいなので、リトライ生成と同じ数え方で歯止めをかけておく
   const budget = createBudget();
