@@ -177,6 +177,52 @@ describe("期間の切り替え", () => {
   });
 });
 
+describe("上限の帯と消化ペース", () => {
+  /**
+   * 割合だけでは速いか遅いか分からない（月末の 80% と3日目の 80% は
+   * 意味が違う）。完全比例ならいまここ、という地点を帯の上に印で置く。
+   * 印の位置は**時刻まで含めた**経過割合（8/21 12:00 なら 20.5/31）。
+   */
+  const ELAPSED = 20.5 / 31;
+
+  it("完全比例の地点を印で置き、額と割合を添える", () => {
+    renderUsage({ usdJpy: 150, limitJpy: 1000 });
+    // 使用は $5 × 150 = ¥750（上限の 75%）
+    expect(screen.getByTestId("pace-mark").style.left).toBe(
+      `${ELAPSED * 100}%`,
+    );
+    expect(
+      screen.getByText(/上限 ¥1,000 の 75%・印は完全比例の ¥661（66%）/),
+    ).toBeTruthy();
+  });
+
+  it("目安より使っていれば「速い」と言い、月末の見込みを添える", () => {
+    renderUsage({ usdJpy: 150, limitJpy: 1000 });
+    expect(screen.getByText("ペースが速い")).toBeTruthy();
+    // ¥750 − ¥661 = ¥89 / 月末は 750 ÷ 0.661 ≒ ¥1,134
+    expect(
+      screen.getByText(/目安より ¥89 多い・このペースだと月末 ¥1,134/),
+    ).toBeTruthy();
+  });
+
+  it("目安に届いていなければ「控えめ」と言う", () => {
+    // 上限 ¥3,000 の目安は ¥1,984。使用は ¥750
+    renderUsage({ usdJpy: 150, limitJpy: 3000 });
+    expect(screen.getByText("ペースは控えめ")).toBeTruthy();
+    expect(screen.getByText(/目安より ¥1,234 少ない/)).toBeTruthy();
+    // 見立てが変わっても帯そのものは出ている
+    expect(screen.getByText(/上限 ¥3,000 の 25%/)).toBeTruthy();
+  });
+
+  it("上限が無ければ帯ごと出さない（比べる相手が無い）", () => {
+    renderUsage({ usdJpy: 150, limitJpy: 0 });
+    expect(screen.queryByTestId("pace-mark")).toBeNull();
+    expect(screen.queryByText(/完全比例/)).toBeNull();
+    // 額そのものは出ている（画面が落ちているのではない）
+    expect(within(totalsCard("今月")).getByText("¥750")).toBeTruthy();
+  });
+});
+
 describe("日別のグラフ", () => {
   it("月初から今日までの棒が並び、記録の無い日は 0 と読める", () => {
     renderUsage({ daily: true });
@@ -213,6 +259,54 @@ describe("日別のグラフ", () => {
     renderUsage({ daily: true, usdJpy: null, limitJpy: 3100 });
     expect(screen.queryByTestId("limit-line")).toBeNull();
     expect(screen.queryByText(/点線は/)).toBeNull();
+  });
+
+  /**
+   * 積み上げの角丸。
+   *
+   * 内訳のそれぞれに角丸を掛けると、下の段の丸めた肩の上に角の尖った段が
+   * 乗り、1本の棒が「別々の棒が重なったもの」に見える（実際そう見えていた）。
+   * 丸めるのは積み上げ全体を包む1枚だけ、という形を見張る。
+   */
+  it("角丸は積み上げ全体に1回だけ掛ける", () => {
+    renderUsage({ daily: true });
+    const bars = within(
+      screen.getByRole("list", { name: "日別の使用額" }),
+    ).getAllByRole("listitem");
+    // 8/3 は OpenAI $2 と Anthropic $1 の2段
+    const rounded = bars[2].querySelectorAll('[class*="rounded"]');
+    expect(rounded).toHaveLength(1);
+    // 丸めた1枚が、2段とも内側に抱えている
+    expect(rounded[0].children).toHaveLength(2);
+    expect(rounded[0].className).toContain("overflow-hidden");
+  });
+
+  it("段の高さは棒の中での割合、棒の高さはグラフの中での割合", () => {
+    renderUsage({ daily: true });
+    const bars = within(
+      screen.getByRole("list", { name: "日別の使用額" }),
+    ).getAllByRole("listitem");
+    const stack = bars[2].querySelector("span") as HTMLElement;
+    // 一番高い棒は $3。天井は 1.15 倍の余白込み
+    expect(parseFloat(stack.style.height)).toBeCloseTo((3 / (3 * 1.15)) * 100, 6);
+    const parts = [...stack.children] as HTMLElement[];
+    // 中は棒（$3）に対する割合。足して 100%——外の高さを使うとはみ出す
+    expect(parts.map((p) => parseFloat(p.style.height))).toEqual([
+      (2 / 3) * 100,
+      (1 / 3) * 100,
+    ]);
+  });
+
+  it("使わなかった日は棒を描かないが、その日の枠と隣の棒は残る", () => {
+    renderUsage({ daily: true });
+    const bars = within(
+      screen.getByRole("list", { name: "日別の使用額" }),
+    ).getAllByRole("listitem");
+    // 8/4 は記録が無い
+    expect(bars[3].querySelector("span")).toBeNull();
+    expect(bars[3].getAttribute("aria-label")).toBe("8月4日 $0.0000");
+    // 隣（8/3）の棒は立っている
+    expect(bars[2].querySelector("span")).not.toBeNull();
   });
 
   it("ベンダーごとの凡例に今月の額を添える", () => {

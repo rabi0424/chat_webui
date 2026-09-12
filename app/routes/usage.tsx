@@ -13,9 +13,11 @@ import {
   FREE_TIER,
   USAGE_RANGES,
   USAGE_RANGE_LABELS,
+  budgetPace,
   checkLimit,
   formatBytes,
   monthLabelJst,
+  type BudgetPace,
   type UsageRange,
   type UsageTotals,
 } from "../lib/usage";
@@ -72,13 +74,38 @@ function jpy(v: number): string {
   return `¥${Math.round(v).toLocaleString()}`;
 }
 
-/** 使用額と上限の帯。上限が無ければ額だけ。 */
+/** 消化ペースの見立てに添える言葉と色。 */
+const PACE_TONES: Record<
+  BudgetPace["tone"],
+  { label: string; className: string }
+> = {
+  fast: {
+    label: "ペースが速い",
+    className:
+      "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  },
+  on: { label: "ほぼ予定どおり", className: "bg-sunken text-ink-2" },
+  slow: {
+    label: "ペースは控えめ",
+    className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+  },
+};
+
+/**
+ * 使用額と上限の帯（UI-8）。
+ *
+ * 割合だけでは「速いのか遅いのか」が分からない——月末に 80% なら余裕だが、
+ * 3日目の 80% は破綻している。月のうち過ぎた割合（**時刻まで数える**）を
+ * 帯の上に印として置き、完全比例ならいまここ、という地点を示す。
+ */
 function LimitBar({
   usedJpy,
   limitJpy,
+  now,
 }: {
   usedJpy: number;
   limitJpy: number;
+  now: number;
 }) {
   const ratio = Math.min(usedJpy / limitJpy, 1);
   // 8割を超えたら色を変える。数字だけだと近づいたことに気づきにくい
@@ -88,17 +115,59 @@ function LimitBar({
       : ratio >= 0.8
         ? "bg-amber-500"
         : "bg-accent";
+  const pace = budgetPace({ usedJpy, limitJpy, now });
   return (
     <div className="mt-3">
-      <div className="h-2 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
-        <div
-          className={`h-full rounded-full transition-all ${tone}`}
-          style={{ width: `${ratio * 100}%` }}
-        />
+      {/*
+        印は帯の外に出す（帯の中に描くと、塗りと同じ面で重なって
+        「使った量」と読めてしまう）。上下に少しはみ出させることで、
+        塗りの上でも地の上でも同じ太さで見える。
+      */}
+      <div className="relative">
+        <div className="h-2 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+          <div
+            className={`h-full rounded-full transition-all ${tone}`}
+            style={{ width: `${ratio * 100}%` }}
+          />
+        </div>
+        {pace && (
+          <span
+            data-testid="pace-mark"
+            aria-hidden
+            className="pointer-events-none absolute -top-1 -bottom-1 w-0.5 -translate-x-1/2 rounded-full bg-ink"
+            style={{ left: `${pace.elapsed * 100}%` }}
+          />
+        )}
       </div>
-      <p className="mt-1.5 text-xs text-ink-2">
+      <p className="mt-2 text-xs text-ink-2">
         上限 {jpy(limitJpy)} の {Math.round(ratio * 100)}%
+        {pace && (
+          <>
+            ・印は完全比例の {jpy(pace.paceJpy)}（
+            {Math.round(pace.elapsed * 100)}%）
+          </>
+        )}
       </p>
+      {pace && (
+        <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-2">
+          <span
+            className={`rounded-full px-2 py-0.5 font-medium ${PACE_TONES[pace.tone].className}`}
+          >
+            {PACE_TONES[pace.tone].label}
+          </span>
+          {/*
+            月末の見込みは、1日ぶんも経っていないうちは出ない
+            （過ぎた割合で割るので、分母が小さいと数字が跳ねる）。
+          */}
+          <span>
+            {`目安より ${jpy(Math.abs(pace.diffJpy))} ${
+              pace.diffJpy >= 0 ? "多い" : "少ない"
+            }`}
+            {pace.projectedJpy != null &&
+              `・このペースだと月末 ${jpy(pace.projectedJpy)}`}
+          </span>
+        </p>
+      )}
     </div>
   );
 }
@@ -203,7 +272,7 @@ function DailyChart({
           </span>
         )}
       </div>
-      <div className="rounded-xl border border-line px-3.5 pb-2 pt-4">
+      <div className="rounded-xl border border-line px-3.5 pb-2.5 pt-4">
         <div className="relative h-32">
           <ul
             aria-label="日別の使用額"
@@ -214,32 +283,54 @@ function DailyChart({
               <li
                 key={b.dayOfMonth}
                 aria-label={`${dayLabel(b)} ${money(b.usd)}`}
-                className="group relative flex h-full flex-1 flex-col-reverse"
+                title={`${dayLabel(b)} ${money(b.usd)}`}
+                className="flex h-full flex-1 flex-col justify-end"
               >
-                {b.parts.map(
-                  (p) =>
-                    p.usd > 0 && (
-                      <span
-                        key={p.vendor}
-                        aria-hidden
-                        className="block w-full first:rounded-t-sm"
-                        style={{
-                          height: pct(p.usd),
-                          backgroundColor: color(p.vendor),
-                        }}
-                      />
-                    ),
-                )}
-                {/* 棒が無い日も、指で触れる場所として最低限の高さを残す */}
-                {b.usd === 0 && (
+                {/*
+                  角丸は積み上げ**全体**に1回だけ掛ける。内訳のそれぞれに
+                  掛けると、下の段の丸めた肩の上に角の尖った段が乗って、
+                  段差が「別の棒」に見える（実際にそう見えていた）。
+                  外側で丸めて内側を刈り取れば、上端だけが丸い1本になる。
+                */}
+                {b.usd > 0 && (
                   <span
                     aria-hidden
-                    className="block h-px w-full bg-neutral-200 dark:bg-neutral-800"
-                  />
+                    className="flex w-full flex-col-reverse overflow-hidden rounded-t-[3px]"
+                    // 1円の日も線として見えるように、最低限の高さを残す
+                    style={{ height: pct(b.usd), minHeight: "2px" }}
+                  >
+                    {b.parts.map(
+                      (p) =>
+                        p.usd > 0 && (
+                          <span
+                            key={p.vendor}
+                            className="block w-full shrink-0"
+                            // 段の高さは棒の中での割合（外側が全体の高さを持つ）
+                            style={{
+                              height: `${(p.usd / b.usd) * 100}%`,
+                              backgroundColor: color(p.vendor),
+                            }}
+                          />
+                        ),
+                    )}
+                  </span>
                 )}
               </li>
             ))}
           </ul>
+          {/*
+            軸。今日までを濃く、残りの日を薄く引く。使わなかった日は
+            軸だけが残り、まだ来ていない日とは濃さで区別できる。
+          */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-line"
+          />
+          <div
+            aria-hidden
+            className="pointer-events-none absolute bottom-0 left-0 h-px bg-line-strong"
+            style={{ width: elapsedWidth }}
+          />
           {/* 線は棒の上に重ねる（下に敷くと、線を越えた日ほど見えなくなる） */}
           {limitPerDayUsd != null && (
             <div
@@ -251,7 +342,7 @@ function DailyChart({
           )}
         </div>
         <div
-          className="mt-1.5 flex text-[0.625rem] tabular-nums text-neutral-400"
+          className="mt-1.5 flex text-[0.625rem] tabular-nums text-ink-3"
           style={{ width: elapsedWidth }}
         >
           {bars.map((b) => (
@@ -505,7 +596,11 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
         </div>
 
         {verdict.limitJpy > 0 && verdict.usedJpy != null && (
-          <LimitBar usedJpy={verdict.usedJpy} limitJpy={verdict.limitJpy} />
+          <LimitBar
+            usedJpy={verdict.usedJpy}
+            limitJpy={verdict.limitJpy}
+            now={now}
+          />
         )}
 
         {/*
