@@ -141,12 +141,6 @@ function LimitBar({
       </div>
       <p className="mt-2 text-xs text-ink-2">
         上限 {jpy(limitJpy)} の {Math.round(ratio * 100)}%
-        {pace && (
-          <>
-            ・印は完全比例の {jpy(pace.paceJpy)}（
-            {Math.round(pace.elapsed * 100)}%）
-          </>
-        )}
       </p>
       {pace && (
         <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-2">

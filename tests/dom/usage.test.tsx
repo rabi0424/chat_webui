@@ -185,21 +185,20 @@ describe("上限の帯と消化ペース", () => {
    */
   const ELAPSED = 20.5 / 31;
 
-  it("完全比例の地点を印で置き、額と割合を添える", () => {
+  it("完全比例の地点に印を置く", () => {
     renderUsage({ usdJpy: 150, limitJpy: 1000 });
-    // 使用は $5 × 150 = ¥750（上限の 75%）
     expect(screen.getByTestId("pace-mark").style.left).toBe(
       `${ELAPSED * 100}%`,
     );
-    expect(
-      screen.getByText(/上限 ¥1,000 の 75%・印は完全比例の ¥661（66%）/),
-    ).toBeTruthy();
+    // 帯そのものは使用の割合（$5 × 150 = ¥750 で上限の 75%）
+    expect(screen.getByText("上限 ¥1,000 の 75%")).toBeTruthy();
   });
 
   it("目安より使っていれば「速い」と言い、月末の見込みを添える", () => {
     renderUsage({ usdJpy: 150, limitJpy: 1000 });
     expect(screen.getByText("ペースが速い")).toBeTruthy();
-    // ¥750 − ¥661 = ¥89 / 月末は 750 ÷ 0.661 ≒ ¥1,134
+    // 目安は ¥661（上限 ¥1,000 × 20.5/31）。¥750 との差は ¥89、
+    // 月末は 750 ÷ 0.661 ≒ ¥1,134
     expect(
       screen.getByText(/目安より ¥89 多い・このペースだと月末 ¥1,134/),
     ).toBeTruthy();
@@ -211,13 +210,15 @@ describe("上限の帯と消化ペース", () => {
     expect(screen.getByText("ペースは控えめ")).toBeTruthy();
     expect(screen.getByText(/目安より ¥1,234 少ない/)).toBeTruthy();
     // 見立てが変わっても帯そのものは出ている
-    expect(screen.getByText(/上限 ¥3,000 の 25%/)).toBeTruthy();
+    expect(screen.getByText("上限 ¥3,000 の 25%")).toBeTruthy();
   });
 
   it("上限が無ければ帯ごと出さない（比べる相手が無い）", () => {
     renderUsage({ usdJpy: 150, limitJpy: 0 });
     expect(screen.queryByTestId("pace-mark")).toBeNull();
-    expect(screen.queryByText(/完全比例/)).toBeNull();
+    expect(screen.queryByText(/ペース/)).toBeNull();
+    // 帯そのものも出ない（上限 0 のまま描くと「¥0 の 100%」になる）
+    expect(screen.queryByText(/上限 ¥/)).toBeNull();
     // 額そのものは出ている（画面が落ちているのではない）
     expect(within(totalsCard("今月")).getByText("¥750")).toBeTruthy();
   });
