@@ -40,7 +40,7 @@ import { IconSidebar, IconX } from "../components/icons";
 import { ConfirmProvider } from "../components/ConfirmDialog";
 import { ShortcutsDialog } from "../components/ShortcutsDialog";
 import { useIsNarrow } from "../components/sidebar/shared";
-import { recordNavigation } from "../lib/perf";
+import { FLUSH_THRESHOLD, flushSamples, recordNavigation } from "../lib/perf";
 import {
   conversationOrder,
   matchShortcut,
@@ -109,6 +109,18 @@ export function shouldRevalidate({
 /** 起動時間はドキュメント読み込みごとに1回だけ記録する。 */
 let startupRecorded = false;
 
+/**
+ * 控えをサーバーへ送る。
+ *
+ * 記録は localStorage に溜め、ここでまとめて D1 へ渡す（`lib/perf.ts`）。
+ * 1件ごとに送ると遷移のたびに往復が増えるので、**画面を閉じる・隠れる
+ * とき**と、**溜まりすぎたとき**だけ送る。送れなければ控えは残り、
+ * 次の機会に送り直す。
+ */
+function flush(): void {
+  void flushSamples();
+}
+
 export default function Shell({ loaderData }: Route.ComponentProps) {
   const { conversations, bots, folders, settings, now } = loaderData;
   // 一覧が持っている更新時刻を先読みキャッシュへ伝える。別の端末で
@@ -169,6 +181,28 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     if (startupRecorded) return;
     startupRecorded = true;
     recordNavigation("(起動)", performance.now());
+  }, []);
+
+  /*
+   * 送るのは画面が隠れるとき。visibilitychange は iPhone でアプリを
+   * 切り替えたときにも来るが、**閉じたときに来るとは限らない**ので
+   * pagehide も併せて拾う（片方だけだと、その端末のぶんが丸ごと
+   * 溜まったまま次に開くまで届かない）。
+   *
+   * 上の「1回だけ」の効果とは分ける。まとめると、貼るのが2度目の
+   * マウントだったときに**印だけ見て早く帰り、聞き耳を立てないまま**に
+   * なる（記録は貯まるのに、どこにも送られない）。
+   */
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", flush);
+    };
   }, []);
   /**
    * 未読の会話ID。応答はサーバー側で進むので、別の画面にいるあいだに
@@ -257,7 +291,9 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     } else if (navigation.state === "idle" && navTiming.current) {
       const { path, started } = navTiming.current;
       navTiming.current = null;
-      recordNavigation(path, performance.now() - started);
+      if (recordNavigation(path, performance.now() - started) >= FLUSH_THRESHOLD) {
+        flush();
+      }
     }
   }, [navigation.state, navigation.location]);
 

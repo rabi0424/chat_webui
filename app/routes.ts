@@ -36,6 +36,7 @@ export default [
   route("api/images", "routes/api.images.ts"),
   route("api/images/:id", "routes/api.images.$id.ts"),
   route("api/settings", "routes/api.settings.ts"),
+  route("api/perf", "routes/api.perf.ts"),
   route("api/generations/stop-all", "routes/api.generations.stop-all.ts"),
   route("api/poe/bot-info", "routes/api.poe.bot-info.ts"),
   route("api/bots", "routes/api.bots.ts"),

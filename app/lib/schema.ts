@@ -353,6 +353,43 @@ CREATE INDEX IF NOT EXISTS idx_retry_attempts_unprocessed
   `
 ALTER TABLE attachments ADD COLUMN thumb_at INTEGER;
 `,
+  // v23: 画面遷移と起動の実測を、端末の localStorage から D1 へ移す。
+  //
+  // それまでは記録がブラウザの中だけにあり、最大1000件・60日で溢れた分は
+  // 捨てていた。端末を替えれば消え、比較できるのは「現行ビルドと直前の
+  // ビルド」の2つだけで、**3つ前のバージョンより古い推移は辿れなかった**。
+  //
+  // 標本は**間引かない**（平均や中央値だけを残さない）。中央値も p90 も
+  // 生の並びが無ければ後から出せず、「あとで別の切り口で見る」ができ
+  // なくなる。1行あたり100バイト程度なので、D1 の無料枠（5GB）なら
+  // 数千万件入る。代わりに読む側を絞る——集計は必ず「表示するビルド」
+  // だけに限る（D1 は**読んだ行数**で課金され、無料枠は1日500万行）。
+  //
+  // device_id は端末（正確にはブラウザのプロファイル）ごとの乱数で、
+  // localStorage に持つ。device / browser はその表示名、mode は
+  // ホーム画面から開いた全画面表示（standalone）かブラウザのタブか。
+  // 起動時間はこの3つで大きく変わるので、混ぜたまま1つの数字にすると
+  // 「速くなった」のか「速い端末から開いただけ」なのかが分からない。
+  `
+CREATE TABLE IF NOT EXISTS perf_samples (
+  id TEXT PRIMARY KEY,
+  at INTEGER NOT NULL,
+  build TEXT NOT NULL,
+  path TEXT NOT NULL,
+  ms INTEGER NOT NULL,
+  device_id TEXT NOT NULL,
+  device TEXT NOT NULL,
+  browser TEXT NOT NULL,
+  mode TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_perf_samples_build ON perf_samples(build);
+CREATE TABLE IF NOT EXISTS perf_builds (
+  build TEXT PRIMARY KEY,
+  first_at INTEGER NOT NULL,
+  last_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_perf_builds_last ON perf_builds(last_at);
+`,
 ];
 
 /**
@@ -997,3 +1034,176 @@ export function searchConversationsSql(counts: {
  */
 export const INSERT_USER_MESSAGE_SQL =
   "INSERT INTO messages (id, conversation_id, parent_id, role, content, status, created_at) VALUES (?, ?, ?, 'user', ?, 'done', ?)";
+
+/* ------------------------------------------------------------------ *
+ * 画面遷移と起動の実測（perf_samples / perf_builds）
+ * ------------------------------------------------------------------ */
+
+/** 1回の送信で受け取る標本の上限。これを超えた分は次の送信へ回す。 */
+export const PERF_MAX_BATCH = 200;
+
+/**
+ * 1文へまとめて入れる行数。
+ *
+ * D1 のバインド変数は**1文あたり100個まで**。1行9列なので11行（99個）が
+ * 上限。数え間違えると「送ったのに何も記録されない」形で出るので、
+ * 列を足したらここも直す（tests/schema.test.ts が数を見張る）。
+ */
+export const PERF_INSERT_COLUMNS = 9;
+export const PERF_INSERT_CHUNK = Math.floor(100 / PERF_INSERT_COLUMNS);
+
+export interface PerfSampleRow {
+  id: string;
+  at: number;
+  build: string;
+  path: string;
+  ms: number;
+  deviceId: string;
+  device: string;
+  browser: string;
+  mode: string;
+}
+
+/**
+ * 標本を入れる文（複数行まとめて1文）。
+ *
+ * 同じ標本が二度届いても増えないよう INSERT OR IGNORE。id は記録した
+ * 時点でブラウザが振る乱数で、送信が途中で切れて送り直しても同じ id に
+ * なる——**送信の成功を待たずに控えを消せない**ので、送り直しは普通に
+ * 起きる。
+ */
+export function perfInsertStatements(rows: PerfSampleRow[]): Statement[] {
+  const statements: Statement[] = [];
+  for (let i = 0; i < rows.length; i += PERF_INSERT_CHUNK) {
+    const chunk = rows.slice(i, i + PERF_INSERT_CHUNK);
+    statements.push({
+      sql:
+        `INSERT OR IGNORE INTO perf_samples (id, at, build, path, ms, device_id, device, browser, mode) VALUES ` +
+        chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", "),
+      binds: chunk.flatMap((r) => [
+        r.id,
+        r.at,
+        r.build,
+        r.path,
+        r.ms,
+        r.deviceId,
+        r.device,
+        r.browser,
+        r.mode,
+      ]),
+    });
+  }
+  return statements;
+}
+
+/**
+ * ビルドの索引を更新する文。
+ *
+ * 「どのビルドがいつ動いていたか」は perf_samples を GROUP BY すれば
+ * 出せるが、それは**全行を読む**ことになる（D1 の課金は読んだ行数）。
+ * 一覧はビルドの数しか行が無いので、1行ずつ持っておく方がはるかに安い。
+ * 遅れて届いた古い標本でも範囲が縮まないよう、min / max で広げる。
+ */
+export const PERF_BUILD_TOUCH_SQL = `INSERT INTO perf_builds (build, first_at, last_at) VALUES (?, ?, ?)
+  ON CONFLICT(build) DO UPDATE SET
+    first_at = MIN(perf_builds.first_at, excluded.first_at),
+    last_at = MAX(perf_builds.last_at, excluded.last_at)`;
+
+/** 新しい順のビルド一覧。バインドは1つ（件数）。 */
+export const PERF_BUILDS_SQL =
+  "SELECT build, first_at, last_at FROM perf_builds ORDER BY last_at DESC, build LIMIT ?";
+
+/**
+ * 表示するビルドに出てくるページの一覧（絞り込みの選択肢）。
+ *
+ * `SELECT DISTINCT path` を全期間にかけると全行読みになるので、ここでも
+ * ビルドで絞る。バインドはビルドの数だけ。
+ */
+export function perfPathsSql(builds: number): string {
+  const placeholders = Array.from({ length: builds }, () => "?").join(", ");
+  return `SELECT DISTINCT path FROM perf_samples WHERE build IN (${placeholders}) ORDER BY path`;
+}
+
+/** すべての記録を消す（設定画面の「記録を消去」）。 */
+export const PERF_CLEAR_SQL = ["DELETE FROM perf_samples", "DELETE FROM perf_builds"];
+
+/** 集計の切り口。画面の「内訳」の選択肢と同じ並び。 */
+export const PERF_DIMENSIONS = [
+  "none",
+  "path",
+  "device",
+  "browser",
+  "mode",
+] as const;
+export type PerfDimension = (typeof PERF_DIMENSIONS)[number];
+
+/**
+ * 切り口ごとに、まとめるのに使う列。
+ *
+ * 画面から来た文字列を SQL へそのまま埋めないための表。ここに無い名前は
+ * 型で弾かれ、実行時にも none 扱いになる。
+ *
+ * 端末だけは device_id（乱数）でまとめ、表示名は別に取る——同じ機種名の
+ * 端末が2台あっても混ざらないようにするため。
+ */
+const PERF_DIMENSION_COLUMN: Record<PerfDimension, string | null> = {
+  none: null,
+  path: "path",
+  device: "device_id",
+  browser: "browser",
+  mode: "mode",
+};
+
+/**
+ * ビルド×切り口ごとの、件数・中央値・p90。
+ *
+ * **平均は出さない。**1回だけ極端に遅い遷移（コールドスタート）が混ざる
+ * ので、平均は「ふだんの速さ」を表さない。中央値と p90 は生の並びが
+ * 必要で、それを出せるのは標本を全数持っているからこそ。
+ *
+ * 順位は `percentile()`（app/lib/perf.ts）と同じ決め方にする——
+ * 1始まりで ceil(p×n/100)、最低1。整数だけで書けるよう
+ * ceil(a/b) = (a + b - 1) / b を使う。並びは rn の順（ms の昇順）なので、
+ * その順位以降の最小値がちょうど目的の値になる。
+ *
+ * 読む行は `WHERE build IN (…)` で表示するビルドだけに絞る。絞らないと
+ * 設定画面を開くたびに全履歴を読むことになり、記録が増えるほど重くなる。
+ * バインドはビルドの数（＋ページを絞るなら1つ）。D1 の1文100個に収まる
+ * 範囲で呼ぶ。
+ *
+ * ページの絞り込みは**順位を数える前**に効かせる（CTE の中）。あとから
+ * 絞ると、中央値は「全ページを混ぜた並び」のまま残る。
+ */
+export function perfAggregateSql(
+  dimension: PerfDimension,
+  builds: number,
+  /** ページを1つに絞るか（「iPhone の起動だけ」を見るため）。 */
+  byPath = false,
+): string {
+  const column = PERF_DIMENSION_COLUMN[dimension] ?? null;
+  const key = column ?? "''";
+  const partition = column ? `PARTITION BY build, ${column}` : "PARTITION BY build";
+  const group = column ? "build, k" : "build";
+  // 端末は乱数でまとめるので、見せる名前は別に拾う（同じ端末なら同じ名前）
+  const label = dimension === "device" ? "MAX(device)" : "k";
+  const placeholders = Array.from({ length: builds }, () => "?").join(", ");
+  return `WITH ranked AS (
+  SELECT build, ${key} AS k, device, ms, at,
+         ROW_NUMBER() OVER (${partition} ORDER BY ms) AS rn,
+         COUNT(*) OVER (${partition}) AS n
+    FROM perf_samples
+   WHERE build IN (${placeholders})${byPath ? " AND path = ?" : ""}
+)
+SELECT build,
+       k,
+       ${label} AS label,
+       MAX(n) AS count,
+       MIN(CASE WHEN rn >= MAX(1, (50 * n + 99) / 100) THEN ms END) AS median,
+       MIN(CASE WHEN rn >= MAX(1, (90 * n + 99) / 100) THEN ms END) AS p90,
+       MAX(ms) AS slowest,
+       MIN(at) AS first_at,
+       MAX(at) AS last_at
+  FROM ranked
+ GROUP BY ${group}
+ ORDER BY count DESC, k`;
+}

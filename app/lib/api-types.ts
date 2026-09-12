@@ -14,8 +14,11 @@ import type { ContentPayload } from "./polling";
 import type {
   ConversationRow,
   GeneratedImageRow,
+  PerfBuildRow,
+  PerfGroupRow,
   SearchResult,
 } from "./db.server";
+import type { PerfDimension } from "./schema";
 import type { ModelInfo } from "./openrouter.server";
 import type { UiMessage } from "./types";
 
@@ -74,6 +77,25 @@ export interface UnreadResponse {
 /** モデル一覧。 */
 export interface ModelsResponse {
   models: ModelInfo[];
+}
+
+/** 起動・遷移の実測の履歴（設定画面の「開発者向け」）。 */
+export interface PerfHistoryResponse {
+  /** 実際に集計した切り口（知らない名前で頼まれたときは既定に落ちる）。 */
+  dimension: PerfDimension;
+  /** 絞り込んだページ（すべてなら null）。 */
+  path: string | null;
+  /** 新しい順のビルド。 */
+  builds: PerfBuildRow[];
+  /** ビルド×切り口ごとの集計。 */
+  groups: PerfGroupRow[];
+  /** 絞り込みに選べるページ（表示するビルドに出てくるものだけ）。 */
+  paths: string[];
+}
+
+/** 標本の受け取り。記録できた件数を返す（形の違うものは数に入らない）。 */
+export interface PerfIngestResponse {
+  accepted: number;
 }
 
 /** 為替（コスト表示の円換算に使う）。 */

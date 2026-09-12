@@ -41,6 +41,16 @@ import {
   recordUsageStatement,
   generatedImagesSql,
   MARK_THUMBNAIL_SQL,
+  PERF_BUILDS_SQL,
+  PERF_BUILD_TOUCH_SQL,
+  PERF_CLEAR_SQL,
+  PERF_DIMENSIONS,
+  PERF_INSERT_COLUMNS,
+  perfAggregateSql,
+  perfInsertStatements,
+  perfPathsSql,
+  type PerfDimension,
+  type PerfSampleRow,
   searchConversationsSql,
   statementsOf,
   stillReferencedSql,
@@ -1657,5 +1667,248 @@ describe("中断の確定", () => {
     expect(sweep("d1", "", "error", "中断されました")).toBe(0);
     expect(row("d1").content).toBe("猫");
     expect(row("d1").status).toBe("done");
+  });
+});
+
+/**
+ * 起動・遷移の実測（perf_samples / perf_builds）。
+ *
+ * 標本は間引かずに全部入れる。中央値も p90 も生の並びが無ければ出せず、
+ * 後から端末別に見直すこともできなくなるため。ここでは「入れたものが
+ * 全部入る」ことと、「並べて数えた値と SQL の値が一致する」ことを見る。
+ */
+describe("起動・遷移の実測", () => {
+  beforeEach(() => migrate(db));
+
+  let seq = 0;
+  const sample = (over: Partial<PerfSampleRow> & { ms: number }): PerfSampleRow => ({
+    id: `s${seq++}`,
+    at: 1_000 + seq,
+    build: "b1",
+    path: "/chat/:id",
+    deviceId: "d1",
+    device: "Mac",
+    browser: "Safari 18",
+    mode: "browser",
+    ...over,
+  });
+
+  const insert = (rows: PerfSampleRow[]) => {
+    for (const st of perfInsertStatements(rows)) {
+      db.prepare(st.sql).run(...st.binds);
+    }
+    const byBuild = new Map<string, number[]>();
+    for (const r of rows) {
+      const list = byBuild.get(r.build) ?? [];
+      list.push(r.at);
+      byBuild.set(r.build, list);
+    }
+    for (const [build, ats] of byBuild) {
+      db.prepare(PERF_BUILD_TOUCH_SQL).run(build, Math.min(...ats), Math.max(...ats));
+    }
+  };
+
+  const aggregate = (dimension: PerfDimension, builds: string[]) =>
+    db.prepare(perfAggregateSql(dimension, builds.length)).all(...builds) as {
+      build: string;
+      k: string;
+      label: string;
+      count: number;
+      median: number;
+      p90: number;
+      slowest: number;
+    }[];
+
+  /** 並べて数える側（SQL とは別に書く。同じ答えになることを見るため）。 */
+  const percentile = (values: number[], p: number): number => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
+    return sorted[Math.max(0, idx)];
+  };
+
+  /**
+   * D1 のバインドは1文あたり100個まで。超えると文ごと失敗し、
+   * **送ったのに1件も記録されない**（画面には何も出ない）。
+   */
+  it("1文のバインドは100個を超えず、送った分は全部入る", () => {
+    const rows = Array.from({ length: 47 }, (_, i) => sample({ ms: i }));
+    const statements = perfInsertStatements(rows);
+    expect(statements.length).toBeGreaterThan(1);
+    for (const st of statements) {
+      expect(st.binds.length).toBeLessThanOrEqual(100);
+      // 列の数と束縛の数がずれていないこと（列を足して数え直し忘れると
+      // ここで出る。SQLite 側も値の個数が合わなければ投げる）
+      expect(st.binds.length % PERF_INSERT_COLUMNS).toBe(0);
+    }
+    insert(rows);
+    const { n } = db.prepare("SELECT COUNT(*) AS n FROM perf_samples").get() as { n: number };
+    expect(n).toBe(47);
+  });
+
+  it("同じ標本が二度届いても増えない", () => {
+    const rows = [sample({ ms: 10 }), sample({ ms: 20 })];
+    insert(rows);
+    insert(rows);
+    const { n } = db.prepare("SELECT COUNT(*) AS n FROM perf_samples").get() as { n: number };
+    expect(n).toBe(2);
+  });
+
+  /**
+   * 中央値・p90 は SQL の中で順位から選ぶ。順位の決め方（ceil(p×n/100)、
+   * 最低1）を整数だけで書いているので、件数が変わるたびに1つずれる
+   * 余地がある。1件から12件まで、全部の件数で突き合わせる。
+   */
+  it("中央値と p90 は、並べて数えたものと一致する", () => {
+    const msFor = (n: number) =>
+      // わざと乱れた順で入れる（並べ替えが効いていないと合わない）
+      Array.from({ length: n }, (_, i) => ((i * 7) % n) * 10 + 5);
+    for (let n = 1; n <= 12; n++) {
+      db.exec("DELETE FROM perf_samples");
+      const values = msFor(n);
+      insert(values.map((ms) => sample({ ms, build: "b1" })));
+      const [row] = aggregate("none", ["b1"]);
+      expect([n, row.count], `n=${n}`).toEqual([n, values.length]);
+      expect(row.median, `n=${n} の中央値`).toBe(percentile(values, 50));
+      expect(row.p90, `n=${n} の p90`).toBe(percentile(values, 90));
+      expect(row.slowest, `n=${n} の最遅`).toBe(Math.max(...values));
+    }
+  });
+
+  /**
+   * 切り口ごとの集計。どの切り口でも、その切り口で分けて数えた値と
+   * 一致すること。切り口を足したときに SQL だけが古いままにならないよう、
+   * PERF_DIMENSIONS を回す。
+   */
+  it("どの切り口でも、分けて数えたものと一致する", () => {
+    const rows = [
+      sample({ ms: 10, path: "(起動)", deviceId: "d1", device: "Mac", browser: "Safari 18", mode: "browser" }),
+      sample({ ms: 30, path: "(起動)", deviceId: "d2", device: "iPhone", browser: "Safari 18", mode: "standalone" }),
+      sample({ ms: 50, path: "/chat/:id", deviceId: "d2", device: "iPhone", browser: "Safari 18", mode: "standalone" }),
+      sample({ ms: 70, path: "/chat/:id", deviceId: "d3", device: "Windows", browser: "Chrome 131", mode: "browser" }),
+      sample({ ms: 90, path: "/images", deviceId: "d3", device: "Windows", browser: "Chrome 131", mode: "browser" }),
+    ];
+    insert(rows);
+    const keyOf: Record<PerfDimension, (r: PerfSampleRow) => string> = {
+      none: () => "",
+      path: (r) => r.path,
+      device: (r) => r.deviceId,
+      browser: (r) => r.browser,
+      mode: (r) => r.mode,
+    };
+    for (const dimension of PERF_DIMENSIONS) {
+      const expected = new Map<string, number[]>();
+      for (const r of rows) {
+        const k = keyOf[dimension](r);
+        expected.set(k, [...(expected.get(k) ?? []), r.ms]);
+      }
+      const got = aggregate(dimension, ["b1"]);
+      expect(got.length, `${dimension}: 行の数`).toBe(expected.size);
+      for (const row of got) {
+        const values = expected.get(row.k);
+        expect(values, `${dimension}: 知らないキー ${row.k}`).toBeTruthy();
+        expect([row.count, row.median, row.p90], `${dimension}/${row.k}`).toEqual([
+          values!.length,
+          percentile(values!, 50),
+          percentile(values!, 90),
+        ]);
+      }
+    }
+  });
+
+  /**
+   * ページの絞り込みは**順位を数える前**に効かせる。あとから絞ると、
+   * 中央値は全ページを混ぜた並びのままになる——起動（数秒）と画面遷移
+   * （数十ミリ秒）が同じ列に並ぶので、桁ごと違う数字が出る。
+   */
+  it("ページを絞ると、そのページだけを並べて数える", () => {
+    insert([
+      // 起動は遅い。混ざったままだと遷移の中央値を押し上げる
+      ...[3000, 4000, 5000].map((ms) => sample({ ms, path: "(起動)" })),
+      ...[10, 20, 30].map((ms) => sample({ ms, path: "/images" })),
+    ]);
+    const filtered = db
+      .prepare(perfAggregateSql("none", 1, true))
+      .all("b1", "/images") as { count: number; median: number; p90: number }[];
+    expect(filtered).toHaveLength(1);
+    expect([filtered[0].count, filtered[0].median, filtered[0].p90]).toEqual([3, 20, 30]);
+
+    // 絞らなければ、6件を混ぜた並びになる
+    const all = aggregate("none", ["b1"]);
+    expect([all[0].count, all[0].median]).toEqual([6, 30]);
+  });
+
+  it("絞り込みの選択肢は、表示するビルドに出てくるページだけ", () => {
+    insert([
+      sample({ ms: 1, build: "new", path: "/images" }),
+      sample({ ms: 1, build: "new", path: "(起動)" }),
+      sample({ ms: 1, build: "old", path: "/usage" }),
+    ]);
+    const rows = db.prepare(perfPathsSql(1)).all("new") as { path: string }[];
+    expect(rows.map((r) => r.path)).toEqual(["(起動)", "/images"]);
+  });
+
+  /** 端末は乱数で分ける。機種名でまとめると、同じ機種の2台が混ざる。 */
+  it("同じ機種名でも、端末が違えば分かれる", () => {
+    insert([
+      sample({ ms: 10, deviceId: "d1", device: "iPhone" }),
+      sample({ ms: 500, deviceId: "d2", device: "iPhone" }),
+    ]);
+    const rows = aggregate("device", ["b1"]);
+    expect(rows.map((r) => [r.k, r.label, r.median]).sort()).toEqual([
+      ["d1", "iPhone", 10],
+      ["d2", "iPhone", 500],
+    ]);
+  });
+
+  /**
+   * 集計は表示するビルドだけを読む（D1 は読んだ行数で課金される）。
+   * 絞りが効いていないと、記録が増えるほど設定画面が重くなる。
+   */
+  it("集計は、渡したビルドの標本だけを見る", () => {
+    insert([
+      sample({ ms: 10, build: "old" }),
+      sample({ ms: 20, build: "old" }),
+      sample({ ms: 300, build: "new" }),
+    ]);
+    const rows = aggregate("none", ["new"]);
+    expect(rows.map((r) => [r.build, r.count, r.median])).toEqual([["new", 1, 300]]);
+  });
+
+  /**
+   * ビルドの索引。遅れて届いた標本で期間が縮まないこと——縮むと、
+   * 一覧の並び（新しい順）が過去へ戻る。
+   */
+  it("ビルドの期間は、あとから届いた標本でも縮まない", () => {
+    const span = () =>
+      db.prepare("SELECT first_at, last_at FROM perf_builds WHERE build = 'b1'").get() as {
+        first_at: number;
+        last_at: number;
+      };
+    insert([sample({ ms: 10, at: 5_000 }), sample({ ms: 20, at: 9_000 })]);
+    // 端末がしばらく圏外で、あとから古い標本だけが届いた（末尾が戻らないこと）
+    insert([sample({ ms: 30, at: 1_000 })]);
+    expect(span()).toEqual({ first_at: 1_000, last_at: 9_000 });
+    // 続きの標本が届いた（先頭が前へ進まないこと）
+    insert([sample({ ms: 40, at: 12_000 })]);
+    expect(span()).toEqual({ first_at: 1_000, last_at: 12_000 });
+  });
+
+  it("ビルドの一覧は新しい順で、件数で切れる", () => {
+    insert([sample({ ms: 1, build: "a", at: 100 })]);
+    insert([sample({ ms: 1, build: "b", at: 300 })]);
+    insert([sample({ ms: 1, build: "c", at: 200 })]);
+    const rows = db.prepare(PERF_BUILDS_SQL).all(2) as { build: string }[];
+    expect(rows.map((r) => r.build)).toEqual(["b", "c"]);
+  });
+
+  it("記録を消すと、標本もビルドの索引も残らない", () => {
+    insert([sample({ ms: 10 })]);
+    for (const sql of PERF_CLEAR_SQL) db.exec(sql);
+    const counts = db
+      .prepare(
+        "SELECT (SELECT COUNT(*) FROM perf_samples) AS s, (SELECT COUNT(*) FROM perf_builds) AS b",
+      )
+      .get() as { s: number; b: number };
+    expect(counts).toEqual({ s: 0, b: 0 });
   });
 });
