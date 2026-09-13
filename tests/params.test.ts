@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   APIYI_IMAGE_PARAM_KEYS,
+  RUNWARE_IMAGE_PARAM_KEYS,
   buildGenerationPayload,
   paramsForModel,
   parseParamsJson,
@@ -250,6 +251,134 @@ describe("paramsForModel（API易）", () => {
      * OpenRouter の一覧へ落ちると、効かない入力欄が並ぶ。
      */
     expect(paramsForModel(model([]))).toEqual([]);
+  });
+});
+
+describe("buildGenerationPayload（Runware）", () => {
+  /*
+   * この窓口は名前も形も他と違う（`size` は無く `width`/`height`、
+   * 審査と品質は入れ子の中）。ここで作るのは**平らな中間の形**で、
+   * 入れ子へ組み立てるのは置き場を知っている runware.server.ts。
+   * ここでの役目は「⚙で選ばれた値のうち、上流の文書にあるものだけを
+   * 通す」こと。
+   */
+  it("文書にある値だけを送る", () => {
+    expect(
+      buildGenerationPayload(
+        {
+          size: "3840x2160",
+          quality: "max",
+          moderation: "low",
+          background: "transparent",
+          output_format: "WEBP",
+        },
+        "runware",
+      ),
+    ).toEqual({
+      size: "3840x2160",
+      quality: "max",
+      moderation: "low",
+      background: "transparent",
+      output_format: "WEBP",
+    });
+  });
+
+  it("選択肢に無い値は捨てる", () => {
+    /*
+     * 保存済みの設定には、別の窓口向けの値が残る（API易 と名前を
+     * 揃えてあるぶん、値だけが違うものが混ざりやすい——形式の
+     * 小文字表記や、この窓口には無いサイズ）。素通しにすると 400。
+     */
+    expect(
+      buildGenerationPayload(
+        {
+          size: "2048x1152",
+          output_format: "webp",
+          moderation: "high",
+          quality: "ultra",
+        },
+        "runware",
+      ),
+    ).toEqual({});
+  });
+
+  it("圧縮率は 20〜99 に収める（上流の範囲）", () => {
+    expect(buildGenerationPayload({ output_compression: 5 }, "runware")).toEqual({
+      output_compression: 20,
+    });
+    expect(buildGenerationPayload({ output_compression: 999 }, "runware")).toEqual({
+      output_compression: 99,
+    });
+    // 空欄は「自動」。0 として送ると挙動が黙って変わる
+    expect(buildGenerationPayload({ output_compression: "" }, "runware")).toEqual({});
+  });
+
+  it("他の窓口向けの設定値は漏らさない", () => {
+    expect(
+      buildGenerationPayload(
+        {
+          temperature: 0.5,
+          [REASONING_KEY]: "high",
+          [POE_THINKING_BUDGET_KEY]: 2048,
+          web: "on",
+          moderation: "low",
+        },
+        "runware",
+      ),
+    ).toEqual({ moderation: "low" });
+  });
+});
+
+describe("paramsForModel（Runware）", () => {
+  const model = (providerSettings: boolean) =>
+    ({
+      id: "runware:vendor:family@1",
+      name: "vendor:family@1",
+      description: "",
+      contextLength: 0,
+      promptPrice: "0",
+      completionPrice: "0",
+      inputModalities: ["text", "image"],
+      outputModalities: ["text", "image"],
+      supportedParameters: [...RUNWARE_IMAGE_PARAM_KEYS],
+      provider: "runware" as const,
+      runwareProviderSettings: providerSettings,
+      createdAt: 0,
+    });
+
+  const optionsOf = (providerSettings: boolean, key: string) => {
+    const def = paramsForModel(model(providerSettings)).find((d) => d.key === key);
+    return def?.kind === "select" ? def.options.map((o) => o.value) : [];
+  };
+
+  it("審査の強さを出す（この窓口を足した目的）", () => {
+    expect(paramsForModel(model(false)).map((d) => d.key)).toContain("moderation");
+    expect(optionsOf(false, "moderation")).toEqual(["low"]);
+  });
+
+  it("古い置き場のモデルには、新しい品質の段を出さない", () => {
+    /*
+     * 上の段は新しい世代で増えたもので、古い世代へ送ると 400 になる
+     * （＝その1本をまるごと失う）。選べてしまうと、選んだ人には
+     * 「なぜか失敗する設定」にしか見えない。
+     */
+    expect(optionsOf(true, "quality")).toEqual(["low", "medium", "high"]);
+    expect(optionsOf(false, "quality")).toContain("max");
+    expect(optionsOf(false, "quality")).toContain("xhigh");
+  });
+
+  it("透過を選べるのはこの窓口だけ（API易 は上流が弾く）", () => {
+    expect(optionsOf(false, "background")).toContain("transparent");
+    expect(
+      paramsForModel({
+        ...model(false),
+        id: "apiyi:m",
+        provider: "apiyi" as const,
+        supportedParameters: [...APIYI_IMAGE_PARAM_KEYS],
+      })
+        .filter((d) => d.key === "background")
+        .flatMap((d) => (d.kind === "select" ? d.options.map((o) => o.value) : [])),
+    ).toEqual(["opaque"]);
   });
 });
 

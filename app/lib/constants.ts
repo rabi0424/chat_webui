@@ -89,6 +89,14 @@ export const POE_PREFIX = "poe:";
 export const APIYI_PREFIX = "apiyi:";
 
 /**
+ * Runware のモデル。接頭辞の後ろは上流の「モデル識別子」
+ * （`creator:family@version` の形）がそのまま入る。
+ *
+ * 中に `:` を含むが、接頭辞の判定は先頭一致なので混ざらない。
+ */
+export const RUNWARE_PREFIX = "runware:";
+
+/**
  * 窓口（上流のサービス）。
  *
  * 接頭辞の付かないIDは OpenRouter。窓口が2つだったころは
@@ -98,7 +106,7 @@ export const APIYI_PREFIX = "apiyi:";
  * ので、足りない分岐は黙って "openrouter" に落ちる）。判定はここだけに
  * 置き、呼ぶ側は必ずこの関数を通す。
  */
-export type ModelProvider = "openrouter" | "poe" | "apiyi";
+export type ModelProvider = "openrouter" | "poe" | "apiyi" | "runware";
 
 /**
  * 接頭辞と窓口の対応。増やすときはここだけを足す。
@@ -111,6 +119,7 @@ export type ModelProvider = "openrouter" | "poe" | "apiyi";
 export const MODEL_PREFIXES: readonly (readonly [ModelProvider, string])[] = [
   ["poe", POE_PREFIX],
   ["apiyi", APIYI_PREFIX],
+  ["runware", RUNWARE_PREFIX],
 ];
 
 /** そのモデルIDがどの窓口のものか。 */
@@ -141,6 +150,11 @@ export function isApiyiModel(modelId: string | null | undefined): boolean {
   return providerOf(modelId) === "apiyi";
 }
 
+/** そのモデルIDが Runware のものか。 */
+export function isRunwareModel(modelId: string | null | undefined): boolean {
+  return providerOf(modelId) === "runware";
+}
+
 /**
  * Web検索・URLの読み取りを使えるモデルか。
  *
@@ -158,6 +172,7 @@ export const PROVIDER_LABELS: Record<ModelProvider, string> = {
   openrouter: "OpenRouter",
   poe: "Poe",
   apiyi: "API易",
+  runware: "Runware",
 };
 
 /**

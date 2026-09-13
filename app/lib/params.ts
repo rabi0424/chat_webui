@@ -506,6 +506,146 @@ function buildApiyiPayload(state: ParamsState): Record<string, unknown> {
   return out;
 }
 
+// --- Runware（画像） -------------------------------------------------------
+
+/**
+ * Runware の画像モデルに出すパラメータ。
+ *
+ * 名前は API易 の画像モデルと**わざと揃えてある**（`size`・`quality`・
+ * `moderation`…）。パラメータは会話に付いたままモデルを乗り換えられる
+ * ので、同じ意味の設定に別の名前を使うと、窓口を変えたとたんに黙って
+ * 「自動」へ戻る。値の検査は窓口ごとに行うので、揃えても混ざらない。
+ *
+ * ただし**送る形は上流ごとに全く違う**。Runware は `size` という項目を
+ * 持たず `width`/`height` を必須で取り、審査や品質は入れ子の中へ置く。
+ * その組み立ては runware.server.ts が行い、ここでは「⚙で選ばれた値を
+ * 検査して平らに並べる」までにする。
+ */
+export const RUNWARE_IMAGE_PARAM_KEYS = [
+  "size",
+  "quality",
+  "moderation",
+  "background",
+  "output_format",
+  "output_compression",
+] as const;
+
+/**
+ * 上流の文書にある値だけ。
+ *
+ * `auto` は選択肢に入れない（⚙の「自動」＝送らない＝上流の既定が
+ * `auto`。同じ意味の選び方が2つあると迷うだけになる）。
+ */
+const RUNWARE_ENUMS: Record<string, string[]> = {
+  // 上流が勧める組み合わせ。縦横は16の倍数・総画素数 655,360〜8,294,400・
+  // 縦横比 3:1 までという制約があり、外れると 400 になる
+  size: ["1024x1024", "1536x1024", "1024x1536", "2560x1440", "3840x2160"],
+  quality: ["low", "medium", "high", "xhigh", "max"],
+  moderation: ["low"],
+  background: ["opaque", "transparent"],
+  output_format: ["PNG", "JPG", "WEBP"],
+};
+
+/**
+ * 古い置き場のモデルでは、品質の段が少ない。
+ *
+ * `xhigh` と `max` は新しい世代で増えた段で、古い世代へ送ると 400 に
+ * なる（＝その1本をまるごと失う）。どのモデルが古いかは環境変数の
+ * 指定から分かるので（runware.server.ts）、選択肢のほうを狭める。
+ */
+const RUNWARE_LEGACY_QUALITY = ["low", "medium", "high"];
+
+function runwareImageParamDefs(legacy: boolean): ParamDef[] {
+  const quality = legacy ? RUNWARE_LEGACY_QUALITY : RUNWARE_ENUMS.quality;
+  return [
+    {
+      kind: "select",
+      key: "size",
+      label: "サイズ",
+      description:
+        "出力の縦横。上流が必須にしているので、自動のままでも 1024x1024 で送る",
+      options: RUNWARE_ENUMS.size.map((v) => ({ value: v, label: v })),
+      defaultValue: "1024x1024",
+    },
+    {
+      kind: "select",
+      key: "quality",
+      label: "品質",
+      description: "上げるほど時間も額も増える（額は出来上がりに応じた従量）",
+      options: quality.map((v) => ({ value: v, label: v })),
+      defaultValue: "high",
+    },
+    {
+      kind: "select",
+      key: "moderation",
+      label: "審査の強さ",
+      description: "low は上流の判定を緩める（自動 = auto は標準の判定）",
+      options: [{ value: "low", label: "低 (low)" }],
+      defaultValue: "low",
+    },
+    {
+      kind: "select",
+      key: "background",
+      label: "背景",
+      description:
+        "transparent は透過。形式が JPG のままだと上流が弾くので PNG に寄せる",
+      options: [
+        { value: "opaque", label: "不透過 (opaque)" },
+        { value: "transparent", label: "透過 (transparent)" },
+      ],
+      defaultValue: "opaque",
+    },
+    {
+      kind: "select",
+      key: "output_format",
+      label: "形式",
+      description: "画像の形式（自動は上流の既定 = JPG）",
+      options: RUNWARE_ENUMS.output_format.map((v) => ({ value: v, label: v })),
+      defaultValue: "PNG",
+    },
+    {
+      kind: "number",
+      key: "output_compression",
+      label: "圧縮率",
+      description: "jpeg・webp のときだけ効く（20〜99）",
+      min: 20,
+      max: 99,
+      step: 1,
+      integer: true,
+      hint: "例: 95",
+      defaultValue: 95,
+    },
+  ];
+}
+
+/**
+ * Runware 向けの、検査済みの平らな設定値。
+ *
+ * ここでは入れ子にしない。審査と品質の置き場がモデルの世代で変わる
+ * （`settings` か `providerSettings.<creator>` か）ため、置き場を知って
+ * いる runware.server.ts で組み立てる。
+ */
+function buildRunwarePayload(state: ParamsState): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of RUNWARE_IMAGE_PARAM_KEYS) {
+    const raw = state[key];
+    if (raw == null) continue;
+    if (key === "output_compression") {
+      const n = toNumber(raw);
+      if (n === undefined) continue;
+      out[key] = Math.min(Math.max(Math.round(n), 20), 99);
+      continue;
+    }
+    // 選択肢に無い値は捨てる（別の窓口向けの設定値や、古い保存が混ざる）。
+    // 品質の段は世代で違うが、ここでは広いほうで通す——狭めるのは
+    // 選択肢の側（画面）と、モデルの素性を知っている組み立ての側の役目
+    if (typeof raw === "string" && RUNWARE_ENUMS[key]?.includes(raw)) {
+      out[key] = raw;
+    }
+  }
+  return out;
+}
+
 // --- 共通 ------------------------------------------------------------------
 
 /** モデルが対応するパラメータ定義だけを返す。 */
@@ -515,6 +655,11 @@ export function paramsForModel(model: ModelInfo | undefined): ParamDef[] {
   const supported = new Set(model.supportedParameters);
   if (model.provider === "apiyi") {
     return APIYI_IMAGE_PARAM_DEFS.filter((p) => supported.has(p.key));
+  }
+  if (model.provider === "runware") {
+    return runwareImageParamDefs(model.runwareProviderSettings === true).filter(
+      (p) => supported.has(p.key),
+    );
   }
   return PARAM_DEFS.filter((p) => supported.has(p.key));
 }
@@ -534,6 +679,7 @@ export function buildGenerationPayload(
   if (!state || typeof state !== "object") return {};
   if (provider === "poe") return buildPoePayload(state);
   if (provider === "apiyi") return buildApiyiPayload(state);
+  if (provider === "runware") return buildRunwarePayload(state);
   return buildOpenRouterPayload(state);
 }
 

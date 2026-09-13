@@ -64,6 +64,7 @@ export function providerColor(modelId: string): string {
   const upstream = providerOf(modelId);
   if (upstream === "poe") return "#7c3aed";
   if (upstream === "apiyi") return "#e8590c";
+  if (upstream === "runware") return "#0ea5e9";
   return "#8e8e93";
 }
 
