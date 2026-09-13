@@ -330,7 +330,7 @@ describe("buildGenerationPayload（Runware）", () => {
 });
 
 describe("paramsForModel（Runware）", () => {
-  const model = (providerSettings: boolean) =>
+  const model = (quality: string[]) =>
     ({
       id: "runware:vendor:family@1",
       name: "vendor:family@1",
@@ -342,36 +342,38 @@ describe("paramsForModel（Runware）", () => {
       outputModalities: ["text", "image"],
       supportedParameters: [...RUNWARE_IMAGE_PARAM_KEYS],
       provider: "runware" as const,
-      runwareProviderSettings: providerSettings,
+      runwareQuality: quality,
       createdAt: 0,
     });
 
-  const optionsOf = (providerSettings: boolean, key: string) => {
-    const def = paramsForModel(model(providerSettings)).find((d) => d.key === key);
+  const wide = ["low", "medium", "high", "xhigh", "max"];
+  const narrow = ["low", "medium", "high"];
+
+  const optionsOf = (quality: string[], key: string) => {
+    const def = paramsForModel(model(quality)).find((d) => d.key === key);
     return def?.kind === "select" ? def.options.map((o) => o.value) : [];
   };
 
   it("審査の強さを出す（この窓口を足した目的）", () => {
-    expect(paramsForModel(model(false)).map((d) => d.key)).toContain("moderation");
-    expect(optionsOf(false, "moderation")).toEqual(["low"]);
+    expect(paramsForModel(model(wide)).map((d) => d.key)).toContain("moderation");
+    expect(optionsOf(wide, "moderation")).toEqual(["low"]);
   });
 
-  it("古い置き場のモデルには、新しい品質の段を出さない", () => {
+  it("品質の段は、モデルが申告した分だけ出す", () => {
     /*
-     * 上の段は新しい世代で増えたもので、古い世代へ送ると 400 になる
-     * （＝その1本をまるごと失う）。選べてしまうと、選んだ人には
-     * 「なぜか失敗する設定」にしか見えない。
+     * 上の段は新しい世代で増えたもので、受け付けないモデルへ送ると
+     * 400 になる（＝その1本をまるごと失う）。選べてしまうと、選んだ
+     * 人には「なぜか失敗する設定」にしか見えない。
      */
-    expect(optionsOf(true, "quality")).toEqual(["low", "medium", "high"]);
-    expect(optionsOf(false, "quality")).toContain("max");
-    expect(optionsOf(false, "quality")).toContain("xhigh");
+    expect(optionsOf(narrow, "quality")).toEqual(narrow);
+    expect(optionsOf(wide, "quality")).toEqual(wide);
   });
 
   it("透過を選べるのはこの窓口だけ（API易 は上流が弾く）", () => {
-    expect(optionsOf(false, "background")).toContain("transparent");
+    expect(optionsOf(wide, "background")).toContain("transparent");
     expect(
       paramsForModel({
-        ...model(false),
+        ...model(wide),
         id: "apiyi:m",
         provider: "apiyi" as const,
         supportedParameters: [...APIYI_IMAGE_PARAM_KEYS],

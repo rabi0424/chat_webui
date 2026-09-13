@@ -547,16 +547,13 @@ const RUNWARE_ENUMS: Record<string, string[]> = {
 };
 
 /**
- * 古い置き場のモデルでは、品質の段が少ない。
+ * 品質の段はモデルごとに違う（`xhigh` と `max` は新しい世代で増えた）。
  *
- * `xhigh` と `max` は新しい世代で増えた段で、古い世代へ送ると 400 に
- * なる（＝その1本をまるごと失う）。どのモデルが古いかは環境変数の
- * 指定から分かるので（runware.server.ts）、選択肢のほうを狭める。
+ * 受け付けない段を送ると 400 になり、その1本をまるごと失う。どの段を
+ * 受けるかはモデルの表（runware.server.ts）にあり、一覧に載って
+ * 渡ってくるので、選択肢はそれに従う。
  */
-const RUNWARE_LEGACY_QUALITY = ["low", "medium", "high"];
-
-function runwareImageParamDefs(legacy: boolean): ParamDef[] {
-  const quality = legacy ? RUNWARE_LEGACY_QUALITY : RUNWARE_ENUMS.quality;
+function runwareImageParamDefs(quality: string[]): ParamDef[] {
   return [
     {
       kind: "select",
@@ -657,9 +654,9 @@ export function paramsForModel(model: ModelInfo | undefined): ParamDef[] {
     return APIYI_IMAGE_PARAM_DEFS.filter((p) => supported.has(p.key));
   }
   if (model.provider === "runware") {
-    return runwareImageParamDefs(model.runwareProviderSettings === true).filter(
-      (p) => supported.has(p.key),
-    );
+    return runwareImageParamDefs(
+      model.runwareQuality ?? RUNWARE_ENUMS.quality,
+    ).filter((p) => supported.has(p.key));
   }
   return PARAM_DEFS.filter((p) => supported.has(p.key));
 }

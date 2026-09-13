@@ -15,20 +15,14 @@ declare namespace Cloudflare {
      * モデル名をリポジトリへ置かないための入れ物でもある。
      */
     APIYI_MODELS?: string;
-    /** 任意: 設定すると Runware のモデルが使えるようになる。 */
-    RUNWARE_API_KEY?: string;
     /**
-     * Runware から一覧に載せるモデル（カンマ・空白・改行区切り）。
+     * 任意: 設定すると Runware のモデルが使えるようになる。
      *
-     * 1件は上流の「モデル識別子」（`creator:family@version`）。
-     * 世代によって審査・品質の設定の置き場が違うので、古い置き場
-     * （`providerSettings.<creator>`）のモデルには `|providerSettings`
-     * を添える（app/lib/runware.server.ts）。
-     *
-     * **鍵だけを設定してここが空なら、Runware のモデルは1本も出ない。**
-     * モデル名をリポジトリへ置かないための入れ物でもある。
+     * どのモデルを載せるかは環境変数ではなくコードの表で決める
+     * （app/lib/runware.server.ts）。モデルごとに受け付ける設定が
+     * 違うので、名前だけを外から渡せても足りないため。
      */
-    RUNWARE_MODELS?: string;
+    RUNWARE_API_KEY?: string;
   }
 }
 

@@ -5,9 +5,19 @@
  * 配列」で、応答も配列**（1回の呼び出しに複数の作業を載せられる）。
  * 会話という概念は無く、送れるのは依頼文1本と参照画像だけ。
  *
- * 一覧に載せるモデルは環境変数 `RUNWARE_MODELS` で指定する。決め打ちに
- * しない理由は API易 と同じ（上流のモデルは予告なく増減する／モデル名を
- * リポジトリへ置かない）。
+ * ## 扱うモデルは3本だけ。表はここに置く
+ *
+ * 他の窓口（API易）はモデル名を環境変数で受け取るが、この窓口は
+ * **「この3本だけ」と決めて表をコードに持つ**。上流のモデルは1本ずつ
+ * 受け付けるパラメータが違い、名前を外から渡せるようにすると
+ * 「どのモデルが何を受けるか」まで外から言ってもらうことになるため
+ * （実際、審査の設定の置き場が世代で違う——下記）。
+ *
+ * このリポジトリには「モデル名・モデル ID を書かない」決まりごとが
+ * あるが、この表はその例外にする（CLAUDE.md にも書いてある）。
+ * 決まりごとを守ったままにすると、鍵に加えてモデルの指定と世代の印まで
+ * 環境変数へ手で書くことになり、書き間違いが**審査の設定が黙って
+ * 効かない**という形で出る。
  *
  * ## 世代で置き場が変わる
  *
@@ -19,14 +29,7 @@
  *
  * 取り違えると**審査の設定が黙って効かない**か、知らない項目として
  * 400 になる。前者のほうが厄介——絵は出るのに、緩めたはずの判定が
- * かかったままになる。そこで置き場は推測せず、環境変数の指定で決める:
- *
- *   RUNWARE_MODELS="creator:family@version, creator:family@ver|providerSettings"
- *
- * 何も添えなければ新しい置き場（`settings`）。`|providerSettings` を
- * 添えたものだけ古い置き場へ入れる。知らない語を添えたときは一覧には
- * 出すが、説明にその旨を出す（黙って既定へ倒すと、設定が効いていない
- * ことに気づけない）。
+ * かかったままになる。表の `providerSettings` がその置き場を決める。
  */
 import { env } from "cloudflare:workers";
 import { RUNWARE_PREFIX } from "./constants";
@@ -52,90 +55,85 @@ const MAX_REFERENCE_IMAGES = 16;
  */
 const DEFAULT_SIZE = { width: 1024, height: 1024 };
 
-/** 古い置き場を指定する語（`RUNWARE_MODELS` の1件に添える）。 */
-const PROVIDER_SETTINGS_OPTION = "providersettings";
+/** 品質の段。`auto` は⚙の「自動」（＝送らない）に当たるので入れない。 */
+const QUALITY_BASE = ["low", "medium", "high"];
+const QUALITY_EXTENDED = [...QUALITY_BASE, "xhigh", "max"];
 
 /** 一覧に載せるモデル1本。 */
-export interface RunwareModelSpec {
+export interface RunwareModel {
   /** 上流のモデル識別子（`creator:family@version`）。 */
   air: string;
-  /** 審査・品質を `providerSettings.<creator>` へ置くモデルか。 */
+  /** 一覧に出す名前。 */
+  label: string;
+  /** 審査・品質を `providerSettings.<creator>` へ置く世代か。 */
   providerSettings: boolean;
-  /** 解釈できなかった指定（あれば画面へ出す）。 */
-  unknownOption?: string;
+  /** このモデルが受け付ける品質の段（上流の文書にあるものだけ）。 */
+  quality: string[];
 }
+
+/**
+ * 扱うモデル。増やすときはここへ足す。
+ *
+ * 品質の段はモデルごとに違う。広いほうを一律に出すと、受け付けない
+ * モデルで選んだときに 400 になり、**その1本をまるごと失う**。
+ */
+export const RUNWARE_MODELS: readonly RunwareModel[] = [
+  {
+    air: "openai:gpt-image@2",
+    label: "GPT Image 2",
+    // この世代だけ、審査と品質が providerSettings 側
+    providerSettings: true,
+    quality: QUALITY_BASE,
+  },
+  {
+    air: "openai:gpt-image@2.5-flare",
+    label: "GPT-Image-2.5 Flare",
+    providerSettings: false,
+    quality: QUALITY_EXTENDED,
+  },
+  {
+    air: "openai:gpt-image@2.5-sunburst",
+    label: "GPT-Image-2.5 Sunburst",
+    providerSettings: false,
+    quality: QUALITY_EXTENDED,
+  },
+];
+
+/**
+ * 表に無いモデルの扱い。
+ *
+ * 表から外したモデルが会話に残っていることがある（過去のやり取りを
+ * 開いて、そのまま送り直せる）。生成そのものは通し、置き場は新しい
+ * ほう、品質は広いほうを許す——ここで弾くと、過去の会話が黙って
+ * 送信できなくなる。
+ */
+const UNKNOWN_MODEL: Omit<RunwareModel, "air" | "label"> = {
+  providerSettings: false,
+  quality: QUALITY_EXTENDED,
+};
 
 /**
  * モデル識別子の供給元（`creator:family@version` の `creator`）。
  *
- * 古い置き場の入れ子の名前はこれで決まる。モデル名をコードへ書かない
- * ために、識別子そのものから取り出す。
+ * 古い置き場の入れ子の名前はこれで決まる。表に無いモデルでも組み立て
+ * られるよう、識別子そのものから取り出す。
  */
 export function runwareCreatorOf(air: string): string {
   const head = air.split(":")[0]?.trim().toLowerCase() ?? "";
   return /^[a-z0-9_-]+$/.test(head) ? head : "";
 }
 
-/**
- * `RUNWARE_MODELS` の中身を読む。
- *
- * 区切りはカンマ・空白・改行のどれでもよい（設定画面ではなく環境変数へ
- * 手で書く値なので、区切りを間違えて全部が1件になると「一覧に出ない」
- * という形でしか分からない）。1件に `|` で指定を添えられる。
- */
-export function parseRunwareModelSpecs(
-  raw: string | undefined,
-): RunwareModelSpec[] {
-  if (!raw) return [];
-  const out: RunwareModelSpec[] = [];
-  const seen = new Set<string>();
-  for (const part of raw.split(/[\s,]+/)) {
-    const [head, ...rest] = part.split("|");
-    const air = head.trim();
-    if (!air || seen.has(air)) continue;
-    seen.add(air);
-    const option = rest.join("|").trim();
-    out.push({
-      air,
-      providerSettings: option.toLowerCase() === PROVIDER_SETTINGS_OPTION,
-      unknownOption:
-        option && option.toLowerCase() !== PROVIDER_SETTINGS_OPTION
-          ? option
-          : undefined,
-    });
-  }
-  return out;
-}
-
-/**
- * 生成のときに、そのモデルの指定を引き直す。
- *
- * 生成は Durable Object の中で走り、そこにはモデル一覧が無い（一覧を
- * 取り直すのはサブリクエストの無駄）。環境変数を読むだけで足りるので、
- * ここで引く。一覧から外されたモデルが会話に残っていることもあるため、
- * 見つからなければ既定（新しい置き場）とみなす。
- */
-export function findRunwareSpec(
-  specs: RunwareModelSpec[],
-  air: string,
-): RunwareModelSpec {
-  return specs.find((s) => s.air === air) ?? { air, providerSettings: false };
-}
-
-/** 上と同じものを、環境変数から引く。 */
-export function runwareSpecOf(air: string): RunwareModelSpec {
-  return findRunwareSpec(parseRunwareModelSpecs(env.RUNWARE_MODELS), air);
+/** 表からモデルを引く。無ければ上の既定。 */
+export function runwareModelOf(air: string): Omit<RunwareModel, "label"> {
+  return RUNWARE_MODELS.find((m) => m.air === air) ?? { air, ...UNKNOWN_MODEL };
 }
 
 /** 一覧に出す1本。 */
-export function buildRunwareModelInfo(spec: RunwareModelSpec): ModelInfo {
-  const warning = spec.unknownOption
-    ? `／指定「${spec.unknownOption}」は解釈できませんでした`
-    : "";
+export function buildRunwareModelInfo(model: RunwareModel): ModelInfo {
   return {
-    id: `${RUNWARE_PREFIX}${spec.air}`,
-    name: spec.air,
-    description: `Runware（画像生成・従量${warning}）`,
+    id: `${RUNWARE_PREFIX}${model.air}`,
+    name: model.label,
+    description: "Runware（画像生成・従量）",
     // 上流はコンテキスト長を持たない。0 は画面側で「出さない」印
     contextLength: 0,
     // 単価は出来上がり（トークン数）で決まり、こちらでは分からない。
@@ -147,15 +145,16 @@ export function buildRunwareModelInfo(spec: RunwareModelSpec): ModelInfo {
     outputModalities: ["text", "image"],
     supportedParameters: [...RUNWARE_IMAGE_PARAM_KEYS],
     provider: "runware",
-    runwareProviderSettings: spec.providerSettings,
+    // ⚙に出す品質の段。クライアントは表を読めないのでここへ載せる
+    runwareQuality: model.quality,
     createdAt: 0,
   };
 }
 
-/** Runware のモデル一覧。鍵か指定が無ければ空（任意の機能）。 */
+/** Runware のモデル一覧。鍵が無ければ空（任意の機能）。 */
 export async function fetchRunwareModels(): Promise<ModelInfo[]> {
   if (!env.RUNWARE_API_KEY) return [];
-  return parseRunwareModelSpecs(env.RUNWARE_MODELS).map(buildRunwareModelInfo);
+  return RUNWARE_MODELS.map(buildRunwareModelInfo);
 }
 
 /** 1回の生成依頼。 */
@@ -170,8 +169,6 @@ export interface RunwareImageRequest {
   referenceImages: string[];
   /** ⚙で手動にした値（`buildGenerationPayload` の平らな出力）。 */
   params: Record<string, unknown>;
-  /** 審査・品質の置き場。 */
-  providerSettings: boolean;
   /** 作業の識別子。上流は UUID v4 を要求する。 */
   taskUUID: string;
 }
@@ -189,10 +186,15 @@ function sizeOf(raw: unknown): { width: number; height: number } {
  * 鍵を足すところと分けてあるのは、ここだけをテストから通せるように
  * するため。入れ子を1つ間違えても返ってくるのは 400 か、**何事も無く
  * 効かない設定**で、画面からは見分けが付かない。
+ *
+ * 置き場と品質の段は、呼ぶ側から受け取らず**ここで表を引く**。渡す形に
+ * すると、呼ぶ側が引き忘れて既定のまま渡しても型では気づけない
+ * （どちらも同じ型なので、審査が黙って効かなくなる）。
  */
 export function runwareImageTaskBody(
   req: RunwareImageRequest,
 ): Record<string, unknown>[] {
+  const model = runwareModelOf(req.model);
   const { width, height } = sizeOf(req.params.size);
   const background = req.params.background;
   let format = req.params.output_format;
@@ -210,17 +212,23 @@ export function runwareImageTaskBody(
   if (typeof req.params.moderation === "string") {
     tuning.moderation = req.params.moderation;
   }
-  if (typeof req.params.quality === "string") {
+  // 品質はモデルごとに受け付ける段が違う。⚙は表に沿った選択肢しか
+  // 出さないが、設定は会話に付いたままモデルを乗り換えられるので、
+  // 段の少ないモデルへ乗り換えたときに古い値が残る
+  if (
+    typeof req.params.quality === "string" &&
+    model.quality.includes(req.params.quality)
+  ) {
     tuning.quality = req.params.quality;
   }
 
   const settings: Record<string, unknown> = {
     ...(background != null ? { background } : {}),
-    ...(req.providerSettings ? {} : tuning),
+    ...(model.providerSettings ? {} : tuning),
   };
   const creator = runwareCreatorOf(req.model);
   const providerSettings =
-    req.providerSettings && creator && Object.keys(tuning).length > 0
+    model.providerSettings && creator && Object.keys(tuning).length > 0
       ? { [creator]: tuning }
       : undefined;
 

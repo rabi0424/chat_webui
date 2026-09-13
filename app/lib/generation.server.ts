@@ -14,7 +14,6 @@ import {
   readRunwareData,
   runwareErrorOf,
   runwareImageRequest,
-  runwareSpecOf,
 } from "./runware.server";
 import {
   PROVIDER_LABELS,
@@ -703,8 +702,8 @@ export async function requestUpstream(
     onRequest();
     /*
      * この窓口は画像だけで、会話も受け取らない（依頼文1本と参照画像）。
-     * 審査・品質の置き場はモデルの世代で変わるので、環境変数の指定を
-     * ここで引き直す（実行体の中にモデル一覧は無い）。
+     * 審査・品質の置き場と品質の段はモデルごとに違うが、組み立ての側が
+     * モデルの表を引くので、ここでは渡さない。
      */
     const { prompt, dataUrls } = imageRequestOf(messages);
     return await runwareImageRequest(
@@ -713,7 +712,6 @@ export async function requestUpstream(
         prompt,
         referenceImages: dataUrls,
         params: buildGenerationPayload(job.paramsState, "runware"),
-        providerSettings: runwareSpecOf(modelName).providerSettings,
       },
       opts.connectTimeoutMs,
       opts.signal,

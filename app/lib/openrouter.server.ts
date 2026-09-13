@@ -68,13 +68,13 @@ export interface ModelInfo {
   /** 提供元。poe はサブスクのポイントで課金される。 */
   provider: ModelProvider;
   /**
-   * Runware: 審査・品質を `providerSettings.<creator>` へ置くモデルか。
+   * Runware: このモデルが受け付ける品質の段。
    *
-   * 世代によって置き場が違い、⚙に出せる品質の段も変わる。判定の材料は
-   * 環境変数の指定だけなので、サーバー側で決めてここへ載せる
-   * （クライアントは env を読めない）。
+   * 段はモデルごとに違い、受け付けない段を送ると 400 になる。表は
+   * サーバー側（runware.server.ts）にあるので、⚙が選択肢を出せるよう
+   * ここへ載せる。
    */
-  runwareProviderSettings?: boolean;
+  runwareQuality?: string[];
   /**
    * API易: 1回いくらで課金されるモデルの単価（USD）。
    *

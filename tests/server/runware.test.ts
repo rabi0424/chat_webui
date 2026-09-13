@@ -11,14 +11,30 @@ import { describe, expect, it } from "vitest";
  * 組み立てと読み取りをここで直に見る。
  */
 const {
+  RUNWARE_MODELS,
   buildRunwareModelInfo,
-  findRunwareSpec,
-  parseRunwareModelSpecs,
   readRunwareData,
   runwareCreatorOf,
   runwareErrorOf,
   runwareImageTaskBody,
+  runwareModelOf,
 } = await import("../../app/lib/runware.server");
+
+/** 表の中の、置き場が新しい／古いモデルの識別子。 */
+const NEW_GEN = RUNWARE_MODELS.find((m) => !m.providerSettings)!.air;
+const OLD_GEN = RUNWARE_MODELS.find((m) => m.providerSettings)!.air;
+
+/**
+ * `wide` は受け付けるが `narrow` は受け付けない品質の段。
+ *
+ * 「段がモデルで違う」ことを使うテストは、この値が無いと**何も検査
+ * しないまま通る**（送らない値を送らないことを確かめるだけになる）。
+ * 取り出しを1か所にして、使う側で必ず存在を見る。
+ */
+function extraQualityOf(narrow: string, wide: string): string | undefined {
+  const allowed = runwareModelOf(narrow).quality;
+  return runwareModelOf(wide).quality.find((q) => !allowed.includes(q));
+}
 
 const { readUpstreamJson } = await import("../../app/lib/generation.server");
 
@@ -27,11 +43,10 @@ function task(
   over: Partial<Parameters<typeof runwareImageTaskBody>[0]> = {},
 ): Record<string, unknown> {
   const body = runwareImageTaskBody({
-    model: "vendor:family@1",
+    model: NEW_GEN,
     prompt: "赤い円",
     referenceImages: [],
     params: {},
-    providerSettings: false,
     taskUUID: "uuid-1",
     ...over,
   });
@@ -41,55 +56,57 @@ function task(
   return body[0];
 }
 
-describe("一覧に載せるモデルの指定", () => {
-  it("カンマ・空白・改行のどれで区切ってもよく、重複は1本にする", () => {
-    expect(parseRunwareModelSpecs("a:b@1, c:d@2\ne:f@3").map((s) => s.air)).toEqual(
-      ["a:b@1", "c:d@2", "e:f@3"],
-    );
-    expect(parseRunwareModelSpecs(" a:b@1 , a:b@1 ")).toHaveLength(1);
-    expect(parseRunwareModelSpecs("")).toEqual([]);
-    expect(parseRunwareModelSpecs(undefined)).toEqual([]);
+describe("扱うモデルの表", () => {
+  /*
+   * 名前を環境変数で受け取らず、表をコードに持つ。モデルごとに
+   * 受け付ける設定が違うので、名前だけ外から渡せても足りないため
+   * （CLAUDE.md の決まりごとの例外。docs/requirements.md §3.1.2）。
+   */
+  it("識別子は重複せず、品質の段を必ず持つ", () => {
+    expect(RUNWARE_MODELS.length).toBeGreaterThan(0);
+    const airs = RUNWARE_MODELS.map((m) => m.air);
+    expect(new Set(airs).size).toBe(airs.length);
+    for (const m of RUNWARE_MODELS) {
+      expect(m.label).toBeTruthy();
+      expect(m.quality.length).toBeGreaterThan(0);
+      // 「自動」は⚙の側（＝送らない）。選択肢に混ぜると同じ意味の
+      // 選び方が2つになる
+      expect(m.quality).not.toContain("auto");
+      // 置き場の名前は識別子から取るので、取り出せない識別子は表に
+      // 置けない（古い置き場のモデルだと入れ子を作れなくなる）
+      expect(runwareCreatorOf(m.air)).toBeTruthy();
+    }
   });
 
-  it("`|providerSettings` を添えたものだけ古い置き場になる", () => {
-    const specs = parseRunwareModelSpecs("a:b@1|providerSettings, c:d@2");
-    expect(specs[0]).toMatchObject({ air: "a:b@1", providerSettings: true });
-    expect(specs[1]).toMatchObject({ air: "c:d@2", providerSettings: false });
-    // 大文字小文字は問わない（環境変数へ手で書く値なので）
-    expect(parseRunwareModelSpecs("a:b@1|ProviderSettings")[0].providerSettings)
-      .toBe(true);
-  });
-
-  it("解釈できない指定は、そうと分かる形で残す", () => {
+  it("置き場の違うモデルが両方あり、段の広さも揃っていない", () => {
     /*
-     * 黙って既定（新しい置き場）へ倒すと、**審査の設定が効かないまま
-     * 絵だけが出る**。書き間違いに気づく手立てが要る。
+     * この2つが同じなら、置き場と段を分ける仕組みそのものを誰も
+     * 通らない（＝壊しても気づけない）。表を減らすときはここも見る。
+     * 数ではなく**中身**で見る——段の一覧を作り間違えて同じ値が並んだ
+     * だけでも数は変わるので、数で見ると違いがあるように見えてしまう。
      */
-    const spec = parseRunwareModelSpecs("a:b@1|provider-settings")[0];
-    expect(spec.providerSettings).toBe(false);
-    expect(spec.unknownOption).toBe("provider-settings");
-    expect(buildRunwareModelInfo(spec).description).toContain("provider-settings");
-    // 正しく書けているモデルの説明に、余計な注記は出さない
-    expect(
-      buildRunwareModelInfo(parseRunwareModelSpecs("a:b@1|providerSettings")[0])
-        .description,
-    ).not.toContain("解釈できません");
+    expect(RUNWARE_MODELS.some((m) => m.providerSettings)).toBe(true);
+    expect(RUNWARE_MODELS.some((m) => !m.providerSettings)).toBe(true);
+    expect(extraQualityOf(OLD_GEN, NEW_GEN)).toBeTruthy();
   });
 
-  it("一覧から外れたモデルが会話に残っていても、既定で生成できる", () => {
-    const specs = parseRunwareModelSpecs("a:b@1|providerSettings");
-    expect(findRunwareSpec(specs, "a:b@1").providerSettings).toBe(true);
-    expect(findRunwareSpec(specs, "x:y@9")).toEqual({
-      air: "x:y@9",
-      providerSettings: false,
-    });
+  it("表に無いモデルは、既定で生成できる", () => {
+    /*
+     * 表から外したモデルが会話に残っていることがある。ここで弾くと、
+     * 過去の会話が黙って送信できなくなる。
+     */
+    const unknown = runwareModelOf("x:y@9");
+    expect(unknown.providerSettings).toBe(false);
+    expect(unknown.quality.length).toBeGreaterThan(0);
+    expect(runwareModelOf(OLD_GEN).providerSettings).toBe(true);
   });
 });
 
 describe("一覧の1本", () => {
   it("画像の窓口として載る（入出力とも画像）", () => {
-    const info = buildRunwareModelInfo({ air: "a:b@1", providerSettings: false });
-    expect(info.id).toBe("runware:a:b@1");
+    const info = buildRunwareModelInfo(RUNWARE_MODELS[0]);
+    expect(info.id).toBe(`runware:${RUNWARE_MODELS[0].air}`);
+    expect(info.name).toBe(RUNWARE_MODELS[0].label);
     expect(info.provider).toBe("runware");
     expect(info.outputModalities).toContain("image");
     expect(info.inputModalities).toContain("image");
@@ -99,20 +116,15 @@ describe("一覧の1本", () => {
     expect(info.supportedParameters).toContain("moderation");
   });
 
-  it("置き場の指定は、画面（⚙）まで持っていく", () => {
+  it("品質の段は、モデルごとに画面（⚙）まで持っていく", () => {
     /*
-     * 品質の段は世代で違う。クライアントは環境変数を読めないので、
-     * ここで載せておかないと**古いモデルに新しい段を出してしまう**
+     * 段は世代で違う。クライアントは表を読めないので、ここで載せて
+     * おかないと**段の少ないモデルに多いほうを出してしまう**
      * （選べば 400 で1本失う）。
      */
-    expect(
-      buildRunwareModelInfo({ air: "a:b@1", providerSettings: true })
-        .runwareProviderSettings,
-    ).toBe(true);
-    expect(
-      buildRunwareModelInfo({ air: "a:b@1", providerSettings: false })
-        .runwareProviderSettings,
-    ).toBe(false);
+    for (const m of RUNWARE_MODELS) {
+      expect(buildRunwareModelInfo(m).runwareQuality).toEqual(m.quality);
+    }
   });
 });
 
@@ -121,7 +133,7 @@ describe("依頼の組み立て", () => {
     const t = task({ params: { size: "1536x1024" } });
     expect(t.taskType).toBe("imageInference");
     expect(t.taskUUID).toBe("uuid-1");
-    expect(t.model).toBe("vendor:family@1");
+    expect(t.model).toBe(NEW_GEN);
     expect(t.positivePrompt).toBe("赤い円");
     expect(t.width).toBe(1536);
     expect(t.height).toBe(1024);
@@ -142,10 +154,7 @@ describe("依頼の組み立て", () => {
   });
 
   it("新しい世代は、審査と品質を settings へ置く", () => {
-    const t = task({
-      params: { moderation: "low", quality: "max" },
-      providerSettings: false,
-    });
+    const t = task({ params: { moderation: "low", quality: "max" } });
     expect(t.settings).toEqual({ moderation: "low", quality: "max" });
     expect(t.providerSettings).toBeUndefined();
   });
@@ -156,11 +165,11 @@ describe("依頼の組み立て", () => {
      * 項目を無視する）。絵は出るので画面からは分からない。
      */
     const t = task({
+      model: OLD_GEN,
       params: { moderation: "low", quality: "high" },
-      providerSettings: true,
     });
     expect(t.providerSettings).toEqual({
-      vendor: { moderation: "low", quality: "high" },
+      [runwareCreatorOf(OLD_GEN)]: { moderation: "low", quality: "high" },
     });
     // settings 側へは残さない（両方へ置くと、片方が知らない項目になる）
     expect(t.settings).toBeUndefined();
@@ -168,11 +177,13 @@ describe("依頼の組み立て", () => {
 
   it("背景はどちらの世代でも settings（上流の文書がそう決めている）", () => {
     const t = task({
+      model: OLD_GEN,
       params: { background: "opaque", moderation: "low" },
-      providerSettings: true,
     });
     expect(t.settings).toEqual({ background: "opaque" });
-    expect(t.providerSettings).toEqual({ vendor: { moderation: "low" } });
+    expect(t.providerSettings).toEqual({
+      [runwareCreatorOf(OLD_GEN)]: { moderation: "low" },
+    });
   });
 
   it("背景を指定したら形式も送る。透過なら JPG に落とさない", () => {
@@ -212,17 +223,24 @@ describe("依頼の組み立て", () => {
     expect(t.outputQuality).toBeUndefined();
   });
 
-  it("供給元を取り出せないモデル識別子では、古い置き場を作らない", () => {
-    // 置き場の名前は識別子から取る。取れないまま空の名前で包むと、
-    // 上流には「知らない入れ子」として届く
-    expect(runwareCreatorOf("vendor:family@1")).toBe("vendor");
-    expect(runwareCreatorOf("名前のない識別子")).toBe("");
-    const t = task({
-      model: "名前のない識別子",
-      params: { moderation: "low" },
-      providerSettings: true,
+  it("そのモデルが受け付けない品質の段は送らない", () => {
+    /*
+     * ⚙は表に沿った選択肢しか出さないが、設定は会話に付いたまま
+     * モデルを乗り換えられる。段の少ないモデルへ移ったときに古い値が
+     * 残り、そのまま送れば 400 で1本まるごと失う。
+     */
+    const narrow = runwareModelOf(OLD_GEN).quality;
+    const extra = extraQualityOf(OLD_GEN, NEW_GEN);
+    // 例が無ければ、以下は「送らない値を送らない」を見るだけになる
+    expect(extra).toBeTruthy();
+    const t = task({ model: OLD_GEN, params: { moderation: "low", quality: extra } });
+    expect(t.providerSettings).toEqual({
+      [runwareCreatorOf(OLD_GEN)]: { moderation: "low" },
     });
-    expect(t.providerSettings).toBeUndefined();
+    // 受け付ける段ならそのまま通る
+    expect(
+      task({ model: OLD_GEN, params: { quality: narrow[0] } }).providerSettings,
+    ).toEqual({ [runwareCreatorOf(OLD_GEN)]: { quality: narrow[0] } });
   });
 });
 
@@ -346,8 +364,13 @@ describe("requestUpstream の Runware 分岐", () => {
   const gen = readFileSync("app/lib/generation.server.ts", "utf8");
   const branch = gen.match(/if \(provider === "runware"\)[\s\S]*?\n {2}}\n/)?.[0];
 
-  it("置き場は環境変数から引き直す（決め打ちにしない）", () => {
-    expect(branch).toContain("runwareSpecOf(modelName).providerSettings");
+  it("置き場は渡さない（組み立ての側が表を引く）", () => {
+    /*
+     * 渡す形にすると、引き忘れて既定のまま渡しても型では気づけない
+     * （どちらも同じ型なので、審査が黙って効かなくなる）。
+     */
+    expect(branch).not.toContain("providerSettings");
+    expect(branch).toContain("model: modelName");
   });
 
   it("参照画像は data: URL のまま渡す（復号して詰め直さない）", () => {
