@@ -8,3 +8,7 @@ OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # キーだけ設定して APIYI_MODELS が空だと、モデルは1本も出ない。
 # APIYI_API_KEY=sk-xxxxxxxxxxxx
 # APIYI_MODELS=
+# 任意: Runware（画像生成だけ。my.runware.ai で鍵を取得）。
+# 載せるモデルはコードの表で決まる（app/lib/runware.server.ts）ので、
+# 設定するのは鍵だけでよい。
+# RUNWARE_API_KEY=xxxxxxxxxxxx

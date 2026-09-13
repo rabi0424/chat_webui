@@ -275,13 +275,13 @@ describe("imageRequestOf", () => {
         { role: "assistant", content: "できました" },
         { role: "user", content: "赤い円" },
       ]),
-    ).toEqual({ prompt: "赤い円", images: [] });
+    ).toEqual({ prompt: "赤い円", images: [], dataUrls: [] });
   });
 
   it("添付は data: URL から実体へ戻し、並び順を保つ", () => {
     const one = "data:image/png;base64,iVBORw0KGgo=";
     const two = "data:image/jpeg;base64,/9j/4AAQ";
-    const { prompt, images } = imageRequestOf([
+    const { prompt, images, dataUrls } = imageRequestOf([
       {
         role: "user",
         content: [
@@ -294,26 +294,37 @@ describe("imageRequestOf", () => {
     expect(prompt).toBe("図1を図2の色で");
     expect(images.map((i) => i.mimeType)).toEqual(["image/png", "image/jpeg"]);
     expect(images[0].data.byteLength).toBeGreaterThan(0);
+    // data: URL のまま受け取る窓口（Runware）向けの並び。実体の側と
+    // 同じ順で、同じ枚数
+    expect(dataUrls).toEqual([one, two]);
   });
 
   it("読めない添付は落とすが、依頼自体は成立させる", () => {
-    const { prompt, images } = imageRequestOf([
+    const ok = "data:image/png;base64,iVBORw0KGgo=";
+    const { prompt, images, dataUrls } = imageRequestOf([
       {
         role: "user",
         content: [
           { type: "image_url", image_url: { url: "https://example.com/x.png" } },
+          { type: "image_url", image_url: { url: ok } },
           { type: "text", text: "赤い円" },
         ],
       },
     ]);
     expect(prompt).toBe("赤い円");
-    expect(images).toEqual([]);
+    expect(images.map((i) => i.mimeType)).toEqual(["image/png"]);
+    /*
+     * 落とすのは**両方から**。片方にだけ残ると、依頼文の中の
+     * 「図1／図2」と実際の並びが窓口によって静かにずれる。
+     */
+    expect(dataUrls).toEqual([ok]);
   });
 
   it("ユーザー発言が無ければ空（例外にしない）", () => {
     expect(imageRequestOf([{ role: "system", content: "x" }])).toEqual({
       prompt: "",
       images: [],
+      dataUrls: [],
     });
   });
 });

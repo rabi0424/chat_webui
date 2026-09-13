@@ -6,6 +6,7 @@ import {
   fetchAwaitingHeaders,
 } from "./upstream-fetch.server";
 import { fetchApiyiModels } from "./apiyi.server";
+import { fetchRunwareModels } from "./runware.server";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const POE_BASE = "https://api.poe.com/v1";
@@ -66,6 +67,14 @@ export interface ModelInfo {
   botParameters?: PoeBotParameter[];
   /** 提供元。poe はサブスクのポイントで課金される。 */
   provider: ModelProvider;
+  /**
+   * Runware: このモデルが受け付ける品質の段。
+   *
+   * 段はモデルごとに違い、受け付けない段を送ると 400 になる。表は
+   * サーバー側（runware.server.ts）にあるので、⚙が選択肢を出せるよう
+   * ここへ載せる。
+   */
+  runwareQuality?: string[];
   /**
    * API易: 1回いくらで課金されるモデルの単価（USD）。
    *
@@ -273,10 +282,11 @@ export async function fetchModels(): Promise<ModelInfo[]> {
 }
 
 async function fetchModelsUncached(): Promise<ModelInfo[]> {
-  const [res, poeModels, apiyiModels] = await Promise.all([
+  const [res, poeModels, apiyiModels, runwareModels] = await Promise.all([
     fetch(`${OPENROUTER_BASE}/models`),
     fetchPoeModels(),
     fetchApiyiModels(),
+    fetchRunwareModels(),
   ]);
   if (!res.ok) {
     throw new Error(`OpenRouterのモデル一覧取得に失敗しました (${res.status})`);
@@ -310,6 +320,8 @@ async function fetchModelsUncached(): Promise<ModelInfo[]> {
     ...poeModels.sort((a, b) => a.name.localeCompare(b.name)),
     // API易は選んだ数本しか載らないので、名前の順で末尾へ足す
     ...apiyiModels.sort((a, b) => a.name.localeCompare(b.name)),
+    // Runware も同じ（環境変数で選んだ数本だけ）
+    ...runwareModels.sort((a, b) => a.name.localeCompare(b.name)),
   ];
   modelsCache = { models: merged, fetchedAt: Date.now() };
   return merged;
@@ -345,6 +357,7 @@ function redactRawText(text: string): string {
     env.POE_API_KEY,
     env.OPENROUTER_API_KEY,
     env.APIYI_API_KEY,
+    env.RUNWARE_API_KEY,
   ]) {
     // 短すぎる値で置換すると、無関係な文字列まで塗り潰してしまう
     if (typeof secret === "string" && secret.length >= 8) {

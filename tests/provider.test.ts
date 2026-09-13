@@ -4,9 +4,11 @@ import {
   MODEL_PREFIXES,
   POE_PREFIX,
   PROVIDER_LABELS,
+  RUNWARE_PREFIX,
   bareModelName,
   isApiyiModel,
   isPoeModel,
+  isRunwareModel,
   providerOf,
   supportsWebSearch,
 } from "../app/lib/constants";
@@ -24,6 +26,7 @@ describe("providerOf", () => {
   it("接頭辞で窓口が決まり、接頭辞が無ければ OpenRouter", () => {
     expect(providerOf(`${POE_PREFIX}Claude-Sonnet`)).toBe("poe");
     expect(providerOf(`${APIYI_PREFIX}some-model`)).toBe("apiyi");
+    expect(providerOf(`${RUNWARE_PREFIX}vendor:family@1`)).toBe("runware");
     expect(providerOf("openai/gpt-4o-mini")).toBe("openrouter");
     expect(providerOf(null)).toBe("openrouter");
     expect(providerOf(undefined)).toBe("openrouter");
@@ -37,6 +40,11 @@ describe("providerOf", () => {
   it("接頭辞を外すと、上流へ投げるモデル名になる", () => {
     expect(bareModelName(`${POE_PREFIX}GPT-Image-2`)).toBe("GPT-Image-2");
     expect(bareModelName(`${APIYI_PREFIX}a/b:c`)).toBe("a/b:c");
+    // Runware のモデル識別子は `:` と `@` を含む。接頭辞の判定は先頭
+    // 一致なので、中の `:` で切ってはいけない
+    expect(bareModelName(`${RUNWARE_PREFIX}vendor:family@1`)).toBe(
+      "vendor:family@1",
+    );
     // 接頭辞が無いIDは、スラッシュを含んでいてもそのまま
     expect(bareModelName("openai/gpt-4o-mini")).toBe("openai/gpt-4o-mini");
   });
@@ -47,6 +55,7 @@ describe("providerOf", () => {
       expect(providerOf(id)).toBe(provider);
       expect(isPoeModel(id)).toBe(provider === "poe");
       expect(isApiyiModel(id)).toBe(provider === "apiyi");
+      expect(isRunwareModel(id)).toBe(provider === "runware");
     }
   });
 
@@ -68,5 +77,6 @@ describe("supportsWebSearch", () => {
     expect(supportsWebSearch("openai/gpt-4o-mini")).toBe(true);
     expect(supportsWebSearch(`${POE_PREFIX}Claude-Sonnet`)).toBe(false);
     expect(supportsWebSearch(`${APIYI_PREFIX}some-model`)).toBe(false);
+    expect(supportsWebSearch(`${RUNWARE_PREFIX}vendor:family@1`)).toBe(false);
   });
 });

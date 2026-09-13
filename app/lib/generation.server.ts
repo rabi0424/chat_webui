@@ -11,6 +11,11 @@ import {
   type ApiyiInputImage,
 } from "./apiyi.server";
 import {
+  readRunwareData,
+  runwareErrorOf,
+  runwareImageRequest,
+} from "./runware.server";
+import {
   PROVIDER_LABELS,
   bareModelName,
   providerOf,
@@ -181,27 +186,39 @@ function applyPromptCaching(
  *
  * 画像は既に data: URL へ展開済み（expandAttachments）。読めないものは
  * 落とす——1枚欠けても依頼自体は成立させる。
+ *
+ * 取り出し方は窓口で違う。multipart で送る窓口には中身（復号した実体）が
+ * 要るが、data: URL をそのまま受ける窓口もある。両方をここで返すのは、
+ * **同じ並び順の画像を2回取り出すコードを2か所に置かないため**——
+ * 片方だけ「読めなかった1枚を落とす」を書き忘れると、依頼文の中の
+ * 「図1／図2」と実際の並びが静かにずれる。
  */
 export function imageRequestOf(messages: OutgoingMessage[]): {
   prompt: string;
   images: ApiyiInputImage[];
+  /** 展開済みの data: URL（復号せずに渡せる窓口向け）。 */
+  dataUrls: string[];
 } {
   const last = [...messages].reverse().find((m) => m.role === "user");
-  if (!last) return { prompt: "", images: [] };
+  if (!last) return { prompt: "", images: [], dataUrls: [] };
   if (typeof last.content === "string") {
-    return { prompt: last.content, images: [] };
+    return { prompt: last.content, images: [], dataUrls: [] };
   }
   const texts: string[] = [];
   const images: ApiyiInputImage[] = [];
+  const dataUrls: string[] = [];
   for (const part of last.content) {
     if (part.type === "text") {
       if (part.text) texts.push(part.text);
       continue;
     }
     const decoded = decodeDataUrl(part.image_url.url);
-    if (decoded) images.push({ data: decoded.buffer, mimeType: decoded.mimeType });
+    // 読めなかったものは両方から落とす（並び順を揃えるため）
+    if (!decoded) continue;
+    images.push({ data: decoded.buffer, mimeType: decoded.mimeType });
+    dataUrls.push(part.image_url.url);
   }
-  return { prompt: texts.join("\n"), images };
+  return { prompt: texts.join("\n"), images, dataUrls };
 }
 
 /** 画像一覧の検索に使う、この生成の依頼文（直近のユーザー発言）。 */
@@ -681,6 +698,26 @@ export async function requestUpstream(
     );
   }
 
+  if (provider === "runware") {
+    onRequest();
+    /*
+     * この窓口は画像だけで、会話も受け取らない（依頼文1本と参照画像）。
+     * 審査・品質の置き場と品質の段はモデルごとに違うが、組み立ての側が
+     * モデルの表を引くので、ここでは渡さない。
+     */
+    const { prompt, dataUrls } = imageRequestOf(messages);
+    return await runwareImageRequest(
+      {
+        model: modelName,
+        prompt,
+        referenceImages: dataUrls,
+        params: buildGenerationPayload(job.paramsState, "runware"),
+      },
+      opts.connectTimeoutMs,
+      opts.signal,
+    );
+  }
+
   if (provider === "apiyi") {
     onRequest();
     /*
@@ -767,7 +804,11 @@ async function readUpstreamError(
 ): Promise<{ detail: string; type: string | null; raw: string }> {
   try {
     const err = (await upstream.json()) as { error?: unknown };
-    return describeUpstreamError(err.error);
+    const described = describeUpstreamError(err.error);
+    // Runware は `error` ではなく `errors` の配列で返し、`code` も
+    // 数値ではなく文字列。片方しか見ていないと、**理由がどこにも出ない
+    // まま状態コードだけ**が利用者に見える
+    return described.detail ? described : (runwareErrorOf(err) ?? described);
   } catch {
     // ステータスコードだけで十分
     return { detail: "", type: null, raw: "" };
@@ -1179,6 +1220,8 @@ export async function readUpstreamJson(
 
   let parsed: {
     error?: unknown;
+    /** Runware は `error` ではなく配列で返す（runwareErrorOf が読む）。 */
+    errors?: unknown;
     /** Images API はここに画像を入れて返す（chat の choices は無い）。 */
     data?: { b64_json?: unknown; url?: unknown }[];
     choices?: {
@@ -1230,6 +1273,15 @@ export async function readUpstreamJson(
     );
   }
 
+  /*
+   * 同じ `data` でも、Runware は項目の名前が違う（`imageURL` など）。
+   * 上の読み方だけだと**画像も額も丸ごと落ちて「本文のない応答」**に
+   * 見える——上流では生成が終わって課金されている。項目の名前で
+   * 見分けが付くので、窓口をここまで持ち回らずに両方を読む。
+   */
+  const runware = readRunwareData(parsed.data);
+  imageUrls.push(...runware.imageUrls);
+
   const choice = parsed.choices?.[0];
   const content = flattenContent(choice?.message?.content, imageUrls);
   collectImageUrls(choice?.message?.images, imageUrls);
@@ -1258,7 +1310,12 @@ export async function readUpstreamJson(
           // 見積もりと実際の請求を後から突き合わせるために残す
           imageTokens: parsed.usage.input_tokens_details?.image_tokens,
         })
-      : null,
+      : // Runware は使用量（トークン数）を返さず、作業ごとの実費だけを
+        // 返す。額が無い記録は台帳から丸ごと捨てられるので、取れた額は
+        // ここで必ず載せる
+        runware.costUsd != null
+        ? JSON.stringify({ cost: runware.costUsd })
+        : null,
     imageUrls,
     citations,
     finishReason: choice?.finish_reason ?? undefined,
@@ -1267,7 +1324,7 @@ export async function readUpstreamJson(
     error:
       parsed.error && typeof parsed.error === "object"
         ? describeUpstreamError(parsed.error)
-        : undefined,
+        : runwareErrorOf(parsed),
   };
 }
 
