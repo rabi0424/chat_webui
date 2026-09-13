@@ -8,6 +8,8 @@
  */
 import { createContext, useContext } from "react";
 import type { UiAttachment } from "../../lib/types";
+import type { BotRow } from "../../lib/db.server";
+import type { ModelInfo } from "../../lib/openrouter.server";
 
 export interface MessageActions {
   /** 生成中。編集・分岐・削除の入口は閉じる（木が動いている最中なので）。 */
@@ -25,6 +27,16 @@ export interface MessageActions {
   isImageGeneration: (modelId: string | undefined) => boolean;
   /** 円換算のレート。null ならドルのまま出す。 */
   usdJpy: number | null;
+  /**
+   * 宛先にできるボット（`@ボット名` の候補）。
+   *
+   * 使うのは編集欄だけだが、渡し口は props ではなくここにする——
+   * 一覧 → ユーザーの吹き出し → 編集欄と3段そのまま運ぶことになり、
+   * その行に固有の値（m と index）が埋もれる。
+   */
+  bots: BotRow[];
+  /** 候補と宛先に添えるモデル名を引くため。 */
+  models: ModelInfo[];
 
   /** 兄弟の枝へ移る。 */
   switchBranch: (targetId: string) => void;

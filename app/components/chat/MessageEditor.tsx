@@ -13,8 +13,20 @@
  * 添付は本文と同じく編集できる。既にある画像は外せて、新しく足すことも
  * できる——アップロードの最中は uploads に枚数が入り、その分だけ枠を
  * 先に見せる（何枚増えるのか分かるように）。
+ *
+ * 冒頭の `@ボット名`（宛先メンション）も、下の入力欄と同じように効く。
+ * 書き直しの動機は「宛先を間違えた」「同じことを別のボットにも聞きたい」
+ * であることが多く、ここで効かないと、枝を作るために下の入力欄へ文面を
+ * 写し直すしかない。候補の出し方・キー操作は use-mention-suggest に
+ * 1つだけ置いてあるものを使う。
  */
-import type { Dispatch, RefObject, SetStateAction } from "react";
+import {
+  useMemo,
+  useRef,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import type { UiAttachment } from "../../lib/types";
 import {
   ALLOWED_IMAGE_TYPES,
@@ -22,7 +34,13 @@ import {
 } from "../../lib/constants";
 import { isAcceptedImage } from "../../lib/image";
 import { PROSE_INPUT } from "../../lib/ui";
+import { applyMention, parseMention, stripMention } from "../../lib/mention";
+import type { BotRow } from "../../lib/db.server";
 import { IconPlus } from "../icons";
+import { useMessageActions } from "./message-context";
+import { MentionSuggest } from "./MentionSuggest";
+import { MentionAddressee } from "./MentionAddressee";
+import { useMentionSuggest } from "./use-mention-suggest";
 
 /**
  * 編集中のメッセージ。
@@ -65,8 +83,46 @@ export function MessageEditor({
   const full = editing.attachments.length + editing.uploads >= MAX_ATTACHMENTS;
   const empty = !editing.text.trim() && editing.attachments.length === 0;
   const busy = editing.uploads > 0;
+
+  const { bots, models } = useMessageActions();
+  const boxRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const mention = useMemo(
+    () => parseMention(editing.text, bots),
+    [editing.text, bots],
+  );
+  const setText = (text: string) =>
+    setEditing((prev) => (prev ? { ...prev, text } : prev));
+  /** 候補を選んだ。本文を書き換え、続きを打てる位置へキャレットを置く。 */
+  const pickMention = (b: BotRow) => {
+    const next = applyMention(editing.text, mention, b);
+    setText(next.text);
+    const el = textareaRef.current;
+    if (!el) return;
+    // 値が反映されてからでないと選択位置を動かせない
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(next.caret, next.caret);
+    });
+  };
+  const {
+    open: suggestOpen,
+    activeIndex,
+    handleKeyDown: onMentionKeyDown,
+  } = useMentionSuggest({
+    text: editing.text,
+    mention,
+    onPick: pickMention,
+    panelRef,
+    anchorRef: boxRef,
+  });
+
   return (
-    <div className="rounded-2xl border border-accent/50 bg-neutral-50 p-3 dark:bg-neutral-900">
+    <div
+      ref={boxRef}
+      className="rounded-2xl border border-accent/50 bg-neutral-50 p-3 dark:bg-neutral-900"
+    >
       {(editing.attachments.length > 0 || editing.uploads > 0) && (
         <div className="mb-2 flex flex-wrap gap-2">
           {editing.attachments.map((a) => (
@@ -111,11 +167,29 @@ export function MessageEditor({
           ))}
         </div>
       )}
+      {mention.bot && (
+        /*
+          ここには色分けの帯を敷かない。帯は textarea の裏に同じ字送りの
+          板を敷いて背景だけを塗る作りで、利用者が縦に伸ばせる（resize-y）
+          この欄では、伸ばした瞬間に帯だけがずれる。宛先が効いていること
+          は、この行（ボット・実際に使われるモデル・解除）で示す
+        */
+        <MentionAddressee
+          bot={mention.bot}
+          models={models}
+          onClear={() => setText(stripMention(editing.text, mention))}
+          className="mb-1"
+        />
+      )}
       <textarea
+        ref={textareaRef}
         value={editing.text}
-        onChange={(e) =>
-          setEditing((prev) => (prev ? { ...prev, text: e.target.value } : prev))
-        }
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing) return;
+          // 候補が拾ったキーは改行まで届かせない
+          onMentionKeyDown(e);
+        }}
         onPaste={(e) => {
           const files = [...e.clipboardData.files];
           if (files.some(isAcceptedImage)) {
@@ -129,6 +203,16 @@ export function MessageEditor({
         {...PROSE_INPUT}
         className="w-full resize-y bg-transparent outline-none"
       />
+      {suggestOpen && (
+        <MentionSuggest
+          anchorRef={boxRef}
+          panelRef={panelRef}
+          bots={mention.candidates}
+          models={models}
+          activeIndex={activeIndex}
+          onPick={pickMention}
+        />
+      )}
       <div className="mt-2 flex items-center gap-2 text-sm">
         <input
           ref={fileInputRef}
