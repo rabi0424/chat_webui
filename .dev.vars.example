@@ -8,3 +8,11 @@ OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # キーだけ設定して APIYI_MODELS が空だと、モデルは1本も出ない。
 # APIYI_API_KEY=sk-xxxxxxxxxxxx
 # APIYI_MODELS=
+# 任意: Runware（画像生成だけ。my.runware.ai で鍵を取得）。
+# RUNWARE_MODELS に並べたモデル識別子だけが一覧に出る
+# （カンマ・空白・改行区切り。`creator:family@version` の形）。
+# キーだけ設定して RUNWARE_MODELS が空だと、モデルは1本も出ない。
+# 審査・品質を providerSettings 側へ置く世代のモデルには
+# `|providerSettings` を添える（docs/requirements.md §3.1.2）。
+# RUNWARE_API_KEY=xxxxxxxxxxxx
+# RUNWARE_MODELS=
