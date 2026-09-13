@@ -64,6 +64,14 @@ import {
   undoGenerationStatements,
   recordUsageStatement,
   MARK_THUMBNAIL_SQL,
+  PERF_BUILDS_SQL,
+  PERF_BUILD_TOUCH_SQL,
+  PERF_CLEAR_SQL,
+  perfAggregateSql,
+  perfInsertStatements,
+  perfPathsSql,
+  type PerfDimension,
+  type PerfSampleRow,
 } from "./schema";
 import {
   EMPTY_TOTALS,
@@ -2585,4 +2593,132 @@ export async function appendRetrySuccess(params: {
   });
   await d.batch(statements.map((st) => d.prepare(st.sql).bind(...st.binds)));
   return id;
+}
+
+// --- 起動・遷移の実測 ------------------------------------------------------
+
+/**
+ * 実測の標本を積む。
+ *
+ * 全部を1つの batch で流す（batch は全体で1サブリクエストとして数えられ
+ * るので、何行入れても外向きの枠は1つ）。1文あたりのバインドは D1 の
+ * 上限100個に収まるよう perfInsertStatements が分ける。
+ *
+ * ビルドの索引（perf_builds）も同じ batch で更新する。別の呼び出しに
+ * すると、標本は入ったのに索引が古いままという状態が作れてしまい、
+ * **入れたはずの記録が一覧に出ない**という形で出る。
+ */
+export async function recordPerfSamples(rows: PerfSampleRow[]): Promise<number> {
+  if (rows.length === 0) return 0;
+  const d = await db();
+  const statements = perfInsertStatements(rows).map((st) =>
+    d.prepare(st.sql).bind(...st.binds),
+  );
+  const byBuild = new Map<string, { first: number; last: number }>();
+  for (const r of rows) {
+    const cur = byBuild.get(r.build);
+    if (!cur) byBuild.set(r.build, { first: r.at, last: r.at });
+    else {
+      cur.first = Math.min(cur.first, r.at);
+      cur.last = Math.max(cur.last, r.at);
+    }
+  }
+  for (const [build, span] of byBuild) {
+    statements.push(
+      d.prepare(PERF_BUILD_TOUCH_SQL).bind(build, span.first, span.last),
+    );
+  }
+  await d.batch(statements);
+  return rows.length;
+}
+
+export interface PerfBuildRow {
+  build: string;
+  firstAt: number;
+  lastAt: number;
+}
+
+export interface PerfGroupRow {
+  build: string;
+  key: string;
+  label: string;
+  count: number;
+  median: number;
+  p90: number;
+  slowest: number;
+  firstAt: number;
+  lastAt: number;
+}
+
+/**
+ * 表示するビルドと、その集計。
+ *
+ * 集計は**表示するビルドだけ**を読む。全期間を読むと、記録が増えるほど
+ * 設定画面を開くのが重くなる（D1 の課金は読んだ行数で、無料枠は1日
+ * 500万行）。標本そのものは消さずに全部残してあるので、後からビルドを
+ * 遡って見ることはできる。
+ */
+export async function perfHistory(params: {
+  dimension: PerfDimension;
+  builds: number;
+  /** 1つのページだけを見る（「(起動)」を端末別に、など）。 */
+  path?: string;
+}): Promise<{
+  builds: PerfBuildRow[];
+  groups: PerfGroupRow[];
+  paths: string[];
+}> {
+  const d = await db();
+  const { results } = await d
+    .prepare(PERF_BUILDS_SQL)
+    .bind(params.builds)
+    .all<{ build: string; first_at: number; last_at: number }>();
+  const builds = results.map((r) => ({
+    build: r.build,
+    firstAt: r.first_at,
+    lastAt: r.last_at,
+  }));
+  if (builds.length === 0) return { builds, groups: [], paths: [] };
+  const ids = builds.map((b) => b.build);
+  // 集計と、絞り込みの選択肢を一度に取る（batch は全体で1サブリクエスト）
+  const batched = await d.batch([
+    d
+      .prepare(perfAggregateSql(params.dimension, ids.length, !!params.path))
+      .bind(...ids, ...(params.path ? [params.path] : [])),
+    d.prepare(perfPathsSql(ids.length)).bind(...ids),
+  ]);
+  // 2文で形が違うので、取り出すときに形を名乗る
+  const rows = batched[0] as D1Result<{
+    build: string;
+    k: string;
+    label: string;
+    count: number;
+    median: number;
+    p90: number;
+    slowest: number;
+    first_at: number;
+    last_at: number;
+  }>;
+  const paths = batched[1] as D1Result<{ path: string }>;
+  return {
+    builds,
+    paths: paths.results.map((r) => r.path),
+    groups: rows.results.map((r) => ({
+      build: r.build,
+      key: r.k,
+      label: r.label,
+      count: r.count,
+      median: r.median,
+      p90: r.p90,
+      slowest: r.slowest,
+      firstAt: r.first_at,
+      lastAt: r.last_at,
+    })),
+  };
+}
+
+/** 実測の記録をすべて消す（設定画面の「記録を消去」）。 */
+export async function clearPerfSamples(): Promise<void> {
+  const d = await db();
+  await d.batch(PERF_CLEAR_SQL.map((sql) => d.prepare(sql)));
 }

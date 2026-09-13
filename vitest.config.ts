@@ -18,6 +18,9 @@ export default defineConfig({
     include: ["tests/**/*.test.{ts,tsx}"],
     projects: [
       {
+        // 本番では vite が埋め込む定数（ビルドID）。テストでも同じように
+        // 置き換える——置き換えが無いと、読んだ瞬間に未定義で落ちる
+        define: { __BUILD_ID__: JSON.stringify("testbuild") },
         test: {
           name: "node",
           include: ["tests/*.test.ts"],
@@ -41,6 +44,7 @@ export default defineConfig({
             ).pathname,
           },
         },
+        define: { __BUILD_ID__: JSON.stringify("testbuild") },
         test: {
           name: "server",
           include: ["tests/server/*.test.ts"],
@@ -78,6 +82,7 @@ export default defineConfig({
             ).pathname,
           },
         },
+        define: { __BUILD_ID__: JSON.stringify("testbuild") },
         test: {
           name: "dom",
           include: ["tests/dom/*.test.{ts,tsx}"],

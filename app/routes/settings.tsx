@@ -1,4 +1,10 @@
-import { startTransition, useEffect, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useCopied } from "../lib/use-copied";
 import { useOutletContext, useRevalidator } from "react-router";
 import type { Route } from "./+types/settings";
@@ -55,14 +61,21 @@ import {
 } from "../components/icons";
 import { useConfirm } from "../components/ConfirmDialog";
 import {
+  ALL_PATHS_LABEL,
+  DIMENSION_LABELS,
   clearSamples,
-  compareLatest,
   currentBuildId,
   delta,
-  formatComparison,
-  loadSamples,
-  type BuildComparison,
+  flushSamples,
+  formatHistory,
+  historyRows,
+  rowLabel,
+  type HistoryRow,
+  type PerfBuild,
+  type PerfGroup,
 } from "../lib/perf";
+import { PERF_DIMENSIONS, type PerfDimension } from "../lib/schema";
+import type { PerfHistoryResponse } from "../lib/api-types";
 
 export function meta() {
   return [{ title: "設定 - Chat" }];
@@ -100,9 +113,17 @@ const THEMES: { value: Theme; label: string; icon: React.ReactNode }[] = [
   { value: "system", label: "自動", icon: <IconAuto className="h-3.5 w-3.5" /> },
 ];
 
-/** 前回ビルド比の表示。速くなったら緑、遅くなったら赤。 */
-function DeltaBadge({ cur, prev }: { cur: number; prev: number | undefined }) {
-  const d = delta(cur, prev);
+/**
+ * 一度に出すビルドの数。
+ *
+ * 集計はここに出すビルドの標本だけを読む（D1 は読んだ行数で課金される）。
+ * 標本自体は消さずに全部残っているので、増やせばもっと遡れる。
+ */
+const HISTORY_BUILDS = 10;
+
+/** 前回比の表示。速くなったら緑、遅くなったら赤。 */
+function DeltaBadge({ cur, prev }: { cur: number; prev: number | null }) {
+  const d = delta(cur, prev ?? undefined);
   if (!d) {
     return (
       <span className="block text-[10px] text-neutral-300 dark:text-neutral-600">
@@ -128,99 +149,197 @@ function DeltaBadge({ cur, prev }: { cur: number; prev: number | undefined }) {
   );
 }
 
+/** 切り口とページの選択に使う小さなボタン。 */
+function Chip({
+  label,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={`rounded-lg border px-2.5 py-1 text-xs ${
+        selected
+          ? "border-transparent bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
+          : "border-line text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-white/5"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** 期間の表示。同じ日に始まって終わったビルドは日付を1度だけ出す。 */
+function spanLabel(from: number, to: number): string {
+  const day = (t: number) => new Date(t).toLocaleDateString("ja-JP");
+  return day(from) === day(to) ? day(from) : `${day(from)} 〜 ${day(to)}`;
+}
+
+/** ビルド1つぶんの表。行は切り口の値（ページ・端末…）。 */
+function BuildTable({
+  rows,
+  dimension,
+}: {
+  rows: HistoryRow[];
+  dimension: PerfDimension;
+}) {
+  if (rows.length === 0) {
+    return <p className="px-1 py-1 text-xs text-ink-3">記録がありません。</p>;
+  }
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="text-left text-xs text-ink-3">
+          <th className="px-1 py-0.5 font-normal">内訳</th>
+          <th className="px-1 py-0.5 text-right font-normal">回数</th>
+          <th className="px-1 py-0.5 text-right font-normal">中央値</th>
+          <th className="px-1 py-0.5 text-right font-normal">p90</th>
+        </tr>
+      </thead>
+      <tbody className="align-top">
+        {rows.map((r) => (
+          <tr key={r.key}>
+            <td className="truncate px-1 py-1 font-mono text-xs">
+              {rowLabel(dimension, r)}
+            </td>
+            <td className="px-1 py-1 text-right tabular-nums">{r.count}</td>
+            <td className="px-1 py-1 text-right tabular-nums">
+              {r.median}ms
+              <DeltaBadge cur={r.median} prev={r.prevMedian} />
+            </td>
+            <td className="px-1 py-1 text-right tabular-nums">
+              {r.p90}ms
+              <DeltaBadge cur={r.p90} prev={r.prevP90} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 /**
- * ページ遷移の実測の集計（lib/perf.ts）。表示は常に「現行ビルド」で、
- * デプロイするとビルドIDが変わって自動で新しい集計に切り替わる。
- * 各項目には直前のビルドとの差（絶対値と割合）を添える。
+ * 起動と画面遷移の実測（lib/perf.ts → D1）。
+ *
+ * 引くたびに、まず控えを送り（この端末の記録をその場で反映させる）、
+ * それからサーバーの集計を引く。**畳んでいるあいだは何もしない**——
+ * 設定画面を開くたびに集計を引くと、見ていない表のために D1 を読む
+ * ことになる（畳んだ `<details>` の中身も DOM には居る）。
+ *
+ * 差は「同じ内訳を持つ、次に古いビルド」との比較（historyRows）。
  */
 function PerfPanel() {
-  const [comparison, setComparison] = useState<BuildComparison | null>(null);
+  const [dimension, setDimension] = useState<PerfDimension>("path");
+  /** 絞り込むページ。null は「すべてのページ」。 */
+  const [path, setPath] = useState<string | null>(null);
+  const [data, setData] = useState<PerfHistoryResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [copied, flashCopied] = useCopied();
   const confirm = useConfirm();
 
-  // localStorageはSSRで読めないので描画後に読む。集計は画面表示を
-  // 待たせないよう低優先度で行う
-  useEffect(() => {
-    startTransition(() => setComparison(compareLatest(loadSamples())));
+  const load = useCallback(async (dim: PerfDimension, only: string | null) => {
+    try {
+      // 引く前に控えを送り**終えて**から引く。並べて投げると、いま測った
+      // ぶんが間に合わず、表に出ないまま「記録がありません」に見える
+      await flushSamples();
+      const res = await fetch(
+        `/api/perf?dimension=${dim}&builds=${HISTORY_BUILDS}` +
+          (only ? `&path=${encodeURIComponent(only)}` : ""),
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      const json = (await res.json()) as PerfHistoryResponse;
+      startTransition(() => {
+        setData(json);
+        setError(null);
+      });
+    } catch {
+      setError("記録を読み込めませんでした");
+    }
   }, []);
 
+  useEffect(() => {
+    void load(dimension, path);
+  }, [load, dimension, path]);
+
+  const history = data
+    ? historyRows(data.builds as PerfBuild[], data.groups as PerfGroup[])
+    : [];
+
   const copy = async () => {
-    if (!comparison) return;
     try {
-      await navigator.clipboard.writeText(formatComparison(comparison));
+      await navigator.clipboard.writeText(
+        formatHistory(history, dimension, path),
+      );
       flashCopied();
     } catch {
       // 権限がない環境では黙って何もしない
     }
   };
 
-  if (!comparison || (!comparison.current && !comparison.previous)) {
-    return (
-      <p className="px-1 py-2 text-sm text-ink-3">
-        まだ記録がありません。ページを行き来すると自動で貯まります。
-      </p>
-    );
-  }
-
-  const { current, previous } = comparison;
-
   return (
     <div className="space-y-3">
-      <p className="px-1 text-xs font-medium text-ink-3">
-        現行ビルド {currentBuildId()}
-        {current && (
-          <>
-            {" "}
-            ・ {current.total}件 ・ 最終{" "}
-            {new Date(current.lastAt).toLocaleDateString("ja-JP")}
-          </>
-        )}
-        {previous && (
-          <>
-            <br />
-            前回ビルド {previous.build}（{previous.total}件）との比較
-          </>
-        )}
-      </p>
-      {!current ? (
-        <p className="px-1 text-sm text-ink-3">
-          このビルドの記録はまだありません。ページを行き来すると貯まります。
-        </p>
-      ) : (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs text-ink-3">
-              <th className="px-1 py-0.5 font-normal">ページ</th>
-              <th className="px-1 py-0.5 text-right font-normal">回数</th>
-              <th className="px-1 py-0.5 text-right font-normal">中央値</th>
-              <th className="px-1 py-0.5 text-right font-normal">p90</th>
-            </tr>
-          </thead>
-          <tbody className="align-top">
-            {current.routes.map((r) => {
-              const prev = previous?.routes.find((p) => p.path === r.path);
-              return (
-                <tr key={r.path}>
-                  <td className="truncate px-1 py-1 font-mono text-xs">
-                    {r.path}
-                  </td>
-                  <td className="px-1 py-1 text-right tabular-nums">
-                    {r.count}
-                  </td>
-                  <td className="px-1 py-1 text-right tabular-nums">
-                    {r.median}ms
-                    <DeltaBadge cur={r.median} prev={prev?.median} />
-                  </td>
-                  <td className="px-1 py-1 text-right tabular-nums">
-                    {r.p90}ms
-                    <DeltaBadge cur={r.p90} prev={prev?.p90} />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="flex flex-wrap gap-1">
+        {PERF_DIMENSIONS.map((d) => (
+          <Chip
+            key={d}
+            label={DIMENSION_LABELS[d]}
+            selected={d === dimension}
+            onSelect={() => setDimension(d)}
+          />
+        ))}
+      </div>
+
+      {/*
+        ページの絞り込み。起動と画面遷移を混ぜたまま端末別に見ると、
+        中央値も p90 も「どちらの話か分からない数字」になる
+        （起動は数秒、遷移は数十ミリ秒）。
+      */}
+      {(data?.paths.length ?? 0) > 0 && (
+        <div className="flex flex-wrap gap-1">
+          <Chip
+            label={ALL_PATHS_LABEL}
+            selected={path === null}
+            onSelect={() => setPath(null)}
+          />
+          {data!.paths.map((p) => (
+            <Chip
+              key={p}
+              label={p}
+              selected={p === path}
+              onSelect={() => setPath(p)}
+            />
+          ))}
+        </div>
       )}
+
+      {error && <p className="px-1 text-sm text-red-600">{error}</p>}
+      {!error && data && history.length === 0 && (
+        <p className="px-1 py-2 text-sm text-ink-3">
+          まだ記録がありません。ページを行き来すると自動で貯まります。
+        </p>
+      )}
+
+      {history.map(({ build, rows }) => (
+        <div key={build.build} className="space-y-1">
+          <p className="px-1 text-xs font-medium text-ink-3">
+            <span className="font-mono">{build.build}</span>
+            {build.build === currentBuildId() && (
+              <span className="ml-1 rounded bg-neutral-200 px-1 py-px text-[10px] text-neutral-700 dark:bg-white/10 dark:text-neutral-200">
+                現行
+              </span>
+            )}{" "}
+            ・ {spanLabel(build.firstAt, build.lastAt)}
+          </p>
+          <BuildTable rows={rows} dimension={dimension} />
+        </div>
+      ))}
+
       <div className="flex items-center gap-2 pt-1">
         <button
           type="button"
@@ -238,13 +357,17 @@ function PerfPanel() {
           type="button"
           onClick={async () => {
             const ok = await confirm({
-              title: "遷移の記録をすべて消しますか？",
+              title: "実測の記録をすべて消しますか？",
+              // 消えるのはサーバー側の全履歴。端末ごとの控えとは別なので、
+              // 「この端末だけ」と読めない文面にする
+              description: "すべての端末・すべてのビルドの記録が消えます。過去バージョンとの比較はできなくなります。",
               confirmLabel: "消去",
               destructive: true,
             });
             if (!ok) return;
             clearSamples();
-            setComparison(compareLatest([]));
+            await fetch("/api/perf", { method: "DELETE" });
+            await load(dimension, path);
           }}
           aria-label="記録を消去"
           title="記録を消去"
@@ -271,6 +394,8 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null);
+  /** 開発者向けの計測を開いているか（開くまで集計を引かない）。 */
+  const [perfOpen, setPerfOpen] = useState(false);
 
   // 端末ごとの設定は localStorage。保存値を購読するので、
   // 別の場所で変えた分もここに出る（SSRでは既定値）
@@ -685,16 +810,25 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             開発者向けの計測は畳んでおく。利用者の設定と同じ重さで並べると、
             ビルドIDと p90 の表が「設定」の一部に見える。
           */}
-          <details className="group mb-7 rounded-2xl border border-black/[0.06] bg-white dark:border-white/[0.08] dark:bg-white/[0.04]">
+          {/*
+            畳んでいるあいだは PerfPanel を作らない。`<details>` の中身は
+            閉じていても DOM に居るので、そのまま置くと設定画面を開く
+            たびに集計を引くことになる
+          */}
+          <details
+            open={perfOpen}
+            onToggle={(e) => setPerfOpen(e.currentTarget.open)}
+            className="group mb-7 rounded-2xl border border-black/[0.06] bg-white dark:border-white/[0.08] dark:bg-white/[0.04]"
+          >
             <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-medium text-neutral-600 dark:text-neutral-300 [&::-webkit-details-marker]:hidden">
               <IconChevronRight className="h-4 w-4 text-neutral-400 transition-transform group-open:rotate-90" />
-              開発者向け: ページ遷移の計測
+              開発者向け: 起動とページ遷移の計測
             </summary>
             <div className="border-t border-black/[0.06] px-4 py-3 dark:border-white/[0.08]">
               <p className="mb-3 text-xs leading-relaxed text-ink-2">
-                ページ遷移のたびに自動で記録されます（この端末のみ・最大1000件）。デプロイすると現行ビルドの集計に切り替わり、各数値に前回ビルドとの差が付きます。
+                起動と画面遷移の所要時間を1件ずつ残しています（間引きなし）。端末・ブラウザ・表示形態・ビルドごとに分けて見られ、デプロイをまたいだ推移も辿れます。数値の下は、同じ内訳を持つ一つ前のビルドとの差です。
               </p>
-              <PerfPanel />
+              {perfOpen && <PerfPanel />}
             </div>
           </details>
         </div>
