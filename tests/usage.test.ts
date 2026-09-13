@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   EMPTY_TOTALS,
   USAGE_WEEK_DAYS,
+  budgetPace,
   checkLimit,
   dayStartJst,
   effectiveUsd,
   formatBytes,
+  monthEndJst,
   monthLabelJst,
   monthStartJst,
   usageRangeStart,
@@ -265,5 +267,111 @@ describe("仮の消費を足す", () => {
     expect(withProvisional(base, null)).toBe(base);
     expect(withProvisional(base, { points: 0, costUsd: null })).toBe(base);
     expect(withProvisional(base, { points: 0, costUsd: 0 })).toBe(base);
+  });
+});
+
+/**
+ * 消化ペース（完全比例ならいまここ、という地点）。
+ *
+ * 「上限の何割を使ったか」だけでは速いのか遅いのか分からない。月末の
+ * 80% と3日目の 80% は意味が違う。ここで見るのは、**時刻まで含めた**
+ * 経過割合と、月の長さの取り方（日数ではなく実長）。
+ */
+describe("消化ペース", () => {
+  it("経過は時刻まで数える（日で切ると昼と夜が同じ地点になる）", () => {
+    // 8月（31日）の16日 12:00 はちょうど半月。日で切ると 15/31 になる
+    const pace = budgetPace({
+      usedJpy: 0,
+      limitJpy: 3100,
+      now: jst("2026-08-16T12:00:00"),
+    })!;
+    expect(pace.elapsed).toBeCloseTo(0.5, 12);
+    expect(pace.paceJpy).toBeCloseTo(1550, 9);
+  });
+
+  it("月の長さは実長で割る（2月と8月で1日の重みが変わる）", () => {
+    // 2月（28日）の15日 0:00 は 14/28 = ちょうど半月
+    const feb = budgetPace({
+      usedJpy: 0,
+      limitJpy: 2800,
+      now: jst("2026-02-15T00:00:00"),
+    })!;
+    expect(feb.elapsed).toBeCloseTo(0.5, 12);
+    // 同じ日でも8月（31日）では半分に届かない
+    const aug = budgetPace({
+      usedJpy: 0,
+      limitJpy: 2800,
+      now: jst("2026-08-15T00:00:00"),
+    })!;
+    expect(aug.elapsed).toBeCloseTo(14 / 31, 12);
+  });
+
+  it("月の境界は JST（UTC で切ると月初の9時間が前の月に落ちる）", () => {
+    // UTC では 2026-08-31T15:30Z。9月（30日）の 0.5 時間ぶんだけ進んでいる
+    const pace = budgetPace({
+      usedJpy: 0,
+      limitJpy: 3000,
+      now: jst("2026-09-01T00:30:00"),
+    })!;
+    expect(pace.elapsed).toBeCloseTo(0.5 / (30 * 24), 12);
+    expect(monthEndJst(jst("2026-09-01T00:30:00"))).toBe(
+      jst("2026-10-01T00:00:00"),
+    );
+  });
+
+  it("目安との差と、速い / 予定どおり / 控えめの見立て", () => {
+    // 8/16 12:00 ＝ 半月。上限 3100 の目安は 1550
+    const at = (usedJpy: number) =>
+      budgetPace({ usedJpy, limitJpy: 3100, now: jst("2026-08-16T12:00:00") })!;
+    expect(at(2000).diffJpy).toBeCloseTo(450, 9);
+    expect(at(2000).tone).toBe("fast");
+    expect(at(1000).diffJpy).toBeCloseTo(-550, 9);
+    expect(at(1000).tone).toBe("slow");
+    // ±5% の幅の中は「ほぼ予定どおり」。幅が無いと数円で見立てが裏返る
+    expect(at(1550).tone).toBe("on");
+    expect(at(1550 * 1.04).tone).toBe("on");
+    expect(at(1550 * 1.06).tone).toBe("fast");
+    expect(at(1550 * 0.96).tone).toBe("on");
+    expect(at(1550 * 0.94).tone).toBe("slow");
+  });
+
+  it("このペースのまま進んだときの月末の額を出す", () => {
+    // 半月で 2000 円 → 月末は 4000 円
+    const pace = budgetPace({
+      usedJpy: 2000,
+      limitJpy: 3100,
+      now: jst("2026-08-16T12:00:00"),
+    })!;
+    expect(pace.projectedJpy).toBeCloseTo(4000, 9);
+  });
+
+  it("1日ぶんも経っていないうちは月末の見込みを出さない", () => {
+    // 分母（経過割合）が小さいあいだは、1件の生成で月末の数字が跳ねる
+    const young = budgetPace({
+      usedJpy: 100,
+      limitJpy: 3100,
+      now: jst("2026-08-01T06:00:00"),
+    })!;
+    expect(young.projectedJpy).toBeNull();
+    // 目安そのもの（印を置く地点）は最初から出る
+    expect(young.elapsed).toBeCloseTo(6 / (31 * 24), 12);
+    const grown = budgetPace({
+      usedJpy: 100,
+      limitJpy: 3100,
+      now: jst("2026-08-02T00:00:00"),
+    })!;
+    expect(grown.projectedJpy).toBeCloseTo(3100, 9);
+  });
+
+  it("上限が無い / 月初の0時ちょうどなら、比べる相手が無いので出さない", () => {
+    const now = jst("2026-08-16T12:00:00");
+    expect(budgetPace({ usedJpy: 100, limitJpy: 0, now })).toBeNull();
+    expect(
+      budgetPace({
+        usedJpy: 100,
+        limitJpy: 3100,
+        now: jst("2026-08-01T00:00:00"),
+      }),
+    ).toBeNull();
   });
 });

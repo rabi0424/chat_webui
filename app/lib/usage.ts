@@ -21,6 +21,17 @@ export function monthStartJst(now: number): number {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - JST_OFFSET_MS;
 }
 
+/**
+ * その時刻が属する月の終わり（＝翌月の始まり、JST）を epoch ms で返す。
+ *
+ * 月の長さは 28〜31 日と揃わないので、「月のどこまで来たか」を測るには
+ * 始まりと終わりの両方が要る。日数で割ると 2月と8月で1日の重みが変わる。
+ */
+export function monthEndJst(now: number): number {
+  const d = new Date(now + JST_OFFSET_MS);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) - JST_OFFSET_MS;
+}
+
 /** その時刻が属する月の名前（"2026-08"）。一時解除の対象月に使う。 */
 export function monthLabelJst(now: number): string {
   const d = new Date(now + JST_OFFSET_MS);
@@ -212,5 +223,77 @@ export function checkLimit(input: LimitInput): LimitVerdict {
     usedJpy,
     limitJpy,
     estimated,
+  };
+}
+
+/**
+ * 「ほぼ予定どおり」と見なす幅（日割りの ±5%）。
+ *
+ * 幅を置かないと、目安をほんの数円跨いだだけで「速い」「控えめ」が
+ * 入れ替わり、印としての意味が無くなる。
+ */
+export const PACE_TOLERANCE = 0.05;
+
+/** 消化ペースの見立て。 */
+export interface BudgetPace {
+  /** 月のうち、いま何割が過ぎたか（0〜1）。日ではなく時刻まで数える。 */
+  elapsed: number;
+  /** 完全比例なら今ごろここ、という額（円）。 */
+  paceJpy: number;
+  /** 目安との差（円）。正なら使いすぎ。 */
+  diffJpy: number;
+  /** 実際 ÷ 目安。1 なら完全比例。 */
+  ratio: number;
+  /**
+   * このペースのまま月末まで進んだときの額（円）。
+   * 月が明けて間もないうちは null（下の理由）。
+   */
+  projectedJpy: number | null;
+  /** 速いか、ほぼ予定どおりか、控えめか。 */
+  tone: "fast" | "on" | "slow";
+}
+
+/**
+ * 月間上限に対する消化ペース（UI-8）。
+ *
+ * 「今月の何割が過ぎたか」を**時刻まで含めて**測り、上限を完全比例で
+ * 割ったときの地点と比べる。日数で割ると、朝も夜も同じ地点になって
+ * しまい、月初の1本で「もう1日ぶん使い切った」ように見える。
+ * 月の長さが 28〜31 日と揃わないので、割る先は日数ではなく月の実長。
+ *
+ * 月末の見込み（`projectedJpy`）は、**1日ぶんも経っていないうちは出さない**。
+ * 過ぎた割合で割る計算なので、分母が小さいあいだは 1 件の生成で
+ * 月末の数字が何倍にも跳ね、目安どころか驚かせるだけになる。
+ */
+export function budgetPace(input: {
+  /** 今月の使用額（円）。 */
+  usedJpy: number;
+  /** 月間の上限（円）。0 以下ならペースを出さない。 */
+  limitJpy: number;
+  now: number;
+}): BudgetPace | null {
+  const { usedJpy, limitJpy, now } = input;
+  if (!(limitJpy > 0)) return null;
+  const start = monthStartJst(now);
+  const length = monthEndJst(now) - start;
+  const elapsedMs = now - start;
+  // 月初の 0 時ちょうどだと分母が 0 になる（比べる相手が無い）
+  if (!(elapsedMs > 0)) return null;
+
+  const elapsed = elapsedMs / length;
+  const paceJpy = limitJpy * elapsed;
+  const ratio = usedJpy / paceJpy;
+  return {
+    elapsed,
+    paceJpy,
+    diffJpy: usedJpy - paceJpy,
+    ratio,
+    projectedJpy: elapsedMs >= 24 * 60 * 60 * 1000 ? usedJpy / elapsed : null,
+    tone:
+      ratio > 1 + PACE_TOLERANCE
+        ? "fast"
+        : ratio < 1 - PACE_TOLERANCE
+          ? "slow"
+          : "on",
   };
 }
