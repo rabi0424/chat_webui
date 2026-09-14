@@ -643,6 +643,23 @@ export function Chat({
    */
   const mention = useMemo(() => parseMention(input, bots), [input, bots]);
 
+  /**
+   * 生成にかける宛先を、その応答が答える**ユーザー発言**から読む。
+   *
+   * 宛先は入力欄の状態ではなく発言の本文に書いてある（`@ボット名` は
+   * 発言の一部として保存される）。入力欄からしか読んでいなかったころは、
+   * 編集して再送信・保存したあとの生成・再生成が、宛先を無視して会話の
+   * モデルへ落ちていた——画面には `@ボット名` が残っているのに、答えて
+   * くるのは別のボット、という形で出る。
+   */
+  const addresseeOf = (history: UiMessage[]): BotRow | null => {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role !== "user") continue;
+      return parseMention(history[i].content, bots).bot;
+    }
+    return null;
+  };
+
   /** 候補を選んだ。本文を書き換え、続きを打てる位置へキャレットを置く。 */
   const pickMention = (b: BotRow) => {
     const next = applyMention(input, mention, b);
@@ -1379,27 +1396,36 @@ export function Chat({
    */
   function generateFromLast(confirmed = false) {
     if (isStreaming) return;
-    if (retryConfig && !confirmed) {
-      askRetry(() => generateFromLast(true), retryConfig);
+    const addressee = addresseeOf(messages);
+    const willRetry = retryConfigFor(addressee);
+    if (willRetry && !confirmed) {
+      askRetry(
+        () => generateFromLast(true),
+        willRetry,
+        addressee?.model_id ?? model,
+      );
       return;
     }
     const last = messages[messages.length - 1];
     if (!last || last.role !== "user") return;
-    void runGeneration([...messages], persistFor([...messages]));
+    void runGeneration([...messages], persistFor([...messages]), addressee);
   }
 
   function regenerate(confirmed = false) {
     if (isStreaming) return;
-    if (retryConfig && !confirmed) {
-      askRetry(() => regenerate(true), retryConfig);
-      return;
-    }
     const history = [...messages];
     while (history.length > 0 && history[history.length - 1].role === "assistant") {
       history.pop();
     }
     if (history.length === 0) return;
-    void runGeneration(history, persistFor(history));
+    // やり直すのは同じ発言への応答。宛先もその発言から読み直す
+    const addressee = addresseeOf(history);
+    const willRetry = retryConfigFor(addressee);
+    if (willRetry && !confirmed) {
+      askRetry(() => regenerate(true), willRetry, addressee?.model_id ?? model);
+      return;
+    }
+    void runGeneration(history, persistFor(history), addressee);
   }
 
   /**
@@ -1499,8 +1525,11 @@ export function Chat({
   /** 過去メッセージの編集・再送信（同一会話内で分岐を作る）。 */
   function submitEdit(confirmed = false) {
     if (!editing || isStreaming || editing.uploads > 0) return;
-    if (retryConfig && !confirmed) {
-      askRetry(() => submitEdit(true), retryConfig);
+    // 宛先は書き直した本文から読む（下の入力欄と同じ規則）
+    const addressee = parseMention(editing.text, bots).bot;
+    const willRetry = retryConfigFor(addressee);
+    if (willRetry && !confirmed) {
+      askRetry(() => submitEdit(true), willRetry, addressee?.model_id ?? model);
       return;
     }
     const text = editing.text.trim();
@@ -1520,11 +1549,15 @@ export function Chat({
       },
     ];
     setEditing(null);
-    void runGeneration(history, {
-      parentId: messages[at - 1]?.id ?? null,
-      userContent: text,
-      userAttachmentIds: attachments.map((a) => a.id),
-    });
+    void runGeneration(
+      history,
+      {
+        parentId: messages[at - 1]?.id ?? null,
+        userContent: text,
+        userAttachmentIds: attachments.map((a) => a.id),
+      },
+      addressee,
+    );
   }
 
   /** 削除選択モードでの選択トグル。 */
@@ -1720,6 +1753,8 @@ export function Chat({
     lastIndex: messages.length - 1,
     isImageGeneration,
     usdJpy,
+    bots,
+    models,
     switchBranch: (id) => void switchBranch(id),
     fork: (id) => void fork(id),
     regenerate: () => regenerate(),

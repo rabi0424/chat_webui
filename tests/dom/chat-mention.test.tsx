@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import {
   installServer,
+  msg,
   renderChat,
   TEST_MODEL,
   type ServerStub,
@@ -351,5 +352,170 @@ describe("宛先へ送る", () => {
     };
     expect(created.botId).toBe("bot-1");
     expect(created.modelId).toBe(BOT_MODEL.id);
+  });
+});
+
+/**
+ * プロンプトの編集欄（送信済みの発言を書き直す箱）。
+ *
+ * 書き直しの動機は「宛先を間違えた」「同じことを別のボットにも聞きたい」
+ * であることが多いのに、ここでは `@` が**何も起こさなかった**——候補は
+ * 出ず、`@翻訳` と書いて送っても会話のモデルが答えていた（本文には
+ * `@翻訳` が残るので、画面だけ見ると宛先が効いているように読める）。
+ */
+describe("編集欄の宛先", () => {
+  const conversation = () => [
+    msg("user", "これを訳して", { id: "u1" }),
+    msg("assistant", "訳しました", { id: "a1" }),
+  ];
+
+  /** 最初のユーザー発言の編集を開く。 */
+  async function openEditor(over: Parameters<typeof renderChat>[0] = {}) {
+    const { user } = renderChat({
+      ...options,
+      initialMessages: conversation(),
+      ...over,
+    });
+    await user.click((await screen.findAllByLabelText("編集して再送信"))[0]);
+    return { user, box: await screen.findByDisplayValue("これを訳して") };
+  }
+
+  /** 編集欄の「送信」（コンポーザーの送信ボタンと aria-label が同じ）。 */
+  const submitEdit = () =>
+    screen
+      .getAllByRole("button", { name: "送信" })
+      .filter((b) => b.textContent?.trim() === "送信")[0];
+
+  beforeEach(() => {
+    server = installServer(conversation());
+  });
+
+  it("@ を打つと候補が出て、選ぶと冒頭に入る（後ろは消えない）", async () => {
+    const { user, box } = await openEditor();
+    box.setSelectionRange(0, 0);
+    await user.type(box, "@", {
+      initialSelectionStart: 0,
+      initialSelectionEnd: 0,
+    });
+
+    const panel = await screen.findByRole("listbox", { name: "宛先のボット" });
+    await user.click(within(panel).getByText("翻訳", { exact: true }));
+    expect((box as HTMLTextAreaElement).value).toBe("@翻訳 これを訳して");
+  });
+
+  it("宛先を書いて送ると、その1通が宛先のボットで生成される", async () => {
+    const { user, box } = await openEditor({
+      systemPrompt: "会話のシステムプロンプト",
+    });
+    box.setSelectionRange(0, 0);
+    await user.type(box, "@翻訳 ", {
+      initialSelectionStart: 0,
+      initialSelectionEnd: 0,
+    });
+    await user.click(submitEdit());
+
+    await waitFor(() => expect(server.countOf("/generate")).toBe(1));
+    const body = server.lastBody("/generate") as {
+      model: string;
+      messages: { role: string; content: string }[];
+      userContent: string;
+    };
+    expect(body.model).toBe(BOT_MODEL.id);
+    expect(body.messages[0]).toEqual({
+      role: "system",
+      content: "あなたは翻訳者です。",
+    });
+    expect(body.userContent).toBe("@翻訳 これを訳して");
+  });
+
+  it("宛先の行にモデルが出て、解除で本文だけが残る", async () => {
+    const { user, box } = await openEditor();
+    box.setSelectionRange(0, 0);
+    await user.type(box, "@翻訳 ", {
+      initialSelectionStart: 0,
+      initialSelectionEnd: 0,
+    });
+    expect(await screen.findByText(/Claude Sonnet/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "解除" }));
+    expect((box as HTMLTextAreaElement).value).toBe("これを訳して");
+    expect(screen.queryByText(/Claude Sonnet/)).toBeNull();
+  });
+
+  it("宛先が「成功するまで生成」なら、編集からの送信でも先に確認を出す", async () => {
+    /*
+      何度も投げる＝そのぶん課金される。会話側の設定だけで見ていると、
+      宛先のボットが「成功するまで生成」でも確認が出ないまま走り出す
+    */
+    const painter = bot({
+      id: "bot-5",
+      name: "絵師",
+      model_id: IMAGE_MODEL.id,
+      params_json: JSON.stringify({
+        retry: "on",
+        retryTarget: "2",
+        retryMax: "4",
+      }),
+    });
+    const { user, box } = await openEditor({
+      bots: [...BOTS, painter],
+      models: [TEST_MODEL, BOT_MODEL, IMAGE_MODEL],
+    });
+    box.setSelectionRange(0, 0);
+    await user.type(box, "@絵師 ", {
+      initialSelectionStart: 0,
+      initialSelectionEnd: 0,
+    });
+    await user.click(submitEdit());
+
+    expect(await screen.findByText("成功するまで生成します")).toBeTruthy();
+    // 確認に出す数字とモデルは、実際に走るもの（＝宛先のもの）
+    expect(screen.getByText("2件")).toBeTruthy();
+    expect(screen.getByText(IMAGE_MODEL.name)).toBeTruthy();
+    expect(server.countOf("/generate")).toBe(0);
+
+    await user.click(screen.getByRole("button", { name: "実行" }));
+    await waitFor(() => expect(server.countOf("/generate")).toBe(1));
+  });
+
+  it("保存しただけの枝から生成しても、宛先が効く", async () => {
+    /*
+      編集欄の出口は2つ（保存／送信）。保存は枝を作るだけなので、
+      生成は「応答を生成」から始まる——宛先を送信の側だけで読んで
+      いると、こちらの経路で黙って会話のモデルへ落ちる
+    */
+    const { user, box } = await openEditor();
+    box.setSelectionRange(0, 0);
+    await user.type(box, "@翻訳 ", {
+      initialSelectionStart: 0,
+      initialSelectionEnd: 0,
+    });
+    // 保存した枝を末尾（ユーザー発言で終わる並び）として返す
+    server.on("/path", () => ({
+      messages: [msg("user", "@翻訳 これを訳して", { id: "u2" })],
+    }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await user.click(await screen.findByRole("button", { name: /応答を生成/ }));
+    await waitFor(() => expect(server.countOf("/generate")).toBe(1));
+    expect((server.lastBody("/generate") as { model: string }).model).toBe(
+      BOT_MODEL.id,
+    );
+  });
+
+  it("再生成も、その発言の宛先へ投げ直す", async () => {
+    const { user } = renderChat({
+      ...options,
+      initialMessages: [
+        msg("user", "@翻訳 これを訳して", { id: "u1" }),
+        msg("assistant", "訳しました", { id: "a1" }),
+      ],
+    });
+    await user.click(await screen.findByLabelText("再生成"));
+
+    await waitFor(() => expect(server.countOf("/generate")).toBe(1));
+    expect((server.lastBody("/generate") as { model: string }).model).toBe(
+      BOT_MODEL.id,
+    );
   });
 });

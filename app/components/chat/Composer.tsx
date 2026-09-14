@@ -11,9 +11,7 @@
  * タイトルだけになる。Mac でも同じ配置で成立するので、端末で分けない。
  */
 import {
-  useCallback,
   useRef,
-  useState,
   type ClipboardEvent,
   type ReactNode,
   type RefObject,
@@ -24,12 +22,12 @@ import {
 } from "../../lib/constants";
 import { formatBytes } from "../../lib/image";
 import { PROSE_INPUT } from "../../lib/ui";
-import { useEscapeToClose, useOutsideToClose } from "../../lib/dismiss";
 import type { MentionState } from "../../lib/mention";
 import type { BotRow } from "../../lib/db.server";
 import type { ModelInfo } from "../../lib/openrouter.server";
-import { shortModelName } from "../ModelPicker";
 import { MentionSuggest } from "./MentionSuggest";
+import { MentionAddressee } from "./MentionAddressee";
+import { useMentionSuggest } from "./use-mention-suggest";
 import {
   IconArrowUp,
   IconBroom,
@@ -135,59 +133,23 @@ export function Composer({
   const pillRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  /**
-   * Escape で閉じたときのメンション部分。ここが変わるまで開き直さない。
-   *
-   * 「閉じた」を真偽値だけで持つと、本文を打ち進めるたびに開き直って
-   * しまう（閉じたのは候補であって、入力ではない）。逆に本文の変化で
-   * 一切開き直さないと、`@` を打ち直しても二度と出てこない。
-   */
-  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
-  /**
-   * ↑↓ で選んでいる位置。「どのメンションに対する選択か」を一緒に持つ。
-   *
-   * 位置だけを持つと、打ち直して候補の並びが変わったときに前の位置が
-   * 残り、Enter が**別のボット**を確定する。効果（useEffect）で戻すの
-   * ではなく、描くときに見比べて捨てる。
-   */
-  const [picked, setPicked] = useState<{ of: string; index: number } | null>(
-    null,
-  );
 
-  const mentionText = input.slice(0, mention.replaceEnd);
-  /**
-   * 候補を出すか。
-   *
-   * 宛先が決まっていない打ちかけのあいだと、決まってはいるが本文が
-   * まだ無いあいだ（もっと長い名前へ打ち足せる）だけ出す。本文を
-   * 打ち始めたら引っ込める。
-   */
-  const suggestOpen =
-    mention.present &&
-    mention.candidates.length > 0 &&
-    dismissedFor !== mentionText &&
-    (mention.bot == null || mention.replaceEnd === input.length);
-
-  /**
-   * 既定でどれを選んでおくか。
-   *
-   * 打ちかけの断片があるとき（＝利用者が名前を絞り込んでいるとき）だけ
-   * 先頭を選んでおき、Enter で確定できるようにする。`@media` のように
-   * 名前と関係ない書き出しでは何も選ばない——ここで先頭を選んでおくと、
-   * 送るつもりの Enter がボットの確定に化ける。
-   */
-  const defaultIndex = mention.fragment === "" ? -1 : 0;
-  const activeIndex =
-    picked && picked.of === mentionText ? picked.index : defaultIndex;
-  const moveActive = (next: (i: number) => number) =>
-    setPicked({ of: mentionText, index: next(activeIndex) });
-
-  const closeSuggest = useCallback(
-    () => setDismissedFor(mentionText),
-    [mentionText],
-  );
-  useEscapeToClose(suggestOpen, closeSuggest);
-  useOutsideToClose(suggestOpen, closeSuggest, panelRef, pillRef);
+  /*
+    候補の開閉・↑↓・キー操作は編集欄（MessageEditor）と同じものを使う。
+    同じ操作感を2箇所に書き写すと、次に直すとき片方だけが直る
+  */
+  const {
+    open: suggestOpen,
+    mentionText,
+    activeIndex,
+    handleKeyDown: onMentionKeyDown,
+  } = useMentionSuggest({
+    text: input,
+    mention,
+    onPick: onPickMention,
+    panelRef,
+    anchorRef: pillRef,
+  });
 
   /** textarea をスクロールしたら、色分けの板も同じだけ動かす。 */
   const syncOverlay = () => {
@@ -197,9 +159,6 @@ export function Composer({
   };
 
   const addressee = mention.bot;
-  const addresseeModel = addressee
-    ? models.find((m) => m.id === addressee.model_id)
-    : undefined;
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -307,26 +266,12 @@ export function Composer({
           }}
         />
         {addressee && (
-          /*
-            宛先が効いていることの説明。色分けだけでは「宛先として
-            採用された」ことは分かっても、**どのモデルで返ってくるか**
-            が分からない。チップに出ているモデルとは違うものが使われる
-            ので、その場で見せておく
-          */
-          <p className="flex items-center gap-1.5 px-4 pt-2 text-xs">
-            <span aria-hidden>{addressee.icon}</span>
-            <span className="font-medium text-accent-ink">{addressee.name}</span>
-            <span className="min-w-0 truncate text-ink-3">
-              宛て・{shortModelName(addresseeModel, addressee.model_id)}
-            </span>
-            <button
-              type="button"
-              onClick={onClearMention}
-              className="shrink-0 rounded px-1 text-ink-3 hover:bg-hover hover:text-ink-2"
-            >
-              解除
-            </button>
-          </p>
+          <MentionAddressee
+            bot={addressee}
+            models={models}
+            onClear={onClearMention}
+            className="px-4 pt-2"
+          />
         )}
         <div className="relative">
           {/*
@@ -385,26 +330,8 @@ export function Composer({
             onScroll={syncOverlay}
             onKeyDown={(e) => {
               if (e.nativeEvent.isComposing) return;
-              if (suggestOpen) {
-                const n = mention.candidates.length;
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  moveActive((i) => (i + 1 + n) % n);
-                  return;
-                }
-                if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  moveActive((i) => (i <= 0 ? n - 1 : i - 1));
-                  return;
-                }
-                // Tab は「補完」。どれも選んでいなければ先頭を採る。
-                // Enter は選んでいるときだけ横取りする（送信を邪魔しない）
-                if (e.key === "Tab" || (e.key === "Enter" && activeIndex >= 0)) {
-                  e.preventDefault();
-                  onPickMention(mention.candidates[Math.max(activeIndex, 0)]);
-                  return;
-                }
-              }
+              // 候補が拾ったキーは送信まで届かせない
+              if (onMentionKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 onSend();

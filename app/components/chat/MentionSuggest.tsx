@@ -1,8 +1,10 @@
 /**
  * 宛先ボットの候補一覧（入力欄の `@` に対する変換予測）。
  *
- * 入力欄の**上**へ開く。入力欄は画面の下端に居るので、下に開くと
- * 画面の外へ出る（モデル選択と同じ事情）。
+ * 入力欄の**上**へ開くのが基本。入力欄は画面の下端に居るので、下に
+ * 開くと画面の外へ出る（モデル選択と同じ事情）。同じ候補を会話の途中に
+ * 開くプロンプトの編集欄でも出すため、上が狭ければ下へ回す
+ * （計算は lib/mention-panel.ts）。
  *
  * ポータルで body 直下に描くのもモデル選択と同じ理由。入力欄は
  * ガラス面（backdrop-blur）で、その子孫に置いた backdrop-filter は
@@ -14,9 +16,7 @@ import type { BotRow } from "../../lib/db.server";
 import { GLASS_PANEL } from "../../lib/ui";
 import { providerColor, shortModelName } from "../ModelPicker";
 import type { ModelInfo } from "../../lib/openrouter.server";
-
-/** 一覧の高さの上限（画面の比率）。 */
-const PANEL_MAX_RATIO = 0.5;
+import { placeMentionPanel } from "../../lib/mention-panel";
 
 export function MentionSuggest({
   anchorRef,
@@ -48,21 +48,21 @@ export function MentionSuggest({
     const rect = anchorRef.current?.getBoundingClientRect();
     const panel = panelRef.current;
     if (!rect || !panel) return;
-    const margin = 8;
-    const above = rect.top - margin;
-    panel.style.left = `${rect.left}px`;
-    panel.style.width = `${rect.width}px`;
-    panel.style.bottom = `${window.innerHeight - rect.top + 6}px`;
-    panel.style.maxHeight = `${Math.max(
-      120,
-      Math.min(window.innerHeight * PANEL_MAX_RATIO, above - 6),
-    )}px`;
+    const at = placeMentionPanel(rect, { height: window.innerHeight });
+    panel.style.left = `${at.left}px`;
+    panel.style.width = `${at.width}px`;
+    // 使わないほうは消す。前の測定が残ると上下の両端に貼り付いて伸びる
+    panel.style.top = at.top == null ? "" : `${at.top}px`;
+    panel.style.bottom = at.bottom == null ? "" : `${at.bottom}px`;
+    panel.style.maxHeight = `${at.maxHeight}px`;
+    // 開く向きと同じ側から伸ばす（animate-pop の拡大の起点）
+    panel.style.transformOrigin = at.top == null ? "bottom" : "top";
   });
 
   return createPortal(
     <div
       ref={panelRef}
-      className={`fixed z-30 flex origin-bottom flex-col overflow-hidden rounded-xl animate-pop ${GLASS_PANEL}`}
+      className={`fixed z-30 flex flex-col overflow-hidden rounded-xl animate-pop ${GLASS_PANEL}`}
     >
       <p className="border-b border-line px-3 py-1.5 text-[11px] font-medium text-ink-3">
         宛先のボット（↑↓ と Tab で選択）
