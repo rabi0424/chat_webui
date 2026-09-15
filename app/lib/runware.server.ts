@@ -33,7 +33,7 @@
  */
 import { env } from "cloudflare:workers";
 import { RUNWARE_PREFIX } from "./constants";
-import { RUNWARE_IMAGE_PARAM_KEYS } from "./params";
+import { RUNWARE_IMAGE_SETTING_KEYS } from "./params";
 import type { ModelInfo } from "./openrouter.server";
 import {
   UPSTREAM_CONNECT_TIMEOUT_MS,
@@ -143,7 +143,7 @@ export function buildRunwareModelInfo(model: RunwareModel): ModelInfo {
     // 参照画像を渡して直させられる
     inputModalities: ["text", "image"],
     outputModalities: ["text", "image"],
-    supportedParameters: [...RUNWARE_IMAGE_PARAM_KEYS],
+    supportedParameters: [...RUNWARE_IMAGE_SETTING_KEYS],
     provider: "runware",
     // ⚙に出す品質の段。クライアントは表を読めないのでここへ載せる
     runwareQuality: model.quality,

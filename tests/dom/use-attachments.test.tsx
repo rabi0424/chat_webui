@@ -10,15 +10,26 @@ import { MAX_ATTACHMENTS_PER_MESSAGE } from "../../app/lib/constants";
  * state ではなく押さえた枚数で数える）。ここが緩むと上限を超えて
  * 添付できてしまい、送信時にサーバー側で切り捨てられる。
  */
-// 画像の縮小はブラウザの機能（canvas）に依るので、テストでは素通しする
+/**
+ * 画像の縮小も、URL から大きさを測るのもブラウザの機能（canvas・Image）に
+ * 依る。ここでは縮小を素通しにし、測るほうは**すぐには返さない**ものに
+ * 差し替える——遅れて届く測定が、途中の操作で落ちないことを見たい。
+ */
+const measured: { url: string; resolve: (s: { width: number; height: number } | null) => void }[] = [];
 vi.mock("../../app/lib/image", async (orig) => {
   const actual = await orig<typeof import("../../app/lib/image")>();
-  return { ...actual, prepareImage: async (f: File) => f };
+  return {
+    ...actual,
+    prepareImage: async (f: File) => f,
+    urlImageSize: (url: string) =>
+      new Promise((resolve) => measured.push({ url, resolve })),
+  };
 });
 
 let uploaded = 0;
 beforeEach(() => {
   uploaded = 0;
+  measured.length = 0;
   globalThis.fetch = (async () => {
     uploaded++;
     return new Response(
@@ -152,5 +163,67 @@ describe("添付を外す", () => {
       expect(hook.result.current.pending).toHaveLength(1);
       expect(hook.result.current.pending[0].id).toBe("g2");
     });
+  });
+});
+
+/**
+ * 実体を手元に持っていない添付（生成画像・送信前の控えから戻したぶん）の
+ * 大きさ。
+ *
+ * 「入力画像に合わせる」の見積もりはこれを読む。測り終わる前に別の添付が
+ * 増えると、測定を作り直しのたびに打ち切る作りでは**1枚目の結果だけが
+ * 静かに落ちる**（測り直しもしないので、以後ずっと大きさ不明のまま）。
+ */
+describe("実体が手元に無い添付の大きさ", () => {
+  const generated = (id: string) => ({
+    id,
+    mimeType: "image/png",
+    name: `${id}.png`,
+    size: 100,
+  });
+
+  it("URL の画像を測って持つ", async () => {
+    const { hook } = setup();
+    act(() => hook.result.current.attachGeneratedImages([generated("g1")]));
+    await waitFor(() => expect(measured).toHaveLength(1));
+    expect(measured[0].url).toBe("/api/files/g1");
+
+    act(() => measured[0].resolve({ width: 1024, height: 768 }));
+    await waitFor(() =>
+      expect(hook.result.current.pending[0].imageSize).toEqual({
+        width: 1024,
+        height: 768,
+      }),
+    );
+  });
+
+  it("測っている途中に別の添付が増えても、結果を落とさない", async () => {
+    const { hook } = setup();
+    act(() => hook.result.current.attachGeneratedImages([generated("g1")]));
+    await waitFor(() => expect(measured).toHaveLength(1));
+
+    // 1枚目の測定が返る前に2枚目を足す（効果が作り直される）
+    act(() => hook.result.current.attachGeneratedImages([generated("g2")]));
+    await waitFor(() => expect(measured).toHaveLength(2));
+
+    act(() => measured[0].resolve({ width: 1024, height: 768 }));
+    await waitFor(() =>
+      expect(hook.result.current.pending[0].imageSize).toEqual({
+        width: 1024,
+        height: 768,
+      }),
+    );
+  });
+
+  /** 入力欄から選んだぶんは、縮小後の実体から読んである（測り直さない）。 */
+  it("縮小前の元ファイル（blob:）は測りに行かない", async () => {
+    const { hook } = setup();
+    await act(async () => {
+      await hook.result.current.addFiles([png("a.png")]);
+    });
+    await waitFor(() =>
+      expect(hook.result.current.pending[0].status).toBe("ready"),
+    );
+    expect(measured).toHaveLength(0);
   });
 });

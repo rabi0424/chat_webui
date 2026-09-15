@@ -37,6 +37,8 @@ function extraQualityOf(narrow: string, wide: string): string | undefined {
 }
 
 const { readUpstreamJson } = await import("../../app/lib/generation.server");
+const { buildGenerationPayload, SIZE_FROM_INPUT_KEY, SIZE_SCALE_KEY } =
+  await import("../../app/lib/params");
 
 /** 依頼の組み立ての既定。各テストで要るところだけ上書きする。 */
 function task(
@@ -360,6 +362,33 @@ describe("readUpstreamJson が Runware の応答を落とさない", () => {
  * ここが外れたときの壊れ方は**画面に出ない**——絵は出るのに、⚙で
  * 選んだ審査の強さだけが効かない。
  */
+/**
+ * ⚙の設定から、実際に上流へ届く縦横までを続けて通す。
+ *
+ * 「入力画像に合わせる」で決めた大きさは⚙の選択肢に無い値なので、
+ * 途中の検査（選択肢に無い値は捨てる）に引っかかると**黙って既定の
+ * 1024x1024 に戻る**。組み立てまで通して、届く数字そのものを見る。
+ */
+describe("入力画像に合わせる（設定 → 上流の縦横）", () => {
+  it("倍した大きさが width / height として届く", () => {
+    const params = buildGenerationPayload(
+      { [SIZE_FROM_INPUT_KEY]: "on", [SIZE_SCALE_KEY]: 2 },
+      "runware",
+      { width: 1024, height: 768 },
+    );
+    expect(task({ params })).toMatchObject({ width: 2048, height: 1536 });
+  });
+
+  it("入力画像が無ければ、⚙で選んだ大きさのまま", () => {
+    const params = buildGenerationPayload(
+      { [SIZE_FROM_INPUT_KEY]: "on", [SIZE_SCALE_KEY]: 2, size: "1536x1024" },
+      "runware",
+      null,
+    );
+    expect(task({ params })).toMatchObject({ width: 1536, height: 1024 });
+  });
+});
+
 describe("requestUpstream の Runware 分岐", () => {
   const gen = readFileSync("app/lib/generation.server.ts", "utf8");
   const branch = gen.match(/if \(provider === "runware"\)[\s\S]*?\n {2}}\n/)?.[0];
@@ -379,7 +408,16 @@ describe("requestUpstream の Runware 分岐", () => {
 
   it("⚙の値は、この窓口の許可リストを通してから渡す", () => {
     expect(branch).toContain(
-      'buildGenerationPayload(job.paramsState, "runware")',
+      'buildGenerationPayload(job.paramsState, "runware", inputSize)',
     );
+  });
+
+  /*
+   * 入力画像の縦横を渡し忘れても型は通り、上流も 400 を返さない——
+   * 「入力画像に合わせる」がオンのまま、⚙で選んだ古いサイズで作られる。
+   * 画面にはエラーが出ないので、出来上がりを数えるまで気づけない。
+   */
+  it("入力画像の縦横を組み立てへ渡す", () => {
+    expect(branch).toContain("inputSize } = imageRequestOf(messages)");
   });
 });

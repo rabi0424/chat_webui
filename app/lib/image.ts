@@ -13,6 +13,7 @@ const MAX_EDGE = 2048;
 const REENCODE_THRESHOLD_BYTES = 512 * 1024;
 
 import { ALLOWED_IMAGE_TYPES } from "./constants";
+import { readImageSize, type ImageSize } from "./image-size";
 
 export function isAcceptedImage(file: File): boolean {
   return ALLOWED_IMAGE_TYPES.includes(file.type.split(";")[0].toLowerCase());
@@ -76,6 +77,47 @@ export async function prepareImage(file: File): Promise<File> {
   const ext = blob.type === "image/webp" ? "webp" : "jpg";
   const base = file.name.replace(/\.[^.]+$/, "") || "image";
   return new File([blob], `${base}.${ext}`, { type: blob.type });
+}
+
+/**
+ * 送る実体そのものから縦横を読む。
+ *
+ * `Image` に読ませないのは、**縮小前の元ファイルではなく、実際に送る
+ * ほうを測る**ため（`prepareImage` は長辺2048まで縮める）。読み取りは
+ * サーバーと同じ関数を使うので、⚙に出る見積もりと、上流へ送られる
+ * 大きさが同じ計算から出る。
+ */
+export async function blobImageSize(blob: Blob): Promise<ImageSize | null> {
+  try {
+    return readImageSize(await blob.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * URL で持っている画像の縦横（実体が手元に無い添付向け）。
+ *
+ * 生成画像を入力欄に載せたときと、送信前の控えから戻したときは、
+ * バイト列がこちら側に無い。表示のために既に読み込んでいるので、
+ * ブラウザの持っている大きさを借りる（取り直しは起きない）。
+ */
+export function urlImageSize(url: string): Promise<ImageSize | null> {
+  return new Promise((resolve) => {
+    if (typeof Image === "undefined") {
+      resolve(null);
+      return;
+    }
+    const img = new Image();
+    img.onload = () =>
+      resolve(
+        img.naturalWidth > 0 && img.naturalHeight > 0
+          ? { width: img.naturalWidth, height: img.naturalHeight }
+          : null,
+      );
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
 }
 
 export function formatBytes(bytes: number): string {

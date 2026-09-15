@@ -289,6 +289,27 @@ describe("apiyiImageRequestInit", () => {
     expect(files[0].type).toBe("image/png");
   });
 
+  /*
+   * 「入力画像に合わせる」で決まる値は⚙の選択肢そのものだが、決めるのは
+   * 送信時。multipart は文字列しか運べないので、ここで落ちると
+   * **編集のときだけ大きさが効かない**という形になる。
+   */
+  it("入力画像に合わせて決めた大きさが、編集の依頼にも載る", async () => {
+    const { buildGenerationPayload, SIZE_FROM_INPUT_KEY, SIZE_SCALE_KEY } =
+      await import("../../app/lib/params");
+    const init = apiyiImageRequestInit({
+      model: "m",
+      prompt: "大きく",
+      images: [png],
+      params: buildGenerationPayload(
+        { [SIZE_FROM_INPUT_KEY]: "on", [SIZE_SCALE_KEY]: 2 },
+        "apiyi",
+        { width: 1024, height: 1024 },
+      ),
+    });
+    expect((init.body as FormData).get("size")).toBe("2048x2048");
+  });
+
   it("画像は上流の上限（16枚）で切る", () => {
     const init = apiyiImageRequestInit({
       model: "m",

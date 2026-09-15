@@ -7,7 +7,13 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "../../lib/constants";
-import { isAcceptedImage, prepareImage } from "../../lib/image";
+import {
+  blobImageSize,
+  isAcceptedImage,
+  prepareImage,
+  urlImageSize,
+} from "../../lib/image";
+import type { ImageSize } from "../../lib/image-size";
 import type { UiAttachment } from "../../lib/types";
 import type { UploadResponse } from "../../lib/api-types";
 
@@ -20,6 +26,14 @@ export interface PendingAttachment {
   status: "uploading" | "ready" | "error";
   id?: string;
   error?: string;
+  /**
+   * 送る実体の縦横（読めたときだけ）。
+   *
+   * 「入力画像に合わせる」の見積もり（⚙）と、入力欄に出す MP の表示に
+   * 使う。読めないこともある（形式を読み取れない・生成画像がまだ画面に
+   * 出ていない）ので、無い前提で書く。
+   */
+  imageSize?: ImageSize;
 }
 
 /**
@@ -28,8 +42,13 @@ export interface PendingAttachment {
  * 入力欄からの追加と編集中の追加で同じ手順を踏むので、ここに集約する
  * （別々に書かれていて、片方だけ直る余地が残っていた）。
  */
-export async function uploadImage(file: File): Promise<UiAttachment> {
+export async function uploadImage(
+  file: File,
+): Promise<{ attachment: UiAttachment; imageSize: ImageSize | null }> {
   const prepared = await prepareImage(file);
+  // 測るのは縮小したあと。元ファイルを測ると、⚙に出る「入力の解像度」が
+  // 実際に送られる画像より大きくなる（長辺2048まで縮めている）
+  const imageSize = await blobImageSize(prepared);
   const form = new FormData();
   form.append("file", prepared);
   const res = await fetch("/api/uploads", { method: "POST", body: form });
@@ -42,10 +61,13 @@ export async function uploadImage(file: File): Promise<UiAttachment> {
     );
   }
   return {
-    id: body.id,
-    mimeType: body.mimeType ?? "image/*",
-    name: body.name ?? file.name,
-    size: body.size ?? file.size,
+    attachment: {
+      id: body.id,
+      mimeType: body.mimeType ?? "image/*",
+      name: body.name ?? file.name,
+      size: body.size ?? file.size,
+    },
+    imageSize,
   };
 }
 
@@ -80,6 +102,40 @@ export function useAttachments({
   // 上限の判定に使う枚数を、実際の並びに合わせ直す（削除・送信のあと）
   useEffect(() => {
     pendingCountRef.current = pending.length;
+  }, [pending]);
+
+  /** 縦横を測りにいった添付（読めなかったものも含む。何度も測らない）。 */
+  const measuredRef = useRef(new Set<string>());
+
+  /*
+   * 実体を手元に持っていない添付（生成画像・送信前の控えから戻したぶん）の
+   * 縦横を埋める。
+   *
+   * 測るのは `/api/files/...` を指しているものだけ——そこにあるのは
+   * **これから送られる実体そのもの**だからである。入力欄から選んだぶんの
+   * previewUrl は縮小前の元ファイル（blob:）を指していて、測ると実際より
+   * 大きい値になる。そちらは縮小後の実体から読んである（uploadImage）。
+   *
+   * 途中で打ち切らない。この効果は添付が増えるたびに作り直されるので、
+   * 「作り直しのときに前回の測定を捨てる」形にすると、**2枚目を足した
+   * 拍子に1枚目の測定結果が落ちる**（測り直しもしないので、そのまま
+   * 大きさ不明で残る）。書き戻しは localId で当てるので、遅れて届いても
+   * 取り違えない。
+   */
+  useEffect(() => {
+    for (const p of pending) {
+      if (p.status !== "ready" || p.imageSize) continue;
+      if (p.previewUrl.startsWith("blob:")) continue;
+      if (measuredRef.current.has(p.localId)) continue;
+      measuredRef.current.add(p.localId);
+      const { localId, previewUrl } = p;
+      void urlImageSize(previewUrl).then((size) => {
+        if (!size) return;
+        setPending((prev) =>
+          prev.map((q) => (q.localId === localId ? { ...q, imageSize: size } : q)),
+        );
+      });
+    }
   }, [pending]);
 
   const tooMany = () =>
@@ -124,11 +180,17 @@ export function useAttachments({
 
       void (async () => {
         try {
-          const uploaded = await uploadImage(file);
+          const { attachment, imageSize } = await uploadImage(file);
           setPending((prev) =>
             prev.map((p) =>
               p.localId === localId
-                ? { ...p, status: "ready", id: uploaded.id, size: uploaded.size }
+                ? {
+                    ...p,
+                    status: "ready",
+                    id: attachment.id,
+                    size: attachment.size,
+                    ...(imageSize ? { imageSize } : {}),
+                  }
                 : p,
             ),
           );

@@ -104,8 +104,19 @@ describe("isShapeChoice", () => {
 });
 
 describe("shapeHint", () => {
-  it("解像度には比と向きの両方を添える", () => {
-    expect(shapeHint("1536x1024", parseShape("1536x1024")!)).toBe("3:2 横長");
+  it("解像度には比と向きと総画素数を添える", () => {
+    expect(shapeHint("1536x1024", parseShape("1536x1024")!)).toBe(
+      "3:2 横長 1.6MP",
+    );
+  });
+
+  /*
+   * MP を添えるのは「どれだけ重いか」を読み取らせるため。数字の並びが
+   * 似ていても、待ち時間と額はこちらに比例する。
+   */
+  it("似た並びの解像度を、総画素数で見分けられる", () => {
+    expect(shapeHint("2560x1440", parseShape("2560x1440")!)).toContain("3.7MP");
+    expect(shapeHint("3840x2160", parseShape("3840x2160")!)).toContain("8.3MP");
   });
 
   it("値がすでに比なら向きだけを添える", () => {

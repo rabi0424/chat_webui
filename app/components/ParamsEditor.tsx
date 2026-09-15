@@ -4,12 +4,141 @@ import { TERSE_INPUT } from "../lib/ui";
 import { isShapeChoice } from "../lib/aspect";
 import { ShapePicker, ShapePreview } from "./ShapePicker";
 import {
+  inputScaleOf,
   paramsForModel,
+  resolveScaledSize,
+  scalesFromInput,
   POE_EXTRA_KEY_PATTERN,
   POE_EXTRA_PREFIX,
+  SIZE_FROM_INPUT_KEY,
+  SIZE_SCALE_CHOICES,
+  SIZE_SCALE_KEY,
   type ParamDef,
   type ParamsState,
 } from "../lib/params";
+import type { ImageSize } from "../lib/image-size";
+import { adjustmentText, megapixelText, sizeText } from "../lib/output-size";
+
+/** ⚙から見た入力欄の添付（順番はそのまま。1枚目が倍率の相手）。 */
+export interface InputImage {
+  imageSize?: ImageSize;
+}
+
+/** オン/オフのつまみ（Web検索のトグルと同じ形）。 */
+function Switch({
+  on,
+  label,
+  onChange,
+}: {
+  on: boolean;
+  label: string;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      onClick={() => onChange(!on)}
+      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+        on ? "bg-accent" : "bg-neutral-300 dark:bg-neutral-600"
+      }`}
+    >
+      <span
+        className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+          on ? "translate-x-[22px]" : "translate-x-0.5"
+        }`}
+      />
+    </button>
+  );
+}
+
+/**
+ * 「入力画像に合わせる」がオンのときの、倍率と出来上がりの大きさ。
+ *
+ * ここに出す大きさは、実際に送る値と**同じ関数**（resolveScaledSize）から
+ * 出す。別々に計算すると、画面は 2048×2048 と言っているのに違う大きさで
+ * 作られることになり、絵が出てしまう以上そのまま気づけない。
+ *
+ * MP を併記するのは、予期せず巨大な絵を作らせないため。倍率は入力画像に
+ * 掛かるので、同じ「2倍」でも入力次第で1MPにも30MPにもなる——額と時間は
+ * そちらに比例する。
+ */
+function InputScaleRow({
+  provider,
+  value,
+  onChange,
+  inputImages,
+}: {
+  provider: "apiyi" | "runware";
+  value: ParamsState;
+  onChange: (next: ParamsState) => void;
+  inputImages: readonly InputImage[];
+}) {
+  const scale = inputScaleOf(value);
+  const input = inputImages[0]?.imageSize;
+  const resolved = resolveScaledSize(value, provider, input);
+  // 保存済みの設定に段以外の値が残っていることがある（ボットの初期設定や、
+  // 範囲の変更のあと）。黙って別の段に見せないよう、その値も並べる
+  const choices = [...new Set([...SIZE_SCALE_CHOICES, scale])].sort(
+    (a, b) => a - b,
+  );
+
+  return (
+    <div className="mt-2 space-y-2 rounded-lg bg-neutral-50 px-2.5 py-2 dark:bg-white/5">
+      <div className="flex items-center gap-3">
+        <label className="flex-1 text-xs text-ink-2" htmlFor="size-scale">
+          倍率
+        </label>
+        {/*
+          自由入力にしない。打っている途中の値（"1" → "13"）がそのまま
+          倍率として効いてしまい、消したときに何倍なのかも言えなくなる。
+          決まった段だけにすれば、打ち間違いで桁が変わることも無い。
+        */}
+        <select
+          id="size-scale"
+          value={String(scale)}
+          onChange={(e) =>
+            onChange({ ...value, [SIZE_SCALE_KEY]: Number(e.target.value) })
+          }
+          className="rounded-lg border border-line bg-white px-2 py-1.5 text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
+        >
+          {choices.map((v) => (
+            <option key={v} value={String(v)}>
+              ×{v}
+            </option>
+          ))}
+        </select>
+      </div>
+      {inputImages.length === 0 ? (
+        /* ボットの編集画面にも同じ⚙が出る（入力欄はまだ無い）ので、
+           「いま画像が無い」ではなく「あるときだけ効く」と言う */
+        <p className="text-xs text-ink-3">
+          入力欄に画像があるときだけ効きます（無ければ上の「サイズ」で作られます）
+        </p>
+      ) : !input || !resolved ? (
+        <p className="text-xs text-ink-3">
+          入力画像の大きさを読み取れませんでした。このまま送ると上の「サイズ」で作られます
+        </p>
+      ) : (
+        <p className="text-xs text-ink-2">
+          入力 {sizeText(input)}（{megapixelText(input)}）× {scale} →{" "}
+          <span className="font-medium tabular-nums">
+            {sizeText(resolved.size)}
+          </span>
+          （{megapixelText(resolved.size)}）
+          {inputImages.length > 1 ? "（1枚目を基準）" : ""}
+        </p>
+      )}
+      {resolved && adjustmentText(resolved.adjustment) && (
+        <p className="text-xs text-amber-600 dark:text-amber-500">
+          {adjustmentText(resolved.adjustment)}
+        </p>
+      )}
+    </div>
+  );
+}
 
 /** この欄が扱う項目（Poeが公開していない名前）だけを取り出す。 */
 function ownEntries(
@@ -154,10 +283,16 @@ export function ParamsEditor({
   model,
   value,
   onChange,
+  inputImages = [],
 }: {
   model: ModelInfo | undefined;
   value: ParamsState;
   onChange: (next: ParamsState) => void;
+  /**
+   * 入力欄にいま並んでいる画像。「入力画像に合わせる」の見積もりに使う
+   * （渡さなければ、画像が無いものとして扱う）。
+   */
+  inputImages?: readonly InputImage[];
 }) {
   const defs = paramsForModel(model);
 
@@ -231,6 +366,11 @@ export function ParamsEditor({
           「自動」はAPIに送信せず、モデル本来の既定動作に任せます
         </p>
         {defs.map((def) => {
+          /*
+           * 倍率は「入力画像に合わせる」の中に置く。オフのときに単体で
+           * 並んでいても、何に掛かる数字なのか読めない。
+           */
+          if (def.key === SIZE_SCALE_KEY) return null;
           const manual = value[def.key] != null;
           /*
            * 形（アスペクト比・解像度）の選択肢は <select> にしない。
@@ -240,10 +380,20 @@ export function ParamsEditor({
           const shapes =
             def.kind === "select" &&
             isShapeChoice(def.options.map((o) => o.value));
+          /*
+           * 「入力画像に合わせる」がオンのあいだ、固定のサイズは送られない。
+           * 選んだ値がそのまま残って見えるので、効いていないことを
+           * 説明に出す（黙って無視されると、選び直しても何も変わらない）。
+           */
+          const superseded = def.key === "size" && scalesFromInput(value);
           const head = (
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium">{def.label}</p>
-              <p className="truncate text-xs text-ink-3">{def.description}</p>
+              <p className="truncate text-xs text-ink-3">
+                {superseded
+                  ? "「入力画像に合わせる」がオンのあいだは使いません"
+                  : def.description}
+              </p>
             </div>
           );
           const toAuto = (
@@ -256,6 +406,35 @@ export function ParamsEditor({
               自動に戻す
             </button>
           );
+
+          if (def.kind === "toggle") {
+            const on = value[def.key] === "on";
+            return (
+              <div key={def.key} className="rounded-lg px-1 py-1.5">
+                <div className="flex items-center gap-3">
+                  {head}
+                  <Switch
+                    on={on}
+                    label={def.label}
+                    onChange={(next) => {
+                      const state = { ...value };
+                      if (next) state[def.key] = "on";
+                      else delete state[def.key];
+                      onChange(state);
+                    }}
+                  />
+                </div>
+                {on && def.key === SIZE_FROM_INPUT_KEY && (
+                  <InputScaleRow
+                    provider={model.provider === "runware" ? "runware" : "apiyi"}
+                    value={value}
+                    onChange={onChange}
+                    inputImages={inputImages}
+                  />
+                )}
+              </div>
+            );
+          }
 
           if (manual && shapes && def.kind === "select") {
             return (

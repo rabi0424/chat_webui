@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   APIYI_IMAGE_PARAM_KEYS,
+  APIYI_IMAGE_SETTING_KEYS,
   RUNWARE_IMAGE_PARAM_KEYS,
+  RUNWARE_IMAGE_SETTING_KEYS,
   buildGenerationPayload,
   paramsForModel,
   parseParamsJson,
@@ -10,6 +12,9 @@ import {
   POE_REASONING_EFFORT_KEY,
   POE_THINKING_BUDGET_KEY,
   REASONING_KEY,
+  resolveScaledSize,
+  SIZE_FROM_INPUT_KEY,
+  SIZE_SCALE_KEY,
 } from "../app/lib/params";
 
 /**
@@ -240,9 +245,30 @@ describe("paramsForModel（API易）", () => {
       createdAt: 0,
     });
 
-  it("申告した項目だけを出す", () => {
-    const defs = paramsForModel(model([...APIYI_IMAGE_PARAM_KEYS]));
-    expect(defs.map((d) => d.key)).toEqual([...APIYI_IMAGE_PARAM_KEYS]);
+  it("申告した項目を、この順で出す", () => {
+    /*
+     * 倍率はサイズの真下に置く。離れて並ぶと、何に掛かる数字なのかが
+     * 読めない（⚙は上から順に読まれる）。
+     */
+    const defs = paramsForModel(model([...APIYI_IMAGE_SETTING_KEYS]));
+    expect(defs.map((d) => d.key)).toEqual([
+      "size",
+      SIZE_FROM_INPUT_KEY,
+      SIZE_SCALE_KEY,
+      "quality",
+      "output_format",
+      "output_compression",
+      "background",
+      "moderation",
+    ]);
+  });
+
+  /** 倍率の2項目は、上流へ送れる名前の一覧には入れない（送ると 400）。 */
+  it("上流へ送れる名前に、こちらの都合の項目を混ぜない", () => {
+    for (const keys of [APIYI_IMAGE_PARAM_KEYS, RUNWARE_IMAGE_PARAM_KEYS]) {
+      expect(keys).not.toContain(SIZE_FROM_INPUT_KEY);
+      expect(keys).not.toContain(SIZE_SCALE_KEY);
+    }
   });
 
   it("申告が無ければ何も出さない（OpenRouter の項目を借りない）", () => {
@@ -340,7 +366,7 @@ describe("paramsForModel（Runware）", () => {
       completionPrice: "0",
       inputModalities: ["text", "image"],
       outputModalities: ["text", "image"],
-      supportedParameters: [...RUNWARE_IMAGE_PARAM_KEYS],
+      supportedParameters: [...RUNWARE_IMAGE_SETTING_KEYS],
       provider: "runware" as const,
       runwareQuality: quality,
       createdAt: 0,
@@ -376,11 +402,115 @@ describe("paramsForModel（Runware）", () => {
         ...model(wide),
         id: "apiyi:m",
         provider: "apiyi" as const,
-        supportedParameters: [...APIYI_IMAGE_PARAM_KEYS],
+        supportedParameters: [...APIYI_IMAGE_SETTING_KEYS],
       })
         .filter((d) => d.key === "background")
         .flatMap((d) => (d.kind === "select" ? d.options.map((o) => o.value) : [])),
     ).toEqual(["opaque"]);
+  });
+});
+
+/**
+ * 「入力画像に合わせる」。
+ *
+ * この2つのキーは**上流に存在しない**。こちらで縦横を計算して `size` に
+ * 化けさせるための、こちら側の都合の値なので、そのまま送ると「知らない
+ * 項目」として 400 になり、その1本をまるごと失う。
+ *
+ * 効かない側の壊れ方も同じくらい厄介で、入力画像の縦横を渡し忘れると、
+ * エラーは出ないまま⚙で選んだ古いサイズで作られる。
+ */
+describe("入力画像に合わせる（size_from_input）", () => {
+  const ON = { [SIZE_FROM_INPUT_KEY]: "on", [SIZE_SCALE_KEY]: 2 };
+  const input = { width: 1024, height: 768 };
+
+  it("倍した大きさを size として送る（Runware）", () => {
+    expect(buildGenerationPayload(ON, "runware", input)).toEqual({
+      size: "2048x1536",
+    });
+  });
+
+  it("倍した大きさに近い選択肢を size として送る（API易）", () => {
+    // 2048x1536（3.1MP）に最も近い横長の選択肢
+    expect(buildGenerationPayload(ON, "apiyi", input)).toEqual({
+      size: "2048x1152",
+    });
+  });
+
+  /** これを落とすと 400 になる。 */
+  it("こちらの都合のキーは、どちらの窓口にも送らない", () => {
+    for (const provider of ["runware", "apiyi"] as const) {
+      const out = buildGenerationPayload(ON, provider, input);
+      expect(out).not.toHaveProperty(SIZE_FROM_INPUT_KEY);
+      expect(out).not.toHaveProperty(SIZE_SCALE_KEY);
+    }
+  });
+
+  it("オフなら、⚙で選んだサイズをそのまま送る", () => {
+    expect(
+      buildGenerationPayload({ size: "1024x1024" }, "runware", input),
+    ).toEqual({ size: "1024x1024" });
+    // 倍率だけ残っていても、オフのあいだは効かない
+    expect(
+      buildGenerationPayload(
+        { size: "1024x1024", [SIZE_SCALE_KEY]: 4 },
+        "runware",
+        input,
+      ),
+    ).toEqual({ size: "1024x1024" });
+  });
+
+  it("入力画像が無ければ、⚙で選んだサイズへ戻る", () => {
+    expect(
+      buildGenerationPayload({ ...ON, size: "1024x1024" }, "runware", null),
+    ).toEqual({ size: "1024x1024" });
+    // 渡し忘れ（既定の引数）も同じ扱い——設定だけ効かない状態にしない
+    expect(
+      buildGenerationPayload({ ...ON, size: "1024x1024" }, "runware"),
+    ).toEqual({ size: "1024x1024" });
+  });
+
+  it("倍率が無ければ等倍。範囲外は丸める", () => {
+    expect(
+      buildGenerationPayload({ [SIZE_FROM_INPUT_KEY]: "on" }, "runware", input),
+    ).toEqual({ size: "1024x768" });
+    expect(
+      buildGenerationPayload(
+        { ...ON, [SIZE_SCALE_KEY]: 99 },
+        "runware",
+        { width: 512, height: 512 },
+      ),
+    ).toEqual({ size: "2048x2048" });
+  });
+
+  it("壊れた倍率でも、生成できる大きさを出す", () => {
+    for (const bad of ["", "abc", -1, 0, Number.NaN]) {
+      const out = buildGenerationPayload(
+        { ...ON, [SIZE_SCALE_KEY]: bad as never },
+        "runware",
+        input,
+      );
+      expect(out.size).toBe("1024x768");
+    }
+  });
+
+  /*
+   * ⚙に出す見積もりと、実際に送る値は同じ関数から出す。別々に計算すると
+   * 「2048×1536 と書いてあるのに違う大きさで作られる」という食い違いが、
+   * 絵が出てしまうぶんだけ気づかれずに残る。
+   */
+  it("⚙の見積もりと、送る値が一致する", () => {
+    for (const provider of ["runware", "apiyi"] as const) {
+      const shown = resolveScaledSize(ON, provider, input);
+      expect(buildGenerationPayload(ON, provider, input).size).toBe(
+        shown?.value,
+      );
+    }
+  });
+
+  it("オフ・入力なしのときは、見積もりも出さない", () => {
+    expect(resolveScaledSize({ [SIZE_SCALE_KEY]: 2 }, "runware", input)).toBeNull();
+    expect(resolveScaledSize(ON, "runware", null)).toBeNull();
   });
 });
 

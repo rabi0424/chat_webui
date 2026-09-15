@@ -16,7 +16,7 @@
  */
 import { env } from "cloudflare:workers";
 import { APIYI_PREFIX, bareModelName, isApiyiModel } from "./constants";
-import { APIYI_IMAGE_PARAM_KEYS } from "./params";
+import { APIYI_IMAGE_SETTING_KEYS } from "./params";
 import type { ModelInfo } from "./openrouter.server";
 import {
   UPSTREAM_CONNECT_TIMEOUT_MS,
@@ -220,7 +220,7 @@ export function buildApiyiModelInfo(
      * する——推測で並べると「効くように見えて効かない」入力欄になり、
      * 知らない名前を送れば 400 で1本まるごと失う。
      */
-    supportedParameters: spec?.imageOutput ? [...APIYI_IMAGE_PARAM_KEYS] : [],
+    supportedParameters: spec?.imageOutput ? [...APIYI_IMAGE_SETTING_KEYS] : [],
     provider: "apiyi",
     perCallUsd: spec?.perCallUsd,
     createdAt: 0,

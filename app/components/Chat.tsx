@@ -972,13 +972,13 @@ export function Chat({
     for (const file of images) {
       try {
         // 入力欄からの追加と同じ手順（縮小 → アップロード）を使う
-        const uploaded = await uploadImage(file);
+        const { attachment } = await uploadImage(file);
         setEditing((prev) =>
           prev
             ? {
                 ...prev,
                 uploads: prev.uploads - 1,
-                attachments: [...prev.attachments, uploaded],
+                attachments: [...prev.attachments, attachment],
               }
             : prev,
         );
@@ -1955,6 +1955,9 @@ export function Chat({
               model={models.find((m) => m.id === model)}
               value={params}
               onChange={changeParams}
+              /* 「入力画像に合わせる」の見積もりは、いま入力欄にある
+                 画像から出す（開いているあいだも、添付を足せば変わる） */
+              inputImages={pending}
             />
           </div>
         </div>

@@ -11,6 +11,8 @@
  * なく「値が形として読めるか」で判定する。名前を増やしても追随しなくて済む。
  */
 
+import { megapixelText } from "./output-size";
+
 export interface Shape {
   /** 比の横。実寸ではなく比として扱う（1536x1024 も 3:2 も同じ形）。 */
   width: number;
@@ -90,13 +92,22 @@ export function isShapeChoice(values: readonly string[]): boolean {
 }
 
 /**
- * 形の説明文（"3:2 横長"）。
+ * 形の説明文（"3:2 横長 8.3MP"）。
  *
  * 比の表記（"16:9"）には向きだけを添える。既に2つの数の比として読める値を
  * 約分し直しても分かりやすくはならず、むしろ "21:9" の隣に "7:3" と出ると
  * 別の値に見える。解像度の表記にだけ、約分した比を足す。
+ *
+ * 解像度には総画素数（MP）も添える。"2560x1440" と "3840x2160" は数字の
+ * 並びが似ていて、**どれだけ重いか（＝待ち時間と額）が読み取れない**——
+ * 実際には2.6倍違う。比べられる1つの数にして並べる。
  */
 export function shapeHint(raw: string, shape: Shape): string {
   const orientation = orientationLabel(shape.orientation);
-  return raw.includes(":") ? orientation : `${shape.ratio} ${orientation}`;
+  if (raw.includes(":")) return orientation;
+  // 比の表記（"1.91:1"）でない＝実寸なので、画素数として読める
+  return `${shape.ratio} ${orientation} ${megapixelText({
+    width: shape.width,
+    height: shape.height,
+  })}`;
 }

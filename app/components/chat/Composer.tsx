@@ -21,6 +21,7 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
 } from "../../lib/constants";
 import { formatBytes } from "../../lib/image";
+import { megapixelText, sizeText } from "../../lib/output-size";
 import { PROSE_INPUT } from "../../lib/ui";
 import type { MentionState } from "../../lib/mention";
 import type { BotRow } from "../../lib/db.server";
@@ -179,7 +180,11 @@ export function Composer({
                 title={
                   p.status === "error"
                     ? p.error
-                    : `${p.name}（${formatBytes(p.size)}）`
+                    : `${p.name}（${formatBytes(p.size)}${
+                        p.imageSize
+                          ? `・${sizeText(p.imageSize)} ${megapixelText(p.imageSize)}`
+                          : ""
+                      }）`
                 }
               >
                 <img
@@ -197,6 +202,17 @@ export function Composer({
                 {p.status === "error" && (
                   <span className="absolute inset-0 grid place-items-center text-red-500">
                     <IconWarningTriangle className="h-5 w-5" />
+                  </span>
+                )}
+                {/*
+                  解像度を MP で添える。出力の大きさを「入力の何倍」で
+                  決められるようになり、**入力が何MPなのかが分からないと
+                  出来上がりの見当が付かない**（同じ2倍でも、1MPの図と
+                  4MPの写真では結果が4倍違う）。縦横の実数は title に出す。
+                */}
+                {p.status === "ready" && p.imageSize && (
+                  <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-black/55 text-center text-[10px] leading-4 text-white tabular-nums">
+                    {megapixelText(p.imageSize)}
                   </span>
                 )}
                 <button

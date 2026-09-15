@@ -18,6 +18,13 @@
  */
 
 import type { ModelInfo, PoeBotParameter } from "./openrouter.server";
+import type { ImageSize } from "./image-size";
+import {
+  MAX_SCALE,
+  MIN_SCALE,
+  scaledOutputSize,
+  type ResolvedSize,
+} from "./output-size";
 
 /** 手動設定された値の集合。キーがない = 自動（送らない）。 */
 export type ParamsState = Record<string, number | string>;
@@ -52,7 +59,22 @@ export interface TextParamDef extends BaseParamDef {
   placeholder: string;
 }
 
-export type ParamDef = NumberParamDef | SelectParamDef | TextParamDef;
+/**
+ * オン/オフだけの項目。
+ *
+ * 他の項目と違い「自動」が無い。上流に同じ設定があるわけではなく、
+ * **こちらが計算して別の項目（size）へ変える**ものなので、「送らない」
+ * ＝オフでしかない。三択に見せると、自動とオフの違いを説明できない。
+ */
+export interface ToggleParamDef extends BaseParamDef {
+  kind: "toggle";
+}
+
+export type ParamDef =
+  | NumberParamDef
+  | SelectParamDef
+  | TextParamDef
+  | ToggleParamDef;
 
 /** thinking（reasoning）設定。supported_parameters の "reasoning" に対応。 */
 export const REASONING_KEY = "reasoning";
@@ -381,6 +403,92 @@ function botParamDef(p: PoeBotParameter): ParamDef {
   };
 }
 
+// --- 画像の大きさ（窓口共通の考え方） --------------------------------------
+
+/**
+ * 入力画像の解像度を一定倍して出力の大きさにする、の オン/オフ。
+ *
+ * 他の項目と違い、**上流にこの名前の設定は無い**。オンのときに
+ * こちらで縦横を計算し、`size` として送る。流してしまうと「知らない
+ * 項目」として 400 になり、その1本をまるごと失う——なので、この2つは
+ * 上流へ送れる名前の一覧（`*_IMAGE_PARAM_KEYS`）には**入れない**。
+ * 組み立てはその一覧しか見ないので、読み飛ばす処理も要らない。
+ * ⚙に出す項目の一覧は別に持つ（`*_IMAGE_SETTING_KEYS`）。
+ */
+export const SIZE_FROM_INPUT_KEY = "size_from_input";
+/** 入力画像に掛ける倍率（`SIZE_FROM_INPUT_KEY` がオンのときだけ効く）。 */
+export const SIZE_SCALE_KEY = "size_scale";
+
+/**
+ * 選べる倍率。
+ *
+ * 細かく刻まないのは、出来上がりが上流の決まり（16の倍数・画素数の枠）へ
+ * 丸められるため——1.1倍と1.2倍を選び分けても同じ大きさになることがある。
+ */
+export const SIZE_SCALE_CHOICES = [0.5, 1, 1.5, 2, 3, 4] as const;
+
+/** 倍する設定がオンか。キーが無い＝オフ。 */
+export function scalesFromInput(state: ParamsState | null | undefined): boolean {
+  return state?.[SIZE_FROM_INPUT_KEY] === "on";
+}
+
+/** 倍率。範囲外・読めない値は既定（等倍）へ寄せる。 */
+export function inputScaleOf(state: ParamsState | null | undefined): number {
+  const raw = state?.[SIZE_SCALE_KEY];
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  return Math.min(Math.max(n, MIN_SCALE), MAX_SCALE);
+}
+
+/**
+ * 倍した結果の大きさ。倍する設定がオフか、入力画像の大きさが読めなければ
+ * null——そのときは⚙で選ばれている固定の `size` をそのまま使う。
+ *
+ * **⚙の見積もりも、実際に送る値もこの関数から出す。**別々に計算すると、
+ * 画面は「2048×2048」と言っているのに違う大きさで作られる、という
+ * 形で食い違う（絵は出るので、数えるまで気づけない）。
+ */
+export function resolveScaledSize(
+  state: ParamsState | null | undefined,
+  provider: "apiyi" | "runware",
+  inputSize: ImageSize | null | undefined,
+): ResolvedSize | null {
+  if (!scalesFromInput(state) || !inputSize) return null;
+  return scaledOutputSize(
+    inputSize,
+    inputScaleOf(state),
+    provider === "runware"
+      ? { provider: "runware" }
+      : { provider: "apiyi", allowed: APIYI_ENUMS.size },
+  );
+}
+
+/** 「入力画像に合わせる」の2項目（窓口で同じ文言にする）。 */
+function inputScaleDefs(): ParamDef[] {
+  return [
+    {
+      kind: "toggle",
+      key: SIZE_FROM_INPUT_KEY,
+      label: "入力画像に合わせる",
+      description:
+        "出力の縦横を、入力欄の画像の解像度を倍して決める（上のサイズは使わない）",
+    },
+    {
+      // 段から選ばせる。自由入力にすると、打っている途中の値
+      // （"1" → "13"）がそのまま倍率として効いてしまう
+      kind: "select",
+      key: SIZE_SCALE_KEY,
+      label: "倍率",
+      description: "入力画像の解像度に掛ける倍率",
+      options: SIZE_SCALE_CHOICES.map((v) => ({
+        value: String(v),
+        label: `×${v}`,
+      })),
+      defaultValue: "1",
+    },
+  ];
+}
+
 // --- API易（画像） ---------------------------------------------------------
 
 /**
@@ -404,6 +512,18 @@ export const APIYI_IMAGE_PARAM_KEYS = [
   "background",
   "moderation",
 ] as const;
+
+/**
+ * ⚙に出す項目（上流へ送れる名前＋こちらで計算に使う項目）。
+ *
+ * モデルの申告（`supportedParameters`）はこちらを使う。送信の側は
+ * 上の一覧しか見ないので、ここへ足しても上流へは流れない。
+ */
+export const APIYI_IMAGE_SETTING_KEYS: readonly string[] = [
+  ...APIYI_IMAGE_PARAM_KEYS,
+  SIZE_FROM_INPUT_KEY,
+  SIZE_SCALE_KEY,
+];
 
 /** 値の一覧（文書に載っているものだけ）。 */
 const APIYI_ENUMS: Record<string, string[]> = {
@@ -433,6 +553,7 @@ const APIYI_IMAGE_PARAM_DEFS: ParamDef[] = [
     options: APIYI_ENUMS.size.map((v) => ({ value: v, label: v })),
     defaultValue: "1024x1024",
   },
+  ...inputScaleDefs(),
   {
     kind: "select",
     key: "quality",
@@ -487,9 +608,19 @@ const APIYI_IMAGE_PARAM_DEFS: ParamDef[] = [
  * 残っているので（モデルを乗り換えてもパラメータは会話に付いたまま）、
  * ここを素通しにすると知らないフィールドとして 400 になる。
  */
-function buildApiyiPayload(state: ParamsState): Record<string, unknown> {
+function buildApiyiPayload(
+  state: ParamsState,
+  inputSize: ImageSize | null | undefined,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  const scaled = resolveScaledSize(state, "apiyi", inputSize);
   for (const key of APIYI_IMAGE_PARAM_KEYS) {
+    // 倍して決まった大きさは⚙の選択肢に無いが、選べる値の中から
+    // 選び直したもの（nearestAllowedSize）なので、そのまま送る
+    if (key === "size" && scaled) {
+      out.size = scaled.value;
+      continue;
+    }
     const raw = state[key];
     if (raw == null) continue;
     if (key === "output_compression") {
@@ -530,6 +661,13 @@ export const RUNWARE_IMAGE_PARAM_KEYS = [
   "output_compression",
 ] as const;
 
+/** ⚙に出す項目（API易 と同じ考え方。上の注記）。 */
+export const RUNWARE_IMAGE_SETTING_KEYS: readonly string[] = [
+  ...RUNWARE_IMAGE_PARAM_KEYS,
+  SIZE_FROM_INPUT_KEY,
+  SIZE_SCALE_KEY,
+];
+
 /**
  * 上流の文書にある値だけ。
  *
@@ -564,6 +702,7 @@ function runwareImageParamDefs(quality: string[]): ParamDef[] {
       options: RUNWARE_ENUMS.size.map((v) => ({ value: v, label: v })),
       defaultValue: "1024x1024",
     },
+    ...inputScaleDefs(),
     {
       kind: "select",
       key: "quality",
@@ -622,9 +761,19 @@ function runwareImageParamDefs(quality: string[]): ParamDef[] {
  * （`settings` か `providerSettings.<creator>` か）ため、置き場を知って
  * いる runware.server.ts で組み立てる。
  */
-function buildRunwarePayload(state: ParamsState): Record<string, unknown> {
+function buildRunwarePayload(
+  state: ParamsState,
+  inputSize: ImageSize | null | undefined,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  const scaled = resolveScaledSize(state, "runware", inputSize);
   for (const key of RUNWARE_IMAGE_PARAM_KEYS) {
+    // 倍して決まった大きさは⚙の選択肢には無い。上流の決まり（16の倍数・
+    // 総画素数・縦横比）へ収めた値なので、選択肢の検査は通さない
+    if (key === "size" && scaled) {
+      out.size = scaled.value;
+      continue;
+    }
     const raw = state[key];
     if (raw == null) continue;
     if (key === "output_compression") {
@@ -672,11 +821,17 @@ export function paramsForModel(model: ModelInfo | undefined): ParamDef[] {
 export function buildGenerationPayload(
   state: ParamsState | null | undefined,
   provider: ModelInfo["provider"] = "openrouter",
+  /**
+   * 入力画像（＝直近のユーザーメッセージの添付の1枚目）の縦横。
+   * 「入力画像に合わせる」がオンのときだけ読む。渡さなければ、その設定は
+   * 効かず、⚙で選ばれている固定のサイズがそのまま送られる。
+   */
+  inputSize: ImageSize | null | undefined = null,
 ): Record<string, unknown> {
   if (!state || typeof state !== "object") return {};
   if (provider === "poe") return buildPoePayload(state);
-  if (provider === "apiyi") return buildApiyiPayload(state);
-  if (provider === "runware") return buildRunwarePayload(state);
+  if (provider === "apiyi") return buildApiyiPayload(state, inputSize);
+  if (provider === "runware") return buildRunwarePayload(state, inputSize);
   return buildOpenRouterPayload(state);
 }
 

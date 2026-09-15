@@ -15,6 +15,8 @@ const { imageRequestOf, readUpstreamJson, readUpstreamResponse } = await import(
   "../../app/lib/generation.server"
 );
 
+import { dataUrlOf, PNG_24x40, PNG_40x24 } from "../fixtures/images";
+
 const encoder = new TextEncoder();
 
 function bodyOf(text: string): ReadableStream<Uint8Array> {
@@ -275,7 +277,7 @@ describe("imageRequestOf", () => {
         { role: "assistant", content: "できました" },
         { role: "user", content: "赤い円" },
       ]),
-    ).toEqual({ prompt: "赤い円", images: [], dataUrls: [] });
+    ).toEqual({ prompt: "赤い円", images: [], dataUrls: [], inputSize: null });
   });
 
   it("添付は data: URL から実体へ戻し、並び順を保つ", () => {
@@ -297,6 +299,49 @@ describe("imageRequestOf", () => {
     // data: URL のまま受け取る窓口（Runware）向けの並び。実体の側と
     // 同じ順で、同じ枚数
     expect(dataUrls).toEqual([one, two]);
+  });
+
+  /*
+   * 「入力画像に合わせる」は、この縦横に倍率を掛ける。添付の行は縦横を
+   * 持たないので、実体のバイト列から読むしかない——ここが null のまま
+   * だと、設定はオンなのに⚙で選んだ古いサイズで作られる（エラーは出ない）。
+   */
+  it("1枚目の実体から縦横を読む", () => {
+    const { inputSize } = imageRequestOf([
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: dataUrlOf(PNG_40x24, "image/png") } },
+          { type: "text", text: "大きく" },
+        ],
+      },
+    ]);
+    expect(inputSize).toEqual({ width: 40, height: 24 });
+  });
+
+  it("倍率を掛ける相手は1枚目（脇に添えた図に引きずられない）", () => {
+    const { inputSize } = imageRequestOf([
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: dataUrlOf(PNG_24x40, "image/png") } },
+          { type: "image_url", image_url: { url: dataUrlOf(PNG_40x24, "image/png") } },
+        ],
+      },
+    ]);
+    expect(inputSize).toEqual({ width: 24, height: 40 });
+  });
+
+  it("大きさを読めない添付では null（推測して送らない）", () => {
+    const { inputSize } = imageRequestOf([
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+        ],
+      },
+    ]);
+    expect(inputSize).toBeNull();
   });
 
   it("読めない添付は落とすが、依頼自体は成立させる", () => {
@@ -325,6 +370,7 @@ describe("imageRequestOf", () => {
       prompt: "",
       images: [],
       dataUrls: [],
+      inputSize: null,
     });
   });
 });

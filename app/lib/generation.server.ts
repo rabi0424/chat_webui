@@ -22,6 +22,7 @@ import {
   type ModelProvider,
 } from "./constants";
 import { buildGenerationPayload, type ParamsState } from "./params";
+import { readImageSize, type ImageSize } from "./image-size";
 import { RETRY_ATTEMPT_DEADLINE_MS, type RetryConfig } from "./retry";
 import { classifyUpstreamFailure } from "./upstream-outcome";
 import { isFetchableImageUrl, looksLikeImageUrl } from "./image-url";
@@ -198,11 +199,23 @@ export function imageRequestOf(messages: OutgoingMessage[]): {
   images: ApiyiInputImage[];
   /** 展開済みの data: URL（復号せずに渡せる窓口向け）。 */
   dataUrls: string[];
+  /**
+   * 1枚目の画像の縦横（読めれば）。
+   *
+   * 「入力画像に合わせる」がオンのとき、出力の大きさをここから決める。
+   * 添付の行は縦横を持たないので、実体のバイト列から読む
+   * （`readImageSize`）。**倍率を掛ける相手は1枚目**——複数枚のときに
+   * いちばん大きい絵へ合わせると、脇に添えた小さな参考図の順番を
+   * 入れ替えただけで出来上がりの大きさが変わる。編集の対象は1枚目、
+   * という並びの決まり（依頼文の「図1」）に合わせる。
+   */
+  inputSize: ImageSize | null;
 } {
   const last = [...messages].reverse().find((m) => m.role === "user");
-  if (!last) return { prompt: "", images: [], dataUrls: [] };
+  const empty = { images: [], dataUrls: [], inputSize: null };
+  if (!last) return { prompt: "", ...empty };
   if (typeof last.content === "string") {
-    return { prompt: last.content, images: [], dataUrls: [] };
+    return { prompt: last.content, ...empty };
   }
   const texts: string[] = [];
   const images: ApiyiInputImage[] = [];
@@ -218,7 +231,12 @@ export function imageRequestOf(messages: OutgoingMessage[]): {
     images.push({ data: decoded.buffer, mimeType: decoded.mimeType });
     dataUrls.push(part.image_url.url);
   }
-  return { prompt: texts.join("\n"), images, dataUrls };
+  return {
+    prompt: texts.join("\n"),
+    images,
+    dataUrls,
+    inputSize: images.length > 0 ? readImageSize(images[0].data) : null,
+  };
 }
 
 /** 画像一覧の検索に使う、この生成の依頼文（直近のユーザー発言）。 */
@@ -705,13 +723,15 @@ export async function requestUpstream(
      * 審査・品質の置き場と品質の段はモデルごとに違うが、組み立ての側が
      * モデルの表を引くので、ここでは渡さない。
      */
-    const { prompt, dataUrls } = imageRequestOf(messages);
+    const { prompt, dataUrls, inputSize } = imageRequestOf(messages);
     return await runwareImageRequest(
       {
         model: modelName,
         prompt,
         referenceImages: dataUrls,
-        params: buildGenerationPayload(job.paramsState, "runware"),
+        // 入力画像の縦横を渡さないと「入力画像に合わせる」が黙って
+        // 効かなくなる（エラーは出ず、前のサイズで作られる）
+        params: buildGenerationPayload(job.paramsState, "runware", inputSize),
       },
       opts.connectTimeoutMs,
       opts.signal,
@@ -727,13 +747,14 @@ export async function requestUpstream(
      * これまでのやり取りは画像モデルには渡らない（渡せない）。
      */
     if (job.imageOutput) {
-      const { prompt, images } = imageRequestOf(messages);
+      const { prompt, images, inputSize } = imageRequestOf(messages);
       return await apiyiImageRequest(
         {
           model: modelName,
           prompt,
           images,
-          params: buildGenerationPayload(job.paramsState, "apiyi"),
+          // 上と同じ（渡し忘れると設定が静かに効かなくなる）
+          params: buildGenerationPayload(job.paramsState, "apiyi", inputSize),
         },
         opts.connectTimeoutMs,
         opts.signal,
