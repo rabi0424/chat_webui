@@ -18,17 +18,9 @@
  */
 
 import type { PageResponse } from "./api-types";
+import { MAX_PAGE_TEXT_CHARS, TRUNCATED_MARK } from "./page-limits";
 
-/**
- * 本文の長さの上限。
- *
- * 超えたぶんは落として、落としたことを本文に書く。黙って切ると、
- * モデルは「そこで終わっている文書」として読む。
- */
-export const MAX_PAGE_TEXT_CHARS = 40_000;
-
-/** 切ったことを伝える印。 */
-export const TRUNCATED_MARK = "…（長すぎるため、ここで切りました）";
+export { MAX_PAGE_TEXT_CHARS, TRUNCATED_MARK };
 
 export interface ExtractedPage {
   /** 見出し（空のこともある）。 */

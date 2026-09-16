@@ -35,6 +35,7 @@ import {
   IconWarningTriangle,
   IconX,
 } from "../icons";
+import { MAX_PAGE_TEXT_CHARS } from "../../lib/page-limits";
 import { hostLabel } from "../../lib/page-url";
 import type { PendingAttachment } from "./use-attachments";
 import {
@@ -262,6 +263,19 @@ export function Composer({
                   ) : (
                     <span className="shrink-0 tabular-nums">
                       {countLines(p.text)}行・{p.text.length.toLocaleString()}字
+                    </span>
+                  )}
+                  {/*
+                    上限で切ったことは、**送る前に**見えていないと意味が
+                    ない。本文の末尾にも同じ断りが入るが、そちらは札を
+                    展開しないと読めない
+                  */}
+                  {p.truncated && (
+                    <span
+                      className="shrink-0 text-amber-600 dark:text-amber-400"
+                      title={`長いので先頭だけを取り込みました（${MAX_PAGE_TEXT_CHARS.toLocaleString()}字まで）`}
+                    >
+                      一部
                     </span>
                   )}
                   {p.status === "error" && (

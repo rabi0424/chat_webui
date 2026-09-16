@@ -163,16 +163,24 @@ export function nextPasteNumber(pastes: CollapsedPaste[]): number {
   return pastes.reduce((max, p) => Math.max(max, p.n), 0) + 1;
 }
 
+/** 選択範囲を差し替える。キャレットは差し込んだ文字の直後。 */
+export function insertText(
+  text: string,
+  selection: { start: number; end: number },
+  insert: string,
+): { text: string; caret: number } {
+  const before = text.slice(0, selection.start);
+  const after = text.slice(selection.end);
+  return { text: before + insert + after, caret: before.length + insert.length };
+}
+
 /** 選択範囲を札で置き換える。キャレットは札の直後。 */
 export function insertPasteToken(
   text: string,
   selection: { start: number; end: number },
   paste: CollapsedPaste,
 ): { text: string; caret: number } {
-  const token = pasteToken(paste);
-  const before = text.slice(0, selection.start);
-  const after = text.slice(selection.end);
-  return { text: before + token + after, caret: before.length + token.length };
+  return insertText(text, selection, pasteToken(paste));
 }
 
 /** 取り込んだページの囲み。 */

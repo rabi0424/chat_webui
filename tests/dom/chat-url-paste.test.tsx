@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Markdown } from "../../app/components/Markdown";
 import { installServer, renderChat, type ServerStub } from "./helpers/chat-harness";
 import { PAGE_CLOSE, PAGE_OPEN } from "../../app/lib/paste";
+import { MAX_PAGE_TEXT_CHARS, TRUNCATED_MARK } from "../../app/lib/page-limits";
 
 /**
  * 入力欄に貼られたリンクの取り込み。
@@ -154,15 +155,123 @@ describe("リンクを貼る", () => {
     expect(sendButton().disabled).toBe(false);
   });
 
-  it("文章に混ざったリンクには触らない", async () => {
-    servePage("<p>本文</p>");
+  it("文章に混ざっていても、リンクのところだけが札になる", async () => {
+    servePage("<h1>記事の題</h1><p>ここが本文です。</p>");
+    const { user } = renderChat({});
+
+    const box = paste(`これ読んで ${LINK} どう思う?`);
+    expect(box.value).toBe("これ読んで [ページ #1: example.com] どう思う?");
+    await screen.findByText(/行・/);
+
+    await user.click(sendButton());
+    await waitFor(() => expect(server.lastBody("/generate")).toBeTruthy());
+    const { userContent } = server.lastBody("/generate") as {
+      userContent: string;
+    };
+    // 書いた文はそのまま残り、リンクのところだけがページに変わる
+    expect(userContent).toContain("これ読んで ");
+    expect(userContent).toContain("どう思う?");
+    expect(userContent).toContain(`${PAGE_OPEN}記事の題 — ${LINK}`);
+    expect(userContent).toContain("ここが本文です。");
+  });
+
+  it("リンクの無い文には触らない", async () => {
     renderChat({});
 
-    const box = paste(`これ読んで ${LINK}`);
+    const box = paste("ただの文です。リンクはありません。");
     // preventDefault していないので jsdom では何も入らないが、札も出ない
     expect(box.value).toBe("");
     expect(server.countOf("/api/page")).toBe(0);
     expect(screen.queryByText(/行・/)).toBeNull();
+  });
+
+  it("1回の貼り付けに何本あっても、それぞれ札になる", async () => {
+    let n = 0;
+    server.on("/api/page", (body) => ({
+      url: (body as { url: string }).url,
+      contentType: "text/html",
+      body: `<p>${++n}本目の本文です。</p>`,
+    }));
+    const { user } = renderChat({});
+
+    const box = paste(`朝は${LINK}、夜は https://other.example/b を読んだ`);
+    expect(box.value).toBe(
+      "朝は[ページ #1: example.com]、夜は [ページ #2: other.example] を読んだ",
+    );
+    await waitFor(() => expect(screen.getAllByText(/行・/)).toHaveLength(2));
+
+    await user.click(sendButton());
+    await waitFor(() => expect(server.lastBody("/generate")).toBeTruthy());
+    const { userContent } = server.lastBody("/generate") as {
+      userContent: string;
+    };
+    expect(userContent).toContain("1本目の本文です。");
+    expect(userContent).toContain("2本目の本文です。");
+  });
+
+  it("同じリンクが2度出てきたら、2度目は文字のまま", async () => {
+    servePage("<p>ここが本文です。</p>");
+    renderChat({});
+
+    const box = paste(`${LINK} と ${LINK} は同じ`);
+    expect(box.value).toBe(`[ページ #1: example.com] と ${LINK} は同じ`);
+    await waitFor(() => expect(server.countOf("/api/page")).toBe(1));
+  });
+
+  /**
+   * リンクの並んだ文をそのまま貼ると、際限なく取りに行くことになる。
+   * 上限を超えたぶんは文字のまま残し、そう伝える。
+   */
+  it("取り込むのは1通につき5本まで。残りは文字のまま", async () => {
+    server.on("/api/page", (body) => ({
+      url: (body as { url: string }).url,
+      contentType: "text/html",
+      body: "<p>ここが本文です。</p>",
+    }));
+    renderChat({});
+
+    const links = Array.from(
+      { length: 7 },
+      (_, i) => `https://example.com/${i}`,
+    );
+    const box = paste(links.join("\n"));
+    await waitFor(() => expect(screen.getAllByText(/行・/)).toHaveLength(5));
+    expect(server.countOf("/api/page")).toBe(5);
+    // 6本目・7本目はリンクの文字のまま残る
+    expect(box.value).toContain("https://example.com/5");
+    expect(box.value).toContain("https://example.com/6");
+    expect(box.value).not.toContain("[ページ #6");
+    expect(screen.getByText(/1通につき5本まで/)).toBeTruthy();
+  });
+
+  /**
+   * 資料を1枚まるごと貼ったときにリンクを何本もたどり始めると、何が
+   * 起きているのか分からないまま待たされる。畳んだ中身は全文がその
+   * まま届くので、リンクも文字として渡っている。
+   */
+  it("長い貼り付けは畳むほうを採り、中のリンクには触らない", async () => {
+    renderChat({});
+
+    const long = `${Array.from({ length: 30 }, (_, i) => `行 ${i + 1}`).join("\n")}\n${LINK}`;
+    const box = paste(long);
+    expect(box.value).toBe("[貼り付け #1: 31行]");
+    expect(server.countOf("/api/page")).toBe(0);
+  });
+
+  it("リンク1本だけなら、長くても取り込む", async () => {
+    servePage("<p>ここが本文です。</p>");
+    renderChat({});
+
+    // しきい値（1,000字）を超える長さのリンク
+    const long = `https://example.com/${"a".repeat(1200)}`;
+    server.on("/api/page", () => ({
+      url: long,
+      contentType: "text/html",
+      body: "<p>ここが本文です。</p>",
+    }));
+    const box = paste(long);
+    expect(box.value).toBe("[ページ #1: example.com]");
+    await waitFor(() => expect(server.countOf("/api/page")).toBe(1));
   });
 
   it("2本目のリンクは別の札になる", async () => {
@@ -189,6 +298,26 @@ describe("リンクを貼る", () => {
     };
     expect(userContent).toContain("ここが本文です。");
     expect(userContent).toContain("ふたつめの本文です。");
+  });
+
+  /**
+   * 上限で切ったことは、**送る前に**見えていないと意味が無い。
+   * 本文の末尾にも同じ断りが入るが、そちらは札を展開しないと読めない。
+   */
+  it("長すぎて切ったページは、札にもそう出る", async () => {
+    servePage(`<p>${"あ".repeat(MAX_PAGE_TEXT_CHARS + 100)}</p>`);
+    const { user } = renderChat({});
+
+    paste(LINK);
+    await screen.findByText("一部");
+
+    await user.click(sendButton());
+    await waitFor(() => expect(server.lastBody("/generate")).toBeTruthy());
+    const { userContent } = server.lastBody("/generate") as {
+      userContent: string;
+    };
+    expect(userContent).toContain(TRUNCATED_MARK);
+    expect(userContent.length).toBeLessThan(MAX_PAGE_TEXT_CHARS + 500);
   });
 
   /**

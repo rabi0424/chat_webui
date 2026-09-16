@@ -10,12 +10,18 @@ import { useShortcut } from "../lib/use-shortcut";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
-import { pastedUrl } from "../lib/page-url";
+import {
+  MAX_PAGES_PER_MESSAGE,
+  findUrls,
+  pastedUrl,
+} from "../lib/page-url";
 import {
   expandOnePaste,
   expandPastes,
   insertPasteToken,
+  insertText,
   keepPasteTokensWhole,
+  pasteToken,
   nextPasteNumber,
   pasteNumbersIn,
   removePasteToken,
@@ -1096,32 +1102,74 @@ export function Chat({
      */
     const text = e.clipboardData.getData("text/plain");
     if (!text) return;
+
     /*
-     * リンク1本だけを貼ったら、その中身を取り込む（§3.3「貼られた
-     * リンクの取り込み」）。文章に混ざったリンクには触らない——
-     * 書いた文まで札に化けると、何が起きたのか分からなくなる。
+     * 長い貼り付けは畳むほうを採り、**中のリンクには触らない**。
+     * 資料を1枚まるごと貼ったときにリンクを数十本たどり始めると、
+     * 何が起きているのか分からないまま待たされる（畳んだ中身は
+     * そのまま全文が届くので、リンクも文字として渡っている）。
+     * リンク1本だけの貼り付けは、長くても取り込む。
      */
-    const link = pastedUrl(text);
-    if (link) {
+    const wholeIsLink = pastedUrl(text) != null;
+    if (!wholeIsLink && shouldCollapsePaste(text, pasteThreshold)) {
       e.preventDefault();
-      const page: CollapsedPaste = {
-        n: nextPasteNumber(pastes),
-        text: "",
-        url: link,
-        status: "loading",
-      };
-      const at = insertPasteToken(input, caretSelection(), page);
-      changeInput(at.text, [...pastes, page]);
-      placeCaret(at.caret);
-      loadPageInto(page.n, link);
+      const paste = { n: nextPasteNumber(pastes), text };
+      const next = insertPasteToken(input, caretSelection(), paste);
+      changeInput(next.text, [...pastes, paste]);
+      placeCaret(next.caret);
       return;
     }
-    if (!shouldCollapsePaste(text, pasteThreshold)) return;
+
+    /*
+     * 文に混ざったリンクを取り込む（§3.3「貼られたリンクの取り込み」）。
+     * リンクのところだけを札に置き換え、**書いた文はそのまま残す**。
+     */
+    const source = wholeIsLink ? text.trim() : text;
+    const found = findUrls(source);
+    if (found.length === 0) return;
     e.preventDefault();
-    const paste = { n: nextPasteNumber(pastes), text };
-    const next = insertPasteToken(input, caretSelection(), paste);
-    changeInput(next.text, [...pastes, paste]);
+
+    let n = nextPasteNumber(pastes);
+    // 上限は「この1通で取り込むページの数」。貼るたびに数え直す
+    let room = MAX_PAGES_PER_MESSAGE - pastes.filter((p) => p.url).length;
+    let overflowed = false;
+    const added: CollapsedPaste[] = [];
+    const taken = new Set<string>();
+    let rewritten = "";
+    let at = 0;
+    for (const f of found) {
+      // 同じリンクが2度出てきたら、2度目は文字のまま（同じページを
+      // 2本ぶん渡しても、長さが倍になるだけで何も増えない）
+      if (taken.has(f.url)) continue;
+      if (room <= 0) {
+        overflowed = true;
+        continue;
+      }
+      taken.add(f.url);
+      room--;
+      const page: CollapsedPaste = {
+        n: n++,
+        text: "",
+        url: f.url,
+        status: "loading",
+      };
+      added.push(page);
+      rewritten += source.slice(at, f.start) + pasteToken(page);
+      at = f.end;
+    }
+    rewritten += source.slice(at);
+
+    const next = insertText(input, caretSelection(), rewritten);
+    changeInput(next.text, [...pastes, ...added]);
     placeCaret(next.caret);
+    // 知らせは控えめなトーストで出す。エラーの欄は生成の失敗を出す
+    // ところで、読み上げも「生成に失敗しました」として読まれる
+    if (overflowed) {
+      showNotice(
+        `リンクの取り込みは1通につき${MAX_PAGES_PER_MESSAGE}本までです。残りは文字のまま送ります。`,
+      );
+    }
+    for (const page of added) loadPageInto(page.n, page.url!);
   }
 
   /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */

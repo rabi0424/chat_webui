@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { blockedUrlReason, hostLabel, pastedUrl } from "../app/lib/page-url";
+import {
+  blockedUrlReason,
+  findUrls,
+  hostLabel,
+  pastedUrl,
+} from "../app/lib/page-url";
 
 /**
  * 貼られたリンクの見分けと、取りに行ってよいかの判定。
@@ -15,7 +20,12 @@ describe("貼られた文字がリンク1本か", () => {
     expect(pastedUrl("  https://example.com/a\n")).toBe("https://example.com/a");
   });
 
-  it("文章に混ざったリンクは採らない", () => {
+  /**
+   * ここが null になるのは「リンク1本だけではない」という意味で、
+   * 取り込まないという意味ではない（文に混ざったものは findUrls が
+   * 拾う）。畳むかどうかの判断にだけ使う。
+   */
+  it("文章に混ざったものは「リンク1本だけ」ではない", () => {
     expect(pastedUrl("これ読んで https://example.com/a")).toBeNull();
     expect(pastedUrl("https://example.com/a も見て")).toBeNull();
     expect(pastedUrl("https://example.com/a\nhttps://example.com/b")).toBeNull();
@@ -130,5 +140,105 @@ describe("札とチップに出すホスト名", () => {
 
   it("URLとして読めないものはそのまま返す", () => {
     expect(hostLabel("これはURLではない")).toBe("これはURLではない");
+  });
+});
+
+/**
+ * 文の中のリンク拾い。
+ *
+ * **空白では切れない。** 日本語には語の区切りが無いので、地の文が
+ * リンクに続く（`詳しくはhttps://example.com/aを見て`）。切りすぎると
+ * 別の場所を指すリンクになり——404 で気づければまだよく、親記事が
+ * 開くと**違うページを読んだまま答えが返る**。
+ */
+describe("文の中のリンクを拾う", () => {
+  const urls = (text: string) => findUrls(text).map((f) => f.url);
+
+  it("文章に混ざったリンクを拾う", () => {
+    expect(urls("これ読んで https://example.com/a どう思う?")).toEqual([
+      "https://example.com/a",
+    ]);
+    expect(urls("詳しくはhttps://example.com/aを見て")).toEqual([
+      "https://example.com/a",
+    ]);
+  });
+
+  it("複数あれば出てくる順に拾う", () => {
+    expect(
+      urls("1つめ https://a.example/1\n2つめ https://b.example/2"),
+    ).toEqual(["https://a.example/1", "https://b.example/2"]);
+  });
+
+  it("置き換える範囲は、そのリンクの文字だけ", () => {
+    const text = "これ読んで https://example.com/a どう?";
+    const [found] = findUrls(text);
+    expect(text.slice(found.start, found.end)).toBe("https://example.com/a");
+  });
+
+  it("文末の記号はリンクに含めない", () => {
+    expect(urls("見て（https://example.com/a）。")).toEqual([
+      "https://example.com/a",
+    ]);
+    expect(urls("見て(https://example.com/a)。")).toEqual([
+      "https://example.com/a",
+    ]);
+    expect(urls("https://example.com/a、それと")).toEqual([
+      "https://example.com/a",
+    ]);
+    expect(urls("https://example.com/a. 次の文")).toEqual([
+      "https://example.com/a",
+    ]);
+    expect(urls('"https://example.com/a"')).toEqual(["https://example.com/a"]);
+  });
+
+  /**
+   * 対応の取れている括弧は落とさない。`)` を削ると `…/Foo_(bar` になり、
+   * 別の場所（あるいは親の記事）を指す。
+   */
+  it("リンクの一部の括弧は残す", () => {
+    expect(urls("https://ja.example.org/wiki/Foo_(bar) を見て")).toEqual([
+      "https://ja.example.org/wiki/Foo_(bar)",
+    ]);
+    expect(urls("(https://ja.example.org/wiki/Foo_(bar))")).toEqual([
+      "https://ja.example.org/wiki/Foo_(bar)",
+    ]);
+  });
+
+  it("問い合わせ文字列と断片も落とさない", () => {
+    expect(urls("https://example.com/a?q=1&r=2#top のところ")).toEqual([
+      "https://example.com/a?q=1&r=2#top",
+    ]);
+  });
+
+  /**
+   * 日本語のパスは地の文と見分けが付かない。切って取りに行くと
+   * **違うページを読んだまま答えが返る**ので、そういうものは
+   * 取り込まずに文字のまま残す（リンクだけを貼れば取り込める）。
+   */
+  it("日本語を含むURLが文に混ざっていたら、切って取りに行かない", () => {
+    expect(urls("https://ja.example.org/wiki/日本語 を見て")).toEqual([]);
+    expect(urls("こちらhttps://example.com/を参照")).toEqual([]);
+    // 符号化されていれば、切れ目を探す必要が無いので拾える
+    expect(
+      urls("https://ja.example.org/wiki/%E6%97%A5%E6%9C%AC%E8%AA%9E を見て"),
+    ).toEqual(["https://ja.example.org/wiki/%E6%97%A5%E6%9C%AC%E8%AA%9E"]);
+  });
+
+  it("断片だけが日本語なら、同じページなので拾う", () => {
+    // 断片はサーバーへ送られない（＝行き先は変わらない）
+    expect(urls("https://example.com/a#見出し のところ")).toEqual([
+      "https://example.com/a",
+    ]);
+  });
+
+  it("スキームの無いものと http 以外は拾わない", () => {
+    expect(urls("example.com/a を見て")).toEqual([]);
+    expect(urls("ftp://example.com/a")).toEqual([]);
+    expect(urls("mailto:a@example.com")).toEqual([]);
+    expect(urls("これはただの文です。とくにリンクはありません。")).toEqual([]);
+  });
+
+  it("リンクだけの貼り付けも同じ規則で拾える", () => {
+    expect(urls("https://example.com/a")).toEqual(["https://example.com/a"]);
   });
 });

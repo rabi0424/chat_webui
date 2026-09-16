@@ -7,14 +7,23 @@
  */
 
 /**
+ * 1通の発言で取り込むページの上限。
+ *
+ * リンクの並んだ文（メールの引用・検索結果の貼り付け）をそのまま
+ * 貼ると、際限なく取りに行くことになる——1本で最大2MBを読み、
+ * 本文も1本あたり数万字になるので、10本も取り込めばモデルの
+ * コンテキストに入らない。超えたぶんは文字のまま残す。
+ */
+export const MAX_PAGES_PER_MESSAGE = 5;
+
+/**
  * 貼り付けられた文字列が「リンク1本だけ」なら、そのURLを返す。
  *
- * 前後の空白は落とす（アプリによっては改行が付いてくる）が、**間に
- * 空白があるものは採らない**——「この記事どう思う? https://…」まで
- * 取り込みにすると、書いた文が消えて何が起きたのか分からなくなる。
- * 文章に混ざったリンクは、そのままの文字として送る。
+ * 前後の空白は落とす（アプリによっては改行が付いてくる）。文章に
+ * 混ざったリンクは findUrls が拾うので、こちらは**畳むかどうかの
+ * 判断**に使う——リンク1本だけの貼り付けは、長さに関わらず取り込む。
  *
- * スキームの無い `example.com/a` も採らない。日本語の文中には
+ * スキームの無い `example.com/a` は採らない。日本語の文中には
  * `。` や `、` で終わる語が普通に出るので、ホスト名らしきものを
  * 拾いにいくと関係の無い貼り付けが取り込みに化ける。
  */
@@ -30,6 +39,102 @@ export function pastedUrl(text: string): string | null {
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
   if (!url.hostname) return null;
   return url.toString();
+}
+
+/** 文の中で見つけたリンク1本（置き換えるために位置も返す）。 */
+export interface FoundUrl {
+  /** 元の文での位置（この範囲を札に置き換える）。 */
+  start: number;
+  end: number;
+  /** 正規化したURL。 */
+  url: string;
+}
+
+/**
+ * リンクの切れ目。
+ *
+ * **空白では切れない。** 日本語には語の区切りが無いので、
+ * `詳しくはhttps://example.com/aを見て` のように地の文がそのまま続く。
+ * そこで、かな・漢字・全角の記号はリンクの外側として扱う。
+ *
+ * 引き換えに、**日本語を含むURL**（`…/wiki/日本語` のように percent
+ * 符号化されていない形）は途中で切れる。切れたものをそのまま取りに
+ * 行くと別のページが開く——404 なら気づけるが、親の記事が開くと
+ * **違うページを読んだまま答えが返る**。切った跡が区切り文字
+ * （`/` `?` `=` など）で終わっているときは「続きが落ちた」とみなし、
+ * そのリンクは取り込まない（文字のまま残す。リンクだけを貼れば
+ * 切れ目を探す必要が無いので、そちらは今までどおり取り込める）。
+ */
+const CJK = "\\u3000-\\u303f\\u3040-\\u30ff\\u31f0-\\u31ff\\u3400-\\u9fff\\uf900-\\ufaff\\uff00-\\uffef\\uac00-\\ud7af";
+const URL_RE = new RegExp(`https?://[^\\s<>"\`\\\\^{}|${CJK}]+`, "g");
+
+/** 続きが落ちた跡（この文字で終わるリンクは、途中で切れている）。 */
+const CUT_TAIL = /[/?=&_%-]$/;
+
+/** かな・漢字・全角の記号。 */
+const CJK_CHAR = new RegExp(`[${CJK}]`);
+
+/**
+ * 文末の記号はリンクの一部ではない。
+ *
+ * `(https://example.com/a)。` の `)` と `。`、`https://example.com/a,`
+ * の `,` は地の文の側。ただし**対応の取れている括弧は落とさない**
+ * ——`…/wiki/Foo_(bar)` の `)` を落とすと、別の場所を指すリンクに
+ * なる（404 になるだけなら気づけるが、親記事が開くこともある）。
+ */
+function trimTrailing(raw: string): string {
+  const count = (s: string, c: string) => s.split(c).length - 1;
+  let s = raw;
+  for (;;) {
+    const last = s.slice(-1);
+    if (last === "") break;
+    if (last === ")" || last === "]" || last === "}") {
+      const open = last === ")" ? "(" : last === "]" ? "[" : "{";
+      if (count(s, open) >= count(s, last)) break;
+      s = s.slice(0, -1);
+      continue;
+    }
+    // 末尾の `#` は行き先を変えない（断片はサーバーへ送られない）
+    if (".,;:!?'\"#".includes(last)) {
+      s = s.slice(0, -1);
+      continue;
+    }
+    break;
+  }
+  return s;
+}
+
+/**
+ * 文の中の http(s) のリンクを、出てくる順に拾う。
+ *
+ * 拾うのはスキームの付いたものだけ。`example.com` のような書き方まで
+ * 拾いにいくと、`ですます。とか` のような地の文がリンクに化ける。
+ */
+export function findUrls(text: string): FoundUrl[] {
+  const out: FoundUrl[] = [];
+  for (const m of text.matchAll(URL_RE)) {
+    const raw = trimTrailing(m[0]);
+    if (raw === "") continue;
+    const start = m.index ?? 0;
+    /*
+     * かな・漢字でリンクが終わっているように見え、しかも切った跡が
+     * 区切り文字なら、URL の続き（日本語のパス）を地の文と一緒に
+     * 落としている。取りに行くと別のページが開くので、取り込まない。
+     */
+    if (CJK_CHAR.test(text[start + m[0].length] ?? "") && CUT_TAIL.test(raw)) {
+      continue;
+    }
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") continue;
+    if (!url.hostname) continue;
+    out.push({ start, end: start + raw.length, url: url.toString() });
+  }
+  return out;
 }
 
 /** 「内側」を指すホスト名の末尾。 */
