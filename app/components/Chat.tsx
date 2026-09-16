@@ -10,6 +10,7 @@ import { useShortcut } from "../lib/use-shortcut";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
+import { pastedUrl } from "../lib/page-url";
 import {
   expandOnePaste,
   expandPastes,
@@ -502,9 +503,19 @@ export function Chat({
       const saved = JSON.parse(
         localStorage.getItem(pasteKey) ?? "[]",
       ) as CollapsedPaste[];
-      const restored = saved.filter(
-        (p) => p && typeof p.n === "number" && typeof p.text === "string",
-      );
+      const restored = saved
+        .filter((p) => p && typeof p.n === "number" && typeof p.text === "string")
+        /*
+         * 読み込み中のまま戻ってきたページは、取りに行っていた処理ごと
+         * 失われている。待っても終わらないので、その場で理由を出して
+         * 「再取得」を押せる形にする（待ち続ける札は、送信も止めたまま
+         * になる）。
+         */
+        .map((p) =>
+          p.url && p.status === "loading"
+            ? { ...p, status: "error" as const, error: "読み込みが中断されました" }
+            : p,
+        );
       if (restored.length > 0) setPastes(restored);
     } catch {
       // 壊れていれば無視する
@@ -578,7 +589,18 @@ export function Chat({
     if (input) el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input, isNarrow]);
 
+  /**
+   * いま押さえている札。取り込みの結果を後から入れるために使う。
+   *
+   * 取り込みのあいだ利用者は打ち続けるので、描画のたびに作られる
+   * `pastes` を閉じ込めて使うと、待っているあいだの変更を巻き戻す
+   * （添付の枚数を ref で数えているのと同じ理由）。
+   */
+  const pastesRef = useRef<CollapsedPaste[]>(pastes);
+  pastesRef.current = pastes;
+
   const savePastes = (next: CollapsedPaste[]) => {
+    pastesRef.current = next;
     setPastes(next);
     try {
       if (next.length > 0) localStorage.setItem(pasteKey, JSON.stringify(next));
@@ -624,6 +646,48 @@ export function Chat({
     }
     changeInput(fixed.text);
     placeCaret(fixed.caret);
+  };
+
+  /** 札1つだけを書き換える（取り込みの結果を後から入れる）。 */
+  const updatePaste = (n: number, patch: Partial<CollapsedPaste>) => {
+    savePastes(
+      pastesRef.current.map((p) => (p.n === n ? { ...p, ...patch } : p)),
+    );
+  };
+
+  /**
+   * 貼られたリンクの中身を取り込む。
+   *
+   * 取ってくるのはサーバー（`/api/page`）、本文にするのはブラウザ
+   * （`lib/page-extract.client.ts`）。取り込みの部品は貼られたときに
+   * 初めて読み込む——普段の会話では要らないので、最初の表示に
+   * 載せない。
+   *
+   * 札が本文から消えていれば、戻ってきた結果は行き場が無いので
+   * そのまま落ちる（updatePaste は居ないものを足さない）。
+   */
+  function loadPageInto(n: number, url: string) {
+    updatePaste(n, { status: "loading", error: undefined });
+    void (async () => {
+      try {
+        const { loadPage } = await import("../lib/page-extract.client");
+        const page = await loadPage(url);
+        updatePaste(n, {
+          status: "ready",
+          text: page.text,
+          title: page.title,
+          finalUrl: page.url,
+          truncated: page.truncated,
+        });
+      } catch (e) {
+        updatePaste(n, { status: "error", error: (e as Error).message });
+      }
+    })();
+  }
+
+  /** 取り込めなかったページを、もう一度取りに行く。 */
+  const retryPage = (p: CollapsedPaste) => {
+    if (p.url) loadPageInto(p.n, p.url);
   };
 
   /** 札を本文に戻す（利用者が中身を編集したいとき）。 */
@@ -999,12 +1063,23 @@ export function Chat({
   }, []);
 
   const uploading = pending.some((p) => p.status === "uploading");
+  /** 取り込みの終わっていないページがある。 */
+  const pagesLoading = pastes.some((p) => p.url && p.status === "loading");
   const readyAttachmentIds = pending
     .filter((p) => p.status === "ready" && p.id)
     .map((p) => p.id!);
 
   function openFilePicker() {
     fileInputRef.current?.click();
+  }
+
+  /** いまのキャレット（札を差し込む位置）。 */
+  function caretSelection(): { start: number; end: number } {
+    const el = textareaRef.current;
+    return {
+      start: el?.selectionStart ?? input.length,
+      end: el?.selectionEnd ?? input.length,
+    };
   }
 
   /** 入力欄への画像貼り付け（スクショの直接添付）。 */
@@ -1020,15 +1095,31 @@ export function Chat({
      * 持って送るときに戻す。短い文はブラウザにそのまま入れさせる。
      */
     const text = e.clipboardData.getData("text/plain");
-    if (!text || !shouldCollapsePaste(text, pasteThreshold)) return;
+    if (!text) return;
+    /*
+     * リンク1本だけを貼ったら、その中身を取り込む（§3.3「貼られた
+     * リンクの取り込み」）。文章に混ざったリンクには触らない——
+     * 書いた文まで札に化けると、何が起きたのか分からなくなる。
+     */
+    const link = pastedUrl(text);
+    if (link) {
+      e.preventDefault();
+      const page: CollapsedPaste = {
+        n: nextPasteNumber(pastes),
+        text: "",
+        url: link,
+        status: "loading",
+      };
+      const at = insertPasteToken(input, caretSelection(), page);
+      changeInput(at.text, [...pastes, page]);
+      placeCaret(at.caret);
+      loadPageInto(page.n, link);
+      return;
+    }
+    if (!shouldCollapsePaste(text, pasteThreshold)) return;
     e.preventDefault();
-    const el = textareaRef.current;
-    const selection = {
-      start: el?.selectionStart ?? input.length,
-      end: el?.selectionEnd ?? input.length,
-    };
     const paste = { n: nextPasteNumber(pastes), text };
-    const next = insertPasteToken(input, selection, paste);
+    const next = insertPasteToken(input, caretSelection(), paste);
     changeInput(next.text, [...pastes, paste]);
     placeCaret(next.caret);
   }
@@ -1267,8 +1358,14 @@ export function Chat({
     }
     // 畳んだ貼り付けは本文へ戻してから送る（畳むのは見た目だけ）
     const text = expandPastes(input, pastes).trim();
-    // 画像だけの送信も許す。アップロード中は完了を待つ
-    if ((!text && readyAttachmentIds.length === 0) || isStreaming || uploading) {
+    // 画像だけの送信も許す。アップロード中とページの取り込み中は
+    // 完了を待つ（読み終える前に送ると、本文にリンクだけが入る）
+    if (
+      (!text && readyAttachmentIds.length === 0) ||
+      isStreaming ||
+      uploading ||
+      pagesLoading
+    ) {
       return;
     }
     const attachments: UiAttachment[] = pending
@@ -2060,6 +2157,7 @@ export function Chat({
             pastes={pastes}
             onExpandPaste={expandPaste}
             onRemovePaste={removePaste}
+            onRetryPage={retryPage}
             onSend={() => send()}
             onPaste={onPaste}
             textareaRef={textareaRef}
@@ -2068,6 +2166,7 @@ export function Chat({
             onStop={stop}
             canSend={!!input.trim() || readyAttachmentIds.length > 0}
             uploading={uploading}
+            loadingPages={pagesLoading}
             canClearContext={
               !!convIdRef.current &&
               !isStreaming &&

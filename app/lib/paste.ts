@@ -13,6 +13,7 @@
  * 足せる。札を消せば貼り付けも消える（送るときに無いものは無い）。
  */
 
+import { hostLabel } from "./page-url";
 import { notifyChanged, readRaw, usePersisted, writeRaw } from "./persisted";
 
 /**
@@ -86,9 +87,28 @@ export function usePasteThreshold(): PasteThreshold {
 }
 
 export interface CollapsedPaste {
-  /** 札の番号（1から。同じ入力欄の中で一意）。 */
+  /** 札の番号（1から。同じ入力欄の中で一意。貼り付けとページで通し番号）。 */
   n: number;
   text: string;
+  /**
+   * 貼られたリンクから取り込んだページなら、その元のURL。
+   *
+   * **この値は後から変えない。** 札の文字（`[ページ #1: example.com]`）を
+   * ここから作っているので、転送を追った先のホストに差し替えると、
+   * 本文に入っている札と食い違って送るときに戻らなくなる。
+   * 実際に読んだ先は finalUrl に持つ。
+   */
+  url?: string;
+  /** 転送を追い終わった先（画面とモデルへはこちらを見せる）。 */
+  finalUrl?: string;
+  /** ページの見出し。 */
+  title?: string;
+  /** 取り込みの進み具合。貼り付け（url 無し）では使わない。 */
+  status?: "loading" | "ready" | "error";
+  /** 取り込めなかった理由（status === "error" のとき）。 */
+  error?: string;
+  /** 長さの上限で切ったか。 */
+  truncated?: boolean;
 }
 
 export function shouldCollapsePaste(
@@ -104,18 +124,37 @@ export function countLines(text: string): number {
   return text.split("\n").length;
 }
 
-/** 入力欄に置く札。 */
+/**
+ * 入力欄に置く札。
+ *
+ * ページの札にホスト名を入れて行数を入れないのは、**札の文字が
+ * 後から変わらないようにする**ため。取り込みは貼った瞬間には
+ * 終わっておらず、行数を入れると読み終えた時点で札が別の文字に
+ * なる——本文に入れた札と食い違い、送るときに中身へ戻らない。
+ */
 export function pasteToken(p: CollapsedPaste): string {
+  if (p.url) return `[ページ #${p.n}: ${hostLabel(p.url)}]`;
   return `[貼り付け #${p.n}: ${countLines(p.text)}行]`;
 }
 
-/** 札を見つける。番号を取り出せるように括る。 */
-const TOKEN_RE = /\[貼り付け #(\d+): \d+行\]/g;
+/**
+ * 札を見つける。番号を取り出せるように括る。
+ *
+ * 貼り付けとページの2種類を**1つの正規表現で**見る。分けて書くと、
+ * 片方だけを見る場所（本文に残っている札を数えるところなど）が
+ * 生まれ、もう片方が「本文から消えた」とみなされて黙って捨てられる。
+ */
+const TOKEN_RE = /\[(?:貼り付け #(\d+): \d+行|ページ #(\d+): [^\]\n]*)\]/g;
+
+/** 見つけた札の番号（どちらの形でも同じように取れる）。 */
+function tokenNumber(m: RegExpMatchArray): number {
+  return Number(m[1] ?? m[2]);
+}
 
 /** 本文に残っている札の番号（順不同・重複なし）。 */
 export function pasteNumbersIn(text: string): Set<number> {
   const out = new Set<number>();
-  for (const m of text.matchAll(TOKEN_RE)) out.add(Number(m[1]));
+  for (const m of text.matchAll(TOKEN_RE)) out.add(tokenNumber(m));
   return out;
 }
 
@@ -136,23 +175,74 @@ export function insertPasteToken(
   return { text: before + token + after, caret: before.length + token.length };
 }
 
+/** 取り込んだページの囲み。 */
+export const PAGE_OPEN = "［取り込んだページ ここから］";
+export const PAGE_CLOSE = "［取り込んだページ ここまで］";
+
+/**
+ * 札が本文に戻るときの中身。
+ *
+ * ページは、どこから取ったものかが分かる囲みに入れて渡す。素の文章
+ * として混ぜると、モデルには利用者が書いた指示と区別が付かない
+ * ——「このページの言うとおりにして」と読まれる余地を残さない。
+ *
+ * 囲みを**文字で**書くのは、送った本文がそのまま画面にも出るため。
+ * `<page …>` のようなタグにすると、本文の消毒が知らない要素として
+ * 落とすので、**自分の発言なのに囲みが見えない**（どこからが取り
+ * 込んだ文章なのか、後から読んで分からなくなる）。
+ *
+ * まだ読み終えていない／読めなかったページはリンクのままにする。
+ * 空の囲みを渡すと、モデルは「中身の無いページ」を読んだことにして
+ * 答えてしまう。
+ */
+export function pasteBody(p: CollapsedPaste): string {
+  if (!p.url) return p.text;
+  if (p.status !== "ready" || p.text.trim() === "") return p.url;
+  // 読んだ先（転送のあと）を書く。短縮URLのままでは参照できない
+  const head = p.title ? `${p.title} — ${p.finalUrl ?? p.url}` : (p.finalUrl ?? p.url);
+  // 中身に同じ印が入っていると、囲みがそこで終わったように読める
+  const body = p.text.replace(
+    /［取り込んだページ (ここから|ここまで)］/g,
+    "[取り込んだページ $1]",
+  );
+  return `${PAGE_OPEN}${head}\n${body}\n${PAGE_CLOSE}`;
+}
+
 /**
  * 札を本文に戻す（送るとき・「展開」を押したとき）。
  * 対応する貼り付けが無い札はそのまま残す（作った覚えの無い文字を消さない）。
  */
 export function expandPastes(text: string, pastes: CollapsedPaste[]): string {
-  const byN = new Map(pastes.map((p) => [p.n, p.text]));
-  return text.replace(TOKEN_RE, (whole, n: string) => byN.get(Number(n)) ?? whole);
+  const byN = new Map(pastes.map((p) => [p.n, p]));
+  return text.replace(TOKEN_RE, (whole, ...args) => {
+    const n = Number(args[0] ?? args[1]);
+    const found = byN.get(n);
+    return found ? pasteBody(found) : whole;
+  });
 }
 
 /** 1つの札だけを展開する。 */
 export function expandOnePaste(text: string, paste: CollapsedPaste): string {
-  return text.split(pasteToken(paste)).join(paste.text);
+  return text.split(pasteToken(paste)).join(pasteBody(paste));
 }
 
-/** 1つの札を取り除く（貼り付けごと捨てる）。 */
+/** 1つの札を別の文字に置き換える。 */
+export function replacePasteToken(
+  text: string,
+  paste: CollapsedPaste,
+  replacement: string,
+): string {
+  return text.split(pasteToken(paste)).join(replacement);
+}
+
+/**
+ * 1つの札を取り除く（貼り付けごと捨てる）。
+ *
+ * ページの札は**リンクの文字だけ残す**。取り込みをやめたいだけの
+ * ことがほとんどで、貼ったリンクまで消えると打ち直しになる。
+ */
 export function removePasteToken(text: string, paste: CollapsedPaste): string {
-  return text.split(pasteToken(paste)).join("");
+  return replacePasteToken(text, paste, paste.url ?? "");
 }
 
 /** 本文を札とそれ以外に切り分ける（色分けの板が札だけを塗るため）。 */
@@ -178,7 +268,7 @@ export function pasteTokenRanges(
   const out: { start: number; end: number; n: number }[] = [];
   for (const m of text.matchAll(TOKEN_RE)) {
     const start = m.index ?? 0;
-    out.push({ start, end: start + m[0].length, n: Number(m[1]) });
+    out.push({ start, end: start + m[0].length, n: tokenNumber(m) });
   }
   return out;
 }

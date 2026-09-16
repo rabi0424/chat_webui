@@ -35,6 +35,7 @@ import {
   IconWarningTriangle,
   IconX,
 } from "../icons";
+import { hostLabel } from "../../lib/page-url";
 import type { PendingAttachment } from "./use-attachments";
 import {
   countLines,
@@ -70,6 +71,7 @@ export function Composer({
   pastes,
   onExpandPaste,
   onRemovePaste,
+  onRetryPage,
   onSend,
   onPaste,
   textareaRef,
@@ -78,6 +80,7 @@ export function Composer({
   onStop,
   canSend,
   uploading,
+  loadingPages,
   canClearContext,
   contextCleared,
   hasContextBoundary,
@@ -102,8 +105,10 @@ export function Composer({
   pastes: CollapsedPaste[];
   /** 札を本文に戻す。 */
   onExpandPaste: (paste: CollapsedPaste) => void;
-  /** 札ごと捨てる。 */
+  /** 札ごと捨てる（ページはリンクの文字だけ残す）。 */
   onRemovePaste: (paste: CollapsedPaste) => void;
+  /** 取り込めなかったページを取りに行き直す。 */
+  onRetryPage: (paste: CollapsedPaste) => void;
   onSend: () => void;
   onPaste: (e: ClipboardEvent<HTMLTextAreaElement>) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -113,6 +118,8 @@ export function Composer({
   onStop: () => void;
   canSend: boolean;
   uploading: boolean;
+  /** 取り込みの終わっていないページがある（読み終えるまで送らせない）。 */
+  loadingPages: boolean;
   /** いまコンテキストを切れる状態か。 */
   canClearContext: boolean;
   /** 末尾で既に切ってある。 */
@@ -219,34 +226,82 @@ export function Composer({
             いちばんの不満だった）。
           */
           <div className="flex flex-wrap gap-1.5 px-3 pt-3">
-            {pastes.map((p) => (
-              <div
-                key={p.n}
-                className="flex items-center gap-1 rounded-lg border border-line bg-neutral-50 py-1 pl-2.5 pr-1 text-xs text-ink-2 dark:bg-white/5"
-              >
-                <span className="font-medium text-ink">貼り付け #{p.n}</span>
-                <span className="tabular-nums">
-                  {countLines(p.text)}行・{p.text.length.toLocaleString()}字
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onExpandPaste(p)}
-                  aria-label={`貼り付け #${p.n} を本文に展開`}
-                  title="本文に展開して編集する"
-                  className="ml-1 rounded px-1.5 py-0.5 hover:bg-hover hover:text-ink"
+            {pastes.map((p) => {
+              const kind = p.url ? "ページ" : "貼り付け";
+              return (
+                <div
+                  key={p.n}
+                  title={p.url ? (p.finalUrl ?? p.url) : undefined}
+                  className="flex max-w-full items-center gap-1 rounded-lg border border-line bg-neutral-50 py-1 pl-2.5 pr-1 text-xs text-ink-2 dark:bg-white/5"
                 >
-                  展開
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onRemovePaste(p)}
-                  aria-label={`貼り付け #${p.n} を削除`}
-                  className="grid h-6 w-6 place-items-center rounded-full hover:bg-hover hover:text-ink"
-                >
-                  <IconX className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
+                  <span className="shrink-0 font-medium text-ink">
+                    {kind} #{p.n}
+                  </span>
+                  {p.url && (
+                    <span className="max-w-[9rem] truncate">
+                      {hostLabel(p.finalUrl ?? p.url)}
+                    </span>
+                  )}
+                  {/*
+                    取り込みの途中・失敗は、ここでしか分からない。札は
+                    本文に入ったままなので、何も出さないと「読めたつもり」
+                    で送ることになる
+                  */}
+                  {p.status === "loading" ? (
+                    <span className="flex shrink-0 items-center gap-1">
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
+                      読み込み中…
+                    </span>
+                  ) : p.status === "error" ? (
+                    <span className="flex min-w-0 items-center gap-1 text-red-600 dark:text-red-400">
+                      <IconWarningTriangle className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">
+                        {p.error ?? "読み込めませんでした"}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="shrink-0 tabular-nums">
+                      {countLines(p.text)}行・{p.text.length.toLocaleString()}字
+                    </span>
+                  )}
+                  {p.status === "error" && (
+                    <button
+                      type="button"
+                      onClick={() => onRetryPage(p)}
+                      aria-label={`${kind} #${p.n} を再取得`}
+                      title="もう一度取りに行く"
+                      className="ml-1 shrink-0 rounded px-1.5 py-0.5 hover:bg-hover hover:text-ink"
+                    >
+                      再取得
+                    </button>
+                  )}
+                  {p.status !== "loading" && p.status !== "error" && (
+                    <button
+                      type="button"
+                      onClick={() => onExpandPaste(p)}
+                      aria-label={`${kind} #${p.n} を本文に展開`}
+                      title="本文に展開して編集する"
+                      className="ml-1 shrink-0 rounded px-1.5 py-0.5 hover:bg-hover hover:text-ink"
+                    >
+                      展開
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onRemovePaste(p)}
+                    aria-label={
+                      p.url ? `ページ #${p.n} の取り込みをやめる` : `貼り付け #${p.n} を削除`
+                    }
+                    title={
+                      p.url ? "取り込みをやめて、リンクのまま送る" : undefined
+                    }
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded-full hover:bg-hover hover:text-ink"
+                  >
+                    <IconX className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
         {pending.length > 0 && !supportsImages && (
@@ -408,8 +463,14 @@ export function Composer({
             <button
               type="button"
               onClick={onSend}
-              disabled={!canSend || uploading}
-              title={uploading ? "画像をアップロード中…" : "送信"}
+              disabled={!canSend || uploading || loadingPages}
+              title={
+                uploading
+                  ? "画像をアップロード中…"
+                  : loadingPages
+                    ? "ページを読み込み中…"
+                    : "送信"
+              }
               className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition hover:bg-accent/85 active:scale-90 disabled:opacity-30"
               aria-label="送信"
             >

@@ -27,6 +27,7 @@ export default [
   route("api/conversations/:id/fork", "routes/api.conversations.$id.fork.ts"),
   route("api/conversations/:id/delete-messages", "routes/api.conversations.$id.delete-messages.ts"),
   route("api/uploads", "routes/api.uploads.ts"),
+  route("api/page", "routes/api.page.ts"),
   route("api/files/:id", "routes/api.files.$id.ts"),
   route("api/files/:id/thumb", "routes/api.files.$id.thumb.ts"),
   route("api/search", "routes/api.search.ts"),
