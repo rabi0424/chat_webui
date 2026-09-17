@@ -25,6 +25,7 @@ import {
   usePasteThreshold,
   type CollapsedPaste,
 } from "../lib/paste";
+import { isTextFile, readTextFile } from "../lib/text-file";
 import {
   DEFAULT_MODEL,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
@@ -601,6 +602,14 @@ export function Chat({
   const pastesRef = useRef<CollapsedPaste[]>(pastes);
   pastesRef.current = pastes;
 
+  /*
+   * 本文も ref で持つ。ファイルを読むあいだ（非同期）に打たれた文字を、
+   * 読み終えたあとの差し込みで巻き戻さないため——閉包に捕まえた input は
+   * 落とした瞬間の値で、そのまま書き戻すと打った字が消える。
+   */
+  const inputRef = useRef(input);
+  inputRef.current = input;
+
   const savePastes = (next: CollapsedPaste[]) => {
     pastesRef.current = next;
     setPastes(next);
@@ -685,6 +694,82 @@ export function Chat({
         updatePaste(n, { status: "error", error: (e as Error).message });
       }
     })();
+  }
+
+  /**
+   * 落とされた（選ばれた・貼られた）テキストファイルを札にする。
+   *
+   * **添付にはしない。** 添付の器は画像専用で、モデルへ渡す形も
+   * `image_url` しか無い（`lib/text-file.ts` の頭に理由）。中身は本文の
+   * 側——貼り付け・リンクと同じ札に乗せ、送るときに囲みごと展開する。
+   *
+   * ページと違って取りに行く相手が居ないので、**読んでから札を作る**
+   * （読み込み中の札を作らない）。手元のファイルを読むだけなので待ち
+   * 時間が無く、中断された札・「再取得」・送信の足止めがまるごと要らない。
+   */
+  async function addTextFiles(files: File[]) {
+    // 本文の取り出しはリンクの取り込みと同じ部品を使う。HTML をタグごと
+    // 渡すと、トークンの大半が属性で埋まる（`page-extract.client.ts`）
+    const { extractPage } = await import("../lib/page-extract.client");
+    const added: CollapsedPaste[] = [];
+    const empty: string[] = [];
+    let n = nextPasteNumber(pastesRef.current);
+    let tokens = "";
+    for (const file of files) {
+      let read;
+      try {
+        read = await readTextFile(file, settings.pageMaxMb * 1024 * 1024);
+      } catch {
+        empty.push(file.name);
+        continue;
+      }
+      const page = extractPage(
+        // 基準にする場所が無いので、相対リンクは書かれたまま残る
+        { url: "", contentType: read.contentType, body: read.body },
+        settings.pageMaxChars,
+      );
+      /*
+       * 中身を取り出せなかったものは札にしない。空の囲みを渡すと、
+       * モデルは「中身の無いファイル」を読んだことにして答えてしまう
+       * （リンクの取り込みで空の囲みを渡さないのと同じ理由）。
+       */
+      if (page.text.trim() === "") {
+        empty.push(file.name);
+        continue;
+      }
+      const paste: CollapsedPaste = {
+        n: n++,
+        text: page.text,
+        file: read.name,
+        // 大きさで切ったか、字数で切ったか。どちらでも「一部」と出す
+        truncated: read.truncated || page.truncated,
+      };
+      added.push(paste);
+      tokens += pasteToken(paste);
+    }
+    if (added.length > 0) {
+      // 読んでいるあいだに打たれた字を巻き戻さないよう、本文は ref から
+      const next = insertText(inputRef.current, caretSelection(), tokens);
+      changeInput(next.text, [...pastesRef.current, ...added]);
+      placeCaret(next.caret);
+    }
+    if (empty.length > 0) {
+      showNotice(`中身を読み取れませんでした: ${empty.join("、")}`);
+    }
+  }
+
+  /**
+   * 受け取ったファイルを、画像とテキストに振り分ける。
+   *
+   * 落とす・選ぶ・貼るの3つの入口が同じ振り分けを通る。片方の入口だけ
+   * に書くと、同じファイルが「落とすと入るのに選ぶと弾かれる」という
+   * 形で食い違う。
+   */
+  function receiveFiles(files: File[]) {
+    const texts = files.filter(isTextFile);
+    const others = files.filter((f) => !isTextFile(f));
+    if (others.length > 0) void addFiles(others);
+    if (texts.length > 0) void addTextFiles(texts);
   }
 
   /** 取り込めなかったページを、もう一度取りに行く。 */
@@ -1084,12 +1169,12 @@ export function Chat({
     };
   }
 
-  /** 入力欄への画像貼り付け（スクショの直接添付）。 */
+  /** 入力欄への貼り付け（スクショの直接添付・ファイル・長い文・リンク）。 */
   function onPaste(e: React.ClipboardEvent) {
     const files = [...e.clipboardData.files];
-    if (files.some(isAcceptedImage)) {
+    if (files.some(isAcceptedImage) || files.some(isTextFile)) {
       e.preventDefault();
-      void addFiles(files);
+      receiveFiles(files);
       return;
     }
     /*
@@ -1950,7 +2035,7 @@ export function Chat({
         e.preventDefault();
         dragDepth.current = 0;
         setDragOver(false);
-        void addFiles([...e.dataTransfer.files]);
+        receiveFiles([...e.dataTransfer.files]);
       }}
     >
       <header className="absolute inset-x-0 top-0 z-20 flex items-center gap-1 px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
@@ -2195,7 +2280,7 @@ export function Chat({
             onRemovePending={removePending}
             supportsImages={supportsImages}
             fileInputRef={fileInputRef}
-            onPickFiles={(files) => void addFiles(files)}
+            onPickFiles={receiveFiles}
             onOpenFilePicker={openFilePicker}
             input={input}
             onChangeInput={editInput}
@@ -2256,7 +2341,7 @@ export function Chat({
 
       {dragOver && (
         <div className="pointer-events-none absolute inset-3 z-40 grid animate-fade place-items-center rounded-3xl border-2 border-dashed border-accent/60 bg-accent/10 text-sm font-medium text-accent-ink backdrop-blur-sm">
-          画像をドロップして添付
+          画像・テキストファイルをドロップ
         </div>
       )}
 

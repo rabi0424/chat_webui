@@ -16,6 +16,23 @@ export const ALLOWED_IMAGE_TYPES = [
   "image/gif",
 ];
 
+/**
+ * 画像のファイル選択に渡す `accept`。
+ *
+ * **MIME だけでなく拡張子も並べる。** ブラウザは `accept` の MIME を
+ * OS の「拡張子 ↔ MIME」の登録を引いて突き合わせるので、登録の無い
+ * 環境では `.webp` が選べない（灰色になる）——ファイルは正しいのに
+ * 選択画面から消えるので、原因に辿り着けない。
+ */
+export const IMAGE_ACCEPT = [
+  ...ALLOWED_IMAGE_TYPES,
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+];
+
 /** 1ファイルあたりの上限。これ以上はクライアント側で縮小してから送る。 */
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 

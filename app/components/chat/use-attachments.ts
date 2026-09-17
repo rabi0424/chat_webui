@@ -90,7 +90,9 @@ export function useAttachments({
   async function addFiles(files: File[]) {
     const images = files.filter(isAcceptedImage);
     if (images.length === 0) {
-      if (files.length > 0) setError("画像ファイルのみ添付できます。");
+      if (files.length > 0) {
+        setError("画像とテキストファイルだけ添付できます。");
+      }
       return;
     }
     /*

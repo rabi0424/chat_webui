@@ -52,14 +52,19 @@ describe("添付の追加", () => {
     });
   });
 
+  /*
+   * 添付になるのは画像だけ。テキストファイルはここへ来る前に振り分け
+   * られ、本文の札になる（`Chat.tsx` の receiveFiles）ので、ここで
+   * 試すのは「画像でもテキストでもないもの」。
+   */
   it("画像でないものは足さない", async () => {
     const { hook, errors } = setup();
-    const txt = new File(["text"], "a.txt", { type: "text/plain" });
+    const zip = new File(["PK"], "a.zip", { type: "application/zip" });
     await act(async () => {
-      await hook.result.current.addFiles([txt]);
+      await hook.result.current.addFiles([zip]);
     });
     expect(hook.result.current.pending).toHaveLength(0);
-    expect(errors.some((e) => e?.includes("画像ファイルのみ"))).toBe(true);
+    expect(errors.some((e) => e?.includes("だけ添付できます"))).toBe(true);
   });
 
   it("上限を超えて足さない", async () => {

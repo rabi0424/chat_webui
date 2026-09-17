@@ -103,6 +103,12 @@ export interface CollapsedPaste {
   finalUrl?: string;
   /** ページの見出し。 */
   title?: string;
+  /**
+   * 落とされた（選ばれた）ファイルなら、そのファイル名。
+   *
+   * url と同じく**後から変えない**——札の文字をここから作っている。
+   */
+  file?: string;
   /** 取り込みの進み具合。貼り付け（url 無し）では使わない。 */
   status?: "loading" | "ready" | "error";
   /** 取り込めなかった理由（status === "error" のとき）。 */
@@ -133,6 +139,7 @@ export function countLines(text: string): number {
  * なる——本文に入れた札と食い違い、送るときに中身へ戻らない。
  */
 export function pasteToken(p: CollapsedPaste): string {
+  if (p.file) return `[ファイル #${p.n}: ${p.file}]`;
   if (p.url) return `[ページ #${p.n}: ${hostLabel(p.url)}]`;
   return `[貼り付け #${p.n}: ${countLines(p.text)}行]`;
 }
@@ -140,11 +147,12 @@ export function pasteToken(p: CollapsedPaste): string {
 /**
  * 札を見つける。番号を取り出せるように括る。
  *
- * 貼り付けとページの2種類を**1つの正規表現で**見る。分けて書くと、
- * 片方だけを見る場所（本文に残っている札を数えるところなど）が
+ * 貼り付け・ページ・ファイルの3種類を**1つの正規表現で**見る。分けて
+ * 書くと、片方だけを見る場所（本文に残っている札を数えるところなど）が
  * 生まれ、もう片方が「本文から消えた」とみなされて黙って捨てられる。
  */
-const TOKEN_RE = /\[(?:貼り付け #(\d+): \d+行|ページ #(\d+): [^\]\n]*)\]/g;
+const TOKEN_RE =
+  /\[(?:貼り付け #(\d+): \d+行|(?:ページ|ファイル) #(\d+): [^\]\n]*)\]/g;
 
 /** 見つけた札の番号（どちらの形でも同じように取れる）。 */
 function tokenNumber(m: RegExpMatchArray): number {
@@ -187,6 +195,24 @@ export function insertPasteToken(
 export const PAGE_OPEN = "［取り込んだページ ここから］";
 export const PAGE_CLOSE = "［取り込んだページ ここまで］";
 
+/** 読み込んだファイルの囲み。 */
+export const FILE_OPEN = "［取り込んだファイル ここから］";
+export const FILE_CLOSE = "［取り込んだファイル ここまで］";
+
+/**
+ * 中身に入っている囲みの印を、囲みとして読めない形に均す。
+ *
+ * **ページとファイルの両方を均す。** 片方だけにすると、取り込んだ
+ * ページの中に `［取り込んだファイル ここまで］` と書いてあるだけで、
+ * その先に続く文章が囲みの外に出たように読める。
+ */
+function neutralizeMarks(text: string): string {
+  return text.replace(
+    /［取り込んだ(ページ|ファイル) (ここから|ここまで)］/g,
+    "[取り込んだ$1 $2]",
+  );
+}
+
 /**
  * 札が本文に戻るときの中身。
  *
@@ -202,18 +228,20 @@ export const PAGE_CLOSE = "［取り込んだページ ここまで］";
  * まだ読み終えていない／読めなかったページはリンクのままにする。
  * 空の囲みを渡すと、モデルは「中身の無いページ」を読んだことにして
  * 答えてしまう。
+ *
+ * ファイルも同じ理由で囲む（ファイル名を添える）。**貼り付けだけは
+ * 囲まない**——利用者が自分で打った・写した文であって、他所から
+ * 持ってきた文書ではない。
  */
 export function pasteBody(p: CollapsedPaste): string {
+  if (p.file) {
+    return `${FILE_OPEN}${p.file}\n${neutralizeMarks(p.text)}\n${FILE_CLOSE}`;
+  }
   if (!p.url) return p.text;
   if (p.status !== "ready" || p.text.trim() === "") return p.url;
   // 読んだ先（転送のあと）を書く。短縮URLのままでは参照できない
   const head = p.title ? `${p.title} — ${p.finalUrl ?? p.url}` : (p.finalUrl ?? p.url);
-  // 中身に同じ印が入っていると、囲みがそこで終わったように読める
-  const body = p.text.replace(
-    /［取り込んだページ (ここから|ここまで)］/g,
-    "[取り込んだページ $1]",
-  );
-  return `${PAGE_OPEN}${head}\n${body}\n${PAGE_CLOSE}`;
+  return `${PAGE_OPEN}${head}\n${neutralizeMarks(p.text)}\n${PAGE_CLOSE}`;
 }
 
 /**

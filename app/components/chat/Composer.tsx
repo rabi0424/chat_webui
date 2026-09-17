@@ -17,9 +17,10 @@ import {
   type RefObject,
 } from "react";
 import {
-  ALLOWED_IMAGE_TYPES,
+  IMAGE_ACCEPT,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
 } from "../../lib/constants";
+import { TEXT_FILE_ACCEPT } from "../../lib/text-file";
 import { formatBytes } from "../../lib/image";
 import { PROSE_INPUT } from "../../lib/ui";
 import type { MentionState } from "../../lib/mention";
@@ -230,20 +231,24 @@ export function Composer({
           */
           <div className="flex flex-wrap gap-1.5 px-3 pt-3">
             {pastes.map((p) => {
-              const kind = p.url ? "ページ" : "貼り付け";
+              const kind = p.file ? "ファイル" : p.url ? "ページ" : "貼り付け";
               return (
                 <div
                   key={p.n}
-                  title={p.url ? (p.finalUrl ?? p.url) : undefined}
+                  title={p.file ?? (p.url ? (p.finalUrl ?? p.url) : undefined)}
                   className="flex max-w-full items-center gap-1 rounded-lg border border-line bg-neutral-50 py-1 pl-2.5 pr-1 text-xs text-ink-2 dark:bg-white/5"
                 >
                   <span className="shrink-0 font-medium text-ink">
                     {kind} #{p.n}
                   </span>
-                  {p.url && (
-                    <span className="max-w-[9rem] truncate">
-                      {hostLabel(p.finalUrl ?? p.url)}
-                    </span>
+                  {p.file ? (
+                    <span className="max-w-[9rem] truncate">{p.file}</span>
+                  ) : (
+                    p.url && (
+                      <span className="max-w-[9rem] truncate">
+                        {hostLabel(p.finalUrl ?? p.url)}
+                      </span>
+                    )
                   )}
                   {/*
                     取り込みの途中・失敗は、ここでしか分からない。札は
@@ -328,7 +333,7 @@ export function Composer({
         <input
           ref={fileInputRef}
           type="file"
-          accept={ALLOWED_IMAGE_TYPES.join(",")}
+          accept={[...IMAGE_ACCEPT, ...TEXT_FILE_ACCEPT].join(",")}
           multiple
           hidden
           onChange={(e) => {
@@ -435,10 +440,10 @@ export function Composer({
             disabled={pending.length >= MAX_ATTACHMENTS}
             title={
               supportsImages
-                ? "画像を添付（貼り付け・ドラッグ&ドロップも可）"
+                ? "画像・テキストファイルを添付（貼り付け・ドラッグ&ドロップも可）"
                 : "このモデルは画像入力に対応していません（添付は可能ですが無視されます）"
             }
-            aria-label="画像を添付"
+            aria-label="ファイルを添付"
             className={`${TOOL_BUTTON} text-ink-2`}
           >
             <IconPlus className="h-5 w-5" />
