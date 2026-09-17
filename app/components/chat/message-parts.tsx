@@ -5,7 +5,13 @@
  * Chat 本体は送信・編集・分岐・削除といった「操作」に集中させたいので、
  * 見た目の都合だけで育つ部分を外に出しておく。
  */
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { parseRetryProgress } from "../../lib/retry";
 import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
@@ -287,6 +293,127 @@ export function ReasoningBlock({
             {reasoning}
           </Markdown>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 畳んだときに見せる高さ（px）。
+ *
+ * iPhone の縦（使える高さがおよそ 700px）で画面の6〜7割、Mac では半分
+ * ほど。1通がこれより長いと、前後のやり取りが画面から消えて、どこまで
+ * 読んだか・何を訊いたかを見失う。
+ */
+export const COLLAPSED_BODY_PX = 480;
+/**
+ * 畳む価値がある最小の超過（px）。
+ *
+ * 数十px しか隠れないのに「続きを読む」を押させるのは手間のほうが
+ * 大きい。これより多く隠れるときだけ畳む。
+ */
+export const COLLAPSE_SLACK_PX = 160;
+
+/**
+ * 長い本文を畳む。**見え方が変わるだけ**で、本文・コピー・モデルへ送る
+ * 履歴には触れない。
+ *
+ * 高さで見る（文字数ではない）。同じ字数でも表や画像で高さは大きく
+ * 違い、字数で切ると「短いのに畳まれる」「長いのに畳まれない」が
+ * 混ざる。高さは描いてから測るので、測る前の1描画は畳まずに出し、
+ * useLayoutEffect で画面に出る前に畳み直す（見た目には最初から
+ * 畳まれている）。
+ *
+ * **流れている最中は畳まない。** 届く文字を読んでいるところで隠す
+ * ものではないし、末尾への追従も高さが伸びることで働いている。
+ * 目の前で流れ終えた1通は、そのあとも畳まない——読んでいる途中で
+ * 急に縮むと読み位置を失う。畳まれるのは、開いたときに既に長かった
+ * ものだけ。
+ *
+ * 畳み直すとき、上端が画面の外にあれば上端を画面に入れる。下端の
+ * 「折りたたむ」を押した瞬間に本文が縮み、見ていた場所が上へ飛ぶため。
+ */
+export function CollapsibleBody({
+  children,
+  streaming = false,
+  fade,
+  buttonClass,
+}: {
+  children: ReactNode;
+  /** まだ本文が流れてきているか。 */
+  streaming?: boolean;
+  /** 畳んだ端をぼかす帯（地の色に溶かす。吹き出しの中と外で色が違う）。 */
+  fade: string;
+  /** 「続きを読む」「折りたたむ」の見た目。 */
+  buttonClass: string;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [tall, setTall] = useState(false);
+  // 目の前で流れ終えた1通は開いたままにする（読み位置を失わせない）
+  const [expanded, setExpanded] = useState(streaming);
+
+  useLayoutEffect(() => {
+    if (streaming) return;
+    const el = bodyRef.current;
+    if (!el) return;
+    const measure = () =>
+      setTall(el.scrollHeight > COLLAPSED_BODY_PX + COLLAPSE_SLACK_PX);
+    measure();
+    // 画像の読み込み・幅の変化で高さは後から変わる
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [streaming]);
+
+  /*
+   * 流れている最中に畳まれないのは、この式に streaming が無くても
+   * 成り立つ——流れているあいだは測らない（tall が立たない）し、流れて
+   * いる状態で開いたものは expanded で始まる。ここに !streaming を足すと
+   * 到達しない条件になり、消しても差が出ないので置かない。
+   */
+  const collapsed = tall && !expanded;
+
+  const toggle = (e: React.MouseEvent) => {
+    // 選択モードでは行のタップが選択になる。ここを押して行まで
+    // 選ばれると、開いたつもりで選ばれている（監査 C-8 と同じ）
+    e.stopPropagation();
+    const opening = !expanded;
+    setExpanded(opening);
+    if (!opening) {
+      // 縮んだあと上端が画面の外なら、上端を画面に入れる
+      requestAnimationFrame(() => {
+        wrapRef.current?.scrollIntoView({ block: "nearest" });
+      });
+    }
+  };
+
+  return (
+    <div ref={wrapRef} data-collapsed={collapsed || undefined}>
+      <div
+        className={collapsed ? "relative overflow-hidden" : undefined}
+        style={collapsed ? { maxHeight: COLLAPSED_BODY_PX } : undefined}
+      >
+        <div ref={bodyRef}>{children}</div>
+        {collapsed && (
+          <div
+            aria-hidden
+            className={`pointer-events-none absolute inset-x-0 bottom-0 h-16 ${fade}`}
+          />
+        )}
+      </div>
+      {tall && !streaming && (
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={expanded}
+          className={`mt-1 flex items-center gap-1 ${buttonClass}`}
+        >
+          {expanded ? "折りたたむ" : "続きを読む"}
+          <IconChevronDown
+            className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`}
+          />
+        </button>
       )}
     </div>
   );

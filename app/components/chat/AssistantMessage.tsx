@@ -20,6 +20,7 @@ import { IconArrowPath, IconBranch, IconTrash } from "../icons";
 import {
   BranchPager,
   CitationList,
+  CollapsibleBody,
   CopyButton,
   GenerationProgress,
   RetryProgressCard,
@@ -131,21 +132,28 @@ export function AssistantMessage({
          * 少しずつ出す動きは streaming のときだけ働く。末尾でない発言は
          * 最初から全文が入っているので、その場で描き切る。
          */
-        <StreamingMessage
-          text={m.content}
+        // 長い応答は畳む（見え方だけ。コピーも履歴も全文のまま）
+        <CollapsibleBody
           streaming={m.status === "streaming"}
-          onReveal={isLast ? followBottom : undefined}
-          /*
-           * モデルが返した画像は本文のマークダウンとして届く（添付欄には
-           * 出ない）。「成功するまで生成」で積まれた画像もこちらなので、
-           * ここを渡さないとタップしても何も起きない。
-           *
-           * ただし選択モード中は渡さない。行を選ぶつもりのタップで拡大
-           * 表示まで開き、閉じたときには行も選ばれている（監査 C-8）。
-           * 渡さなければ、本文の画像はただの画像に戻る。
-           */
-          onImageClick={selecting ? undefined : openImage}
-        />
+          fade="bg-gradient-to-b from-transparent to-surface"
+          buttonClass={`${MSG_TEXT_ACTION} -ml-1.5`}
+        >
+          <StreamingMessage
+            text={m.content}
+            streaming={m.status === "streaming"}
+            onReveal={isLast ? followBottom : undefined}
+            /*
+             * モデルが返した画像は本文のマークダウンとして届く（添付欄には
+             * 出ない）。「成功するまで生成」で積まれた画像もこちらなので、
+             * ここを渡さないとタップしても何も起きない。
+             *
+             * ただし選択モード中は渡さない。行を選ぶつもりのタップで拡大
+             * 表示まで開き、閉じたときには行も選ばれている（監査 C-8）。
+             * 渡さなければ、本文の画像はただの画像に戻る。
+             */
+            onImageClick={selecting ? undefined : openImage}
+          />
+        </CollapsibleBody>
       )}
       {/* 進捗の見出しは秒が動いているのでカーソルは出さない */}
       {isStreaming &&

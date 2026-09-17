@@ -9,7 +9,12 @@ import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { UiMessage } from "../../lib/types";
 import { Markdown } from "../Markdown";
 import { IconBranch, IconPencil, IconTrash } from "../icons";
-import { BranchPager, CopyButton, MessageImages } from "./message-parts";
+import {
+  BranchPager,
+  CollapsibleBody,
+  CopyButton,
+  MessageImages,
+} from "./message-parts";
 import { MessageEditor, type EditingState } from "./MessageEditor";
 import { selectionClassOf, useMessageActions } from "./message-context";
 import { MSG_DELETE_ACTION, MSG_ICON_ACTION } from "../../lib/ui";
@@ -84,9 +89,15 @@ export function UserMessage({
                   アクセント色に載るので、prose の配色は使わず
                   文字色を継いで見出しや線だけを整える（.chat-bubble）。
                 */}
-                <Markdown diagrams={false} className="chat-bubble">
-                  {m.content}
-                </Markdown>
+                <CollapsibleBody
+                  // 吹き出しの中なので、帯も文字もアクセント色に合わせる
+                  fade="bg-gradient-to-b from-transparent to-accent"
+                  buttonClass="-ml-1.5 rounded-md px-1.5 py-0.5 text-xs text-accent-fg/80 hover:bg-black/10 hover:text-accent-fg"
+                >
+                  <Markdown diagrams={false} className="chat-bubble">
+                    {m.content}
+                  </Markdown>
+                </CollapsibleBody>
               </div>
             </div>
           )}
