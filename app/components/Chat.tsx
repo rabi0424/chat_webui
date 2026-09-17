@@ -858,10 +858,44 @@ export function Chat({
   };
 
   /**
-   * 引っぱって更新: 会話フィードをサーバーから取り直す。
-   * 別の端末・別のタブで進んだ内容や、通信が途切れて取りこぼした
-   * 続きをここで拾い直せる。
+   * 表示中のフィードを、サーバーが持ついまのパスへ合わせ直す。
+   *
+   * 別の端末・別のタブで進んだ内容や、通信が途切れて取りこぼした続きを
+   * ここで拾い直す。引っぱって更新と、画面へ戻ったときの取り直しが
+   * 共有する（取り直しの決まりを2箇所に書くと、片方だけ直したときに
+   * 差が黙って生まれる）。
    */
+  async function syncFeed(convId: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/conversations/${convId}/path`);
+      if (!res.ok) return;
+      const { messages: fresh } = (await res.json()) as PathResponse;
+      /*
+       * まだサーバーに無いメッセージが画面にある間は差し替えない。
+       *
+       * 送信した直後は、保存が終わるまで楽観表示のユーザー発言と
+       * プレースホルダがIDを持たずに並んでいる。ここでサーバーの
+       * パスに置き換えるとそれらが消え、あとから届いたIDが別の
+       * メッセージに付いて、前の応答の本文が新しい応答で上書き
+       * されて見える。取り直しは次の機会に回せばよい。
+       */
+      let replaced = false;
+      setMessages((prev) => {
+        if (prev.some((m) => !m.id)) return prev;
+        replaced = true;
+        return fresh;
+      });
+      if (replaced) {
+        setError(null);
+        // 別の画面で走っている生成があれば、ここから追いかける
+        if (!isStreaming) trackRunning(convId, fresh);
+      }
+    } catch {
+      // 取り直せなくても、いま出ている内容はそのまま残す
+    }
+  }
+
+  /** 引っぱって更新: 印を出しながらフィードを取り直す。 */
   async function pullRefresh() {
     const convId = convIdRef.current;
     if (!convId || refreshingRef.current) return;
@@ -869,34 +903,7 @@ export function Chat({
     setRefreshing(true);
     invalidateChat(convId); // 先読みキャッシュも作り直させる
     const started = performance.now();
-    try {
-      const res = await fetch(`/api/conversations/${convId}/path`);
-      if (res.ok) {
-        const { messages: fresh } = (await res.json()) as PathResponse;
-        /*
-         * まだサーバーに無いメッセージが画面にある間は差し替えない。
-         *
-         * 送信した直後は、保存が終わるまで楽観表示のユーザー発言と
-         * プレースホルダがIDを持たずに並んでいる。ここでサーバーの
-         * パスに置き換えるとそれらが消え、あとから届いたIDが別の
-         * メッセージに付いて、前の応答の本文が新しい応答で上書き
-         * されて見える。取り直しは次の機会に回せばよい。
-         */
-        let replaced = false;
-        setMessages((prev) => {
-          if (prev.some((m) => !m.id)) return prev;
-          replaced = true;
-          return fresh;
-        });
-        if (replaced) {
-          setError(null);
-          // 別の画面で走っている生成があれば、ここから追いかける
-          if (!isStreaming) trackRunning(convId, fresh);
-        }
-      }
-    } catch {
-      // 取り直せなくても、いま出ている内容はそのまま残す
-    }
+    await syncFeed(convId);
     // 一瞬で消えると更新されたのか分からないので、印は少しだけ見せる
     const rest = 450 - (performance.now() - started);
     if (rest > 0) await new Promise((r) => setTimeout(r, rest));
@@ -905,6 +912,44 @@ export function Chat({
 
   const pullRefreshRef = useRef(pullRefresh);
   pullRefreshRef.current = pullRefresh;
+
+  /**
+   * 画面へ戻ったときの取り直し。
+   *
+   * ブラウザを閉じて開き直すと、Safari は前に開いていた画面を**そのまま**
+   * 復元することがある（bfcache／タブの復元）。文書を取り直していないので、
+   * 閉じているあいだにサーバーで進んだぶんが抜けたまま出る——利用者からは
+   * 「最新のメッセージが欠けたページが読み込まれ、再読み込みすると直る」
+   * という形で見える。文書そのものを溜めさせない手当ては入口で行って
+   * いる（`app/entry.server.tsx` の `Cache-Control: no-store`）が、
+   * それは**取り直すとき**の話で、画面ごと復元される経路には効かない。
+   *
+   * 生成を追っているあいだは何もしない。ポーリングが同じ場所を更新して
+   * いるので、ここで割り込むと追跡が組み立てた途中経過を一度古い本文で
+   * 塗り替えることになる。
+   */
+  const resyncRef = useRef<() => void>(() => {});
+  resyncRef.current = () => {
+    const convId = convIdRef.current;
+    if (!convId || isStreaming || refreshingRef.current) return;
+    if (document.visibilityState !== "visible") return;
+    void syncFeed(convId);
+  };
+
+  useEffect(() => {
+    const resync = () => resyncRef.current();
+    // bfcache から戻ったときだけ。通常の読み込みは文書が新しいので要らない
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) resync();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    // アプリを切り替えて戻ったとき（iPhone ではこちらだけが来ることが多い）
+    document.addEventListener("visibilitychange", resync);
+    return () => {
+      window.removeEventListener("pageshow", onPageShow);
+      document.removeEventListener("visibilitychange", resync);
+    };
+  }, []);
 
   /**
    * 最上部から下へ引っぱったら更新する（iOSアプリと同じ操作）。
