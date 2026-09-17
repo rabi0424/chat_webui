@@ -11,9 +11,13 @@ import {
   insertPasteToken,
   nextPasteNumber,
   pasteNumbersIn,
+  PAGE_CLOSE,
+  PAGE_OPEN,
+  pasteBody,
   pasteToken,
   removePasteToken,
   shouldCollapsePaste,
+  type CollapsedPaste,
 } from "../app/lib/paste";
 
 /**
@@ -159,5 +163,132 @@ describe("キャレットは札の外へ", () => {
     expect(snapSelectionOutsideTokens(text, { start: ts, end: ts })).toBeNull();
     expect(snapSelectionOutsideTokens(text, { start: te, end: te })).toBeNull();
     expect(snapSelectionOutsideTokens(text, { start: ts, end: te })).toBeNull();
+  });
+});
+
+/**
+ * 貼られたリンクの札（ページ）。
+ *
+ * 貼り付けと同じ仕組みに乗せてあるので、**片方だけを見る場所**が
+ * できると、もう片方は「本文から消えた札」として黙って捨てられる。
+ * 番号・見つけ方・戻し方を、2種類が混ざった状態で見る。
+ */
+describe("ページの札", () => {
+  const ready: CollapsedPaste = {
+    n: 1,
+    text: "ページの本文",
+    url: "https://www.example.com/a",
+    finalUrl: "https://example.com/a",
+    title: "記事の題",
+    status: "ready",
+  };
+  const loading: CollapsedPaste = {
+    n: 2,
+    text: "",
+    url: "https://example.com/b",
+    status: "loading",
+  };
+
+  /**
+   * 札の文字は取り込みの前後で変わってはいけない。行数を入れると、
+   * 読み終えた瞬間に別の文字になり、本文に入れた札と食い違う
+   * （送るときに中身へ戻らなくなる）。
+   */
+  it("札はホスト名で、取り込みの前後で変わらない", () => {
+    expect(pasteToken(loading)).toBe("[ページ #2: example.com]");
+    const done = { ...loading, status: "ready" as const, text: "あ\nい\nう" };
+    expect(pasteToken(done)).toBe(pasteToken(loading));
+    // www. は落とすが、札と本文で同じ規則を使うこと
+    expect(pasteToken(ready)).toBe("[ページ #1: example.com]");
+  });
+
+  it("番号は貼り付けと通しで振る", () => {
+    const pastes: CollapsedPaste[] = [{ n: 1, text: "長い貼り付け" }, loading];
+    expect(nextPasteNumber(pastes)).toBe(3);
+  });
+
+  it("本文に残っている札は、2種類とも見つかる", () => {
+    const text = `${pasteToken({ n: 1, text: "あ\nい" })}と${pasteToken(loading)}`;
+    expect([...pasteNumbersIn(text)].sort()).toEqual([1, 2]);
+  });
+
+  /**
+   * 囲みは**文字で**書く。タグにすると本文の消毒が落とすので、送った
+   * 本人の画面では囲みが見えない（どこからが取り込んだ文章なのか、
+   * 後から読んで分からなくなる）。
+   */
+  it("読み終えたページは、どこから取ったかが分かる囲みで渡す", () => {
+    const body = pasteBody(ready);
+    expect(body).toBe(
+      `${PAGE_OPEN}記事の題 — https://example.com/a\nページの本文\n${PAGE_CLOSE}`,
+    );
+    // 読んだ先（転送のあと）を書く。短縮URLのまま渡すと参照できない
+    expect(body).toContain("https://example.com/a");
+    expect(body).not.toContain("www.example.com");
+    expect(body).not.toContain("<page");
+  });
+
+  it("題が無ければURLだけを添える", () => {
+    expect(pasteBody({ ...ready, title: undefined })).toBe(
+      `${PAGE_OPEN}https://example.com/a\nページの本文\n${PAGE_CLOSE}`,
+    );
+  });
+
+  it("読み終えていない・読めなかったページはリンクのまま渡す", () => {
+    expect(pasteBody(loading)).toBe("https://example.com/b");
+    expect(pasteBody({ ...loading, status: "error", error: "だめ" })).toBe(
+      "https://example.com/b",
+    );
+    // 本文が空のまま ready になっても、空の囲みは渡さない
+    expect(pasteBody({ ...ready, text: "   " })).toBe(ready.url);
+  });
+
+  it("囲みと同じ印が本文にあれば、印として読めない形に直す", () => {
+    const body = pasteBody({ ...ready, text: `前${PAGE_CLOSE}後` });
+    // 囲みの印は開きと閉じで1つずつ
+    expect(body.split(PAGE_CLOSE)).toHaveLength(2);
+    expect(body).toContain("前[取り込んだページ ここまで]後");
+  });
+
+  it("送るときは、貼り付けとページが混ざっていても両方戻る", () => {
+    const paste: CollapsedPaste = { n: 3, text: "貼った文" };
+    const text = `${pasteToken(paste)}\nこれを${pasteToken(ready)}と比べて`;
+    const expanded = expandPastes(text, [paste, ready]);
+    expect(expanded).toContain("貼った文");
+    expect(expanded).toContain(`${PAGE_OPEN}記事の題 — https://example.com/a`);
+    expect(expanded).not.toContain("[ページ #");
+    expect(expanded).not.toContain("[貼り付け #");
+  });
+
+  /**
+   * × は「取り込みをやめたい」であって「リンクを消したい」ではない。
+   * リンクごと消えると打ち直しになる。
+   */
+  it("札を捨てると、ページはリンクの文字が残り、貼り付けは消える", () => {
+    const text = `見て${pasteToken(ready)}ね`;
+    expect(removePasteToken(text, ready)).toBe(
+      "見てhttps://www.example.com/aね",
+    );
+    const paste: CollapsedPaste = { n: 4, text: "あ\nい" };
+    expect(removePasteToken(`見て${pasteToken(paste)}ね`, paste)).toBe("見てね");
+  });
+
+  /**
+   * 札の一部を消す操作は、貼り付けと同じく札ごと消す（リンクも残らない）。
+   * リンクを残したいときのために × があり、そちらとは結果が違う。
+   */
+  it("ページの札も塊として扱う（途中を消すと札ごと消える）", () => {
+    const before = `${pasteToken(ready)}について`;
+    const damaged = before.slice(0, 3) + before.slice(4);
+    const fixed = keepPasteTokensWhole(before, damaged);
+    expect(fixed?.text).toBe("について");
+  });
+
+  it("ページの札の中にキャレットは入らない", () => {
+    const text = pasteToken(ready);
+    expect(snapSelectionOutsideTokens(text, { start: 3, end: 3 })).toEqual({
+      start: 0,
+      end: 0,
+    });
   });
 });

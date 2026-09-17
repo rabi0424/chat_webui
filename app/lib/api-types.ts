@@ -116,6 +116,14 @@ export interface UploadResponse {
   size: number;
 }
 
+/** 貼られたリンクの中身（本文の取り出しはブラウザ側で行う）。 */
+export interface PageResponse {
+  /** 転送を追い終わった先のURL。 */
+  url: string;
+  contentType: string;
+  body: string;
+}
+
 /** 会話の検索結果。 */
 export interface SearchResponse {
   results: SearchResult[];

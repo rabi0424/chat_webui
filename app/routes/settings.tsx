@@ -14,6 +14,10 @@ import {
   DEFAULT_SYSTEM_PROMPT_MAX,
   MONTHLY_LIMIT_RANGE,
   NEW_MODEL_DAYS_RANGE,
+  PAGE_MAX_CHARS_RANGE,
+  PAGE_MAX_MB_RANGE,
+  PAGE_MAX_PAGES_RANGE,
+  PAGE_TIMEOUT_RANGE,
   POE_RATE_RANGE,
   RETRY_CEILING_RANGE,
   RETRY_WORKER_CONCURRENCY_RANGE,
@@ -716,6 +720,72 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 max={NEW_MODEL_DAYS_RANGE.max}
                 step={1}
                 onChange={(v) => void save({ newModelDays: v })}
+                width="w-14"
+              />
+            </Row>
+          </Group>
+
+          <Group
+            title="リンクの取り込み"
+            note="入力欄に貼ったリンクは、中身を取ってきて本文に添えます（モデルにはページの文章が届きます）。取り込んだぶんはそのまま入力になるので、額に効きます。"
+          >
+            <Row
+              label="1通に取り込む本数"
+              description={`貼られたリンクをこの本数まで取り込む（0 で取り込まない・最大${PAGE_MAX_PAGES_RANGE.max}）`}
+              saved={saved("pageMaxPages")}
+            >
+              <Stepper
+                label="1通に取り込む本数"
+                value={settings.pageMaxPages}
+                min={PAGE_MAX_PAGES_RANGE.min}
+                max={PAGE_MAX_PAGES_RANGE.max}
+                step={1}
+                onChange={(v) => void save({ pageMaxPages: v })}
+                width="w-14"
+              />
+            </Row>
+            <Row
+              label="1本あたりの長さ"
+              description={`ページ1本をこの字数までモデルへ渡す（超えたぶんは落とし、そう断る・${PAGE_MAX_CHARS_RANGE.min.toLocaleString()}〜${PAGE_MAX_CHARS_RANGE.max.toLocaleString()}字）`}
+              saved={saved("pageMaxChars")}
+            >
+              <Stepper
+                label="1本あたりの長さ"
+                value={settings.pageMaxChars}
+                min={PAGE_MAX_CHARS_RANGE.min}
+                max={PAGE_MAX_CHARS_RANGE.max}
+                step={1000}
+                onChange={(v) => void save({ pageMaxChars: v })}
+                width="w-24"
+              />
+            </Row>
+            <Row
+              label="取ってくる大きさ"
+              description={`これを超えるページは取り込まない（リンクのまま送れます・${PAGE_MAX_MB_RANGE.min}〜${PAGE_MAX_MB_RANGE.max}MB）`}
+              saved={saved("pageMaxMb")}
+            >
+              <Stepper
+                label="取ってくる大きさ（MB）"
+                value={settings.pageMaxMb}
+                min={PAGE_MAX_MB_RANGE.min}
+                max={PAGE_MAX_MB_RANGE.max}
+                step={1}
+                onChange={(v) => void save({ pageMaxMb: v })}
+                width="w-14"
+              />
+            </Row>
+            <Row
+              label="待つ時間"
+              description={`1本の取得にこの秒数まで待つ（${PAGE_TIMEOUT_RANGE.min}〜${PAGE_TIMEOUT_RANGE.max}秒）`}
+              saved={saved("pageTimeoutSec")}
+            >
+              <Stepper
+                label="待つ時間（秒）"
+                value={settings.pageTimeoutSec}
+                min={PAGE_TIMEOUT_RANGE.min}
+                max={PAGE_TIMEOUT_RANGE.max}
+                step={5}
+                onChange={(v) => void save({ pageTimeoutSec: v })}
                 width="w-14"
               />
             </Row>

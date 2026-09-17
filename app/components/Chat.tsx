@@ -10,11 +10,14 @@ import { useShortcut } from "../lib/use-shortcut";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
+import { findUrls, pastedUrl } from "../lib/page-url";
 import {
   expandOnePaste,
   expandPastes,
   insertPasteToken,
+  insertText,
   keepPasteTokensWhole,
+  pasteToken,
   nextPasteNumber,
   pasteNumbersIn,
   removePasteToken,
@@ -502,9 +505,19 @@ export function Chat({
       const saved = JSON.parse(
         localStorage.getItem(pasteKey) ?? "[]",
       ) as CollapsedPaste[];
-      const restored = saved.filter(
-        (p) => p && typeof p.n === "number" && typeof p.text === "string",
-      );
+      const restored = saved
+        .filter((p) => p && typeof p.n === "number" && typeof p.text === "string")
+        /*
+         * 読み込み中のまま戻ってきたページは、取りに行っていた処理ごと
+         * 失われている。待っても終わらないので、その場で理由を出して
+         * 「再取得」を押せる形にする（待ち続ける札は、送信も止めたまま
+         * になる）。
+         */
+        .map((p) =>
+          p.url && p.status === "loading"
+            ? { ...p, status: "error" as const, error: "読み込みが中断されました" }
+            : p,
+        );
       if (restored.length > 0) setPastes(restored);
     } catch {
       // 壊れていれば無視する
@@ -578,7 +591,18 @@ export function Chat({
     if (input) el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input, isNarrow]);
 
+  /**
+   * いま押さえている札。取り込みの結果を後から入れるために使う。
+   *
+   * 取り込みのあいだ利用者は打ち続けるので、描画のたびに作られる
+   * `pastes` を閉じ込めて使うと、待っているあいだの変更を巻き戻す
+   * （添付の枚数を ref で数えているのと同じ理由）。
+   */
+  const pastesRef = useRef<CollapsedPaste[]>(pastes);
+  pastesRef.current = pastes;
+
   const savePastes = (next: CollapsedPaste[]) => {
+    pastesRef.current = next;
     setPastes(next);
     try {
       if (next.length > 0) localStorage.setItem(pasteKey, JSON.stringify(next));
@@ -624,6 +648,48 @@ export function Chat({
     }
     changeInput(fixed.text);
     placeCaret(fixed.caret);
+  };
+
+  /** 札1つだけを書き換える（取り込みの結果を後から入れる）。 */
+  const updatePaste = (n: number, patch: Partial<CollapsedPaste>) => {
+    savePastes(
+      pastesRef.current.map((p) => (p.n === n ? { ...p, ...patch } : p)),
+    );
+  };
+
+  /**
+   * 貼られたリンクの中身を取り込む。
+   *
+   * 取ってくるのはサーバー（`/api/page`）、本文にするのはブラウザ
+   * （`lib/page-extract.client.ts`）。取り込みの部品は貼られたときに
+   * 初めて読み込む——普段の会話では要らないので、最初の表示に
+   * 載せない。
+   *
+   * 札が本文から消えていれば、戻ってきた結果は行き場が無いので
+   * そのまま落ちる（updatePaste は居ないものを足さない）。
+   */
+  function loadPageInto(n: number, url: string) {
+    updatePaste(n, { status: "loading", error: undefined });
+    void (async () => {
+      try {
+        const { loadPage } = await import("../lib/page-extract.client");
+        const page = await loadPage(url, settings.pageMaxChars);
+        updatePaste(n, {
+          status: "ready",
+          text: page.text,
+          title: page.title,
+          finalUrl: page.url,
+          truncated: page.truncated,
+        });
+      } catch (e) {
+        updatePaste(n, { status: "error", error: (e as Error).message });
+      }
+    })();
+  }
+
+  /** 取り込めなかったページを、もう一度取りに行く。 */
+  const retryPage = (p: CollapsedPaste) => {
+    if (p.url) loadPageInto(p.n, p.url);
   };
 
   /** 札を本文に戻す（利用者が中身を編集したいとき）。 */
@@ -999,12 +1065,23 @@ export function Chat({
   }, []);
 
   const uploading = pending.some((p) => p.status === "uploading");
+  /** 取り込みの終わっていないページがある。 */
+  const pagesLoading = pastes.some((p) => p.url && p.status === "loading");
   const readyAttachmentIds = pending
     .filter((p) => p.status === "ready" && p.id)
     .map((p) => p.id!);
 
   function openFilePicker() {
     fileInputRef.current?.click();
+  }
+
+  /** いまのキャレット（札を差し込む位置）。 */
+  function caretSelection(): { start: number; end: number } {
+    const el = textareaRef.current;
+    return {
+      start: el?.selectionStart ?? input.length,
+      end: el?.selectionEnd ?? input.length,
+    };
   }
 
   /** 入力欄への画像貼り付け（スクショの直接添付）。 */
@@ -1020,17 +1097,76 @@ export function Chat({
      * 持って送るときに戻す。短い文はブラウザにそのまま入れさせる。
      */
     const text = e.clipboardData.getData("text/plain");
-    if (!text || !shouldCollapsePaste(text, pasteThreshold)) return;
+    if (!text) return;
+
+    /*
+     * 長い貼り付けは畳むほうを採り、**中のリンクには触らない**。
+     * 資料を1枚まるごと貼ったときにリンクを数十本たどり始めると、
+     * 何が起きているのか分からないまま待たされる（畳んだ中身は
+     * そのまま全文が届くので、リンクも文字として渡っている）。
+     * リンク1本だけの貼り付けは、長くても取り込む。
+     */
+    const wholeIsLink = pastedUrl(text) != null;
+    if (!wholeIsLink && shouldCollapsePaste(text, pasteThreshold)) {
+      e.preventDefault();
+      const paste = { n: nextPasteNumber(pastes), text };
+      const next = insertPasteToken(input, caretSelection(), paste);
+      changeInput(next.text, [...pastes, paste]);
+      placeCaret(next.caret);
+      return;
+    }
+
+    /*
+     * 文に混ざったリンクを取り込む（§3.3「貼られたリンクの取り込み」）。
+     * リンクのところだけを札に置き換え、**書いた文はそのまま残す**。
+     */
+    const source = wholeIsLink ? text.trim() : text;
+    // 0 本なら取り込まない。リンクは今までどおり文字として送る
+    const found = settings.pageMaxPages > 0 ? findUrls(source) : [];
+    if (found.length === 0) return;
     e.preventDefault();
-    const el = textareaRef.current;
-    const selection = {
-      start: el?.selectionStart ?? input.length,
-      end: el?.selectionEnd ?? input.length,
-    };
-    const paste = { n: nextPasteNumber(pastes), text };
-    const next = insertPasteToken(input, selection, paste);
-    changeInput(next.text, [...pastes, paste]);
+
+    let n = nextPasteNumber(pastes);
+    // 上限は「この1通で取り込むページの数」。貼るたびに数え直す
+    let room = settings.pageMaxPages - pastes.filter((p) => p.url).length;
+    let overflowed = false;
+    const added: CollapsedPaste[] = [];
+    const taken = new Set<string>();
+    let rewritten = "";
+    let at = 0;
+    for (const f of found) {
+      // 同じリンクが2度出てきたら、2度目は文字のまま（同じページを
+      // 2本ぶん渡しても、長さが倍になるだけで何も増えない）
+      if (taken.has(f.url)) continue;
+      if (room <= 0) {
+        overflowed = true;
+        continue;
+      }
+      taken.add(f.url);
+      room--;
+      const page: CollapsedPaste = {
+        n: n++,
+        text: "",
+        url: f.url,
+        status: "loading",
+      };
+      added.push(page);
+      rewritten += source.slice(at, f.start) + pasteToken(page);
+      at = f.end;
+    }
+    rewritten += source.slice(at);
+
+    const next = insertText(input, caretSelection(), rewritten);
+    changeInput(next.text, [...pastes, ...added]);
     placeCaret(next.caret);
+    // 知らせは控えめなトーストで出す。エラーの欄は生成の失敗を出す
+    // ところで、読み上げも「生成に失敗しました」として読まれる
+    if (overflowed) {
+      showNotice(
+        `リンクの取り込みは1通につき${settings.pageMaxPages}本までです。残りは文字のまま送ります。`,
+      );
+    }
+    for (const page of added) loadPageInto(page.n, page.url!);
   }
 
   /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */
@@ -1267,8 +1403,14 @@ export function Chat({
     }
     // 畳んだ貼り付けは本文へ戻してから送る（畳むのは見た目だけ）
     const text = expandPastes(input, pastes).trim();
-    // 画像だけの送信も許す。アップロード中は完了を待つ
-    if ((!text && readyAttachmentIds.length === 0) || isStreaming || uploading) {
+    // 画像だけの送信も許す。アップロード中とページの取り込み中は
+    // 完了を待つ（読み終える前に送ると、本文にリンクだけが入る）
+    if (
+      (!text && readyAttachmentIds.length === 0) ||
+      isStreaming ||
+      uploading ||
+      pagesLoading
+    ) {
       return;
     }
     const attachments: UiAttachment[] = pending
@@ -2060,6 +2202,8 @@ export function Chat({
             pastes={pastes}
             onExpandPaste={expandPaste}
             onRemovePaste={removePaste}
+            onRetryPage={retryPage}
+            pageMaxChars={settings.pageMaxChars}
             onSend={() => send()}
             onPaste={onPaste}
             textareaRef={textareaRef}
@@ -2068,6 +2212,7 @@ export function Chat({
             onStop={stop}
             canSend={!!input.trim() || readyAttachmentIds.length > 0}
             uploading={uploading}
+            loadingPages={pagesLoading}
             canClearContext={
               !!convIdRef.current &&
               !isStreaming &&
