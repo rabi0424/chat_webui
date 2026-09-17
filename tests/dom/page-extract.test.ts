@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-  MAX_PAGE_TEXT_CHARS,
-  TRUNCATED_MARK,
-  extractPage,
-} from "../../app/lib/page-extract.client";
+import { TRUNCATED_MARK, extractPage } from "../../app/lib/page-extract.client";
+import { DEFAULT_APP_SETTINGS } from "../../app/lib/settings";
+
+/** 既定の上限（設定の `pageMaxChars`）。 */
+const MAX = DEFAULT_APP_SETTINGS.pageMaxChars;
 
 /**
  * 取ってきた HTML から、モデルに渡す本文を作るところ。
@@ -13,8 +13,11 @@ import {
  * 参照できない。どれも送った後に気づけないので、出来上がりの文字を
  * 直に見る。
  */
-const page = (body: string, contentType = "text/html") =>
-  extractPage({ url: "https://example.com/dir/page.html", contentType, body });
+const page = (body: string, contentType = "text/html", maxChars = MAX) =>
+  extractPage(
+    { url: "https://example.com/dir/page.html", contentType, body },
+    maxChars,
+  );
 
 describe("本文の取り出し", () => {
   it("スクリプト・スタイル・飾りは落とす", () => {
@@ -151,12 +154,21 @@ describe("見出し", () => {
 
 describe("長さの上限", () => {
   it("超えたら切って、切ったことを本文に書く", () => {
-    const { text, truncated } = page(`<p>${"あ".repeat(MAX_PAGE_TEXT_CHARS + 10)}</p>`);
+    const { text, truncated } = page(`<p>${"あ".repeat(MAX + 10)}</p>`);
     expect(truncated).toBe(true);
     expect(text).toContain(TRUNCATED_MARK);
-    expect(text.length).toBeLessThanOrEqual(
-      MAX_PAGE_TEXT_CHARS + TRUNCATED_MARK.length + 2,
-    );
+    expect(text.length).toBeLessThanOrEqual(MAX + TRUNCATED_MARK.length + 2);
+  });
+
+  /**
+   * 上限は設定から渡る。ここを固定値で持っていると、設定を変えても
+   * 切られる長さが変わらない（画面には何も出ない）。
+   */
+  it("上限は渡された値に従う", () => {
+    const { text, truncated } = page(`<p>${"あ".repeat(500)}</p>`, "text/html", 100);
+    expect(truncated).toBe(true);
+    expect(text.startsWith("あ".repeat(100))).toBe(true);
+    expect(text.length).toBeLessThan(200);
   });
 
   it("上限までなら切らない", () => {

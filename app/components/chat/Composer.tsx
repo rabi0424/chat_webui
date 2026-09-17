@@ -35,7 +35,6 @@ import {
   IconWarningTriangle,
   IconX,
 } from "../icons";
-import { MAX_PAGE_TEXT_CHARS } from "../../lib/page-limits";
 import { hostLabel } from "../../lib/page-url";
 import type { PendingAttachment } from "./use-attachments";
 import {
@@ -73,6 +72,7 @@ export function Composer({
   onExpandPaste,
   onRemovePaste,
   onRetryPage,
+  pageMaxChars,
   onSend,
   onPaste,
   textareaRef,
@@ -110,6 +110,8 @@ export function Composer({
   onRemovePaste: (paste: CollapsedPaste) => void;
   /** 取り込めなかったページを取りに行き直す。 */
   onRetryPage: (paste: CollapsedPaste) => void;
+  /** ページ1本を何文字まで渡すか（切ったことの断りに出す）。 */
+  pageMaxChars: number;
   onSend: () => void;
   onPaste: (e: ClipboardEvent<HTMLTextAreaElement>) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -273,7 +275,7 @@ export function Composer({
                   {p.truncated && (
                     <span
                       className="shrink-0 text-amber-600 dark:text-amber-400"
-                      title={`長いので先頭だけを取り込みました（${MAX_PAGE_TEXT_CHARS.toLocaleString()}字まで）`}
+                      title={`長いので先頭だけを取り込みました（${pageMaxChars.toLocaleString()}字まで）`}
                     >
                       一部
                     </span>

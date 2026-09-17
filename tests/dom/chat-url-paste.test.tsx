@@ -3,7 +3,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Markdown } from "../../app/components/Markdown";
 import { installServer, renderChat, type ServerStub } from "./helpers/chat-harness";
 import { PAGE_CLOSE, PAGE_OPEN } from "../../app/lib/paste";
-import { MAX_PAGE_TEXT_CHARS, TRUNCATED_MARK } from "../../app/lib/page-limits";
+import { TRUNCATED_MARK } from "../../app/lib/page-limits";
+import { DEFAULT_APP_SETTINGS } from "../../app/lib/settings";
+
+/** 既定の上限（設定の `pageMaxChars`）。 */
+const MAX_PAGE_TEXT_CHARS = DEFAULT_APP_SETTINGS.pageMaxChars;
 
 /**
  * 入力欄に貼られたリンクの取り込み。
@@ -222,7 +226,7 @@ describe("リンクを貼る", () => {
    * リンクの並んだ文をそのまま貼ると、際限なく取りに行くことになる。
    * 上限を超えたぶんは文字のまま残し、そう伝える。
    */
-  it("取り込むのは1通につき5本まで。残りは文字のまま", async () => {
+  it("取り込むのは1通につき既定で5本まで。残りは文字のまま", async () => {
     server.on("/api/page", (body) => ({
       url: (body as { url: string }).url,
       contentType: "text/html",
@@ -242,6 +246,58 @@ describe("リンクを貼る", () => {
     expect(box.value).toContain("https://example.com/6");
     expect(box.value).not.toContain("[ページ #6");
     expect(screen.getByText(/1通につき5本まで/)).toBeTruthy();
+    expect(DEFAULT_APP_SETTINGS.pageMaxPages).toBe(5);
+  });
+
+  /**
+   * 上限は設定から来る。固定値で持っていると、設定を変えても本数が
+   * 変わらない（画面には何も出ない）。
+   */
+  it("本数の上限は設定に従う", async () => {
+    server.on("/api/page", (body) => ({
+      url: (body as { url: string }).url,
+      contentType: "text/html",
+      body: "<p>ここが本文です。</p>",
+    }));
+    renderChat({ settings: { pageMaxPages: 2 } });
+
+    const box = paste(
+      ["https://a.example/1", "https://b.example/2", "https://c.example/3"].join(
+        "\n",
+      ),
+    );
+    await waitFor(() => expect(screen.getAllByText(/行・/)).toHaveLength(2));
+    expect(server.countOf("/api/page")).toBe(2);
+    expect(box.value).toContain("https://c.example/3");
+    expect(screen.getByText(/1通につき2本まで/)).toBeTruthy();
+  });
+
+  it("0 本にすると取り込まない（リンクは文字のまま）", async () => {
+    servePage("<p>ここが本文です。</p>");
+    renderChat({ settings: { pageMaxPages: 0 } });
+
+    const box = paste(LINK);
+    // preventDefault していないので jsdom では何も入らないが、札も出ない
+    expect(box.value).toBe("");
+    expect(server.countOf("/api/page")).toBe(0);
+    expect(screen.queryByText(/行・/)).toBeNull();
+  });
+
+  it("1本あたりの長さの上限も設定に従う", async () => {
+    servePage(`<p>${"あ".repeat(3000)}</p>`);
+    const { user } = renderChat({ settings: { pageMaxChars: 1000 } });
+
+    paste(LINK);
+    await screen.findByText("一部");
+
+    await user.click(sendButton());
+    await waitFor(() => expect(server.lastBody("/generate")).toBeTruthy());
+    const { userContent } = server.lastBody("/generate") as {
+      userContent: string;
+    };
+    expect(userContent).toContain(TRUNCATED_MARK);
+    // 上限（1,000字）＋囲みと断りのぶんに収まる
+    expect(userContent.length).toBeLessThan(1200);
   });
 
   /**

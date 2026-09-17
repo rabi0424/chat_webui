@@ -1,6 +1,7 @@
 import type { Route } from "./+types/api.page";
 import { apiError, apiJson, requireMethod, type PageResponse } from "../lib/api-types";
-import { fetchPage } from "../lib/page-fetch.server";
+import { getAppSettings } from "../lib/db.server";
+import { fetchPage, pageLimitsOf } from "../lib/page-fetch.server";
 
 /**
  * 入力欄に貼られたリンクの取り込み。
@@ -9,7 +10,7 @@ import { fetchPage } from "../lib/page-fetch.server";
  * 取ってきたものをそのまま返す。取りに行ってよい宛先かの判定は
  * `page-fetch.server.ts`（転送の途中も1段ずつ見る）。
  *
- * バインディングには触らない（鍵も D1 も R2 も要らない）。
+ * 鍵は要らない。D1 は上限の設定を引くためだけに読む。
  */
 export async function action({ request }: Route.ActionArgs) {
   const bad = requireMethod(request, ["POST"]);
@@ -22,7 +23,10 @@ export async function action({ request }: Route.ActionArgs) {
     return apiError("url は必須です", 400);
   }
 
-  const result = await fetchPage(body.url, new URL(request.url).host);
+  // 上限は設定から引く（`pageMaxMb` / `pageTimeoutSec`）。値を書き写すと、
+  // 設定を変えても効かないという、画面に何も出ない壊れ方をする
+  const limits = pageLimitsOf(await getAppSettings());
+  const result = await fetchPage(body.url, new URL(request.url).host, limits);
   if (!result.ok) return apiError(result.error, result.status);
   return apiJson<PageResponse>(result.page);
 }

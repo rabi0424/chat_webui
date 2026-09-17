@@ -10,11 +10,7 @@ import { useShortcut } from "../lib/use-shortcut";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
 import type { UiAttachment, UiMessage } from "../lib/types";
-import {
-  MAX_PAGES_PER_MESSAGE,
-  findUrls,
-  pastedUrl,
-} from "../lib/page-url";
+import { findUrls, pastedUrl } from "../lib/page-url";
 import {
   expandOnePaste,
   expandPastes,
@@ -677,7 +673,7 @@ export function Chat({
     void (async () => {
       try {
         const { loadPage } = await import("../lib/page-extract.client");
-        const page = await loadPage(url);
+        const page = await loadPage(url, settings.pageMaxChars);
         updatePaste(n, {
           status: "ready",
           text: page.text,
@@ -1125,13 +1121,14 @@ export function Chat({
      * リンクのところだけを札に置き換え、**書いた文はそのまま残す**。
      */
     const source = wholeIsLink ? text.trim() : text;
-    const found = findUrls(source);
+    // 0 本なら取り込まない。リンクは今までどおり文字として送る
+    const found = settings.pageMaxPages > 0 ? findUrls(source) : [];
     if (found.length === 0) return;
     e.preventDefault();
 
     let n = nextPasteNumber(pastes);
     // 上限は「この1通で取り込むページの数」。貼るたびに数え直す
-    let room = MAX_PAGES_PER_MESSAGE - pastes.filter((p) => p.url).length;
+    let room = settings.pageMaxPages - pastes.filter((p) => p.url).length;
     let overflowed = false;
     const added: CollapsedPaste[] = [];
     const taken = new Set<string>();
@@ -1166,7 +1163,7 @@ export function Chat({
     // ところで、読み上げも「生成に失敗しました」として読まれる
     if (overflowed) {
       showNotice(
-        `リンクの取り込みは1通につき${MAX_PAGES_PER_MESSAGE}本までです。残りは文字のまま送ります。`,
+        `リンクの取り込みは1通につき${settings.pageMaxPages}本までです。残りは文字のまま送ります。`,
       );
     }
     for (const page of added) loadPageInto(page.n, page.url!);
@@ -2206,6 +2203,7 @@ export function Chat({
             onExpandPaste={expandPaste}
             onRemovePaste={removePaste}
             onRetryPage={retryPage}
+            pageMaxChars={settings.pageMaxChars}
             onSend={() => send()}
             onPaste={onPaste}
             textareaRef={textareaRef}

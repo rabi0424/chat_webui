@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  MAX_PAGE_BYTES,
+  DEFAULT_PAGE_LIMITS,
   MAX_PAGE_REDIRECTS,
   charsetOf,
   decodeBody,
   fetchPage,
+  pageLimitsOf,
 } from "../../app/lib/page-fetch.server";
+import { DEFAULT_APP_SETTINGS } from "../../app/lib/settings";
+
+/** 既定の上限（設定の `pageMaxMb`）。 */
+const MAX_PAGE_BYTES = DEFAULT_PAGE_LIMITS.maxBytes;
 
 /**
  * 貼られたリンクを取ってくるところ。
@@ -18,7 +23,7 @@ import {
 
 /** 上流の振りをする。URLごとの応答を決め、呼ばれた順と渡された指定を残す。 */
 function installFetch(
-  routes: Record<string, () => Response | Promise<Response>>,
+  routes: Record<string, (init?: RequestInit) => Response | Promise<Response>>,
 ): { seen: string[]; inits: (RequestInit | undefined)[] } {
   const seen: string[] = [];
   const inits: (RequestInit | undefined)[] = [];
@@ -28,7 +33,7 @@ function installFetch(
     inits.push(init);
     const hit = routes[url];
     if (!hit) throw new Error(`知らないURL: ${url}`);
-    return await hit();
+    return await hit(init);
   }) as typeof fetch;
   return { seen, inits };
 }
@@ -172,6 +177,59 @@ describe("取ってくる", () => {
         }),
     });
     expect((await fetchPage("https://example.com/big")).ok).toBe(true);
+  });
+
+  /**
+   * 上限は設定から渡る。既定を書き写して持っていると、設定を変えても
+   * 効かない（画面には何も出ない）。
+   */
+  it("上限は渡された値に従う", async () => {
+    installFetch({
+      "https://example.com/a": () =>
+        new Response("a".repeat(2000), {
+          headers: { "Content-Type": "text/html" },
+        }),
+    });
+    const small = pageLimitsOf({ pageMaxMb: 1, pageTimeoutSec: 30 });
+    const result = await fetchPage("https://example.com/a", null, {
+      ...small,
+      maxBytes: 1000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(413);
+  });
+
+  /**
+   * 待ち時間も設定から渡る。既定（15秒）を書き写して持っていると、
+   * 設定を変えても待ち続ける（そのあいだ入力欄は送信できない）。
+   */
+  it("待つ時間は渡された値に従い、その秒数を理由に書く", async () => {
+    installFetch({
+      // 中断されるまで返さない（本物の fetch と同じく、合図で断る）
+      "https://example.com/slow": (init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new Error("The operation was aborted")),
+          );
+        }),
+    });
+    const started = Date.now();
+    const result = await fetchPage("https://example.com/slow", null, {
+      maxBytes: 1024,
+      timeoutMs: 1_000,
+    });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/1秒で応答がありませんでした/);
+  });
+
+  it("既定の上限は設定の既定と同じ", () => {
+    expect(DEFAULT_PAGE_LIMITS).toEqual({
+      maxBytes: DEFAULT_APP_SETTINGS.pageMaxMb * 1024 * 1024,
+      timeoutMs: DEFAULT_APP_SETTINGS.pageTimeoutSec * 1000,
+    });
   });
 
   it("読めなかった応答は、状態コードを添えて断る", async () => {

@@ -82,6 +82,35 @@ export interface AppSettings {
    * 空なら指定しない（モデル本来の既定に任せる）。
    */
   defaultParams: Record<string, unknown>;
+  /**
+   * 貼られたリンクを、1通につき何本まで取り込むか。**0 で取り込まない**
+   * （リンクは今までどおり文字として送る）。
+   *
+   * ここに置くのは、取り込んだ本文がそのままモデルへの入力になる＝
+   * 課金に直結するため。端末ごとの好みではない。
+   */
+  pageMaxPages: number;
+  /**
+   * 取り込んだページ1本を、何文字までモデルへ渡すか。
+   *
+   * 日本語で4万字はおよそ3万トークン。超えたぶんは落とし、落とした
+   * ことを本文の末尾と札に出す。
+   */
+  pageMaxChars: number;
+  /**
+   * 取ってくるページ1本の大きさの上限（MB）。
+   *
+   * 読みながら数えて、超えたらそこで捨てる。大きすぎるページは
+   * 取り込めなかったものとして扱い、リンクのまま送れる。
+   */
+  pageMaxMb: number;
+  /**
+   * リンク1本の取得にかける時間（秒）。
+   *
+   * 待たされるのは入力欄なので、生成（分単位）とは別の物差しにする。
+   * 遅いサイトは諦めて、リンクのまま送れるようにする。
+   */
+  pageTimeoutSec: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -99,6 +128,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultModelId: null,
   defaultSystemPrompt: "",
   defaultParams: {},
+  pageMaxPages: 5,
+  pageMaxChars: 40_000,
+  pageMaxMb: 2,
+  pageTimeoutSec: 15,
 };
 
 /** システムプロンプトとして受け付ける長さ。 */
@@ -126,6 +159,71 @@ export const MONTHLY_LIMIT_RANGE = { min: 0, max: 1_000_000 };
 
 /** ポイント換算レートとして受け付ける範囲（0 = 見積もらない）。 */
 export const POE_RATE_RANGE = { min: 0, max: 1 };
+
+/**
+ * 1通で取り込むリンクの本数として受け付ける範囲（0 = 取り込まない）。
+ *
+ * 上は20。1本で最大数MBを読み、本文も数万字になるので、これ以上は
+ * モデルのコンテキストに入らない（入れても読まれない）。
+ */
+export const PAGE_MAX_PAGES_RANGE = { min: 0, max: 20 };
+
+/**
+ * ページ1本の長さとして受け付ける範囲（文字）。
+ *
+ * 下は1,000字（見出しと冒頭だけでも渡せる）、上は20万字。
+ * 上限そのものを外せるようにはしない——長いページを丸ごと渡すと、
+ * 上流が受け取れる長さを超えて1通まるごと失敗する。
+ */
+export const PAGE_MAX_CHARS_RANGE = { min: 1_000, max: 200_000 };
+
+/** 取ってくる大きさとして受け付ける範囲（MB）。 */
+export const PAGE_MAX_MB_RANGE = { min: 1, max: 20 };
+
+/** 取得にかける時間として受け付ける範囲（秒）。 */
+export const PAGE_TIMEOUT_RANGE = { min: 5, max: 120 };
+
+/**
+ * 取り込みの上限を、受け付ける範囲に収めて写す。
+ *
+ * **保存の手前で必ず通す。** 範囲の判定を D1 を触る側（db.server）の
+ * 中だけに置くと、バインディングの要る経路になってテストから叩けない
+ * ——上限が効かないまま（0 や巨大な値のまま）保存できても、気づく
+ * 手立てが無くなる。
+ *
+ * 数として読めない値は**現在値のまま**。「送られてこなかった項目」と
+ * 「壊れた値」を区別せずに既定へ戻すと、設定画面の1項目を保存した
+ * だけで他の項目が黙って巻き戻る。
+ */
+export function clampPageSettings(
+  current: AppSettings,
+  patch: Partial<AppSettings>,
+): Pick<
+  AppSettings,
+  "pageMaxPages" | "pageMaxChars" | "pageMaxMb" | "pageTimeoutSec"
+> {
+  const ranges: [
+    keyof ReturnType<typeof clampPageSettings>,
+    { min: number; max: number },
+  ][] = [
+    ["pageMaxPages", PAGE_MAX_PAGES_RANGE],
+    ["pageMaxChars", PAGE_MAX_CHARS_RANGE],
+    ["pageMaxMb", PAGE_MAX_MB_RANGE],
+    ["pageTimeoutSec", PAGE_TIMEOUT_RANGE],
+  ];
+  const out = {
+    pageMaxPages: current.pageMaxPages,
+    pageMaxChars: current.pageMaxChars,
+    pageMaxMb: current.pageMaxMb,
+    pageTimeoutSec: current.pageTimeoutSec,
+  };
+  for (const [key, range] of ranges) {
+    const value = Number(patch[key]);
+    if (!Number.isFinite(value)) continue;
+    out[key] = Math.min(Math.max(Math.round(value), range.min), range.max);
+  }
+  return out;
+}
 
 /**
  * その会話に写し取るシステムプロンプト。無ければ null。

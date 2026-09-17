@@ -9,6 +9,7 @@ import {
   conversationSystemPrompt,
   NEW_MODEL_DAYS_RANGE,
   POE_RATE_RANGE,
+  clampPageSettings,
   RETRY_CEILING_RANGE,
   RETRY_WORKER_CONCURRENCY_RANGE,
   DAILY_DO_SECONDS_RANGE,
@@ -307,6 +308,10 @@ export async function updateAppSettings(
       POE_RATE_RANGE.max,
     );
   }
+
+  // 取り込みの上限4つ。範囲の判定は settings.ts に置いてある
+  // （ここに書くと D1 の要る経路になり、テストから叩けなくなる）
+  Object.assign(next, clampPageSettings(next, patch));
 
   // 一時解除は「どの月か」で持つ。true/false のトグルにすると、
   // 解除したまま忘れて翌月も素通りする

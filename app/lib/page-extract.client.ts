@@ -18,9 +18,9 @@
  */
 
 import type { PageResponse } from "./api-types";
-import { MAX_PAGE_TEXT_CHARS, TRUNCATED_MARK } from "./page-limits";
+import { TRUNCATED_MARK } from "./page-limits";
 
-export { MAX_PAGE_TEXT_CHARS, TRUNCATED_MARK };
+export { TRUNCATED_MARK };
 
 export interface ExtractedPage {
   /** 見出し（空のこともある）。 */
@@ -264,10 +264,10 @@ function tidy(text: string): string {
 }
 
 /** 上限で切る（切ったことを本文に書く）。 */
-function cap(text: string): { text: string; truncated: boolean } {
-  if (text.length <= MAX_PAGE_TEXT_CHARS) return { text, truncated: false };
+function cap(text: string, maxChars: number): { text: string; truncated: boolean } {
+  if (text.length <= maxChars) return { text, truncated: false };
   return {
-    text: `${text.slice(0, MAX_PAGE_TEXT_CHARS).trimEnd()}\n\n${TRUNCATED_MARK}`,
+    text: `${text.slice(0, maxChars).trimEnd()}\n\n${TRUNCATED_MARK}`,
     truncated: true,
   };
 }
@@ -308,13 +308,16 @@ function rootOf(doc: Document): Element {
  * HTML でないもの（プレーンテキスト・JSON・CSV）はそのまま通す。
  * 形を変えずに渡したほうが読めるし、変えようが無い。
  */
-export function extractPage(page: {
-  url: string;
-  contentType: string;
-  body: string;
-}): ExtractedPage {
+export function extractPage(
+  page: { url: string; contentType: string; body: string },
+  /** 何文字までモデルへ渡すか（設定の `pageMaxChars`）。 */
+  maxChars: number,
+): ExtractedPage {
   if (!isHtml(page.contentType)) {
-    const { text, truncated } = cap(page.body.replace(/\r\n/g, "\n").trim());
+    const { text, truncated } = cap(
+      page.body.replace(/\r\n/g, "\n").trim(),
+      maxChars,
+    );
     return { title: "", text, truncated };
   }
 
@@ -323,7 +326,7 @@ export function extractPage(page: {
   for (const el of doc.querySelectorAll(DROP_SELECTOR)) el.remove();
   const out = makeSink();
   walk(rootOf(doc), out, page.url);
-  const { text, truncated } = cap(tidy(out.value()));
+  const { text, truncated } = cap(tidy(out.value()), maxChars);
   return { title, text, truncated };
 }
 
@@ -342,7 +345,11 @@ export interface LoadedPage extends ExtractedPage {
  * 失敗は例外で返す。呼ぶ側はその文言を札に出し、送るときはリンクだけを
  * 渡す形に落とす。
  */
-export async function loadPage(url: string): Promise<LoadedPage> {
+export async function loadPage(
+  url: string,
+  /** 何文字までモデルへ渡すか（設定の `pageMaxChars`）。 */
+  maxChars: number,
+): Promise<LoadedPage> {
   const res = await fetch("/api/page", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -354,11 +361,14 @@ export async function loadPage(url: string): Promise<LoadedPage> {
   if (!res.ok || typeof body?.body !== "string") {
     throw new Error(body?.error ?? `ページを取得できませんでした (${res.status})`);
   }
-  const page = extractPage({
-    url: body.url ?? url,
-    contentType: body.contentType ?? "text/html",
-    body: body.body,
-  });
+  const page = extractPage(
+    {
+      url: body.url ?? url,
+      contentType: body.contentType ?? "text/html",
+      body: body.body,
+    },
+    maxChars,
+  );
   if (page.text.trim() === "") {
     // 中身の無い囲みを渡すと、モデルは「読んだが何も書いていない」と
     // 受け取る。読めなかったことは読めなかったこととして扱う

@@ -14,7 +14,7 @@ import userEvent from "@testing-library/user-event";
 import { Chat, type BotContext } from "../../../app/components/Chat";
 import type { BotRow } from "../../../app/lib/db.server";
 import { ConfirmProvider } from "../../../app/components/ConfirmDialog";
-import { DEFAULT_APP_SETTINGS } from "../../../app/lib/settings";
+import { DEFAULT_APP_SETTINGS, type AppSettings } from "../../../app/lib/settings";
 import type { ModelInfo } from "../../../app/lib/openrouter.server";
 import type { UiMessage } from "../../../app/lib/types";
 import type { ParamsState } from "../../../app/lib/params";
@@ -290,12 +290,14 @@ export function renderChat(props: {
   systemPrompt?: string | null;
   /** この会話に保存されている生成パラメータ。 */
   initialParams?: ParamsState | null;
+  /** アプリ設定の上書き（取り込みの上限など）。 */
+  settings?: Partial<AppSettings>;
 }): RenderResult & { user: ReturnType<typeof userEvent.setup> } {
   const shell = {
     models: props.models ?? [TEST_MODEL],
     bots: props.bots ?? [],
     usdJpy: 150,
-    settings: DEFAULT_APP_SETTINGS,
+    settings: { ...DEFAULT_APP_SETTINGS, ...props.settings },
     openSidebar: () => {},
   };
 

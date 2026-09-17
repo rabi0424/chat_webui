@@ -12,22 +12,34 @@
  */
 import { blockedUrlReason } from "./page-url";
 import { readBounded } from "./read-bounded";
+import { DEFAULT_APP_SETTINGS } from "./settings";
 
 /**
- * 受け取る本文の上限。
+ * 取得の上限（設定から渡す）。
  *
- * 記事1本のHTMLは大きくても数百KB。ここを超えるものは、取り込んでも
- * モデルへ渡せる量ではない（本文の取り出しでさらに削られる）。
+ * 既定は `DEFAULT_APP_SETTINGS` の `pageMaxMb` / `pageTimeoutSec`。
+ * **値を書き写さない**——設定を変えても、書き写した側が古いままだと
+ * 「設定したのに効かない」という、画面に何も出ない壊れ方をする。
  */
-export const MAX_PAGE_BYTES = 2 * 1024 * 1024;
+export interface PageLimits {
+  /** 受け取る本文の上限（バイト）。 */
+  maxBytes: number;
+  /** 1本にかける時間の上限（ミリ秒）。 */
+  timeoutMs: number;
+}
 
-/**
- * 1本にかける時間の上限。
- *
- * 貼ってから待たされるのは入力欄なので、生成（分単位）とは別の
- * 物差しにする。遅いサイトは諦めて、リンクのまま送れるようにする。
- */
-export const PAGE_FETCH_TIMEOUT_MS = 15_000;
+export function pageLimitsOf(settings: {
+  pageMaxMb: number;
+  pageTimeoutSec: number;
+}): PageLimits {
+  return {
+    maxBytes: settings.pageMaxMb * 1024 * 1024,
+    timeoutMs: settings.pageTimeoutSec * 1000,
+  };
+}
+
+/** 設定を渡されなかったときの上限（既定の設定と同じ値）。 */
+export const DEFAULT_PAGE_LIMITS = pageLimitsOf(DEFAULT_APP_SETTINGS);
 
 /**
  * 追いかけるリダイレクトの段数。
@@ -121,6 +133,7 @@ export function decodeBody(body: ArrayBuffer, charset: string): string {
 export async function fetchPage(
   raw: string,
   selfHost?: string | null,
+  limits: PageLimits = DEFAULT_PAGE_LIMITS,
 ): Promise<PageFetchResult> {
   let url: URL;
   try {
@@ -129,7 +142,7 @@ export async function fetchPage(
     return { ok: false, error: "URLとして読めません", status: 400 };
   }
 
-  const deadline = AbortSignal.timeout(PAGE_FETCH_TIMEOUT_MS);
+  const deadline = AbortSignal.timeout(limits.timeoutMs);
   let res: Response;
   let hops = 0;
   for (;;) {
@@ -148,7 +161,7 @@ export async function fetchPage(
       });
     } catch (e) {
       const reason = deadline.aborted
-        ? `${PAGE_FETCH_TIMEOUT_MS / 1000}秒で応答がありませんでした`
+        ? `${Math.round(limits.timeoutMs / 1000)}秒で応答がありませんでした`
         : ((e as Error).message ?? String(e));
       return {
         ok: false,
@@ -196,11 +209,11 @@ export async function fetchPage(
     return { ok: true, page: { url: url.toString(), contentType: mediaType, body: "" } };
   }
 
-  const body = await readBounded(res, MAX_PAGE_BYTES);
+  const body = await readBounded(res, limits.maxBytes);
   if (!body) {
     return {
       ok: false,
-      error: `ページが大きすぎます（上限 ${MAX_PAGE_BYTES / 1024 / 1024}MB）`,
+      error: `ページが大きすぎます（上限 ${Math.round(limits.maxBytes / 1024 / 1024)}MB）`,
       status: 413,
     };
   }
