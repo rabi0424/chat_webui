@@ -54,6 +54,23 @@ export default async function handleRequest(
       dev: import.meta.env.DEV,
     }),
   );
+  /*
+   * 文書をブラウザに溜めさせない。
+   *
+   * Safari はタブを復元するとき（アプリを終了して開き直したとき）、
+   * 保存してある応答を**鮮度を確かめずに**そのまま使う。Cache-Control が
+   * 無い応答は保存の対象になるので、前に開いたときの会話がそのまま出る
+   * ——最後のやり取りが抜けた状態で、再読み込みするまで直らない。
+   *
+   * ここで返すのは会話そのもので、次に開くときには変わっている前提の
+   * ものなので、溜めさせる意味がない。`no-cache`（溜めるが毎回確かめる）
+   * ではなく `no-store` にするのは、確かめる材料（ETag / Last-Modified）を
+   * 文書には付けていないため——溜めさせても結局取り直しになる。
+   *
+   * 付けるのは文書だけ。単一フェッチ（`*.data`）と API はここを通らない
+   * ので、リンクの先読み（prefetch="intent"）はそのまま効く。
+   */
+  responseHeaders.set("Cache-Control", "no-store");
   // 申告と違う型で解釈させない（アップロードした画像を HTML として
   // 読ませる類の抜け道を塞ぐ）
   responseHeaders.set("X-Content-Type-Options", "nosniff");
