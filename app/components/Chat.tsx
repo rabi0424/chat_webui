@@ -120,6 +120,19 @@ function contextWindow(history: UiMessage[]): UiMessage[] {
 
 const DEFERRED_TAIL = 24;
 
+/**
+ * 「最下部に貼り付いている」とみなす距離（px）。
+ *
+ * ここより近ければ、本文が伸びるたびに追いかける。離れていれば、
+ * 読んでいる位置をそのままにする。
+ */
+const STICK_BOTTOM_PX = 80;
+
+/** 最下部の近くに居るか（貼り付きの判定そのもの）。 */
+function nearBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < STICK_BOTTOM_PX;
+}
+
 export function Chat({
   conversationId,
   initialMessages,
@@ -283,6 +296,47 @@ export function Chat({
   const convIdRef = useRef<string | null>(conversationId);
   // スマートスクロール: 最下部付近にいるときだけ自動追従する
   const stickToBottomRef = useRef(true);
+  /**
+   * こちらが最後に合わせた位置。
+   *
+   * 貼り付きの印は `scroll` の通知でしか更新できないが、**通知は後から
+   * 来る**（iOS Safari はスクロールをコンポジタ側で進め、通知はあとで
+   * まとめて届く）。指で上へ払った直後に本文の更新が入ると、印はまだ
+   * 「最下部に居る」ままなので、読んでいた位置から最下部へ引き戻される。
+   * 生成の確定は、確定した全文の描き直し・図の描画・パスの取り直し・
+   * 一覧の取り直しが重なっていちばん忙しいので、この隙間がいちばん開く
+   * ——「生成が終わった瞬間に最下部へ飛ぶ」のはこれ。
+   *
+   * こちらが置いた位置を覚えておけば、そこから**上へ**動いた量が
+   * そのまま「利用者が離れた量」になる。通知を待たなくても読めるので、
+   * 追従してよいかはこれで決める（`shouldStick`）。
+   */
+  const pinnedTopRef = useRef(0);
+
+  /**
+   * いま追従してよいか。
+   *
+   * 見るのは「こちらが合わせた位置から**上へ**どれだけ動いたか」。
+   * 通知が来ていなくても、動いた量そのものは読めるので、ここで判断
+   * できる。
+   *
+   * 高さを見ないのが肝心。本文が下に伸びても位置は動かないので、
+   * 伸びただけで「離れた」ことにはならない。ここで最下部からの距離を
+   * 測り直すと、**伸びたぶんがそのまま距離になって追従が止まる**
+   * （内容が縮んでブラウザが位置を詰めた直後に、これで止まった）。
+   */
+  const shouldStick = useCallback((el: HTMLElement): boolean => {
+    const movedUp = pinnedTopRef.current - el.scrollTop;
+    if (movedUp > STICK_BOTTOM_PX) stickToBottomRef.current = false;
+    return stickToBottomRef.current;
+  }, []);
+
+  /** 最下部へ合わせ、その位置を控える（次に動いたかを見るため）。 */
+  const pinToBottom = useCallback((el: HTMLElement): void => {
+    el.scrollTop = el.scrollHeight;
+    // 詰められたあとの実際の値を控える（scrollHeight そのものではない）
+    pinnedTopRef.current = el.scrollTop;
+  }, []);
 
   /**
    * 本文をどこまで描くか。none → tail → all と広げる。
@@ -328,9 +382,8 @@ export function Chat({
   }, [renderStage]);
   useEffect(() => {
     // 段階が進むと上に内容が増える。最下部に貼り付いていたなら貼り直す
-    if (renderStage !== "none" && stickToBottomRef.current) {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-    }
+    const el = scrollRef.current;
+    if (renderStage !== "none" && el && shouldStick(el)) pinToBottom(el);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderStage]);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -487,10 +540,9 @@ export function Chat({
   };
 
   useEffect(() => {
-    if (stickToBottomRef.current) {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-    }
-  }, [messages]);
+    const el = scrollRef.current;
+    if (el && shouldStick(el)) pinToBottom(el);
+  }, [messages, shouldStick, pinToBottom]);
 
   // 本文が動いたら先読みキャッシュを無効化（古いスナップショットで再訪させない）
   useEffect(() => {
@@ -827,14 +879,20 @@ export function Chat({
   /** 表示が伸びたときの追従（最下部に貼り付いているときだけ）。 */
   const followBottom = () => {
     const el = scrollRef.current;
-    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+    if (el && shouldStick(el)) pinToBottom(el);
   };
 
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const near = nearBottom(el);
     stickToBottomRef.current = near;
+    /*
+     * 印と、その判断の元になった位置は必ず一緒に控える。片方だけ新しいと
+     * 「こちらが合わせた位置」と食い違い、次に伸びたときの判断がずれる
+     * （利用者が自分で最下部まで戻したのに、追従が戻らない）。
+     */
+    pinnedTopRef.current = el.scrollTop;
     setAtBottom(near);
     setScrolled(el.scrollTop > 8);
   };
@@ -1036,13 +1094,19 @@ export function Chat({
    * 最下部へ、そうでなければ元の位置へ戻す。
    */
   const captureScroll = () => {
-    const wasAtBottom = stickToBottomRef.current;
-    const top = scrollRef.current?.scrollTop ?? 0;
+    const at = scrollRef.current;
+    const wasAtBottom = at ? shouldStick(at) : true;
+    const top = at?.scrollTop ?? 0;
     return () => {
       requestAnimationFrame(() => {
         const el = scrollRef.current;
         if (!el) return;
-        el.scrollTop = wasAtBottom ? el.scrollHeight : top;
+        if (wasAtBottom) {
+          pinToBottom(el);
+        } else {
+          el.scrollTop = top;
+          pinnedTopRef.current = el.scrollTop;
+        }
       });
     };
   };
