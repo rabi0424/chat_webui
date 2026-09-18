@@ -524,13 +524,13 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-1 border-b border-black/[0.06] px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-white/[0.06]">
-        <div className="flex w-9 shrink-0 justify-start">
+      <header className="flex shrink-0 items-center gap-1 border-b border-line px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
+        <div className="flex w-11 shrink-0 justify-start">
           <button
             type="button"
             onClick={openSidebar}
             aria-label="メニュー"
-            className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
+            className="grid h-11 w-11 -my-1 place-items-center rounded-lg text-ink-2 hover:bg-hover md:hidden"
           >
             <IconMenu className="h-5 w-5" />
           </button>
@@ -538,7 +538,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
         <h1 className="min-w-0 flex-1 truncate text-center text-[0.9375rem] font-semibold">
           設定
         </h1>
-        <div className="flex w-9 shrink-0 justify-end" />
+        <div className="flex w-11 shrink-0 justify-end" />
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">

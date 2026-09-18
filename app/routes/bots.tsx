@@ -170,11 +170,11 @@ export default function Bots() {
           type="button"
           onClick={openSidebar}
           aria-label="メニュー"
-          className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
+          className="grid h-11 w-11 -my-1 place-items-center rounded-lg text-ink-2 hover:bg-hover md:hidden"
         >
           <IconMenu className="h-5 w-5" />
         </button>
-        <h1 className="px-1 text-sm font-semibold tracking-tight">ボット管理</h1>
+        <h1 className="px-1 text-[0.9375rem] font-semibold">ボット管理</h1>
         <div className="ml-auto">
           <button
             type="button"

@@ -12,9 +12,14 @@
  */
 
 /** ポップオーバー・パネル用のガラス面（角丸・配置・パディングは呼び出し側で指定）。 */
+/*
+ * 透過は 8% まで。以前は 20% で、下をくぐる吹き出しの青や赤いエラー文が
+ * ポップオーバーの文字に透けて読みづらかった（監査 D-5）。iOS の material
+ * （thick）と同じく、背景の色相だけを残して文字は透かさない。
+ */
 export const GLASS_PANEL =
-  "border border-neutral-200/80 bg-white/80 shadow-md shadow-black/5 " +
-  "backdrop-blur-xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-900/80";
+  "border border-neutral-200/80 bg-white/[0.92] shadow-xl shadow-black/10 " +
+  "backdrop-blur-2xl backdrop-saturate-150 dark:border-white/10 dark:bg-[#1c1c1e]/[0.94]";
 
 /**
  * ガラスのボタン面。角丸・大きさは呼び出し側で指定する。
@@ -61,21 +66,23 @@ const MSG_ACTION_BASE =
  */
 export const MSG_ICON_ACTION =
   MSG_ACTION_BASE +
-  " grid h-7 w-7 place-items-center touch:h-11 touch:w-11 touch:-my-2 " +
+  // shrink-0: 操作が7つ並ぶと flex に潰され、44px の指定が 32px まで
+  // 縮んでいた（監査 D-4）。溢れたぶんは行を折る（AssistantMessage）
+  " grid h-7 w-7 shrink-0 place-items-center touch:h-11 touch:w-11 touch:-my-2 " +
   "hover:bg-neutral-100 hover:text-neutral-600 " +
   "dark:hover:bg-neutral-800 dark:hover:text-neutral-300";
 
 /** 削除だけは、押したときに赤くする。 */
 export const MSG_DELETE_ACTION =
   MSG_ACTION_BASE +
-  " grid h-7 w-7 place-items-center touch:h-11 touch:w-11 touch:-my-2 " +
+  " grid h-7 w-7 shrink-0 place-items-center touch:h-11 touch:w-11 touch:-my-2 " +
   "hover:bg-neutral-100 hover:text-red-600 " +
   "dark:hover:bg-neutral-800 dark:hover:text-red-400";
 
 /** 文字の操作（「⑂ ここから分岐」「この画像を使う」）。 */
 export const MSG_TEXT_ACTION =
   MSG_ACTION_BASE +
-  " px-1.5 py-0.5 text-xs touch:px-2 touch:py-1.5 " +
+  " shrink-0 whitespace-nowrap px-1.5 py-0.5 text-xs touch:px-2 touch:py-1.5 " +
   "hover:bg-neutral-100 hover:text-neutral-600 " +
   "dark:hover:bg-neutral-800 dark:hover:text-neutral-300";
 

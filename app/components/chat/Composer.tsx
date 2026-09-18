@@ -46,9 +46,17 @@ import {
   type CollapsedPaste,
 } from "../../lib/paste";
 
-/** 入力欄の中の丸いアイコンボタン。指で押せる大きさ（36px）を確保する。 */
+/** 入力欄の中の丸いアイコンボタン。指の端末では 44px（Apple の指針）。 */
 const TOOL_BUTTON =
-  "grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-black/[0.05] active:scale-90 disabled:opacity-30 dark:hover:bg-white/10";
+  "grid h-9 w-9 shrink-0 place-items-center rounded-full transition hover:bg-black/[0.05] active:scale-90 disabled:opacity-30 touch:h-11 touch:w-11 dark:hover:bg-white/10";
+/*
+ * 送信・停止。無効のときはアクセントを薄めるのではなく無彩色にする。
+ * 薄めた水色の丸が常に見えていて、イエローのアクセントでは白地に
+ * 溶けていた（監査 D-9）。iMessage と同じく、無効は灰色。
+ */
+const SEND_BUTTON =
+  "grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition hover:bg-accent/85 active:scale-90 touch:h-11 touch:w-11 " +
+  "disabled:bg-neutral-200 disabled:text-neutral-400 dark:disabled:bg-white/10 dark:disabled:text-white/40";
 
 /**
  * 本文の字送りと余白。
@@ -176,7 +184,7 @@ export function Composer({
     <div className="mx-auto max-w-3xl">
       <div
         ref={pillRef}
-        className="rounded-[1.625rem] border border-neutral-200/80 bg-white/85 shadow-lg shadow-black/5 backdrop-blur-xl backdrop-saturate-150 transition-colors focus-within:border-neutral-300 dark:border-white/10 dark:bg-neutral-900/80 dark:focus-within:border-white/20"
+        className="rounded-[1.625rem] border border-neutral-200/80 bg-white/[0.92] shadow-lg shadow-black/5 backdrop-blur-2xl backdrop-saturate-150 transition-colors focus-within:border-neutral-300 dark:border-white/[0.12] dark:bg-[#1c1c1e]/90 dark:focus-within:border-white/20"
       >
         {pending.length > 0 && (
           <div className="flex flex-wrap gap-2 px-3 pt-3">
@@ -477,7 +485,7 @@ export function Composer({
             <button
               type="button"
               onClick={onStop}
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition hover:bg-accent/85 active:scale-90"
+              className={SEND_BUTTON}
               aria-label="停止"
             >
               <span className="block h-3 w-3 rounded-[3px] bg-current" />
@@ -494,7 +502,7 @@ export function Composer({
                     ? "ページを読み込み中…"
                     : "送信"
               }
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition hover:bg-accent/85 active:scale-90 disabled:opacity-30"
+              className={SEND_BUTTON}
               aria-label="送信"
             >
               <IconArrowUp className="h-4.5 w-4.5" />

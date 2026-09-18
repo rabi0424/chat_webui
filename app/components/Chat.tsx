@@ -2237,12 +2237,12 @@ export function Chat({
           右＝この会話の操作。左右を同じ幅にして中央を本当の中央に置く。
           モデルの選択は入力欄の中のチップへ移した（Composer 参照）。
         */}
-        <div className="flex w-9 shrink-0 justify-start">
+        <div className="flex w-11 shrink-0 justify-start">
           <button
             type="button"
             onClick={openSidebar}
             aria-label="メニュー"
-            className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
+            className="grid h-11 w-11 -my-1 place-items-center rounded-lg text-ink-2 hover:bg-hover md:hidden"
           >
             <IconMenu className="h-5 w-5" />
           </button>
@@ -2252,18 +2252,18 @@ export function Chat({
             {title ?? (bot ? bot.name : "新規チャット")}
           </p>
           {conversationSummary && (
-            <p className="truncate text-[11px] leading-tight text-ink-2 tabular-nums">
+            <p className="truncate text-xs leading-tight text-ink-2 tabular-nums">
               {conversationSummary}
             </p>
           )}
         </div>
-        <div className="flex w-9 shrink-0 justify-end">
+        <div className="flex w-11 shrink-0 justify-end">
           <button
             type="button"
             onClick={() => setParamsOpen((v) => !v)}
             aria-label="生成パラメータ"
             title="生成パラメータ（この会話にのみ適用）"
-            className="relative rounded-lg p-2 text-ink-2 hover:bg-hover"
+            className="relative grid h-11 w-11 -my-1 place-items-center rounded-lg text-ink-2 hover:bg-hover"
           >
             <IconSliders className="h-5 w-5" />
             {/*
@@ -2273,7 +2273,7 @@ export function Chat({
             {Object.keys(params).length > 0 && (
               <span
                 aria-label="変更あり"
-                className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent ring-2 ring-white dark:ring-neutral-950"
+                className="absolute right-2.5 top-2.5 h-2 w-2 rounded-full bg-accent ring-2 ring-white dark:ring-neutral-950"
               />
             )}
           </button>

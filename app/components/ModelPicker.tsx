@@ -340,7 +340,7 @@ export function ModelPicker({
 
   const triggerClass =
     variant === "chip"
-      ? "flex h-8 max-w-full items-center gap-1.5 rounded-full bg-black/[0.05] pl-2.5 pr-2 text-[13px] font-medium text-neutral-700 transition-colors hover:bg-black/[0.08] active:scale-[0.98] dark:bg-white/10 dark:text-neutral-200 dark:hover:bg-white/15"
+      ? "flex h-9 max-w-full items-center gap-1.5 rounded-full bg-black/[0.05] pl-2.5 pr-2 text-[13px] font-medium text-neutral-700 transition-colors hover:bg-black/[0.08] active:scale-[0.98] dark:bg-white/10 dark:text-neutral-200 dark:hover:bg-white/15"
       : variant === "field"
         ? "flex max-w-full items-center gap-2 rounded-lg border border-line bg-neutral-50 py-1.5 pl-2.5 pr-2 text-sm text-neutral-800 transition-colors hover:bg-hover active:scale-[0.98] dark:bg-white/5 dark:text-neutral-100"
         : "flex max-w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-hover active:scale-[0.98] dark:text-neutral-200";

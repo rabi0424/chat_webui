@@ -107,7 +107,7 @@ export function BotForm({
   return (
     <div className="flex h-full flex-col">
       {/* 他の画面と同じ帯。以前はこの画面だけヘッダーが無く、ラベルの上が空いていた */}
-      <header className="flex shrink-0 items-center gap-1 border-b border-black/[0.06] px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-white/[0.06]">
+      <header className="flex shrink-0 items-center gap-1 border-b border-line px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
         <div className="flex w-24 shrink-0 justify-start">
           {openSidebar && (
             <button

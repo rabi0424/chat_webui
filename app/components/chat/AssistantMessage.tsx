@@ -16,7 +16,12 @@
 import type { UiMessage } from "../../lib/types";
 import { isRetryProgress } from "../../lib/retry";
 import { StreamingMessage } from "../StreamingMessage";
-import { IconArrowPath, IconBranch, IconTrash } from "../icons";
+import {
+  IconArrowPath,
+  IconBranch,
+  IconTrash,
+  IconWarningTriangle,
+} from "../icons";
 import {
   BranchPager,
   CitationList,
@@ -50,8 +55,10 @@ export function briefMeta(m: UiMessage, usdJpy: number | null): string | null {
   } else if (u?.points != null) {
     parts.push(`${u.points.toLocaleString()} pt`);
   }
+  // 失敗した行に秒を出さない（1.0秒と並ぶと、何かが出来たように見える）
   if (
     m.status !== "streaming" &&
+    m.status !== "error" &&
     m.finishedAt &&
     m.createdAt &&
     m.finishedAt > m.createdAt
@@ -107,17 +114,28 @@ export function AssistantMessage({
         // 1枚だけの画像生成。本文が流れてこないので秒だけ進める
         <GenerationProgress text="画像を生成中…" startedAt={m.createdAt} />
       ) : m.status === "error" ? (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-          <span className="break-all">{m.error ?? "生成に失敗しました"}</span>
-          {isLast && !isStreaming && (
-            <button
-              type="button"
-              onClick={() => regenerate()}
-              className="shrink-0 rounded-lg border border-red-300 px-3 py-1 hover:bg-red-100 dark:border-red-800 dark:hover:bg-red-900"
-            >
-              再試行
-            </button>
-          )}
+        /*
+         * 失敗は見出しで伝え、上流の生の文言は畳んでおく。以前は
+         * 英文のエラーがそのまま赤枠で出ていて、何が起きたのかが
+         * 読まないと分からなかった（監査 D-14）
+         */
+        <div className="rounded-2xl border border-red-200/80 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/60 dark:text-red-200">
+          <div className="flex items-center gap-3">
+            <IconWarningTriangle className="h-5 w-5 shrink-0 text-red-500" />
+            <p className="min-w-0 flex-1 font-medium">応答を取得できませんでした</p>
+            {isLast && !isStreaming && (
+              <button
+                type="button"
+                onClick={() => regenerate()}
+                className="shrink-0 rounded-full bg-red-600 px-3.5 py-1.5 text-sm font-medium text-white hover:bg-red-500 touch:py-2.5"
+              >
+                再試行
+              </button>
+            )}
+          </div>
+          <p className="mt-1.5 break-all pl-8 text-xs leading-relaxed text-red-700/90 dark:text-red-300/90">
+            {m.error ?? "生成に失敗しました"}
+          </p>
         </div>
       ) : (
         /*
@@ -158,7 +176,7 @@ export function AssistantMessage({
         <CitationList citations={m.citations} />
       )}
       {!selecting && (
-        <div className="mt-1 flex items-center gap-0.5">
+        <div className="mt-1 flex flex-wrap items-center gap-0.5">
           {/*
             再生成は末尾の応答にだけ。以前は一覧の末尾に「↻ 再生成」の行を
             別に置いていたが、操作列に入れれば専用の行が要らない。
@@ -174,7 +192,7 @@ export function AssistantMessage({
               <IconArrowPath className="h-4 w-4" />
             </button>
           )}
-          <CopyButton text={m.content} />
+          {m.status !== "error" && <CopyButton text={m.content} />}
           {/*
             分岐（別の会話へ写す）は生成中でも通す。ここまでの履歴を
             読んで写すだけで、走っている生成には触れない。ただし

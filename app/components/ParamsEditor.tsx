@@ -227,7 +227,12 @@ export function ParamsEditor({
 
   return (
     <>
-      <div className="space-y-1 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
+      {/*
+        枠は持たない。設定・ボット編集ではグループの塊の中に置かれ、
+        ⚙パネルでもパネルの中なので、ここで枠を描くとカードの中に
+        カードが二重に見えていた（監査 D-3）
+      */}
+      <div className="space-y-1">
         <p className="px-1 pb-1 text-xs text-ink-3">
           「自動」はAPIに送信せず、モデル本来の既定動作に任せます
         </p>
