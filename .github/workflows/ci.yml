@@ -22,4 +22,9 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+      # ビルド結果の CSS を読む検査（css project）は build/ が無いと
+      # 飛ばされる（describe.skipIf）。CI で build を挟まないと、CLAUDE.md が
+      # いちばん重視する「出力そのものを検査する」28件が一度も走らない
+      # まま緑に見えていた（監査 T-1）
+      - run: npm run build
       - run: npm test

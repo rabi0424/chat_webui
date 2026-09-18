@@ -119,12 +119,13 @@ playwright は `/opt/node22/lib/node_modules` にある。
 
 ```
 npm run typecheck    # 型（tsc -b。--noEmit ではない——下記）
-npx eslint .         # エラー0（警告20はフック関連で既知）
+npx eslint .         # エラー0（警告14はフック関連で既知）
 npx vitest run       # 全通過
 npm run build        # ビルド
 ```
 
-4つ全部が通ってから push する。CI も同じものを見る。
+4つ全部が通ってから push する。CI も同じものを見る（CI は test の前に
+build を挟む——ビルド後の CSS を読む検査は build/ が無いと飛ばされる）。
 
 **`npx tsc --noEmit` は何も検査しない。** ルートの `tsconfig.json` は
 `"files": []` と references だけで、`tsc` は単体では references を辿らない

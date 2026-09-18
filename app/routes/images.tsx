@@ -283,7 +283,6 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, favoritesOnly]);
 
   /**
