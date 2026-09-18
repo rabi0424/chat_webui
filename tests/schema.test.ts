@@ -19,8 +19,11 @@ import {
   RETRY_ATTEMPTS_RUNNING_SQL,
   RETRY_ATTEMPTS_SWEEP_LOST_SQL,
   RETRY_ATTEMPTS_UNPROCESSED_SQL,
+  RETRY_ATTEMPT_CLAIM_SQL,
   RETRY_ATTEMPT_FINISH_SQL,
   RETRY_ATTEMPT_INSERT_SQL,
+  ORPHAN_ATTACHMENTS_SQL,
+  REWRITE_MESSAGE_CONTENT_SQL,
   RETRY_RUN_ADD_COORDINATOR_MS_SQL,
   RETRY_ATTEMPTS_PRUNE_SQL,
   RETRY_RUN_COORDINATOR_MS_SQL,
@@ -1197,6 +1200,18 @@ describe("生成中の部分保存", () => {
     ).toBe("x");
   });
 
+  it("本文の差し替えは時刻も進める（追いかけている側の札が変わる）", () => {
+    // 画像を自前の置き場へ移したあとの差し替え。flushed_at が動かないと
+    // ETag が変わらず、クライアントは 304 のまま古い本文を見続ける（S-7）
+    expect(flush("s1")).toBe(1);
+    db.prepare(REWRITE_MESSAGE_CONTENT_SQL).run("![](/api/files/x)", 9, "s1");
+    const row = db.prepare("SELECT content, flushed_at FROM messages WHERE id = 's1'").get() as {
+      content: string;
+      flushed_at: number;
+    };
+    expect(row).toEqual({ content: "![](/api/files/x)", flushed_at: 9 });
+  });
+
   it("停止要求の確認は行の状態に関係なく読める", () => {
     const check = (id: string) =>
       (db.prepare(FLUSH_STOP_CHECK_SQL).get(id) as { stop_requested: number } | undefined)
@@ -1302,6 +1317,50 @@ describe("成功するまで生成の記録", () => {
     succeed("m2", "a2");
     expect(parentOf("m2")).toBe("m1");
     expect(leaf()).toBe("u1");
+  });
+
+  it("依頼は一度しか取れない（担当の再送で二重に投げない）", () => {
+    launch("a1", 1);
+    const claim = (id: string, at = 1_500) =>
+      db.prepare(RETRY_ATTEMPT_CLAIM_SQL).run(at, id).changes;
+    expect(claim("a1")).toBe(1);
+    // 再送されたアラームが同じ依頼を取りに来ても、もう取れない
+    expect(claim("a1")).toBe(0);
+    // 取られないまま決着した（見回りが失われたと決めた）依頼も取れない
+    launch("a2", 2);
+    finish("a2", "transient", "失われました");
+    expect(claim("a2")).toBe(0);
+    // 取っていないだけの依頼は取れる
+    launch("a3", 3);
+    expect(claim("a3")).toBe(1);
+    expect(
+      (db.prepare("SELECT started_at FROM retry_attempts WHERE id = 'a3'").get() as { started_at: number })
+        .started_at,
+    ).toBe(1_500);
+  });
+
+  it("成功を積むのと依頼の決着は1つの並びで書ける", () => {
+    launch("a1", 1);
+    for (const st of appendRetrySuccessStatements({
+      id: "m1",
+      attemptId: "a1",
+      statusId: S,
+      conversationId: "c1",
+      modelId: "poe:Imagen",
+      content: "![](x)",
+      usageJson: null,
+      now: 3_000,
+      finish: { headerMs: 120, doMs: 450 },
+    })) {
+      db.prepare(st.sql).run(...st.binds);
+    }
+    const row = db
+      .prepare("SELECT kind, finished_at, header_ms, do_ms, message_id FROM retry_attempts WHERE id = 'a1'")
+      .get() as { kind: string; finished_at: number; header_ms: number; do_ms: number; message_id: string };
+    expect(row).toEqual({ kind: "success", finished_at: 3_000, header_ms: 120, do_ms: 450, message_id: "m1" });
+    // 決着済みなので、あとから別の結果は書けない
+    expect(finish("a1", "transient", "遅れて来た")).toBe(0);
+    expect(unprocessed().map((r) => r.kind)).toEqual(["success"]);
   });
 
   it("結果は一度しか書けない（担当の再送で二重に数えない）", () => {
@@ -1910,5 +1969,44 @@ describe("起動・遷移の実測", () => {
       )
       .get() as { s: number; b: number };
     expect(counts).toEqual({ s: 0, b: 0 });
+  });
+});
+
+/**
+ * 紐づく先の無い添付（監査 S-4）。
+ *
+ * 会話を消したあとに生成が終わると、消えたメッセージの ID で添付の行が
+ * 作られることがあった。`message_id IS NULL` だけを掃除する作りでは
+ * 永久に残り、画像一覧に会話の無い画像として出続ける。
+ */
+describe("紐づく先の無い添付", () => {
+  beforeEach(() => {
+    migrate(db);
+    db.prepare(
+      "INSERT INTO conversations (id, title, unread, created_at, updated_at) VALUES ('c1', 't', 0, 1, 1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('m1', 'c1', 'user', 'x', 1)",
+    ).run();
+    const put = (id: string, messageId: string | null, at: number) =>
+      db
+        .prepare(
+          "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at) VALUES (?, ?, 'c1', ?, 'image/png', ?, 1, ?)",
+        )
+        .run(id, messageId, `${id}.png`, `${id}.png`, at);
+    put("live", "m1", 10); // 生きているメッセージに属する
+    put("unsent", null, 10); // 選んだまま送らなかった
+    put("ghost", "gone", 10); // 消えたメッセージに紐づいている
+    put("young", "gone", 100); // 消えているが、まだ猶予の内
+  });
+
+  const orphans = (before: number) =>
+    (db.prepare(ORPHAN_ATTACHMENTS_SQL).all(before) as { id: string }[])
+      .map((r) => r.id)
+      .sort();
+
+  it("送られなかったものと、メッセージが消えたものを、猶予を過ぎた分だけ拾う", () => {
+    expect(orphans(50)).toEqual(["ghost", "unsent"]);
+    expect(orphans(1_000)).toEqual(["ghost", "unsent", "young"]);
   });
 });

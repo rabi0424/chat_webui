@@ -57,6 +57,17 @@ interface KeyCache {
  */
 let cache: KeyCache | null = null;
 
+/**
+ * 見知らぬ kid による取り直しの間隔。
+ *
+ * 認証の**前**に通る経路なので、誰でも適当な kid を付けた要求を送れる。
+ * そのたびに取りに行くと、鍵の配布先を要求の数だけ叩き続ける（監査
+ * S-11）。写しがあるあいだは、取り直しを一定間隔に抑える。本物の
+ * 鍵の入れ替えでも最初の1回は通り、次はこの間隔の後になる。
+ */
+const FORCED_RELOAD_MIN_MS = 60_000;
+let lastForcedAt = 0;
+
 async function loadKeys(
   teamDomain: string,
   force: boolean,
@@ -66,6 +77,10 @@ async function loadKeys(
     cache.teamDomain === teamDomain &&
     Date.now() - cache.fetchedAt < KEYS_TTL_MS;
   if (!force && fresh) return cache!.keys;
+  if (force && cache && cache.teamDomain === teamDomain) {
+    if (Date.now() - lastForcedAt < FORCED_RELOAD_MIN_MS) return cache.keys;
+    lastForcedAt = Date.now();
+  }
 
   try {
     const res = await fetch(`https://${teamDomain}/cdn-cgi/access/certs`);
@@ -100,6 +115,7 @@ async function loadKeys(
 /** テストから鍵の写しを捨てる（本番からは呼ばない）。 */
 export function forgetAccessKeys(): void {
   cache = null;
+  lastForcedAt = 0;
 }
 
 function base64UrlToBytes(segment: string): Uint8Array<ArrayBuffer> {

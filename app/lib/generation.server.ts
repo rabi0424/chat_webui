@@ -2,6 +2,7 @@ import {
   fetchPoeRecentPoints,
   openRouterChatRequest,
   poeChatRequest,
+  redactRawText,
   type ChatMessage,
 } from "./openrouter.server";
 import {
@@ -1244,12 +1245,14 @@ export async function readUpstreamJson(
     parsed = JSON.parse(text) as typeof parsed;
   } catch {
     // JSONでもSSEでもない本文（手前のプロキシのHTMLなど）。何が返って
-    // きたのか分からないまま「空の応答」にせず、先頭だけ理由に添える
+    // きたのか分からないまま「空の応答」にせず、先頭だけ理由に添える。
+    // この理由は本文の注記として**保存される**ので、プロキシのページに
+    // 写っていることがある鍵の値は伏せる（要件 §2.3。監査 S-8）
     return {
       ...empty,
       interrupted:
         interrupted ??
-        `上流の応答を解釈できませんでした: ${text.trim().slice(0, 200)}`,
+        `上流の応答を解釈できませんでした: ${redactRawText(text.trim().slice(0, 200))}`,
     };
   }
 

@@ -188,15 +188,27 @@ describe("1本担当", () => {
     expect(w).toContain("finally {");
   });
 
-  it("成功は保存できた時点で書き、画像の取り込みの失敗で取り消さない", () => {
+  it("成功は保存と決着を1つの batch で書き、画像の取り込みの失敗で取り消さない", () => {
     const success = w.slice(w.indexOf('if (r.kind === "success")'), w.indexOf('else if (r.kind === "refused")'));
+    // 決着は appendRetrySuccess の中（同じ batch）。別の呼び出しで決着させると、
+    // 間に落ちたときに「応答は積まれたのに決着は transient」になる（S-9）
+    expect(success).toContain("finish: { headerMs: timing.headerMs ?? null, doMs: doMs() }");
+    expect(success).not.toContain('await finish(attemptId, "success"');
     expect(success.indexOf("await appendRetrySuccess(")).toBeLessThan(
-      success.indexOf('await finish(attemptId, "success", null, null,'),
+      success.indexOf("captureGeneratedImages("),
     );
-    expect(
-      success.indexOf('await finish(attemptId, "success", null, null,'),
-    ).toBeLessThan(success.indexOf("captureGeneratedImages("));
+    // 積めなかった（会話ごと消えていた）なら画像を取り込まない（S-4）
+    expect(success.indexOf("if (id == null) return;")).toBeLessThan(
+      success.indexOf("captureGeneratedImages("),
+    );
     expect(success).toContain("画像の取り込みに失敗しました");
+  });
+
+  it("束の依頼は投げる前に取り、取れた分だけを投げる（S-3）", () => {
+    const claim = w.indexOf("await claimRetryAttempts({");
+    expect(claim).toBeGreaterThan(0);
+    expect(claim).toBeLessThan(w.indexOf("const runOne = async"));
+    expect(w).toContain("queue.filter((id) => claimed.has(id))");
   });
 
   it("引き受けた依頼を、同時数を守って回し、投げなかった分は決着させる", () => {

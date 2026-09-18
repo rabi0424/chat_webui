@@ -211,6 +211,19 @@ describe("Access のトークン検証", () => {
     expect(await check(fresh)).toBeNull();
   });
 
+  it("見知らぬ kid が続いても、取り直しは間隔を空ける（S-11）", async () => {
+    // 認証の前に通る経路なので、誰でも適当な kid を送れる。そのたびに
+    // 取りに行くと、鍵の配布先を要求の数だけ叩き続ける
+    expect(await check(await token())).toBeNull();
+    expect(fetchCalls).toBe(1);
+    for (let i = 0; i < 3; i++) {
+      const bogus = await token({ kid: `bogus-${i}`, key: other.privateKey });
+      expect(await check(bogus)).not.toBeNull();
+    }
+    // 最初の見知らぬ kid で1回だけ取り直し、続く分は写しで断る
+    expect(fetchCalls).toBe(2);
+  });
+
   it("鍵は要求のたびに取りに行かない（外部fetchの枠を食わない）", async () => {
     await check(await token());
     await check(await token());
