@@ -1,3 +1,4 @@
+import { bareModelName } from "../lib/constants";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PULL_IGNORE_SELECTOR,
@@ -57,7 +58,7 @@ function formatDate(ms: number): string {
 /** モデルIDは長いので、末尾の名前だけ出す。 */
 function modelName(id: string | null): string {
   if (!id) return "";
-  return id.replace(/^poe:/, "").split("/").pop() ?? id;
+  return bareModelName(id).split("/").pop() ?? id;
 }
 
 /**
@@ -426,11 +427,14 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     );
     setMenu(null);
     try {
-      await fetch(`/api/images/${img.id}`, {
+      const res = await fetch(`/api/images/${img.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ favorite }),
       });
+      // 4xx/5xx も失敗。通信の例外だけ戻していたので、消えた画像の
+      // 星が付いたまま残っていた（監査 C-9）
+      if (!res.ok) throw new Error(String(res.status));
     } catch {
       // 失敗したら元に戻す
       setImages((prev) =>

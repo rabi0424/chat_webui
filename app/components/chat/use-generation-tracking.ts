@@ -10,7 +10,7 @@
  */
 import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { isRetryProgress } from "../../lib/retry";
-import { applyContentPayload } from "../../lib/polling";
+import { applyContentPayload , POLL_GIVE_UP_MS, pollBackoffMs } from "../../lib/polling";
 import type { UiCitation, UiMessage } from "../../lib/types";
 import type {
   MessageStateResponse,
@@ -25,13 +25,35 @@ const POLL_INTERVAL_MS = 400;
  */
 const RUN_POLL_INTERVAL_MS = 1000;
 /**
- * ポーリングを諦めるまでの連続失敗回数。
+ * 続けて失敗しているあいだの数え方。
  *
- * 一過性の失敗（5xx・通信断）で追跡をやめると、生成は続いているのに
- * 表示が生成中のまま誰も追わない状態になる。かといって永久に叩き続ける
- * わけにもいかないので、続けて失敗した回数で打ち切る。
+ * 回数ではなく**時間**で諦める（`POLL_GIVE_UP_MS`）。回数で切ると、
+ * 間隔が短いぶん数秒の回線断で打ち切られ、しかも黙ってやめるので
+ * 本文が途中で止まったまま何も出なかった（監査 C-2）。待ちは失敗が
+ * 続くほど広げる（`pollBackoffMs`）。諦めるときは onLost で知らせる。
  */
-const POLL_MAX_FAILURES = 10;
+function failureCounter(onLost: () => void) {
+  let failures = 0;
+  let since: number | null = null;
+  return {
+    /** 失敗を数える。諦めるべきなら true（呼ぶ側は返る）。 */
+    fail(): boolean {
+      failures++;
+      since ??= Date.now();
+      if (Date.now() - since < POLL_GIVE_UP_MS) return false;
+      onLost();
+      return true;
+    },
+    reset(): void {
+      failures = 0;
+      since = null;
+    },
+    /** 次の待ち。失敗が続いていれば長く。 */
+    delay(baseMs: number): number {
+      return pollBackoffMs(failures, baseMs);
+    },
+  };
+}
 
 /**
  * 追いかけている生成ひとつぶんの合図。
@@ -101,10 +123,13 @@ export function useGenerationTracking({
   setMessages,
   setIsStreaming,
   markRead,
+  onLost = () => {},
 }: {
   setMessages: Dispatch<SetStateAction<UiMessage[]>>;
   setIsStreaming: (running: boolean) => void;
   markRead: (convId: string) => void;
+  /** 長く失敗が続いて追うのを諦めたとき（利用者に知らせる）。 */
+  onLost?: () => void;
 }): GenerationTracking {
   const epochRef = useRef(0);
   /**
@@ -169,7 +194,7 @@ export function useGenerationTracking({
     statusId: string,
     track: Tracking,
   ): Promise<void> {
-    let failures = 0;
+    const failures = failureCounter(onLost);
     /*
      * 前回受け取った札。同じものを送り返すと、中身が変わっていなければ
      * 304 が返る——積み上がった成功の本文をまるごと運ばずに済む
@@ -201,9 +226,9 @@ export function useGenerationTracking({
         );
         if (res.status === 304) {
           // 何も変わっていない＝まだ実行中。終われば行の状態が動き、札も変わる
-          failures = 0;
+          failures.reset();
         } else if (res.ok) {
-          failures = 0;
+          failures.reset();
           etag = res.headers.get("ETag");
           const { messages: fresh } = (await res.json()) as PathResponse;
           if (!alive(track)) return;
@@ -217,13 +242,13 @@ export function useGenerationTracking({
         } else {
           // 会話が消えた等の確定的な失敗は、待っても直らない
           if (terminalStatus(res.status)) return;
-          if (++failures >= POLL_MAX_FAILURES) return;
+          if (failures.fail()) return;
         }
       } catch (e) {
         if ((e as Error).name === "AbortError") return;
-        if (++failures >= POLL_MAX_FAILURES) return;
+        if (failures.fail()) return;
       }
-      await sleep(RUN_POLL_INTERVAL_MS, track.signal);
+      await sleep(failures.delay(RUN_POLL_INTERVAL_MS), track.signal);
     }
   }
   /**
@@ -337,7 +362,7 @@ export function useGenerationTracking({
     messageId: string,
     track: Tracking,
   ): Promise<void> {
-    let failures = 0;
+    const failures = failureCounter(onLost);
     /*
      * サーバーへ「ここまで持っている」と伝え、その先だけを受け取る。
      * 全文を毎回運んでいたので、長い応答ほど1回のポーリングが重くなって
@@ -358,11 +383,11 @@ export function useGenerationTracking({
           // 一過性の失敗で追跡をやめると、生成は続いているのに
           // 表示が生成中のまま誰も追わない状態になる
           if (terminalStatus(res.status)) return;
-          if (++failures >= POLL_MAX_FAILURES) return;
-          await sleep(POLL_INTERVAL_MS, track.signal);
+          if (failures.fail()) return;
+          await sleep(failures.delay(POLL_INTERVAL_MS), track.signal);
           continue;
         }
-        failures = 0;
+        failures.reset();
         const remote = (await res.json()) as MessageStateResponse;
         if (!alive(track)) return;
         const content = applyContentPayload(held, remote);
@@ -386,9 +411,9 @@ export function useGenerationTracking({
         }
       } catch (e) {
         if ((e as Error).name === "AbortError") return;
-        if (++failures >= POLL_MAX_FAILURES) return;
+        if (failures.fail()) return;
       }
-      await sleep(POLL_INTERVAL_MS, track.signal);
+      await sleep(failures.delay(POLL_INTERVAL_MS), track.signal);
     }
   }
 

@@ -49,7 +49,12 @@ export function NumberInput({
   return (
     <input
       type="number"
-      inputMode="numeric"
+      /*
+        iOS の numeric キーパッドには小数点が無い。小数の刻みの欄
+        （Poe の換算レート・temperature）では decimal にしないと、
+        値を打ち込む手立てが無くなる（監査 P-2）
+      */
+      inputMode={step != null && !Number.isInteger(step) ? "decimal" : "numeric"}
       value={text}
       min={min}
       max={max}

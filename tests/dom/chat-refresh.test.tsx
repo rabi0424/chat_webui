@@ -46,6 +46,33 @@ describe("送信中の取り直し", () => {
     release({ userMessageId: "u1", assistantMessageId: "a1" });
   });
 
+  it("送信に失敗した発言が残っていても、取り直しは反映される（C-5）", async () => {
+    // 残高不足などで /generate が断られると、発言は ID の無いまま残る
+    server.on(
+      "/generate",
+      () =>
+        new Response(JSON.stringify({ error: "上限です" }), {
+          status: 402,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const { user } = renderChat({});
+    await user.type(await screen.findByRole("textbox"), "断られた発言");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(document.body.textContent).toContain("上限です"));
+
+    // 別の端末で会話が進んだ
+    server.on("/path", () => ({
+      messages: [
+        { id: "x1", role: "user", content: "別の端末の発言", createdAt: 1 },
+      ],
+    }));
+    pullToRefresh();
+    // 取り直しの結果が出て、断られた発言も消えていない
+    expect(await screen.findByText("別の端末の発言")).toBeTruthy();
+    expect(screen.getByText("断られた発言")).toBeTruthy();
+  });
+
   it("すべて保存済みなら、取り直しの結果を反映する", async () => {
     const { user } = renderChat({});
     await user.type(await screen.findByRole("textbox"), "ひとつ目");

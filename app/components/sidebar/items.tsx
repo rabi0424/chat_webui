@@ -24,6 +24,7 @@ import {
 } from "../icons";
 import { FAVORITES_ID, useIsNarrow, usePrefetchOnVisible } from "./shared";
 import { GLASS_PANEL, TERSE_INPUT } from "../../lib/ui";
+import { isImeKeystroke } from "../../lib/ime";
 import { anchorIsOffscreen, placeAnchoredMenu } from "../../lib/anchored-menu";
 
 /**
@@ -324,7 +325,7 @@ export function RenameField({
       value={value}
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={(e) => {
-        if (e.nativeEvent.isComposing) return;
+        if (isImeKeystroke(e.nativeEvent)) return;
         if (e.key === "Enter") {
           e.preventDefault();
           finish(value.trim() || null);

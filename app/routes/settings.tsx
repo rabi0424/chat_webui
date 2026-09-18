@@ -97,6 +97,8 @@ export async function loader() {
 let settingsCache: { at: number; data: { settings: AppSettings } } | null =
   null;
 const SETTINGS_TTL_MS = 5 * 60 * 1000;
+/** 変更をまとめて送るまでの待ち（1文字ごとに要求を出さない）。 */
+const SAVE_DEBOUNCE_MS = 300;
 
 export async function clientLoader({
   serverLoader,
@@ -432,33 +434,90 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
     } catch {
       setStopping("止められませんでした");
     }
+    // 結果は読めるだけ出して、ボタンに戻す。出しっぱなしだと2度目に
+    // 押しても何も変わらないように見える（監査 P-10）
+    setTimeout(() => setStopping(null), 4000);
   }
 
-  async function save(patch: Partial<AppSettings>) {
-    const next = { ...settings, ...patch };
-    setSettings(next);
+  /**
+   * 保存は**溜めて、1本ずつ**送る（監査 P-1）。
+   *
+   * 以前は onChange のたびに PATCH を投げ、返事で setSettings していた。
+   * 日本語の変換中に1文字ごとの要求が重なり、遅れて返った古い返事が
+   * 打っている最中の欄を巻き戻していた。数値も「100」と打つと 1・10・100
+   * の要求が並んで走り、D1 に最後に着いたものが残る——上限回数 1 や
+   * 月間上限 1円が保存されうる。サーバー側は設定1行の JSON を読んで
+   * 書き戻すので、別の項目でも重なれば片方が消える。
+   *
+   * ここで少し待って（SAVE_DEBOUNCE_MS）変更をまとめ、送るのは前の
+   * 要求が返ってから。返事を貼るときは、まだ送っていない変更を上に
+   * 重ねる（欄が巻き戻らない）。
+   */
+  const pendingRef = useRef<Partial<AppSettings>>({});
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chain = useRef<Promise<void>>(Promise.resolve());
+  /** 最後にサーバーが確定した値（保存に失敗した項目を戻す先）。 */
+  const confirmedRef = useRef<AppSettings>(loaderData.settings);
+
+  function save(patch: Partial<AppSettings>) {
+    setSettings((prev) => ({ ...prev, ...patch }));
     setError(null);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      const body = (await res.json()) as { settings?: AppSettings };
-      if (!res.ok || !body.settings) throw new Error();
-      // 範囲外の値はサーバー側で丸められるので、戻り値で上書きする
-      setSettings(body.settings);
-      settingsCache = { at: Date.now(), data: { settings: body.settings } };
-      // シェル経由でChatが参照する設定も更新する（遷移では再読込しないため）
-      revalidator.revalidate();
-      setSavedKeys(new Set(Object.keys(patch) as (keyof AppSettings)[]));
-      if (savedTimer.current) clearTimeout(savedTimer.current);
-      savedTimer.current = setTimeout(() => setSavedKeys(new Set()), 1500);
-    } catch {
-      setError("設定を保存できませんでした");
-      setSettings(settings);
-    }
+    pendingRef.current = { ...pendingRef.current, ...patch };
+    if (flushTimer.current) clearTimeout(flushTimer.current);
+    flushTimer.current = setTimeout(flushSave, SAVE_DEBOUNCE_MS);
   }
+
+  function flushSave() {
+    flushTimer.current = null;
+    const patch = pendingRef.current;
+    pendingRef.current = {};
+    const keys = Object.keys(patch) as (keyof AppSettings)[];
+    if (keys.length === 0) return;
+    chain.current = chain.current.then(async () => {
+      try {
+        const res = await fetch("/api/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        const body = (await res.json()) as { settings?: AppSettings };
+        if (!res.ok || !body.settings) throw new Error();
+        const confirmed = body.settings;
+        confirmedRef.current = confirmed;
+        // 範囲外の値はサーバー側で丸められるので、戻り値で上書きする。
+        // ただし、まだ送っていない変更はそのまま残す
+        setSettings(() => ({ ...confirmed, ...pendingRef.current }));
+        settingsCache = { at: Date.now(), data: { settings: confirmed } };
+        // シェル経由でChatが参照する設定も更新する（遷移では再読込しないため）
+        revalidator.revalidate();
+        setSavedKeys(new Set(keys));
+        if (savedTimer.current) clearTimeout(savedTimer.current);
+        savedTimer.current = setTimeout(() => setSavedKeys(new Set()), 1500);
+      } catch {
+        setError("設定を保存できませんでした");
+        // 保存できなかった項目だけを、確定している値へ戻す
+        setSettings((prev) => {
+          const next = { ...prev };
+          for (const k of keys) {
+            (next as Record<string, unknown>)[k] = confirmedRef.current[k];
+          }
+          return next;
+        });
+      }
+    });
+  }
+  // 待たせている保存は、画面を離れるときに送る
+  const flushRef = useRef(flushSave);
+  flushRef.current = flushSave;
+  useEffect(
+    () => () => {
+      if (flushTimer.current) {
+        clearTimeout(flushTimer.current);
+        flushRef.current();
+      }
+    },
+    [],
+  );
   const saved = (key: keyof AppSettings) => savedKeys.has(key);
 
   const defaultModelId = settings.defaultModelId ?? DEFAULT_MODEL;

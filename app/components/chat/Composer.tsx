@@ -23,6 +23,7 @@ import {
 import { TEXT_FILE_ACCEPT } from "../../lib/text-file";
 import { formatBytes } from "../../lib/image";
 import { PROSE_INPUT } from "../../lib/ui";
+import { isImeKeystroke } from "../../lib/ime";
 import type { MentionState } from "../../lib/mention";
 import type { BotRow } from "../../lib/db.server";
 import type { ModelInfo } from "../../lib/openrouter.server";
@@ -405,7 +406,8 @@ export function Composer({
             }}
             onScroll={syncOverlay}
             onKeyDown={(e) => {
-              if (e.nativeEvent.isComposing) return;
+              // 変換の確定は送信ではない（Safari は keyCode 229 で届く）
+              if (isImeKeystroke(e.nativeEvent)) return;
               // 候補が拾ったキーは送信まで届かせない
               if (onMentionKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey) {

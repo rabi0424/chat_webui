@@ -1,3 +1,4 @@
+import { bareModelName } from "../lib/constants";
 import { useState } from "react";
 import { useOutletContext } from "react-router";
 import type { Route } from "./+types/usage";
@@ -62,7 +63,9 @@ export async function loader() {
 /** モデルIDは長いので、末尾の名前だけ出す。 */
 function modelName(id: string | null): string {
   if (!id) return "（不明）";
-  return id.replace(/^poe:/, "").split("/").pop() ?? id;
+  // 窓口の接頭辞は constants の表で外す（`^poe:` を書き写すと、
+  // API易・Runware のモデルが接頭辞付きのまま出る。監査 P-8）
+  return bareModelName(id).split("/").pop() ?? id;
 }
 
 /** ドル建て。少額なので桁を落とさない。 */
@@ -200,6 +203,8 @@ const VENDOR_LABELS: Record<string, string> = {
   deepseek: "DeepSeek",
   openrouter: "OpenRouter",
   poe: "Poe",
+  apiyi: "API易",
+  runware: "Runware",
 };
 function vendorLabel(vendor: string): string {
   return VENDOR_LABELS[vendor] ?? vendor.charAt(0).toUpperCase() + vendor.slice(1);
@@ -541,7 +546,7 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
             type="button"
             onClick={openSidebar}
             aria-label="メニュー"
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-2 transition hover:bg-hover active:scale-95 lg:hidden"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-2 transition hover:bg-hover active:scale-95 md:hidden"
           >
             <IconMenu className="h-5 w-5" />
           </button>

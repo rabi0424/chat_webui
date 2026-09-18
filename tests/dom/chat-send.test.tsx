@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import {
   installServer,
   renderChat,
@@ -19,6 +19,25 @@ beforeEach(() => {
 });
 
 describe("送信", () => {
+  it("変換の確定の Enter では送らない（Safari は keyCode 229 で届く）", async () => {
+    // Safari は compositionend を keydown より先に出すので、確定の Enter は
+    // isComposing=false で届く。keyCode 229 だけが手がかり（監査 C-1）
+    const { user } = renderChat({});
+    const box = await screen.findByRole("textbox");
+    await user.type(box, "こんにちは");
+    fireEvent.keyDown(box, { key: "Enter", keyCode: 229 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(server.calls.some((c) => c.path.includes("/generate"))).toBe(false);
+    // 本文はそのまま残っている
+    expect((box as HTMLTextAreaElement).value).toBe("こんにちは");
+
+    // ふつうの Enter なら送る
+    fireEvent.keyDown(box, { key: "Enter", keyCode: 13 });
+    await waitFor(() =>
+      expect(server.calls.some((c) => c.path.includes("/generate"))).toBe(true),
+    );
+  });
+
   it("サーバーの応答を待たずに、送った本文が出る", async () => {
     // 生成の応答を返さないままにして「通信中」を作る。
     // ここで本文が見えなければ、楽観表示が効いていないということ

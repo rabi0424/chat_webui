@@ -320,7 +320,7 @@ export async function runRetryGenerationJob(
         doBudgetStopped = true;
         state.lastError =
           `1日の実行体の時間の上限（${limit.toLocaleString()}秒）に達したため打ち切りました。` +
-          `UTCの0時に戻ります`;
+          `UTCの0時（日本時間の朝9時）に戻ります`;
         return true;
       }
       return false;

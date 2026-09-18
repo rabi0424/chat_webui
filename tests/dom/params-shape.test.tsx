@@ -170,6 +170,40 @@ describe("形の選択", () => {
     expect(JSON.parse(screen.getByTestId("state").textContent!)).toEqual({});
   });
 
+  it("数値の欄を空にすると自動に戻る（0 を保存しない）", async () => {
+    // 素の <input type=number> は空にした瞬間に 0 を返す。max_tokens: 0 は
+    // 上流で 400 になり、打ち直す途中の 0 も保存されていた（監査 P-3）
+    const TEXT_MODEL = {
+      ...IMAGE_BOT,
+      id: "vendor/text-model",
+      provider: "openrouter",
+      outputModalities: ["text"],
+      supportedParameters: ["max_tokens"],
+      botParameters: undefined,
+    } as ModelInfo;
+    function TextHarness() {
+      const [params, setParams] = useState<ParamsState>({ max_tokens: 500 });
+      return (
+        <>
+          <ParamsEditor model={TEXT_MODEL} value={params} onChange={setParams} />
+          <output data-testid="state">{JSON.stringify(params)}</output>
+        </>
+      );
+    }
+    const user = userEvent.setup();
+    render(<TextHarness />);
+    const box = screen.getByRole("spinbutton", { name: "Max Tokens" });
+    await user.clear(box);
+    // 空欄は打ち直しの途中。0 にも自動にもならない
+    expect(JSON.parse(screen.getByTestId("state").textContent ?? "{}")).toEqual({
+      max_tokens: 500,
+    });
+    await user.type(box, "12");
+    expect(JSON.parse(screen.getByTestId("state").textContent ?? "{}")).toEqual({
+      max_tokens: 12,
+    });
+  });
+
   it("形でないパラメータは今までどおり <select> のまま", async () => {
     const user = userEvent.setup();
     render(<Harness />);

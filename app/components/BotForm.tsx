@@ -32,9 +32,14 @@ export function BotForm({
   const confirm = useConfirm();
   const [name, setName] = useState(initial?.name ?? "");
   const [icon, setIcon] = useState(initial?.icon ?? "🤖");
-  const [modelId, setModelId] = useState(
-    initial?.model_id ?? models[0]?.id ?? "",
-  );
+  const [chosenModelId, setModelId] = useState(initial?.model_id ?? "");
+  /*
+   * モデル一覧はシェルが遅れて読む。起動直後にこの画面を開くと、
+   * 最初の描画では一覧が空。「選んでいなければ先頭」を state に写すと
+   * 空のまま固定され、保存が理由なく押せなかった（監査 P-5）。
+   * 選択は state に持ち、既定は描画のたびに一覧から引く
+   */
+  const modelId = chosenModelId || models[0]?.id || "";
   const [systemPrompt, setSystemPrompt] = useState(
     initial?.system_prompt ?? "",
   );

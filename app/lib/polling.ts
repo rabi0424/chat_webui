@@ -102,3 +102,23 @@ export function pathFingerprint(
   }
   return `W/"${rows.length}-${hash.toString(36)}"`;
 }
+
+/**
+ * ポーリングが続けて失敗しているときの待ち。
+ *
+ * 一過性の失敗（5xx・通信断）で追跡をやめると、生成は続いているのに
+ * 表示が生成中のまま誰も追わない状態になる。以前は10回で黙って
+ * やめていて、トンネルで回線が数秒切れただけで本文が途中で止まった
+ * まま何の表示も無くなっていた（監査 C-2）。
+ *
+ * かといって同じ間隔で叩き続けるのも電池に効くので、失敗が続くほど
+ * 間隔を倍にしていき、上限で頭打ちにする。成功したら元の間隔に戻す。
+ */
+export const POLL_BACKOFF_MAX_MS = 8_000;
+/** これだけの時間、続けて失敗したら諦めて利用者に知らせる。 */
+export const POLL_GIVE_UP_MS = 10 * 60_000;
+
+export function pollBackoffMs(failures: number, baseMs: number): number {
+  if (failures <= 0) return baseMs;
+  return Math.min(baseMs * 2 ** (failures - 1), POLL_BACKOFF_MAX_MS);
+}

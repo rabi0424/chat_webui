@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  POLL_BACKOFF_MAX_MS,
+  pollBackoffMs,
   applyContentPayload,
   contentPayload,
   parseSince,
@@ -159,5 +161,17 @@ describe("パスの指紋", () => {
 
   it("ETag の形をしている", () => {
     expect(pathFingerprint([row("m1")])).toMatch(/^W\/"[\w-]+"$/);
+  });
+});
+
+describe("失敗が続くときの待ち", () => {
+  it("失敗のたびに倍にし、上限で頭打ちにする", () => {
+    expect(pollBackoffMs(0, 400)).toBe(400);
+    expect(pollBackoffMs(1, 400)).toBe(400);
+    expect(pollBackoffMs(2, 400)).toBe(800);
+    expect(pollBackoffMs(3, 400)).toBe(1600);
+    expect(pollBackoffMs(6, 400)).toBe(POLL_BACKOFF_MAX_MS);
+    // 桁が大きくても伸び続けない（2**n が Infinity になっても上限）
+    expect(pollBackoffMs(2000, 400)).toBe(POLL_BACKOFF_MAX_MS);
   });
 });

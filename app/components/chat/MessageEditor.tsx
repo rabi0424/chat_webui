@@ -34,6 +34,7 @@ import {
 } from "../../lib/constants";
 import { isAcceptedImage } from "../../lib/image";
 import { PROSE_INPUT } from "../../lib/ui";
+import { isImeKeystroke } from "../../lib/ime";
 import { applyMention, parseMention, stripMention } from "../../lib/mention";
 import type { BotRow } from "../../lib/db.server";
 import { IconPlus } from "../icons";
@@ -186,7 +187,7 @@ export function MessageEditor({
         value={editing.text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.nativeEvent.isComposing) return;
+          if (isImeKeystroke(e.nativeEvent)) return;
           // 候補が拾ったキーは改行まで届かせない
           onMentionKeyDown(e);
         }}
