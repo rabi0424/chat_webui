@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ParamsEditor } from "../../app/components/ParamsEditor";
 import { POE_EXTRA_PREFIX, type ParamsState } from "../../app/lib/params";
@@ -197,6 +197,15 @@ describe("形の選択", () => {
     // 空欄は打ち直しの途中。0 にも自動にもならない
     expect(JSON.parse(screen.getByTestId("state").textContent ?? "{}")).toEqual({
       max_tokens: 500,
+    });
+    /*
+      フォーカス直後の select()（iOS の取りこぼし対策で1フレーム後にも
+      呼ぶ）を先に流してから打つ。指で打つときは動き出す前に済んでいる
+      が、ここは1フレームより速く打てるので、割り込まれると最初の1文字が
+      選択ごと置き換わって「12」が「2」になる（検査が時々落ちていた）
+    */
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
     });
     await user.type(box, "12");
     expect(JSON.parse(screen.getByTestId("state").textContent ?? "{}")).toEqual({

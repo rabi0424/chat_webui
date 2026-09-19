@@ -64,7 +64,50 @@ describe("思考プロセスのカード", () => {
     const user = userEvent.setup();
     render(<ReasoningBlock reasoning="まず前提を確かめる" streaming={false} />);
     expect(screen.queryByText("まず前提を確かめる")).toBeNull();
+    // 「無いこと」だけを見ない: 畳まれているだけで、カードは出ている
+    expect(screen.getByRole("button", { name: /思考プロセス/ })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /思考プロセス/ }));
+    expect(screen.getByText("まず前提を確かめる")).toBeTruthy();
+  });
+
+  /*
+   * 開け閉めの3つ。思考中に押しても閉じず、終わっても開いたままで、
+   * どちらの向きにも効かない状態が続いていた。
+   */
+  it("思考中でも、押せば畳める", async () => {
+    const user = userEvent.setup();
+    render(<ReasoningBlock reasoning="まず前提を確かめる" streaming />);
+    const button = screen.getByRole("button", { name: /思考中/ });
+    await user.click(button);
+    expect(screen.queryByText("まず前提を確かめる")).toBeNull();
+    // 畳まれただけで、見出しは「思考中…」のまま出ている
+    expect(screen.getByText("思考中…")).toBeTruthy();
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    // もう一度押せば開く
+    await user.click(button);
+    expect(screen.getByText("まず前提を確かめる")).toBeTruthy();
+  });
+
+  it("押していなければ、思考が終わった時点で畳まれる", () => {
+    const { rerender } = render(
+      <ReasoningBlock reasoning="まず前提を確かめる" streaming />,
+    );
+    expect(screen.getByText("まず前提を確かめる")).toBeTruthy();
+    rerender(<ReasoningBlock reasoning="まず前提を確かめる" streaming={false} />);
+    expect(screen.queryByText("まず前提を確かめる")).toBeNull();
+    expect(screen.getByText("思考プロセス")).toBeTruthy();
+  });
+
+  it("思考中に開いたままにしていたら、終わっても畳まれない", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ReasoningBlock reasoning="まず前提を確かめる" streaming />,
+    );
+    const button = screen.getByRole("button", { name: /思考中/ });
+    // 一度畳んでから開き直す＝「開いておく」と押して選んだ状態
+    await user.click(button);
+    await user.click(button);
+    rerender(<ReasoningBlock reasoning="まず前提を確かめる" streaming={false} />);
     expect(screen.getByText("まず前提を確かめる")).toBeTruthy();
   });
 });

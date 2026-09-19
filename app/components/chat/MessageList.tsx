@@ -16,6 +16,7 @@ import { ContextBoundaryLine } from "./message-parts";
 import { MessageProvider, type MessageActions } from "./message-context";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
+import { MessageBoundary } from "./MessageBoundary";
 import { PlainMessages } from "./PlainMessages";
 import { type EditingState } from "./MessageEditor";
 import { conversationLanguage } from "../../lib/content-language";
@@ -129,10 +130,18 @@ export function MessageList({
           <div className="space-y-6">
             {visibleMessages.map((m, vi) => {
               const i = vi + hiddenCount;
-              const body =
+              /*
+                1件ずつ受け皿に入れる。画面翻訳が節点を差し替えたあとの
+                描き直しで落ちても、画面ごと「読み込めませんでした」に
+                差し替わらないようにする（MessageBoundary）。
+
+                key は一覧に並ぶ要素——つまり受け皿——に付ける。中身に
+                付けたままだと一覧から見た並びに key が無いことになり、
+                順番が変わったときに React が別のものと取り違える
+              */
+              const inner =
                 m.role === "user" ? (
                   <UserMessage
-                    key={m.id ?? `u${i}`}
                     m={m}
                     // 編集中かどうかはIDで見る。添字で見ていたころは、
                     // 枝を切り替えた先の同じ位置の発言に編集欄が
@@ -145,8 +154,15 @@ export function MessageList({
                     editFileInputRef={editFileInputRef}
                   />
                 ) : (
-                  <AssistantMessage key={m.id ?? `a${i}`} m={m} index={i} />
+                  <AssistantMessage m={m} index={i} />
                 );
+              const body = (
+                <MessageBoundary
+                  key={m.id ?? `${m.role === "user" ? "u" : "a"}${i}`}
+                >
+                  {inner}
+                </MessageBoundary>
+              );
               // 境界線はメッセージの「後ろ」に置く。Fragment なので
               // 一覧の space-y はメッセージと同じ間隔のまま効く
               const boundaryKey = BOUNDARY_SELECT_PREFIX + m.id;
