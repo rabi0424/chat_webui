@@ -253,13 +253,25 @@ export function ReasoningBlock({
   reasoning: string;
   streaming: boolean;
 }) {
-  const [open, setOpen] = useState(streaming);
-  const show = open || streaming;
+  /*
+   * 開いているかは「押されていなければ思考中かどうか」に従う（UI-5）。
+   *
+   * 以前は `useState(streaming)` と `open || streaming` の2本立てだった。
+   * これだと**どちらの向きにも押せない**: 思考中は streaming が真な
+   * かぎり開いたままで、押しても畳めない。そして思考が終わっても、
+   * マウント時に真で始まった open がそのまま残るので開きっぱなしになり、
+   * 「終わると畳まれる」も効かない。
+   *
+   * null は「まだ押されていない」。押されたらそちらが勝ち、以後は
+   * 思考が終わっても利用者の選んだ側のままにする。
+   */
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const show = choice ?? streaming;
   return (
     <div className="mb-3 overflow-hidden rounded-xl border border-neutral-200/80 bg-neutral-50/70 dark:border-white/10 dark:bg-white/[0.04]">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setChoice(!show)}
         aria-expanded={show}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-ink-2 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
       >
@@ -278,7 +290,17 @@ export function ReasoningBlock({
       {show && (
         // 思考プロセスにも数式やコードが混ざるので、本文と同じ描き方をする。
         // 図まで描くと本文より目立ってしまうので、ここはソースのまま。
-        <div className="max-h-64 overflow-y-auto border-t border-neutral-200/80 px-3 py-2 text-xs leading-relaxed text-ink-2 dark:border-white/10">
+        <div
+          /*
+            思考中は全文を届くたびに描き直すので、そのあいだは画面翻訳に
+            触らせない（本文と同じ事情。Markdown.tsx の
+            TRANSLATE_WHILE_GROWING）。訳された節点をこちらが消しに行くと
+            `NotFoundError` で落ちる。思考が終われば断りは外れ、畳んで
+            開き直したところで訳される。
+          */
+          translate={streaming ? "no" : undefined}
+          className="max-h-64 overflow-y-auto border-t border-neutral-200/80 px-3 py-2 text-xs leading-relaxed text-ink-2 dark:border-white/10"
+        >
           <Markdown
             streaming={streaming}
             diagrams={false}

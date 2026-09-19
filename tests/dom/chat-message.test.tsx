@@ -108,6 +108,67 @@ describe("生成中の吹き出し", () => {
   });
 });
 
+/**
+ * 思考プロセスのカードの開け閉め（UI-5）。
+ *
+ * カードそのものの理屈は tests/dom/citations.test.tsx。ここで見るのは
+ * **ポーリングが走っている本物の画面で、押した状態が残るか**。思考中は
+ * 数百msおきに中身が届き、そのたびに一覧が描き直される——押した側を
+ * 覚えていなかったり、作り直しで状態が飛んだりすれば、畳んだそばから
+ * 開き直る（利用者からは「開け閉めができない」という形で出た）。
+ */
+describe("思考中のカード", () => {
+  /** 思考だけが伸びていく生成を仕込む。 */
+  function thinking() {
+    server.on("/generate", () => ({
+      userMessageId: "u1",
+      assistantMessageId: "a1",
+    }));
+    server.on("/path", () => ({
+      messages: [
+        { id: "u1", role: "user", content: "質問", createdAt: 1 },
+        { id: "a1", role: "assistant", content: "", createdAt: 2 },
+      ],
+    }));
+    let turn = 0;
+    server.on("/messages/", () => ({
+      content: "",
+      reasoning: `まず前提を確かめる${"。".repeat(++turn)}`,
+      status: "streaming",
+      error: null,
+      usage: null,
+      citations: null,
+    }));
+  }
+
+  it("思考中に畳んだら、続きが届いても畳まれたまま", async () => {
+    thinking();
+    const { user } = renderChat({});
+    await user.type(await screen.findByRole("textbox"), "質問");
+    await user.keyboard("{Enter}");
+
+    const header = await screen.findByRole("button", { name: /思考中/ });
+    // 思考中は開いて出ている
+    expect(screen.getByText(/まず前提を確かめる/)).toBeTruthy();
+
+    await user.click(header);
+    expect(screen.queryByText(/まず前提を確かめる/)).toBeNull();
+
+    // ポーリングを数回またぐ（中身は伸び続けている）
+    const polls = server.countOf("/messages/");
+    await waitFor(
+      () => expect(server.countOf("/messages/")).toBeGreaterThan(polls + 1),
+      { timeout: 5000 },
+    );
+
+    // 畳まれたまま。カード自体は出ている（＝落ちて消えたのではない）
+    expect(
+      screen.getByRole("button", { name: /思考中/ }).getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(screen.queryByText(/まず前提を確かめる/)).toBeNull();
+  }, 20_000);
+});
+
 describe("一覧の末尾に出る誘い", () => {
   it("最後がユーザーの発言なら、応答を生成できる", async () => {
     const { user } = renderChat({

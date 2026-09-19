@@ -344,10 +344,36 @@ const sanitizeSchema = {
  * 新しく届いた分だけが新しい要素として現れるので、CSSアニメーションが
  * その語にだけ1回走り、ChatGPTアプリのように文字が少しずつ浮かび上がる。
  * 既に出ている語の要素は作り直されないため、再アニメーションは起きない。
+ *
+ * あわせて、この塊を**ブラウザの画面翻訳の対象から外す**（`translate="no"`）。
+ * 理由は下の TRANSLATE_WHILE_GROWING を参照。
  */
 function rehypeStreamTokens() {
-  return (tree: Root) => wrapTokens(tree);
+  return (tree: Root) => {
+    wrapTokens(tree);
+    for (const child of tree.children) {
+      if (child.type !== "element") continue;
+      child.properties = { ...child.properties, translate: "no" };
+    }
+  };
 }
+
+/*
+ * TRANSLATE_WHILE_GROWING — 伸びている塊を翻訳させない理由（§3.3）。
+ *
+ * 画面翻訳は、訳した文を**元の節点と差し替える**形で入れてくる。一方
+ * こちらは、伸びている塊だけを語ごとの <span> に包んで描き、伸び終わって
+ * 次の塊へ移った時点で包みを外して描き直す。**React は自分が置いた
+ * <span> を消しに行き、それが翻訳に差し替えられていると `NotFoundError`
+ * で落ちる**——受け皿はルート側にしか無いので、本文ではなく画面が丸ごと
+ * 「読み込めませんでした」に差し替わっていた（英文の生成中に翻訳を掛けると
+ * エラー画面になる、という形で出た）。
+ *
+ * 断るのは**伸びているあいだだけ**でよい。確定した塊は二度と描き直されない
+ * ので、訳されても衝突しない。しかも包みを外す描き直しで節点そのものが
+ * 入れ替わるため、断りが外れた瞬間に翻訳側もそこを訳し直せる——つまり
+ * 「読んでいる後ろで、段落が確定するたびに訳が付く」形になる。
+ */
 
 /** 中の文字を触ってはいけない要素（コード・数式・生SVG）。 */
 const OPAQUE_TAGS = new Set(["pre", "code", "script", "style", "svg", "math"]);
