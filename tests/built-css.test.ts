@@ -50,7 +50,14 @@ describe.skipIf(css == null)("任意指定のプロパティ", () => {
  * 見た目には何も出ないので、ビルド結果の入れ子を読んで確かめる。
  */
 describe.skipIf(css == null)("吹き出しは hover のある端末だけ", () => {
-  /** `.tip::after` を含む規則が、hover のメディアクエリの内側にあるか。 */
+  /**
+   * hover 向けの手書き規則が、hover のメディアクエリの内側にあるか。
+   *
+   * 対象は `.tip::after`（吹き出し）と `.md-table-sortable:hover`（表の
+   * 見出し）。Tailwind の `hover:` は `@media (hover:hover)` に包まれるが、
+   * app.css に手で書いた `:hover` は包まれない。表の見出しは外に出ていて、
+   * iPhone で並べ替えを押すと背景が残っていた（監査 D-19）。
+   */
   function tipRulesOutsideHoverMedia(source: string): number {
     let outside = 0;
     const stack: string[] = [];
@@ -68,7 +75,10 @@ describe.skipIf(css == null)("吹き出しは hover のある端末だけ", () =
       // 規則の中身の途中（宣言）で "{" を見ることは無いので、
       // ここに来る head は必ずセレクタか @ルール
       // 最小化で `::after` は `:after` に縮むので、どちらも見る
-      if (/\.tip(?::hover|:focus-visible)?::?after/.test(head)) {
+      if (
+        /\.tip(?::hover|:focus-visible)?::?after/.test(head) ||
+        /\.md-table-sortable:hover/.test(head)
+      ) {
         const inHover = stack.some((s) => /@media[^{]*hover:\s*hover/.test(s));
         if (!inHover) outside++;
       }
@@ -80,6 +90,7 @@ describe.skipIf(css == null)("吹き出しは hover のある端末だけ", () =
 
   it("吹き出しの規則が1つ以上出ていて、すべて hover の中にある", () => {
     expect(css).toMatch(/\.tip::?after/);
+    expect(css).toMatch(/\.md-table-sortable:hover/);
     expect(tipRulesOutsideHoverMedia(css!)).toBe(0);
   });
 
@@ -88,6 +99,7 @@ describe.skipIf(css == null)("吹き出しは hover のある端末だけ", () =
     expect(tipRulesOutsideHoverMedia(bad)).toBe(1);
     const good = "@media (hover:hover){.tip::after{content:''}.tip:hover::after{opacity:1}}";
     expect(tipRulesOutsideHoverMedia(good)).toBe(0);
+    expect(tipRulesOutsideHoverMedia(".prose th.md-table-sortable:hover{x:1}")).toBe(1);
   });
 });
 

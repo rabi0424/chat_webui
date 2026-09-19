@@ -3,6 +3,7 @@ import type { ModelInfo } from "../lib/openrouter.server";
 import { TERSE_INPUT } from "../lib/ui";
 import { isShapeChoice } from "../lib/aspect";
 import { ShapePicker, ShapePreview } from "./ShapePicker";
+import { NumberInput } from "./NumberInput";
 import {
   paramsForModel,
   POE_EXTRA_KEY_PATTERN,
@@ -226,7 +227,12 @@ export function ParamsEditor({
 
   return (
     <>
-      <div className="space-y-1 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
+      {/*
+        枠は持たない。設定・ボット編集ではグループの塊の中に置かれ、
+        ⚙パネルでもパネルの中なので、ここで枠を描くとカードの中に
+        カードが二重に見えていた（監査 D-3）
+      */}
+      <div className="space-y-1">
         <p className="px-1 pb-1 text-xs text-ink-3">
           「自動」はAPIに送信せず、モデル本来の既定動作に任せます
         </p>
@@ -284,20 +290,21 @@ export function ParamsEditor({
               {manual ? (
                 <>
                   {def.kind === "number" && (
-                    <input
-                      type="number"
-                      value={value[def.key] as number}
+                    /*
+                      素の number の欄だと、空にした瞬間に
+                      Number("") = 0 が保存される（max_tokens: 0 は上流で
+                      400、temperature を打ち直す途中の 0 も残る。監査 P-3）。
+                      空欄は打ち直しの途中とみなし、離れたら元の値に戻す
+                      （自動に戻すのは「自動に戻す」で）
+                    */
+                    <NumberInput
+                      label={def.label}
+                      value={value[def.key] as number | undefined}
                       min={def.min}
                       max={def.max}
                       step={def.step}
                       placeholder={def.hint}
-                      onChange={(e) =>
-                        onChange({
-                          ...value,
-                          [def.key]: Number(e.target.value),
-                        })
-                      }
-                      aria-label={def.label}
+                      onChange={(n) => onChange({ ...value, [def.key]: n })}
                       className="w-24 rounded-lg border border-line bg-neutral-50 px-2 py-1.5 text-right text-base outline-none focus:border-accent/60 sm:text-sm dark:bg-white/5"
                     />
                   )}

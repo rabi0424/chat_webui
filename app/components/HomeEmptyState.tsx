@@ -110,7 +110,13 @@ export function HomeEmptyState({
               <Link
                 to="/bots/new"
                 style={{ animationDelay: `${bots.length * 45}ms` }}
-                className="animate-pop flex min-h-[120px] flex-col items-center justify-center gap-1.5 rounded-[22px] border border-dashed border-black/[0.14] bg-white/25 text-[13px] text-ink-2 backdrop-blur-xl transition hover:bg-white/50 active:scale-[0.97] dark:border-white/[0.16] dark:bg-white/[0.025] dark:hover:bg-white/[0.06]"
+                className={`animate-pop flex items-center justify-center gap-2 rounded-[22px] border border-dashed border-black/[0.14] bg-white/25 text-[13px] text-ink-2 backdrop-blur-xl transition hover:bg-white/50 active:scale-[0.97] dark:border-white/[0.16] dark:bg-white/[0.025] dark:hover:bg-white/[0.06] ${
+                  // ボットが偶数なら最後の段が1枚だけ残って片側が空く。
+                  // 横いっぱいの帯にして埋める（監査 D-17）
+                  bots.length % 2 === 0
+                    ? "col-span-2 min-h-[64px] flex-row"
+                    : "min-h-[120px] flex-col"
+                }`}
               >
                 {bots.length === 0 ? (
                   <IconBot className="h-6 w-6" />

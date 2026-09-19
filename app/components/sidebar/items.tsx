@@ -24,6 +24,7 @@ import {
 } from "../icons";
 import { FAVORITES_ID, useIsNarrow, usePrefetchOnVisible } from "./shared";
 import { GLASS_PANEL, TERSE_INPUT } from "../../lib/ui";
+import { isImeKeystroke } from "../../lib/ime";
 import { anchorIsOffscreen, placeAnchoredMenu } from "../../lib/anchored-menu";
 
 /**
@@ -179,10 +180,10 @@ export function MenuPanel({
   return createPortal(
     <div className="fixed inset-0 z-50" onClick={(e) => e.stopPropagation()}>
       {/* シートの背景。押したらメニューだけ閉じる（ドロワーは閉じない） */}
-      <div className="absolute inset-0 bg-black/30 animate-fade" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/40 animate-fade" onClick={onClose} />
       <div
         role="menu"
-        className={`absolute inset-x-2 bottom-[max(env(safe-area-inset-bottom),0.5rem)] rounded-2xl p-1.5 animate-sheet ${GLASS_PANEL}`}
+        className={`absolute inset-x-2 bottom-[max(env(safe-area-inset-bottom),0.5rem)] rounded-2xl p-2 animate-sheet ${GLASS_PANEL}`}
       >
         <p className="truncate px-3 pb-1 pt-2 text-xs text-ink-2">
           {title}
@@ -324,7 +325,7 @@ export function RenameField({
       value={value}
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={(e) => {
-        if (e.nativeEvent.isComposing) return;
+        if (isImeKeystroke(e.nativeEvent)) return;
         if (e.key === "Enter") {
           e.preventDefault();
           finish(value.trim() || null);

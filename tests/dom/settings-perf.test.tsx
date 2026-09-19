@@ -181,7 +181,9 @@ describe("開発者向けの計測", () => {
     await user.click(await screen.findByText(/開発者向け: 起動とページ遷移の計測/));
     await waitFor(() => expect(perfCalls().length).toBe(1));
 
-    await user.click(screen.getByRole("button", { name: "(起動)" }));
+    // 取得が**呼ばれた**ことと、その結果が**描かれた**ことは別の瞬間。
+    // 同期の getByRole は描かれる前に走って落ちることがあった（監査 T-2）
+    await user.click(await screen.findByRole("button", { name: "(起動)" }));
     await waitFor(() =>
       expect(
         perfCalls().some((c) => c.url.includes(`path=${encodeURIComponent("(起動)")}`)),

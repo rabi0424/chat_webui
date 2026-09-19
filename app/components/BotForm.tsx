@@ -32,9 +32,14 @@ export function BotForm({
   const confirm = useConfirm();
   const [name, setName] = useState(initial?.name ?? "");
   const [icon, setIcon] = useState(initial?.icon ?? "🤖");
-  const [modelId, setModelId] = useState(
-    initial?.model_id ?? models[0]?.id ?? "",
-  );
+  const [chosenModelId, setModelId] = useState(initial?.model_id ?? "");
+  /*
+   * モデル一覧はシェルが遅れて読む。起動直後にこの画面を開くと、
+   * 最初の描画では一覧が空。「選んでいなければ先頭」を state に写すと
+   * 空のまま固定され、保存が理由なく押せなかった（監査 P-5）。
+   * 選択は state に持ち、既定は描画のたびに一覧から引く
+   */
+  const modelId = chosenModelId || models[0]?.id || "";
   const [systemPrompt, setSystemPrompt] = useState(
     initial?.system_prompt ?? "",
   );
@@ -102,7 +107,7 @@ export function BotForm({
   return (
     <div className="flex h-full flex-col">
       {/* 他の画面と同じ帯。以前はこの画面だけヘッダーが無く、ラベルの上が空いていた */}
-      <header className="flex shrink-0 items-center gap-1 border-b border-black/[0.06] px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))] dark:border-white/[0.06]">
+      <header className="flex shrink-0 items-center gap-1 border-b border-line px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
         <div className="flex w-24 shrink-0 justify-start">
           {openSidebar && (
             <button

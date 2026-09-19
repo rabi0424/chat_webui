@@ -16,8 +16,9 @@ import { IconCheck } from "./icons";
 export const FIELD =
   "rounded-lg border border-line bg-neutral-50 px-2.5 py-1.5 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:bg-white/5";
 
+// resize は Mac だけ。iPhone では右下のつまみが見えるだけで引けない（監査 D-18）
 export const FIELD_AREA =
-  "w-full resize-y rounded-xl border border-line bg-neutral-50 px-3 py-2 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm dark:bg-white/5";
+  "w-full resize-none rounded-xl border border-line bg-neutral-50 px-3 py-2 text-base outline-none placeholder:text-neutral-400 focus:border-accent/60 sm:text-sm md:resize-y dark:bg-white/5";
 
 /**
  * セグメント。選択肢が2〜4つで、どれか1つを選ぶもの（テーマ・文字サイズ・
@@ -49,7 +50,7 @@ export function Segmented<T extends string>({
             role="radio"
             aria-checked={on}
             onClick={() => onChange(o.value)}
-            className={`flex items-center gap-1.5 rounded-[6px] px-3 py-1.5 text-sm transition touch:py-2 ${
+            className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-3 py-1.5 text-sm transition touch:py-2 ${
               on
                 ? "bg-white font-medium text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-50"
                 : "text-ink-2 hover:text-neutral-800 dark:hover:text-neutral-100"
@@ -159,9 +160,16 @@ export function SavedMark({ shown }: { shown: boolean }) {
   return (
     <span
       aria-live="polite"
-      className={`flex items-center gap-1 text-xs text-green-600 transition-opacity dark:text-green-400 ${
-        shown ? "opacity-100" : "opacity-0"
-      }`}
+      /*
+       * 出していないときは幅を持たない（sr-only）。透明にして置いて
+       * おくと、印の幅と gap のぶんだけ右の欄が押され、縦積みの欄が
+       * カードの右端からはみ出して設定画面が横に動いていた（監査 D-3）
+       */
+      className={
+        shown
+          ? "flex items-center gap-1 text-xs text-green-600 dark:text-green-400"
+          : "sr-only"
+      }
     >
       <IconCheck className="h-3.5 w-3.5" />
       {shown ? "保存しました" : ""}
@@ -233,10 +241,21 @@ export function Row({
           ? ""
           : narrow
             ? "sm:flex sm:min-h-[3.25rem] sm:items-center sm:gap-4"
-            : "flex min-h-[3.25rem] items-center gap-4"
+            : /*
+               * 横並びは折り返せるようにする。見出しには最低 12rem を
+               * 与え、ステッパー（約 150px）が横に収まらなければ操作が
+               * 次の行へ右寄せで降りる。以前は右側を 6 割までに抑えて
+               * いたので、見出しが 1 文字ずつ折れていた（監査 D-3）。
+               * スイッチのような細い操作はそのまま横に並ぶ
+               */
+              "flex min-h-[3.25rem] flex-wrap items-center gap-x-4 gap-y-2"
       }`}
     >
-      <div className={`min-w-0 ${stacked ? "" : narrow ? "sm:flex-1" : "flex-1"}`}>
+      <div
+        className={`min-w-0 ${
+          stacked ? "" : narrow ? "sm:flex-1" : "flex-1 basis-[12rem]"
+        }`}
+      >
         <p className="text-sm font-medium">{label}</p>
         {description && (
           <p className="text-xs leading-relaxed text-ink-2">
@@ -255,7 +274,7 @@ export function Row({
               ? "mt-2"
               : narrow
                 ? "mt-2 sm:mt-0 sm:shrink-0"
-                : "shrink-0 max-w-[60%] sm:max-w-none"
+                : "ml-auto shrink-0"
           }`}
         >
           <SavedMark shown={saved} />

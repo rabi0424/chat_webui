@@ -223,6 +223,8 @@ export function Chat({
   /** 引っぱって更新の実行中。 */
   const [refreshing, setRefreshing] = useState(false);
   const refreshingRef = useRef(false);
+  /** 送信の保存（/generate の返事）を待っているあいだ true。 */
+  const savingRef = useRef(false);
   refreshingRef.current = refreshing;
   /** 送信前の添付画像。 */
   const {
@@ -387,6 +389,7 @@ export function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderStage]);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingParamsRef = useRef<{ convId: string; next: ParamsState } | null>(null);
   // ガラス面フッターの高さ（コンテンツ下部の余白に使う）
   const footerRef = useRef<HTMLElement>(null);
   const [footerHeight, setFooterHeight] = useState(88);
@@ -411,7 +414,17 @@ export function Chat({
     trackRunning,
     runningId,
     notePath,
-  } = useGenerationTracking({ setMessages, setIsStreaming, markRead });
+  } = useGenerationTracking({
+    setMessages,
+    setIsStreaming,
+    markRead,
+    // 回線が長く戻らず追うのを諦めたとき。黙って戻ると、本文が途中で
+    // 止まったまま何も出ない（監査 C-2）
+    onLost: () =>
+      setError(
+        "サーバーに届かない状態が続いたため、追いかけるのをやめました。生成はサーバー側で続いていることがあります。引っぱって更新すると取り直せます。",
+      ),
+  });
 
   /**
    * 会話IDが決まったので、下書きの置き場をその会話へ移す。
@@ -520,14 +533,42 @@ export function Chat({
     if (!convId) return;
     invalidateChat(convId); // モデルと同じ理由（巻き戻って見えるのを防ぐ）
     if (paramsSaveTimer.current) clearTimeout(paramsSaveTimer.current);
+    pendingParamsRef.current = { convId, next };
     paramsSaveTimer.current = setTimeout(() => {
-      void fetch(`/api/conversations/${convId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ params: next }),
-      }).catch(() => {});
+      paramsSaveTimer.current = null;
+      flushParams();
     }, 600);
   };
+  /** 溜めている⚙の変更をいま送る。 */
+  const flushParams = () => {
+    const pending = pendingParamsRef.current;
+    pendingParamsRef.current = null;
+    if (!pending) return;
+    void fetch(`/api/conversations/${pending.convId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ params: pending.next }),
+      // 画面を離れる途中でも送り切る
+      keepalive: true,
+    }).catch(() => {});
+  };
+  const flushParamsRef = useRef(flushParams);
+  flushParamsRef.current = flushParams;
+  /*
+   * 画面を離れるときに、待たせている保存を送る。600ms の待ちの内に別の
+   * 会話へ移って戻ると、先読みは捨ててあるのにサーバーはまだ古い
+   * パラメータで、変更が巻き戻って見えていた（監査 C-12）
+   */
+  useEffect(
+    () => () => {
+      if (paramsSaveTimer.current) {
+        clearTimeout(paramsSaveTimer.current);
+        paramsSaveTimer.current = null;
+        flushParamsRef.current();
+      }
+    },
+    [],
+  );
 
   const resetParams = async () => {
     const ok = await confirm({
@@ -542,6 +583,10 @@ export function Chat({
   useEffect(() => {
     const el = scrollRef.current;
     if (el && shouldStick(el)) pinToBottom(el);
+    // 枝の切替や削除で内容が短くなると、スクロールせずに最下部に
+    // なることがある。印はスクロールでしか更新していなかったので、
+    // 「最新へ」のボタンが出たまま残っていた（監査 C-10）
+    if (el) setAtBottom(nearBottom(el));
   }, [messages, shouldStick, pinToBottom]);
 
   // 本文が動いたら先読みキャッシュを無効化（古いスナップショットで再訪させない）
@@ -939,9 +984,17 @@ export function Chat({
        */
       let replaced = false;
       setMessages((prev) => {
-        if (prev.some((m) => !m.id)) return prev;
+        const unsaved = prev.filter((m) => !m.id);
+        if (savingRef.current && unsaved.length > 0) return prev;
         replaced = true;
-        return fresh;
+        /*
+         * 保存の返事を待っていないのに ID の無い行があるのは、送信が
+         * 失敗した（402・5xx）発言。以前はこれがある限り差し替えを
+         * 諦めていたので、失敗のあとは引っぱって更新も復帰時の取り直しも
+         * 全部効かなくなっていた（監査 C-5）。サーバーの並びを採り、
+         * その発言は末尾に残す（消すと打った本文が失われる）
+         */
+        return unsaved.length > 0 ? [...fresh, ...unsaved] : fresh;
       });
       if (replaced) {
         setError(null);
@@ -1163,6 +1216,9 @@ export function Chat({
     };
   };
 
+  /** 最新の send（確認ダイアログから呼ぶ。上の注記）。 */
+  const sendRef = useRef<(confirmed?: boolean) => void>(() => {});
+  sendRef.current = send;
   /**
    * 「成功するまで生成」の確認を出す。走らせる中身と、確認に見せる値を
    * 一緒に預ける（画面の状態から引き直すと、宛先付きの1通で食い違う）。
@@ -1452,6 +1508,7 @@ export function Chat({
         },
       ]);
 
+      savingRef.current = true;
       const res = await fetch(`/api/conversations/${convId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1517,6 +1574,7 @@ export function Chat({
         }
         return next;
       });
+      savingRef.current = false;
 
       // 返事を待っているあいだに停止を押されていたら、ここで送る
       if (stopWantedRef.current) sendStop(convId, assistantMessageId);
@@ -1572,6 +1630,7 @@ export function Chat({
         }
       }
     } catch (e) {
+      savingRef.current = false;
       if (alive(track)) {
         setError((e as Error).message);
         setIsStreaming(false);
@@ -1588,13 +1647,6 @@ export function Chat({
   }
 
   function send(confirmed = false) {
-    // 宛先は送信の時点の本文から読む（打っている最中の解析と同じ規則）
-    const addressee = mention.bot;
-    const willRetry = retryConfigFor(addressee);
-    if (willRetry && !confirmed) {
-      askRetry(() => send(true), willRetry, addressee?.model_id ?? model);
-      return;
-    }
     // 畳んだ貼り付けは本文へ戻してから送る（畳むのは見た目だけ）
     const text = expandPastes(input, pastes).trim();
     // 画像だけの送信も許す。アップロード中とページの取り込み中は
@@ -1605,6 +1657,18 @@ export function Chat({
       uploading ||
       pagesLoading
     ) {
+      return;
+    }
+    // 宛先は送信の時点の本文から読む（打っている最中の解析と同じ規則）
+    const addressee = mention.bot;
+    const willRetry = retryConfigFor(addressee);
+    if (willRetry && !confirmed) {
+      // 確認の「実行」は、押された時点の最新の send を呼ぶ。この描画の
+      // send を閉じ込めると、アップロード中に出した確認を後で通しても
+      // 古い uploading=true を見て何もせずに閉じていた（監査 C-4）。
+      // 上の判定を確認より前に置いたのも同じ理由——送れない状態で
+      // 確認だけ出さない
+      askRetry(() => sendRef.current(true), willRetry, addressee?.model_id ?? model);
       return;
     }
     const attachments: UiAttachment[] = pending
@@ -2173,12 +2237,12 @@ export function Chat({
           右＝この会話の操作。左右を同じ幅にして中央を本当の中央に置く。
           モデルの選択は入力欄の中のチップへ移した（Composer 参照）。
         */}
-        <div className="flex w-9 shrink-0 justify-start">
+        <div className="flex w-11 shrink-0 justify-start">
           <button
             type="button"
             onClick={openSidebar}
             aria-label="メニュー"
-            className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
+            className="grid h-11 w-11 -my-1 place-items-center rounded-lg text-ink-2 hover:bg-hover md:hidden"
           >
             <IconMenu className="h-5 w-5" />
           </button>
@@ -2188,18 +2252,18 @@ export function Chat({
             {title ?? (bot ? bot.name : "新規チャット")}
           </p>
           {conversationSummary && (
-            <p className="truncate text-[11px] leading-tight text-ink-2 tabular-nums">
+            <p className="truncate text-xs leading-tight text-ink-2 tabular-nums">
               {conversationSummary}
             </p>
           )}
         </div>
-        <div className="flex w-9 shrink-0 justify-end">
+        <div className="flex w-11 shrink-0 justify-end">
           <button
             type="button"
             onClick={() => setParamsOpen((v) => !v)}
             aria-label="生成パラメータ"
             title="生成パラメータ（この会話にのみ適用）"
-            className="relative rounded-lg p-2 text-ink-2 hover:bg-hover"
+            className="relative grid h-11 w-11 -my-1 place-items-center rounded-lg text-ink-2 hover:bg-hover"
           >
             <IconSliders className="h-5 w-5" />
             {/*
@@ -2209,7 +2273,7 @@ export function Chat({
             {Object.keys(params).length > 0 && (
               <span
                 aria-label="変更あり"
-                className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-accent ring-2 ring-white dark:ring-neutral-950"
+                className="absolute right-2.5 top-2.5 h-2 w-2 rounded-full bg-accent ring-2 ring-white dark:ring-neutral-950"
               />
             )}
           </button>

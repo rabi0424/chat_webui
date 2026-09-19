@@ -390,6 +390,17 @@ CREATE TABLE IF NOT EXISTS perf_builds (
 );
 CREATE INDEX IF NOT EXISTS idx_perf_builds_last ON perf_builds(last_at);
 `,
+  // v24: 担当が依頼を「取った」時刻。
+  //
+  // 担当のアラームは at-least-once で、15分の壁や退避のあとに**同じ
+  // 依頼の束でもう一度**届くことがある。決着の書き込み（finished_at）
+  // は二重に数えないようにしてあったが、上流へ**投げる**ほうは何も
+  // 見ていなかったので、決着済みの依頼まで全部もう一度投げていた
+  // ——二重課金と、会話に重なる応答（監査 S-3）。投げる前にここを
+  // 書き、書けた依頼だけを投げる。
+  `
+ALTER TABLE retry_attempts ADD COLUMN started_at INTEGER;
+`,
 ];
 
 /**
@@ -410,6 +421,14 @@ export const RETRY_RUN_INSERT_SQL =
   "INSERT OR IGNORE INTO retry_runs (status_id, conversation_id, tail_message_id, created_at) VALUES (?, ?, ?, ?)";
 export const RETRY_ATTEMPT_INSERT_SQL =
   "INSERT OR IGNORE INTO retry_attempts (id, status_id, seq, launched_at) VALUES (?, ?, ?, ?)";
+/**
+ * 依頼を「取る」。取れたときだけ上流へ投げる。
+ *
+ * 既に取られた行・決着済みの行は当たらない（changes = 0）。再送された
+ * アラームは、束の中で決着していない依頼だけを投げ直すことになる。
+ */
+export const RETRY_ATTEMPT_CLAIM_SQL =
+  "UPDATE retry_attempts SET started_at = ? WHERE id = ? AND started_at IS NULL AND finished_at IS NULL";
 /** 結果が決まった。既に決まっている行は上書きしない（再送で二重に数えない）。 */
 export const RETRY_ATTEMPT_FINISH_SQL =
   "UPDATE retry_attempts SET finished_at = ?, kind = ?, detail = ?, wait_ms = ?, header_ms = ?, do_ms = ? WHERE id = ? AND finished_at IS NULL";
@@ -455,6 +474,28 @@ export const DAILY_DO_MS_SQL = `SELECT
   (SELECT COALESCE(SUM(do_ms), 0) FROM retry_attempts WHERE finished_at >= ?1)
   + (SELECT COALESCE(SUM(coordinator_ms), 0) FROM retry_runs WHERE created_at >= ?1)
   AS total`;
+
+/**
+ * 紐づく先の無い添付。
+ *
+ * 「まだメッセージに属さない」（選んだあと送らずに離れた）ものに加えて、
+ * **メッセージが消えたあとに紐づけられた**ものも拾う。会話を消した
+ * あとに生成が終わると、消えたメッセージの ID で添付の行が作られる
+ * ことがあり、それは message_id IS NULL では見つからず、画像一覧に
+ * 会話の無い画像として出続けた（監査 S-4）。
+ */
+export const ORPHAN_ATTACHMENTS_SQL =
+  "SELECT a.id FROM attachments a LEFT JOIN messages m ON m.id = a.message_id WHERE (a.message_id IS NULL OR m.id IS NULL) AND a.created_at < ? LIMIT 100";
+
+/**
+ * 本文の差し替え（画像を自前の置き場へ移したあと）。
+ *
+ * flushed_at も進める。本文だけ変えると、行の札（ETag）が変わらず、
+ * 追いかけているクライアントには 304 が返り続けて古い本文（上流の
+ * CDN の URL。CSP で表示されない）が残る（監査 S-7）。
+ */
+export const REWRITE_MESSAGE_CONTENT_SQL =
+  "UPDATE messages SET content = ?, flushed_at = ? WHERE id = ?";
 
 /** 司令役が起きていた時間を足す。 */
 export const RETRY_RUN_ADD_COORDINATOR_MS_SQL =
@@ -541,6 +582,14 @@ export function appendRetrySuccessStatements(params: {
   content: string;
   usageJson: string | null;
   now: number;
+  /**
+   * 依頼の決着（成功）も同じ batch に入れる。
+   *
+   * 応答を積んでから別の呼び出しで決着させると、その間に落ちたときに
+   * 「応答は積まれたのに決着は transient」になり、司令役が同じ依頼を
+   * 投げ直して目標を越える成功と課金が起きる（監査 S-9）。
+   */
+  finish?: { headerMs: number | null; doMs: number | null };
 }): Statement[] {
   const statements: Statement[] = [
     {
@@ -576,6 +625,20 @@ export function appendRetrySuccessStatements(params: {
       binds: [params.id, params.attemptId],
     },
   ];
+  if (params.finish) {
+    statements.push({
+      sql: RETRY_ATTEMPT_FINISH_SQL,
+      binds: [
+        params.now,
+        "success",
+        null,
+        null,
+        params.finish.headerMs,
+        params.finish.doMs,
+        params.attemptId,
+      ],
+    });
+  }
   const usage = usageForLedger(params.usageJson);
   if (usage) {
     statements.push({

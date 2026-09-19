@@ -113,6 +113,14 @@ export default function Bots() {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const closeMenu = useCallback(() => setMenuFor(null), []);
   useEscapeToClose(menuFor != null, closeMenu);
+  /** 削除・複製が通らなかったとき。黙って一覧を取り直すだけでは、押したのに何も起きないように見える（監査 P-6）。 */
+  const [error, setError] = useState<string | null>(null);
+
+  /** 応答の失敗を文言にする。 */
+  async function failureOf(res: Response, fallback: string): Promise<string> {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    return body?.error ?? `${fallback}（${res.status}）`;
+  }
 
   async function remove(id: string, name: string) {
     const ok = await confirm({
@@ -122,24 +130,36 @@ export default function Bots() {
       destructive: true,
     });
     if (!ok) return;
-    await fetch(`/api/bots/${id}`, { method: "DELETE" });
+    setError(null);
+    try {
+      const res = await fetch(`/api/bots/${id}`, { method: "DELETE" });
+      if (!res.ok) setError(await failureOf(res, "削除できませんでした"));
+    } catch {
+      setError("削除できませんでした（通信に失敗しました）");
+    }
     revalidator.revalidate();
   }
 
   async function duplicate(id: string) {
     const bot = bots.find((b) => b.id === id);
     if (!bot) return;
-    await fetch("/api/bots", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: `${bot.name}のコピー`.slice(0, MAX_TITLE_LENGTH),
-        icon: bot.icon,
-        modelId: bot.model_id,
-        systemPrompt: bot.system_prompt,
-        params: bot.params_json ? JSON.parse(bot.params_json) : null,
-      }),
-    });
+    setError(null);
+    try {
+      const res = await fetch("/api/bots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: `${bot.name}のコピー`.slice(0, MAX_TITLE_LENGTH),
+          icon: bot.icon,
+          modelId: bot.model_id,
+          systemPrompt: bot.system_prompt,
+          params: bot.params_json ? JSON.parse(bot.params_json) : null,
+        }),
+      });
+      if (!res.ok) setError(await failureOf(res, "複製できませんでした"));
+    } catch {
+      setError("複製できませんでした（通信に失敗しました）");
+    }
     revalidator.revalidate();
   }
 
@@ -150,11 +170,11 @@ export default function Bots() {
           type="button"
           onClick={openSidebar}
           aria-label="メニュー"
-          className="rounded-lg p-2 text-ink-2 hover:bg-hover md:hidden"
+          className="grid h-11 w-11 -my-1 place-items-center rounded-lg text-ink-2 hover:bg-hover md:hidden"
         >
           <IconMenu className="h-5 w-5" />
         </button>
-        <h1 className="px-1 text-sm font-semibold tracking-tight">ボット管理</h1>
+        <h1 className="px-1 text-[0.9375rem] font-semibold">ボット管理</h1>
         <div className="ml-auto">
           <button
             type="button"
@@ -169,6 +189,14 @@ export default function Bots() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-4 pb-[max(env(safe-area-inset-bottom),1.5rem)] pt-6">
+          {error && (
+            <p
+              role="alert"
+              className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+            >
+              {error}
+            </p>
+          )}
           {bots.length === 0 ? (
             <div className="py-14">
               <EmptyState

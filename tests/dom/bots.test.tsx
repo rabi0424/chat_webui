@@ -116,6 +116,24 @@ describe("ボット一覧", () => {
     );
   });
 
+  it("削除が断られたら、その理由を出す（P-6）", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return new Response(JSON.stringify({ error: "このボットは消せません" }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return realFetch(input, init);
+    }) as typeof fetch;
+    const user = renderBots();
+    await user.click(screen.getByRole("button", { name: "校正 のメニュー" }));
+    await user.click(screen.getByRole("menuitem", { name: "削除" }));
+    await user.click(await screen.findByTestId("dialog-confirm"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("このボットは消せません");
+  });
+
   it("1つも無ければ、作る入口を出す", async () => {
     const user = renderBots([]);
     expect(screen.getByText("ボットはまだありません")).toBeTruthy();

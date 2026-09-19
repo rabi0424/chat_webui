@@ -62,6 +62,7 @@ import {
   retryRunSnapshot,
   rewriteMessageContent,
   sweepLostRetryAttempts,
+  claimRetryAttempts,
   tickRetryRun,
   type RetryAttemptRow,
 } from "./db.server";
@@ -319,7 +320,7 @@ export async function runRetryGenerationJob(
         doBudgetStopped = true;
         state.lastError =
           `1日の実行体の時間の上限（${limit.toLocaleString()}秒）に達したため打ち切りました。` +
-          `UTCの0時に戻ります`;
+          `UTCの0時（日本時間の朝9時）に戻ります`;
         return true;
       }
       return false;
@@ -827,6 +828,23 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
    */
   const share = createDurableShare();
 
+  /*
+   * 束の依頼を先に「取る」。再送されたアラームで、決着済み・投げた最中の
+   * 依頼をもう一度投げない（監査 S-3）。取れなかった依頼には触れない
+   * ——その結果は前の実行が書くか、司令役の見回りが「失われた」と
+   * 決着させる。取る操作そのものが失敗したときは従来どおり全部投げる
+   * （D1 の不調を「取られていた」と読み違えて、束を丸ごと捨てないため）。
+   *
+   * 投げる直前に1本ずつ取る形にはしない。取るのを待つあいだに、上の
+   * ループが通信の枠を数え終える前に次を起こしてしまい、枠を1つ
+   * 越えて投げていた。
+   */
+  const claimed = await claimRetryAttempts({
+    ids: queue,
+    now: Date.now(),
+  }).catch(() => new Set(queue));
+  queue.splice(0, queue.length, ...queue.filter((id) => claimed.has(id)));
+
   const runOne = async (attemptId: string): Promise<void> => {
     share.begin(attemptId);
     /** この依頼の取り分。結果を書くときに1度だけ呼ぶ。 */
@@ -854,6 +872,7 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
         timing,
       );
       if (r.kind === "success") {
+        // 応答を積むのと依頼の決着は1つの batch（監査 S-9）
         const id = await appendRetrySuccess({
           attemptId,
           statusId: job.statusId,
@@ -861,8 +880,11 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
           modelId: job.model,
           content: r.content,
           usageJson: r.usageJson,
+          finish: { headerMs: timing.headerMs ?? null, doMs: doMs() },
         });
-        await finish(attemptId, "success", null, null, timing.headerMs ?? null, doMs());
+        // 積めなかった（会話ごと消えていた）なら、画像も取り込まない。
+        // 取り込むと消えたメッセージの添付として残る（監査 S-4）
+        if (id == null) return;
         try {
           const captured = await captureGeneratedImages(
             r.content,

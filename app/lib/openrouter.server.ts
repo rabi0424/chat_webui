@@ -351,14 +351,21 @@ function redactSecrets(value: unknown): unknown {
  * Authorization ヘッダがそのまま写っている**ことがある。診断画面は
  * 生の本文を見せる作りなので、鍵の値そのものを探して消す。
  */
-function redactRawText(text: string): string {
+export function redactRawText(text: string): string {
   let out = text;
-  for (const secret of [
-    env.POE_API_KEY,
-    env.OPENROUTER_API_KEY,
-    env.APIYI_API_KEY,
-    env.RUNWARE_API_KEY,
-  ]) {
+  let secrets: unknown[];
+  try {
+    secrets = [
+      env.POE_API_KEY,
+      env.OPENROUTER_API_KEY,
+      env.APIYI_API_KEY,
+      env.RUNWARE_API_KEY,
+    ];
+  } catch {
+    // バインディングの無い環境（テストのスタブ）では伏せるものが無い
+    return out;
+  }
+  for (const secret of secrets) {
     // 短すぎる値で置換すると、無関係な文字列まで塗り潰してしまう
     if (typeof secret === "string" && secret.length >= 8) {
       out = out.split(secret).join("***");

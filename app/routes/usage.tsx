@@ -1,4 +1,6 @@
+import { bareModelName } from "../lib/constants";
 import { useState } from "react";
+import { Segmented } from "../components/controls";
 import { useOutletContext } from "react-router";
 import type { Route } from "./+types/usage";
 import type { ShellContext } from "./shell";
@@ -62,7 +64,9 @@ export async function loader() {
 /** モデルIDは長いので、末尾の名前だけ出す。 */
 function modelName(id: string | null): string {
   if (!id) return "（不明）";
-  return id.replace(/^poe:/, "").split("/").pop() ?? id;
+  // 窓口の接頭辞は constants の表で外す（`^poe:` を書き写すと、
+  // API易・Runware のモデルが接頭辞付きのまま出る。監査 P-8）
+  return bareModelName(id).split("/").pop() ?? id;
 }
 
 /** ドル建て。少額なので桁を落とさない。 */
@@ -200,6 +204,8 @@ const VENDOR_LABELS: Record<string, string> = {
   deepseek: "DeepSeek",
   openrouter: "OpenRouter",
   poe: "Poe",
+  apiyi: "API易",
+  runware: "Runware",
 };
 function vendorLabel(vendor: string): string {
   return VENDOR_LABELS[vendor] ?? vendor.charAt(0).toUpperCase() + vendor.slice(1);
@@ -534,46 +540,37 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
   const shown = totals[range];
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl px-4 pb-16 pt-[calc(1rem+env(safe-area-inset-top))]">
-        <header className="mb-6 flex items-center gap-2">
+    <div className="flex h-full flex-col">
+      {/* 他の画面と同じ帯（以前はこの画面だけ大きな見出しで、線も無かった。監査 D-7） */}
+      <header className="flex shrink-0 items-center gap-1 border-b border-line px-3 pb-2 pt-[calc(0.5rem+env(safe-area-inset-top))]">
+        <div className="flex w-11 shrink-0 justify-start">
           <button
             type="button"
             onClick={openSidebar}
             aria-label="メニュー"
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-2 transition hover:bg-hover active:scale-95 lg:hidden"
+            className="grid h-11 w-11 -my-1 place-items-center rounded-lg text-ink-2 hover:bg-hover md:hidden"
           >
             <IconMenu className="h-5 w-5" />
           </button>
-          <h1 className="text-xl font-semibold tracking-tight">使用量</h1>
-          <span className="ml-auto text-xs text-ink-2">
-            {monthLabelJst(now)}（JST）
-          </span>
-        </header>
+        </div>
+        <h1 className="min-w-0 flex-1 truncate text-center text-[0.9375rem] font-semibold">
+          使用量
+        </h1>
+        <div className="flex w-11 shrink-0 justify-end" />
+      </header>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-3xl px-4 pb-16 pt-4">
+        <p className="mb-3 text-xs text-ink-2">{monthLabelJst(now)}（JST）</p>
 
         {/* 期間の切り替え。押した期間の合計・内訳がその場で入れ替わる */}
-        <div
-          role="group"
-          aria-label="期間"
-          className="mb-4 inline-flex rounded-xl border border-line p-0.5"
-        >
-          {USAGE_RANGES.map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => setRange(r)}
-              aria-pressed={range === r}
-              className={`rounded-[0.625rem] px-3 py-1.5 text-xs font-medium ${
-                range === r
-                  ? "bg-accent/10 text-accent-ink"
-                  : "text-ink-2 hover:bg-hover"
-              }`}
-            >
-              {USAGE_RANGE_LABELS[r]}
-            </button>
-          ))}
+        <div className="mb-4">
+          <Segmented
+            label="期間"
+            value={range}
+            options={USAGE_RANGES.map((r) => ({ value: r, label: USAGE_RANGE_LABELS[r] }))}
+            onChange={setRange}
+          />
         </div>
-
         <div className="grid grid-cols-2 gap-4">
           <Totals
             title={USAGE_RANGE_LABELS[range]}
@@ -652,6 +649,7 @@ export default function Usage({ loaderData }: Route.ComponentProps) {
           会話やメッセージを削除しても、ここの記録は残ります。使った額は
           戻らないので、消すことで上限が緩まないようにしてあります。
         </p>
+      </div>
       </div>
     </div>
   );

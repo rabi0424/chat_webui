@@ -1,3 +1,4 @@
+import { bareModelName } from "../lib/constants";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PULL_IGNORE_SELECTOR,
@@ -57,7 +58,7 @@ function formatDate(ms: number): string {
 /** モデルIDは長いので、末尾の名前だけ出す。 */
 function modelName(id: string | null): string {
   if (!id) return "";
-  return id.replace(/^poe:/, "").split("/").pop() ?? id;
+  return bareModelName(id).split("/").pop() ?? id;
 }
 
 /**
@@ -106,7 +107,7 @@ function ImageTile({
       画像から取っていると畳まれた瞬間に潰れる。正方形は
       ここで宣言し、画像はその中いっぱいに敷く。
     */
-    <div className="group/img relative aspect-square [content-visibility:auto]">
+    <div className="group/img relative aspect-square overflow-hidden rounded-lg [content-visibility:auto]">
       <button
         type="button"
         onClick={onView}
@@ -160,7 +161,7 @@ function ImageTile({
           （ポータル）に居るので、そちらへポインタを移すとマスの
           ホバーが外れ、押したボタンだけが消える
         */
-        className={`absolute right-1 top-1 rounded-lg bg-black/45 p-1 text-white focus:opacity-100 touch:opacity-100 ${
+        className={`absolute right-1 top-1 rounded-lg bg-black/45 p-1 text-white focus:opacity-100 touch:p-2.5 touch:opacity-100 ${
           menuOpen ? "opacity-100" : "opacity-0 group-hover/img:opacity-100"
         }`}
       >
@@ -282,7 +283,6 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, favoritesOnly]);
 
   /**
@@ -426,11 +426,14 @@ export default function Images({ loaderData }: Route.ComponentProps) {
     );
     setMenu(null);
     try {
-      await fetch(`/api/images/${img.id}`, {
+      const res = await fetch(`/api/images/${img.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ favorite }),
       });
+      // 4xx/5xx も失敗。通信の例外だけ戻していたので、消えた画像の
+      // 星が付いたまま残っていた（監査 C-9）
+      if (!res.ok) throw new Error(String(res.status));
     } catch {
       // 失敗したら元に戻す
       setImages((prev) =>
@@ -605,7 +608,7 @@ export default function Images({ loaderData }: Route.ComponentProps) {
               画像より説明のほうが場所を取り、並べたときに絵として
               見渡せない。説明と操作は開いたとき（Lightbox）に出す。
             */}
-            <div className="grid grid-cols-3 gap-0.5 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+            <div className="grid grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
               {images.map((img) => (
                 <ImageTile
                   key={img.id}

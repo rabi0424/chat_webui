@@ -2,6 +2,7 @@ import {
   fetchPoeRecentPoints,
   openRouterChatRequest,
   poeChatRequest,
+  redactRawText,
   type ChatMessage,
 } from "./openrouter.server";
 import {
@@ -246,8 +247,8 @@ const UPSTREAM_IDLE_TIMEOUT_MS = 120_000;
  * 3〜5分かかるとして**600秒以上のタイムアウト**を勧めている。短く
  * 切ると、上流では完成して課金されているのにこちらには何も残らない。
  *
- * 生存確認（heartbeat）は30分まで打ち続けるので、この待ちのあいだに
- * 行が中断とみなされることはない。
+ * 生存確認（heartbeat）は上流へ投げる前から確定の直前まで打ち続ける
+ * ので、この待ちのあいだに行が中断とみなされることはない。
  *
  * 「成功するまで生成」の1本はこれを使わない。あちらは担当の実行体が
  * 15分で止められる壁の内側で決着させる必要があり、発射の窓（7分）＋
@@ -1244,12 +1245,14 @@ export async function readUpstreamJson(
     parsed = JSON.parse(text) as typeof parsed;
   } catch {
     // JSONでもSSEでもない本文（手前のプロキシのHTMLなど）。何が返って
-    // きたのか分からないまま「空の応答」にせず、先頭だけ理由に添える
+    // きたのか分からないまま「空の応答」にせず、先頭だけ理由に添える。
+    // この理由は本文の注記として**保存される**ので、プロキシのページに
+    // 写っていることがある鍵の値は伏せる（要件 §2.3。監査 S-8）
     return {
       ...empty,
       interrupted:
         interrupted ??
-        `上流の応答を解釈できませんでした: ${text.trim().slice(0, 200)}`,
+        `上流の応答を解釈できませんでした: ${redactRawText(text.trim().slice(0, 200))}`,
     };
   }
 
@@ -1361,8 +1364,39 @@ export async function readUpstreamResponse(
   return await readUpstreamStream(body, onProgress, opts);
 }
 
+/**
+ * 単発の生成1本に許す総時間。
+ *
+ * 生成は Durable Object のアラームの中で走り、アラームは壁時計で15分を
+ * 過ぎると実行ごと止められる（CLAUDE.md）。止められると行は
+ * 「生成中」のまま残り、60秒後に中断として確定する——usage も台帳も
+ * 無いまま。さらにアラームが再送されると、本文が空なら同じ依頼を
+ * 最初から投げ直す（二重課金）。壁の手前で自分から切り、ここまでの
+ * 本文と注記で確定させる（監査 S-5）。
+ */
+export const SINGLE_GENERATION_DEADLINE_MS = 13 * 60_000;
+
+/**
+ * 単発生成の時計。既定は本番の値で、テストだけが縮める。
+ *
+ * 生存確認の間隔（15秒）や締め切り（13分）を本物のまま待つテストは
+ * 書けない。定数を書き換える手立てを別に持つより、引数で受け取る。
+ */
+export interface SingleGenerationClock {
+  /** 生存確認の間隔。 */
+  heartbeatMs: number;
+  /** 総時間の締め切り。 */
+  deadlineMs: number;
+}
+
 /** 例外を投げず、必ずメッセージ行を確定させて終了する。 */
-export async function runSingleGeneration(job: GenerationJob): Promise<void> {
+export async function runSingleGeneration(
+  job: GenerationJob,
+  clock: SingleGenerationClock = {
+    heartbeatMs: IDLE_HEARTBEAT_MS,
+    deadlineMs: SINGLE_GENERATION_DEADLINE_MS,
+  },
+): Promise<void> {
   const startedAt = Date.now();
   const provider = providerOf(job.model);
   const isPoe = provider === "poe";
@@ -1373,38 +1407,6 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
   // 上流しだいなので、リトライ生成と同じ数え方で歯止めをかけておく
   const budget = createBudget();
 
-  let upstream: Response;
-  try {
-    // 添付画像はここでR2から読み出して data: URL に展開する
-    // （DOのストレージに実体を持ち込まないため、ジョブにはIDだけを載せている）
-    upstream = await requestUpstream(
-      job,
-      await expandAttachments(job.messages),
-      budget.spend,
-      { connectTimeoutMs: imageTimeoutMs },
-    );
-  } catch (e) {
-    await finalizeGeneration(job.assistantMessageId, {
-      content: "",
-      reasoning: null,
-      usageJson: null,
-      status: "error",
-      error: `${PROVIDER_LABELS[provider]}への接続に失敗しました: ${(e as Error).message}`,
-    });
-    return;
-  }
-
-  if (!upstream.ok || !upstream.body) {
-    await finalizeGeneration(job.assistantMessageId, {
-      content: "",
-      reasoning: null,
-      usageJson: null,
-      status: "error",
-      error: await upstreamErrorMessage(upstream, provider),
-    });
-    return;
-  }
-
   /**
    * 上流が無言のあいだも「生きている」印を打ち直す。
    *
@@ -1413,30 +1415,50 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
    * 更新されないまま sweepStaleStreaming の中断判定（60秒）に掛かる。
    * そうなると生成はまだ走っているのに行だけ確定してしまい、停止も効かず、
    * 完了時の確定（status='streaming' 条件）も空振りして結果が失われる。
+   *
+   * **打ち始めるのは上流へ投げる前、やめるのは確定の直前。** 以前は
+   * ヘッダが返ってから打ち始め、ストリームが終わった時点でやめていた。
+   * ところが画像のモデルはヘッダを返すまでに何分もかかり（API易の同期
+   * Images API は 60〜300 秒）、その間に行が中断で確定して、出来上がった
+   * 画像は本文に付かず台帳にも載らなかった（監査 S-1）。ストリームの
+   * あとの Poe の突き合わせと画像の取り込みも同じで、8枚取り込むと
+   * 60秒を越えうる（S-15）。
+   *
+   * 印を打つついでに停止要求も拾い、拾ったら上流を切る（abort）。
+   * 以前は打ち直しの返り値を捨てていたので、上流が黙っているあいだは
+   * 停止ボタンが「次のチャンクが届くまで」効かなかった（S-2）。
    */
   let latest = { content: "", reasoning: null as string | null };
   let lastWrite = Date.now();
-  let streamDone = false;
+  let jobDone = false;
   let wakeHeartbeat = () => {};
+  /** 停止要求を拾った（上流を切ったのはこちらの都合、という印）。 */
+  let stopRequested = false;
+  const abort = new AbortController();
 
   const write = async (): Promise<boolean> => {
     lastWrite = Date.now();
-    const { stopRequested, applied } = await flushGeneration(
+    const { stopRequested: stop, applied } = await flushGeneration(
       job.assistantMessageId,
       { content: latest.content, reasoning: latest.reasoning },
     );
     // 行が消えた・確定済みなら、読み続けても受け取る先が無い。
     // 停止と同じに扱って上流を切る（読み続けた分も課金される）
-    return stopRequested || !applied;
+    if (stop || !applied) {
+      stopRequested = true;
+      abort.abort("停止が要求されました");
+      return true;
+    }
+    return false;
   };
 
   const heartbeat = (async () => {
-    while (!streamDone && Date.now() - startedAt < MAX_HEARTBEAT_MS) {
-      const nap = cancellableSleep(IDLE_HEARTBEAT_MS);
+    while (!jobDone && Date.now() - startedAt < MAX_HEARTBEAT_MS) {
+      const nap = cancellableSleep(clock.heartbeatMs);
       wakeHeartbeat = nap.cancel;
       await nap.promise;
       // 直前にチャンクが届いて保存済みなら、打ち直す必要はない
-      if (streamDone || Date.now() - lastWrite < IDLE_HEARTBEAT_MS) continue;
+      if (jobDone || Date.now() - lastWrite < clock.heartbeatMs) continue;
       try {
         await write();
       } catch {
@@ -1444,6 +1466,61 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
       }
     }
   })();
+  const deadline = setTimeout(
+    () =>
+      abort.abort(
+        `${Math.round(clock.deadlineMs / 60_000)}分以内に応答が完了しなかったため打ち切りました`,
+      ),
+    clock.deadlineMs,
+  );
+  /** 印を止めて、打ちかけの1回が終わるのを待つ（確定と重ねない）。 */
+  const settleHeartbeat = async () => {
+    jobDone = true;
+    clearTimeout(deadline);
+    wakeHeartbeat();
+    await heartbeat;
+  };
+
+  let upstream: Response;
+  try {
+    // 添付画像はここでR2から読み出して data: URL に展開する
+    // （DOのストレージに実体を持ち込まないため、ジョブにはIDだけを載せている）
+    upstream = await requestUpstream(
+      job,
+      await expandAttachments(job.messages),
+      budget.spend,
+      { connectTimeoutMs: imageTimeoutMs, signal: abort.signal },
+    );
+  } catch (e) {
+    await settleHeartbeat();
+    await finalizeGeneration(job.assistantMessageId, {
+      content: "",
+      reasoning: null,
+      usageJson: null,
+      status: "error",
+      // 打ち切り（abort）の理由は文字列で届くことがある。Error として
+      // 読むと「undefined」が残る
+      error: stopRequested
+        ? "生成開始直後に停止されました"
+        : `${PROVIDER_LABELS[provider]}への接続に失敗しました: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+    });
+    return;
+  }
+
+  if (!upstream.ok || !upstream.body) {
+    const error = await upstreamErrorMessage(upstream, provider);
+    await settleHeartbeat();
+    await finalizeGeneration(job.assistantMessageId, {
+      content: "",
+      reasoning: null,
+      usageJson: null,
+      status: "error",
+      error,
+    });
+    return;
+  }
 
   const result = await readUpstreamResponse(
     upstream,
@@ -1454,11 +1531,15 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
       };
       return await write();
     },
-    { idleTimeoutMs: imageTimeoutMs },
+    { idleTimeoutMs: imageTimeoutMs, signal: abort.signal },
   );
-  streamDone = true;
-  wakeHeartbeat();
-  await heartbeat;
+  // 生存確認が停止を拾って切った場合、読み手からは「打ち切られた」と
+  // 見える。停止は正常な終わり方なので、中断の注記は付けない
+  if (stopRequested) {
+    result.stopped = true;
+    result.interrupted = undefined;
+  }
+  latest = { content: result.content, reasoning: result.reasoning || null };
   let usageJson = result.usageJson;
 
   // Poe: ポイント消費はレスポンスに載らないため、Usage APIの履歴を
@@ -1487,9 +1568,12 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
   // 使用量の画面にも月間上限にも出てこない）
   usageJson = await applyApiyiCost(job.model, usageJson, budget.spend);
 
-  // 画像はここで自前のストレージへ移す（本文のURLも差し替わる）
+  // 画像はここで自前のストレージへ移す（本文のURLも差し替わる）。
+  // 停止や行の消失で受け取る先が無いときは取り込まない——取り込むと
+  // 消えたメッセージに紐づく添付行と R2 の実体だけが残り、画像一覧に
+  // 会話の無い画像として出続ける（監査 S-4）
   const finalContent =
-    result.content === "" && result.imageUrls.length === 0
+    stopRequested || (result.content === "" && result.imageUrls.length === 0)
       ? result.content
       : (
           await captureGeneratedImages(
@@ -1506,6 +1590,7 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
   // 画像だけの応答（本文なし）も成功として扱う
   const empty = finalContent === "";
 
+  await settleHeartbeat();
   await finalizeGeneration(job.assistantMessageId, {
     // 途中で切れた応答は、完結したものと見分けが付かないまま残すと
     // 利用者がそのまま次の話へ進んでしまう。本文に注記を足しておく
@@ -1549,11 +1634,12 @@ export async function runSingleGeneration(job: GenerationJob): Promise<void> {
 const IDLE_HEARTBEAT_MS = 15_000;
 
 /**
- * 打ち直しを続ける上限。
+ * 打ち直しを続ける上限（保険）。
  *
  * 印を打ち続けている限り中断とみなされないので、上流が永久に沈黙した
- * 場合に「生成中」の表示が二度と解けなくなる。ここで打ち直しをやめれば
- * 60秒後には中断として確定し、UIが固まったままにならずに済む。
+ * 場合に「生成中」の表示が二度と解けなくなる。ふだんは総時間の締め切り
+ * （SINGLE_GENERATION_DEADLINE_MS）が先に来て上流を切るので、ここに
+ * 届くのは締め切りが効かなかったときだけ。
  */
 const MAX_HEARTBEAT_MS = 30 * 60 * 1000;
 

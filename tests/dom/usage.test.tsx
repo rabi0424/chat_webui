@@ -133,7 +133,8 @@ function renderUsage(
 
 /**
  * 合計の額が出ているまとまり。
- * 期間の名前は切り替えのボタンにも出るので、見出し（p）のほうから辿る。
+ * 期間の名前は切り替え（設定画面と同じセグメント。role=radio）にも出るので、
+ * 見出し（p）のほうから辿る。
  */
 function totalsCard(title: string): HTMLElement {
   const heading = screen
@@ -151,7 +152,7 @@ describe("期間の切り替え", () => {
 
   it("押した期間の合計と内訳に入れ替わる", async () => {
     const { user } = renderUsage();
-    await user.click(screen.getByRole("button", { name: "今日" }));
+    await user.click(screen.getByRole("radio", { name: "今日" }));
 
     expect(within(totalsCard("今日")).getByText("$0.1000")).toBeTruthy();
     expect(screen.getByText("モデル別（今日）")).toBeTruthy();
@@ -163,7 +164,7 @@ describe("期間の切り替え", () => {
 
   it("別の期間を見ていても、今月の額は隣に残る（上限は月ごとのため）", async () => {
     const { user } = renderUsage();
-    await user.click(screen.getByRole("button", { name: "直近7日" }));
+    await user.click(screen.getByRole("radio", { name: "直近7日" }));
     expect(within(totalsCard("直近7日")).getByText("$1.00")).toBeTruthy();
     expect(within(totalsCard("今月")).getByText("$5.00")).toBeTruthy();
   });
@@ -172,7 +173,7 @@ describe("期間の切り替え", () => {
     const { user } = renderUsage({ empty: true });
     // 今月には記録があるので、最初は何も言わない
     expect(screen.queryByText(/記録はまだありません/)).toBeNull();
-    await user.click(screen.getByRole("button", { name: "今日" }));
+    await user.click(screen.getByRole("radio", { name: "今日" }));
     expect(screen.getByText("今日の記録はまだありません")).toBeTruthy();
   });
 });

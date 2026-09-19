@@ -128,7 +128,23 @@ vi.mock("../../app/lib/db.server", () => ({
       return true;
     },
   ),
-  appendRetrySuccess: vi.fn(async () => "m1"),
+  appendRetrySuccess: vi.fn(
+    async (p: {
+      attemptId: string;
+      finish?: { headerMs: number | null; doMs: number | null };
+    }) => {
+      // 本番では応答を積むのと決着が1つの batch（S-9）。ここでも
+      // 決着として記録し、担当が別に finish を呼ばないことを見られるようにする
+      if (p.finish) {
+        finished.push({ id: p.attemptId, kind: "success", detail: null, doMs: p.finish.doMs });
+      }
+      return "m1";
+    },
+  ),
+  claimRetryAttempts: vi.fn(
+    async (p: { ids: string[] }) =>
+      new Set(p.ids.filter((id) => !unclaimable.has(id))),
+  ),
   rewriteMessageContent: vi.fn(async () => {}),
   finalizeGeneration: vi.fn(
     async (_id: string, r: { status: string; content: string; error?: string | null }) => {
@@ -149,6 +165,8 @@ vi.mock("../../app/lib/limit.server", () => ({
 const attemptCalls = { started: 0, finished: 0, peak: 0 };
 /** 担当が使ってよい通信の数。尽きたら新しく投げない。 */
 let launchAllowance = Number.POSITIVE_INFINITY;
+/** 既に別の実行が取った（または決着済みの）依頼。取れないので投げない。 */
+const unclaimable = new Set<string>();
 const upstream = vi.fn(async (_job: unknown, _messages: unknown, spend?: () => void) => {
   spend?.();
   attemptCalls.started++;
@@ -222,6 +240,7 @@ beforeEach(() => {
   attemptCalls.peak = 0;
   upstream.mockClear();
   launchAllowance = Number.POSITIVE_INFINITY;
+  unclaimable.clear();
   tickCalls = [];
   finalized = null;
   onTick = null;
@@ -636,6 +655,22 @@ describe("1本担当", () => {
       expect(attemptCalls.peak).toBeGreaterThan(6);
     },
     60_000,
+  );
+
+  it(
+    "取れなかった依頼は投げない（再送されたアラームで二重に投げない）",
+    async () => {
+      // 前の実行が投げた（決着済みかもしれない）依頼が束に残っている
+      unclaimable.add("r0");
+      unclaimable.add("r2");
+      await runAttemptJob(attemptJob(["r0", "r1", "r2", "r3"]));
+      expect(upstream).toHaveBeenCalledTimes(2);
+      expect(finished.map((f) => f.id).sort()).toEqual(["r1", "r3"]);
+      // 取れなかった分を「投げなかった」として決着させもしない
+      // （その結果は前の実行か司令役の見回りが書く）
+      expect(failed).toEqual([]);
+    },
+    30_000,
   );
 
   it(

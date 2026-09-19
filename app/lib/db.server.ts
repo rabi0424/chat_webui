@@ -50,8 +50,11 @@ import {
   RETRY_ATTEMPTS_RUNNING_SQL,
   RETRY_ATTEMPTS_SWEEP_LOST_SQL,
   RETRY_ATTEMPTS_UNPROCESSED_SQL,
+  RETRY_ATTEMPT_CLAIM_SQL,
   RETRY_ATTEMPT_FINISH_SQL,
   RETRY_ATTEMPT_INSERT_SQL,
+  ORPHAN_ATTACHMENTS_SQL,
+  REWRITE_MESSAGE_CONTENT_SQL,
   RETRY_RUN_INSERT_SQL,
   RETRY_RUN_STARTED_SQL,
   SWEEP_STALE_STREAMING_SQL,
@@ -1205,8 +1208,10 @@ function linkAttachmentStatements(
           .prepare(
             // prompt と favorite も複製する。落とすと、画像一覧は同じ実体の
             // うち最も新しい行（＝この複製）を代表として出すため、
-            // 一覧から依頼文が消え、お気に入りも外れて見える
-            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind, prompt, favorite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            // 一覧から依頼文が消え、お気に入りも外れて見える。
+            // thumb_at も写す——落とすと、この複製が代表になった一覧は
+            // 縮小版が無いと見なして、原寸を読んで作り直す（監査 S-10）
+            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind, prompt, favorite, thumb_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .bind(
             crypto.randomUUID(),
@@ -1220,6 +1225,7 @@ function linkAttachmentStatements(
             a.kind ?? "upload",
             a.prompt ?? null,
             a.favorite ?? 0,
+            a.thumb_at ?? null,
           ),
   );
 }
@@ -1469,9 +1475,7 @@ export async function sweepOrphanAttachments(): Promise<void> {
   await sweepPendingFileDeletions();
   const d = await db();
   const { results } = await d
-    .prepare(
-      "SELECT id FROM attachments WHERE message_id IS NULL AND created_at < ? LIMIT 100",
-    )
+    .prepare(ORPHAN_ATTACHMENTS_SQL)
     .bind(Date.now() - ORPHAN_ATTACHMENT_TTL_MS)
     .all<{ id: string }>();
   await deleteAttachmentRows(results.map((r) => r.id));
@@ -2030,8 +2034,8 @@ export async function rewriteMessageContent(
 ): Promise<void> {
   const d = await db();
   await d
-    .prepare("UPDATE messages SET content = ? WHERE id = ?")
-    .bind(content, messageId)
+    .prepare(REWRITE_MESSAGE_CONTENT_SQL)
+    .bind(content, Date.now(), messageId)
     .run();
 }
 
@@ -2480,6 +2484,29 @@ export async function retryRunDurations(
 }
 
 /** 1本担当が結果を書く。既に決まっている行は上書きしない（再送に備える）。 */
+/**
+ * 依頼を「取る」。取れた依頼の id を返す。既に取られた・決着済みの
+ * ものは含まれない。再送されたアラームが同じ依頼を投げ直さないための
+ * 柵（監査 S-3）。束をまとめて1つの batch で取る（1サブリクエスト）。
+ */
+export async function claimRetryAttempts(params: {
+  ids: string[];
+  now: number;
+}): Promise<Set<string>> {
+  const claimed = new Set<string>();
+  if (params.ids.length === 0) return claimed;
+  const d = await db();
+  const results = await d.batch(
+    params.ids.map((id) =>
+      d.prepare(RETRY_ATTEMPT_CLAIM_SQL).bind(params.now, id),
+    ),
+  );
+  results.forEach((r, i) => {
+    if ((r.meta.changes ?? 0) > 0) claimed.add(params.ids[i]);
+  });
+  return claimed;
+}
+
 export async function finishRetryAttempt(params: {
   id: string;
   kind: RetryAttemptKind;
@@ -2583,7 +2610,9 @@ export async function appendRetrySuccess(params: {
   modelId: string;
   content: string;
   usageJson: string | null;
-}): Promise<string> {
+  /** 依頼の決着も同じ batch で書く（appendRetrySuccessStatements の注記）。 */
+  finish?: { headerMs: number | null; doMs: number | null };
+}): Promise<string | null> {
   const d = await db();
   const id = crypto.randomUUID();
   const statements = appendRetrySuccessStatements({
@@ -2595,9 +2624,15 @@ export async function appendRetrySuccess(params: {
     content: params.content,
     usageJson: params.usageJson,
     now: Date.now(),
+    finish: params.finish,
   });
-  await d.batch(statements.map((st) => d.prepare(st.sql).bind(...st.binds)));
-  return id;
+  const [inserted] = await d.batch(
+    statements.map((st) => d.prepare(st.sql).bind(...st.binds)),
+  );
+  // 応答の INSERT は retry_runs から繋ぐ先を引くので、会話ごと消されて
+  // いれば0行になる。その id を返すと、呼ぶ側が消えたメッセージへ
+  // 画像を紐づけてしまう（監査 S-4）。積めなかったときは null
+  return (inserted.meta.changes ?? 0) > 0 ? id : null;
 }
 
 // --- 起動・遷移の実測 ------------------------------------------------------
