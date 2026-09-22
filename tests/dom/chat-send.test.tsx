@@ -52,6 +52,38 @@ describe("送信", () => {
     expect(server.calls.some((c) => c.path.includes("/path"))).toBe(false);
   });
 
+  it("新規チャットでも、会話の作成を待たずに送った本文が出る", async () => {
+    // 新規チャットは生成の前に会話を作る。その返事を返さないままにして
+    // 「作成待ち」を作る。以前はここを待ってから本文を出していたので、
+    // 押すと入力欄だけが空になり、往復1回ぶん何も出なかった
+    server.on("/api/conversations", () => new Promise<never>(() => {}));
+
+    const { user } = renderChat({ conversationId: null });
+    const box = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await user.type(box, "はじめまして");
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByText("はじめまして")).toBeTruthy();
+    expect(box.value).toBe("");
+    // 作成の依頼は出ているが、生成にはまだ進んでいない（＝作成待ちの
+    // あいだに出ている）
+    expect(server.calls.some((c) => c.path.endsWith("/api/conversations"))).toBe(true);
+    expect(server.calls.some((c) => c.path.includes("/generate"))).toBe(false);
+  });
+
+  it("新規チャットで会話の作成に失敗しても、送った本文は消えない", async () => {
+    // 入力欄は押した時点で空になる。本文を出すのが作成の後だったころは、
+    // 作成に失敗すると本文がどこにも残らず、打ち直すしかなかった
+    server.fail("/api/conversations", 500);
+
+    const { user } = renderChat({ conversationId: null });
+    await user.type(await screen.findByRole("textbox"), "消えないで");
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByText("会話の作成に失敗しました")).toBeTruthy();
+    expect(screen.getByText("消えないで")).toBeTruthy();
+  });
+
   it("応答が届くと画面に出る", async () => {
     const { user } = renderChat({});
     await user.type(await screen.findByRole("textbox"), "こんにちは");
