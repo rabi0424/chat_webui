@@ -1456,6 +1456,24 @@ export function Chat({
     // 生成へ使ったときだけ数える
     recordModelUse(gen.model);
 
+    // 送った本文と「生成中」の枠は、どの通信よりも先に出す。新規チャット
+    // では下の会話の作成を待ってから出していたので、押すと入力欄だけが
+    // 空になり、往復1回ぶん何も出ない間ができていた（押しても反応が
+    // 遅れて見える）。失敗したときの後始末は catch 側で枠を外す
+    setMessages([
+      ...history,
+      // modelId をここで入れておく。送信の時点で決まる値なのに空にして
+      // いたので、表示は「いま選んでいるモデル」に落ちて解釈されていた
+      // ——生成中にモデルを切り替えると、流れている応答の見た目が
+      // 「画像を生成中…」と本文とで入れ替わっていた（監査 C-6）
+      {
+        role: "assistant",
+        content: "",
+        status: "streaming",
+        modelId: gen.model,
+      },
+    ]);
+
     try {
       // 新規チャットなら先に会話を作る
       let convId = convIdRef.current;
@@ -1493,20 +1511,6 @@ export function Chat({
         adoptDraftScope(convId);
         revalidator.revalidate(); // サイドバーに即反映
       }
-
-      setMessages([
-        ...history,
-        // modelId をここで入れておく。送信の時点で決まる値なのに空にして
-        // いたので、表示は「いま選んでいるモデル」に落ちて解釈されていた
-        // ——生成中にモデルを切り替えると、流れている応答の見た目が
-        // 「画像を生成中…」と本文とで入れ替わっていた（監査 C-6）
-        {
-          role: "assistant",
-          content: "",
-          status: "streaming",
-          modelId: gen.model,
-        },
-      ]);
 
       savingRef.current = true;
       const res = await fetch(`/api/conversations/${convId}/generate`, {
