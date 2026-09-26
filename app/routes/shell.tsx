@@ -460,13 +460,24 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       // キーボードが残したページのパンを戻す（このアプリのbodyは
       // 本来スクロールしないため、scrollY > 0 はSafariのパンの残骸）
       if (window.scrollY > 0) window.scrollTo(0, 0);
-      document.documentElement.style.setProperty(
+      const html = document.documentElement;
+      const standalone = isStandaloneDisplay(window);
+      html.style.setProperty(
         "--app-height",
-        appHeightValue({
-          standalone: isStandaloneDisplay(window),
-          measured: vv.height,
-        }),
+        appHeightValue({ standalone, measured: vv.height }),
       );
+      // 実測値が文書のスクロールできる範囲より大きいと、画面ごと少し
+      // 動いてしまう（lib/app-height.ts）。当てた直後にはみ出しを読み、
+      // あればその分だけ縮めて当て直す
+      const root = document.scrollingElement ?? html;
+      const overflow = root.scrollHeight - root.clientHeight;
+      if (!standalone && overflow > 0) {
+        html.style.setProperty(
+          "--app-height",
+          appHeightValue({ standalone, measured: vv.height, overflow }),
+        );
+        if (window.scrollY > 0) window.scrollTo(0, 0);
+      }
     };
     update();
     vv.addEventListener("resize", update);

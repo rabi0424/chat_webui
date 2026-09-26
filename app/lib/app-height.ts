@@ -13,14 +13,26 @@
  * この表示ではツールバーが無いので 100vh がそのまま画面の高さで、
  * 起動直後から正しい唯一の値。「実測値と大きいほう」では両方とも
  * 短いので効かない（実際に効かなかった）。
+ *
+ * Safari の実測値は、逆に**ページのスクロールできる範囲より大きい**ことも
+ * ある。そのままだと箱が表示領域からはみ出し、アプリの部品ではなく画面
+ * ごと少しスクロールできてしまう——下まで送ると上端が数十pxステータス
+ * バーの裏へ隠れた（実際に起きた）。どの値が食い違うのかは Safari の版で
+ * 変わるので、推測で別の値に乗り換えず、「実測値を当てた結果、文書が
+ * 何px スクロールできたか」（overflow）をそのまま差し引く。はみ出して
+ * いなければ 0 で、実測値は変わらない——短すぎた起動直後の問題を
+ * 「小さいほう」で呼び戻すことが無い。
  */
 export function appHeightValue(opts: {
   standalone: boolean;
   /** visualViewport.height（CSS px）。 */
   measured: number;
+  /** 実測値を当てたとき、文書がスクロールできた量（CSS px）。 */
+  overflow?: number;
 }): string {
   if (opts.standalone) return "100vh";
-  return `${opts.measured}px`;
+  const over = Math.max(0, opts.overflow ?? 0);
+  return `${opts.measured - over}px`;
 }
 
 /** ホーム画面から開いた全画面表示か。 */
