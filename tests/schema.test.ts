@@ -1,7 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
+  LIST_VERSION_BUMP_SQL,
   DAILY_DO_MS_SQL,
   DUE_PENDING_DELETIONS_SQL,
   FLUSH_GENERATION_SQL,
@@ -519,6 +521,62 @@ describe("サイドバーの会話一覧", () => {
     addConversation("新", { updatedAt: 300 });
     addConversation("ピン", { pinned: 1, updatedAt: 1 });
     expect(list().map((r) => r.id)).toEqual(["ピン", "新", "古"]);
+  });
+});
+
+/**
+ * サイドバーの見張り（5秒ごと）が「一覧が動いたか」を知る1文。
+ *
+ * 更新時刻の最大値だけでは、タイトル・ピン・削除が拾えない。とくに
+ * 新しい会話の自動タイトルは応答の確定より後に書かれるので、付いた名前が
+ * サイドバーに届かなかった。一覧の見た目だけを変える書き込みは meta の
+ * 番号を進め、見張りは番号の変化でも取り直す。
+ */
+describe("会話一覧が動いたかの見張り", () => {
+  beforeEach(() => migrate(db));
+
+  const head = () =>
+    db.prepare(CONVERSATIONS_LATEST_SQL).get() as {
+      latest: number | null;
+      version: number | null;
+    };
+  const bump = () => db.prepare(LIST_VERSION_BUMP_SQL).run();
+
+  it("一度も進めていなければ番号は NULL、時刻は最大値", () => {
+    db.exec(
+      "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('a', 'x', 1, 5), ('b', 'y', 1, 9)",
+    );
+    expect(head()).toEqual({ latest: 9, version: null });
+  });
+
+  it("進めるたびに番号が1つずつ増える（時刻は動かない）", () => {
+    db.exec(
+      "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('a', 'x', 1, 5)",
+    );
+    bump();
+    expect(head()).toEqual({ latest: 5, version: 1 });
+    bump();
+    bump();
+    // 文字列の連結や上書き（'1' のまま）ではなく、数として増える
+    expect(head()).toEqual({ latest: 5, version: 3 });
+  });
+
+  it("版の記録（schema_version）には触らない", () => {
+    db.exec(
+      "INSERT INTO meta (key, value) VALUES ('schema_version', '42')",
+    );
+    bump();
+    bump();
+    const row = db
+      .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+      .get() as { value: string };
+    expect(row.value).toBe("42");
+    expect(head().version).toBe(2);
+  });
+
+  it("会話が1つも無くても引ける", () => {
+    bump();
+    expect(head()).toEqual({ latest: null, version: 1 });
   });
 });
 

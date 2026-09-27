@@ -893,12 +893,31 @@ export const GENERATING_CONVERSATIONS_SQL = `SELECT DISTINCT conversation_id AS 
  * なら、updated_at の索引の端を1行見るだけで済む。値が動いたときだけ
  * 一覧を取り直す。
  *
- * 拾えないのは削除だけ（消しても最大値は動かない）。消したのが自分の
- * 端末なら操作の直後に取り直しているので、残るのは「別の端末で消した
- * 会話が、次に何かが動くまで一覧に居座る」場合だけ。開けば404になる。
+ * 最大値だけでは拾えないものがある。削除（消しても最大値は動かない）と、
+ * タイトル・ピン・お気に入り・フォルダの変更（updated_at を動かさない。
+ * 動かすと名前を変えただけで一覧の先頭へ上がる）。とくに**新しい会話の
+ * 自動タイトル**は、応答が確定した**後**に書かれるので、確定で一覧を
+ * 取り直した時点ではまだ仮の名前のまま——そのあと何も動かなければ、
+ * 付いた名前がサイドバーに一度も出なかった。
+ *
+ * そこで、一覧の見た目だけを変える書き込みでは meta の番号
+ * （`LIST_VERSION_BUMP_SQL`）を1つ進め、同じ1文で受け取る。番号が
+ * 変わったら取り直す。meta の主キーを1行引くだけなので、読む行は増えない。
+ * 一度も進めていなければ version は NULL。
  */
-export const CONVERSATIONS_LATEST_SQL =
-  "SELECT MAX(updated_at) AS latest FROM conversations";
+export const CONVERSATIONS_LATEST_SQL = `SELECT
+         (SELECT MAX(updated_at) FROM conversations) AS latest,
+         (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'list_version') AS version`;
+
+/**
+ * 一覧の見た目だけを変えた書き込みの印（番号を1つ進める）。
+ *
+ * 時刻ではなく番号にするのは、端末や Worker の時計の食い違いで
+ * 「前より小さい値」を書いてしまうと、見る側が変化に気づけないため。
+ * 書き込みの本体と同じ batch に入れる（サブリクエストを増やさない）。
+ */
+export const LIST_VERSION_BUMP_SQL = `INSERT INTO meta (key, value) VALUES ('list_version', '1')
+  ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1`;
 
 /**
  * サイドバーに出す会話の一覧。

@@ -194,4 +194,32 @@ describe("会話一覧の取り直し", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     expect(await settle(() => loads)).toBe(base + 1);
   });
+
+  /**
+   * タイトル・ピン・フォルダの変更と削除は updated_at を動かさない。
+   * 新しい会話の自動タイトルは応答の確定より後に書かれるので、時刻だけを
+   * 見ていると、付いた名前がサイドバーに一度も出なかった。サーバーは
+   * これらの書き込みで番号を進める（schema.ts の LIST_VERSION_BUMP_SQL）。
+   */
+  it("時刻が同じでも、一覧の番号が動いたら取り直す", async () => {
+    let listVersion = 3;
+    let loads = 0;
+    installFetch({
+      unread: () => ({ ids: [], generating: [], latest: 100, listVersion }),
+    });
+    renderShell({ onLoad: () => loads++ });
+    // 最初の値は控えるだけ
+    const base = await settle(() => loads);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(await settle(() => loads)).toBe(base);
+
+    // 別の端末（や名付け）でタイトルが変わった。時刻は動かない
+    listVersion = 4;
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(loads).toBe(base + 1));
+
+    // 同じ番号のままなら、何度引いても取り直さない
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(await settle(() => loads)).toBe(base + 1);
+  });
 });
