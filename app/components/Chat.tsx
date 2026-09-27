@@ -515,7 +515,9 @@ export function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const selectModel = (id: string) => {
+  // 同一性を保つ（モデル一覧は memo されていて、毎回新しい関数を渡すと
+  // 生成の追いかけで描き直すたびに一覧の部品まで描き直すことになる）
+  const selectModel = useStableCallback((id: string) => {
     setModel(id);
     writeLastUsedModel(id);
     if (convIdRef.current) {
@@ -528,7 +530,18 @@ export function Chat({
         body: JSON.stringify({ modelId: id }),
       }).catch(() => {});
     }
-  };
+  });
+  // モデル一覧のチップに渡すもの。上と同じ理由で同一性を保つ
+  const botMark = useMemo(
+    () =>
+      bot ? (
+        <span aria-hidden title={bot.name} className="-ml-0.5 text-[15px] leading-none">
+          {bot.icon}
+        </span>
+      ) : undefined,
+    [bot],
+  );
+  const clearBot = useStableCallback(() => onClearBot?.());
 
   /**
    * Web検索の有効/無効。既定はオンで、オフにしたときだけ
@@ -2583,18 +2596,8 @@ export function Chat({
                 newModelDays={settings.newModelDays}
                 onChange={selectModel}
                 variant="chip"
-                leading={
-                  bot ? (
-                    <span
-                      aria-hidden
-                      title={bot.name}
-                      className="-ml-0.5 text-[15px] leading-none"
-                    >
-                      {bot.icon}
-                    </span>
-                  ) : undefined
-                }
-                onClear={bot && onClearBot ? onClearBot : undefined}
+                leading={botMark}
+                onClear={bot && onClearBot ? clearBot : undefined}
                 clearLabel="ボットの選択を解除"
               />
             }
