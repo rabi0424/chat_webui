@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { flushSync } from "react-dom";
 import { NavLink, useNavigate, useParams, useRevalidator } from "react-router";
@@ -30,6 +31,13 @@ import {
 import { FAVORITES_ID, usePrefetchOnVisible } from "./sidebar/shared";
 import { useEscapeToClose } from "../lib/dismiss";
 import { invalidateChat } from "../lib/chat-cache";
+import {
+  applyOverlay,
+  conversationPatchFromBody,
+  folderPatchFromBody,
+  pinnedMovePatch,
+  type OverlayPatch,
+} from "../lib/sidebar-overlay";
 import {
   useExpandedFolders,
   writeExpandedFolders,
@@ -166,6 +174,29 @@ function AppMark() {
 }
 
 /**
+ * このページでサイドバーを一度でも描き終えたか（ブラウザの中だけで立つ）。
+ *
+ * サーバーは一画面ぶん（SSR_ROWS）しか描かないので、ハイドレーションでも
+ * その行数で突き合わせてから全行へ広げる。だが、それが要るのは
+ * ハイドレーションのときだけ。スマホのドロワーは開いたときに初めて
+ * 作られるので、同じ手順を踏むと「20行→200行」の2度描きが、開く動き
+ * （0.24秒のスライドとぼかし）の最中に走っていた。
+ */
+let mountedOnce = false;
+const subscribeNothing = () => () => {};
+
+/** 保存中の変更（lib/sidebar-overlay.ts）。 */
+interface PendingOp extends OverlayPatch {
+  seq: number;
+  /**
+   * 書き終えて取り直しも済んだときの、ローダーの一覧。これと違う一覧が
+   * 届いたら（＝書いた後に読んだ一覧が着いたら）重ねるのをやめる。
+   * null のあいだは送っている最中。
+   */
+  settled: { conversations: unknown; folders: unknown } | null;
+}
+
+/**
  * 会話一覧。
  *
  * memo してある。シェルは自分の都合（ショートカットの一覧・遷移の
@@ -176,8 +207,8 @@ function AppMark() {
  * （tests/dom/shell-rerender.test.tsx が数えて見張る）。
  */
 export const Sidebar = memo(function Sidebar({
-  conversations,
-  folders,
+  conversations: loadedConversations,
+  folders: loadedFolders,
   unreadIds,
   generatingIds,
   now,
@@ -208,6 +239,49 @@ export const Sidebar = memo(function Sidebar({
   const params = useParams();
   const confirm = useConfirm();
 
+  /*
+   * 送った変更を、ローダーの一覧の上に重ねて見せる（lib/sidebar-overlay.ts）。
+   * 以下はすべて、重ねた後の一覧（conversations / folders）を読む。
+   */
+  const [ops, setOps] = useState<PendingOp[]>([]);
+  const loadedRef = useRef({
+    conversations: loadedConversations as unknown,
+    folders: loadedFolders as unknown,
+  });
+  useEffect(() => {
+    loadedRef.current = {
+      conversations: loadedConversations,
+      folders: loadedFolders,
+    };
+  }, [loadedConversations, loadedFolders]);
+  /**
+   * 重ねたままにするか。書き終えた後に**新しい一覧が着いたら**外す。
+   *
+   * 「書き終えたら外す」では早すぎる。取り直した一覧が着くまでの間、
+   * 古い値に一瞬戻って見える（名前を変えたのに旧名が出る、が戻ってくる）。
+   * 「値が一致したら外す」でも足りない——別の端末でさらに変えた値が
+   * 届いたとき、いつまでも外れずに上書きし続ける。
+   */
+  const isLive = (op: PendingOp) =>
+    op.settled == null ||
+    (op.settled.conversations === loadedConversations &&
+      op.settled.folders === loadedFolders);
+  const { conversations, folders } = useMemo(() => {
+    const live = ops.filter(isLive);
+    return {
+      conversations: applyOverlay(
+        loadedConversations,
+        live.map((op) => op.conversations),
+      ),
+      folders: applyOverlay(
+        loadedFolders,
+        live.map((op) => op.folders),
+      ),
+    };
+    // isLive は描画のたびに作り直されるが、中身は ops と props だけを読む
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ops, loadedConversations, loadedFolders]);
+
   /**
    * 未読の印を出すか。取得済みの状態があればそちらを正とする
    * （開いて既読になった分も即座に消える）。
@@ -226,9 +300,11 @@ export const Sidebar = memo(function Sidebar({
   /** null = ルート表示、フォルダID = そのフォルダの階層を表示 */
   const [view, setView] = useState<string | null>(null);
   /*
-    開いているフォルダは保存して持ち回る。スマホのドロワーは閉じるたびに
-    外されるので、状態を中に持つと開き直すたびに畳まれていた。画面の中に
-    一覧は2つある（デスクトップ用とドロワー用）ので、どちらで開いても揃う。
+    開いているフォルダは保存して持ち回る。スマホのドロワーは以前は閉じる
+    たびに外されていて、状態を中に持つと開き直すたびに畳まれていた
+    （いまは閉じても外さないが、再読込をまたいでも揃えるために残す）。
+    一覧は幅で2通り（デスクトップ用とドロワー用）あるので、どちらで
+    開いても揃う。
   */
   const expanded = useExpandedFolders();
   const toggleExpanded = (id: string) => {
@@ -359,8 +435,20 @@ export const Sidebar = memo(function Sidebar({
    * データとして既にHTMLに載っているので、往復は増えない）。
    */
   const SSR_ROWS = 20;
-  const [allRows, setAllRows] = useState(false);
+  /*
+   * ハイドレーション（とサーバー）では server 値の false を使うので、
+   * サーバーの出力と行数が揃う。その後にブラウザの中で作られたもの
+   * （ドロワー）は、初めから全行で描く。
+   */
+  const mountedBefore = useSyncExternalStore(
+    subscribeNothing,
+    () => mountedOnce,
+    () => false,
+  );
+  const [expandedRows, setAllRows] = useState(mountedBefore);
+  const allRows = mountedBefore || expandedRows;
   useEffect(() => {
+    mountedOnce = true;
     startTransition(() => setAllRows(true));
   }, []);
   /** 一覧を描くときに通す。サーバー側では先頭だけに切る。 */
@@ -410,11 +498,15 @@ export const Sidebar = memo(function Sidebar({
     errorTimer.current = setTimeout(() => setError(null), 5000);
   };
 
-  /** 送って、失敗したら伝える。成功・失敗どちらでも一覧は取り直す。 */
+  /**
+   * 送って、失敗したら伝える。成功・失敗どちらでも一覧は取り直す
+   * （refresh: false のときは呼ぶ側が取り直す）。
+   */
   const send = async (
     what: string,
     input: string,
     init: RequestInit,
+    { refresh: reload = true }: { refresh?: boolean } = {},
   ): Promise<Response | null> => {
     try {
       const res = await fetch(input, init);
@@ -428,8 +520,50 @@ export const Sidebar = memo(function Sidebar({
       fail(what);
       return null;
     } finally {
-      refresh();
+      if (reload) void refresh();
     }
+  };
+
+  const opSeq = useRef(0);
+  /** 書き終えた後の一覧が既に着いている変更は、もう要らないので捨てる。 */
+  const pruned = (list: PendingOp[]) =>
+    list.filter(
+      (op) =>
+        op.settled == null ||
+        (op.settled.conversations === loadedRef.current.conversations &&
+          op.settled.folders === loadedRef.current.folders),
+    );
+
+  /**
+   * 変更を先に画面へ映してから送る。
+   *
+   * 失敗したら重ねたものを外して（元に戻して）伝える。成功したら一覧を
+   * 取り直し、それが着いた時点で外す（isLive）。取り直しは失敗のときも
+   * する——返事が届かなかっただけで、書けている場合がある。
+   */
+  const sendOptimistic = async (
+    what: string,
+    patch: OverlayPatch,
+    input: string,
+    init: RequestInit,
+  ): Promise<Response | null> => {
+    const seq = ++opSeq.current;
+    setOps((prev) => [...pruned(prev), { seq, ...patch, settled: null }]);
+    const res = await send(what, input, init, { refresh: false });
+    if (!res) {
+      setOps((prev) => prev.filter((op) => op.seq !== seq));
+      void refresh();
+      return null;
+    }
+    await refresh();
+    // 取り直しの結果がもう描かれていれば、ここで控えるのは新しい一覧
+    // （重ねた値と同じなので、次に一覧が動くまで重ねたままでも見た目は
+    // 変わらない）。まだなら古い一覧で、新しいものが着いた描画で外れる
+    const settled = { ...loadedRef.current };
+    setOps((prev) =>
+      pruned(prev).map((op) => (op.seq === seq ? { ...op, settled } : op)),
+    );
+    return res;
   };
 
   // --- 会話操作 -----------------------------------------------------------
@@ -443,11 +577,16 @@ export const Sidebar = memo(function Sidebar({
      * 捨てるのは書き終えてから（送っている間に先読みが古い行を写し直す
      * ことがあるので、先に捨てても残りうる）。
      */
-    await send("会話の更新", `/api/conversations/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    await sendOptimistic(
+      "会話の更新",
+      { conversations: { [id]: conversationPatchFromBody(body) }, folders: {} },
+      `/api/conversations/${id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
     invalidateChat(id);
   }
 
@@ -470,11 +609,16 @@ export const Sidebar = memo(function Sidebar({
   // --- フォルダ操作 -------------------------------------------------------
 
   async function patchFolder(id: string, body: Record<string, unknown>) {
-    await send("フォルダの更新", `/api/folders/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    await sendOptimistic(
+      "フォルダの更新",
+      { conversations: {}, folders: { [id]: folderPatchFromBody(body) } },
+      `/api/folders/${id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
   }
 
   async function removeFolder(f: FolderRow) {
@@ -520,7 +664,10 @@ export const Sidebar = memo(function Sidebar({
   }
 
   async function movePinned(type: "conversation" | "folder", id: string, direction: "up" | "down") {
-    await send("並べ替え", "/api/sidebar/move", {
+    // 端ではサーバーも何もしないので、送らない
+    const patch = pinnedMovePatch(conversations, folders, type, id, direction);
+    if (!patch) return;
+    await sendOptimistic("並べ替え", patch, "/api/sidebar/move", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type, id, direction }),

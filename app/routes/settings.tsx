@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { useCopied } from "../lib/use-copied";
-import { useOutletContext, useRevalidator } from "react-router";
+import { useOutletContext } from "react-router";
 import type { Route } from "./+types/settings";
 import type { ShellContext } from "./shell";
 import { getAppSettings } from "../lib/db.server";
@@ -387,8 +387,8 @@ function PerfPanel() {
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
-  const { openSidebar, models } = useOutletContext<ShellContext>();
-  const revalidator = useRevalidator();
+  const { openSidebar, models, applySettings } =
+    useOutletContext<ShellContext>();
   const [settings, setSettings] = useState<AppSettings>(loaderData.settings);
   /** 一時解除の対象月。ローダーの時刻から作る（描画のたびに変わらない）。 */
   const thisMonth = monthLabelJst(loaderData.now);
@@ -488,8 +488,12 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
         // ただし、まだ送っていない変更はそのまま残す
         setSettings(() => ({ ...confirmed, ...pendingRef.current }));
         settingsCache = { at: Date.now(), data: { settings: confirmed } };
-        // シェル経由でChatが参照する設定も更新する（遷移では再読込しないため）
-        revalidator.revalidate();
+        // シェル経由で Chat が参照する設定も差し替える（遷移ではシェルを
+        // 取り直さないため）。revalidate はしない——シェルのローダーは
+        // 会話一覧ごと返すので、打つ手を止めるたびに一覧を丸ごと取り直し、
+        // サイドバーの全行まで描き直していた。別のタブ・端末には、それぞれが
+        // 次にシェルを読み込んだとき（一覧が動いた・再読込）に届く
+        applySettings(confirmed);
         setSavedKeys(new Set(keys));
         if (savedTimer.current) clearTimeout(savedTimer.current);
         savedTimer.current = setTimeout(() => setSavedKeys(new Set()), 1500);

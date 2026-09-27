@@ -38,6 +38,7 @@ function renderSettings(settings: Partial<AppSettings> = {}) {
     bots: [],
     usdJpy: 150,
     settings: merged,
+    applySettings: () => {},
     openSidebar: () => {},
   };
   const loaderData = { settings: merged, now: 1_700_000_000_000 };

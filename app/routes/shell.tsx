@@ -87,6 +87,16 @@ export interface ShellContext {
   usdJpy: number | null;
   /** アプリ全体の設定（設定画面で変更する）。 */
   settings: AppSettings;
+  /**
+   * 保存できた設定を、ローダーを取り直さずに会話画面などへ渡す。
+   *
+   * 設定画面は保存のたびに revalidate していた。シェルのローダーは
+   * 会話200件・ボット・フォルダ・設定をまとめて返す（約100KB）ので、
+   * システムプロンプトを打っていると手を止めるたび（300ms）にそれを
+   * 丸ごと取り直し、サイドバーの全行まで描き直していた。変わったのは
+   * 設定だけなので、その値だけを差し替える。
+   */
+  applySettings: (settings: AppSettings) => void;
   openSidebar: () => void;
 }
 
@@ -144,7 +154,39 @@ function flush(): void {
 }
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { conversations, bots, folders, settings, now } = loaderData;
+  const { conversations, bots, folders, now } = loaderData;
+  /*
+   * 設定画面で保存した値。**どのローダーの値の上に貼ったか**も控え、
+   * ローダーが取り直されたら（別の操作や一覧の動きで）そちらを正とする
+   * ——取り直した値は保存を済ませた後のサーバーの値なので、ここの控えと
+   * 同じか、別の端末で変えたもっと新しい値。控えを持ち続けると、別の
+   * 端末で変えた設定をこの端末が上書きし続けることになる。
+   *
+   * 既知の穴: 保存より前に始まった取り直しが保存の後に着くと、古い値が
+   * 正になる（次に取り直すまで）。設定画面は開くたびに自分のローダーで
+   * 読むので、そこで食い違いは見える。
+   */
+  const [applied, setApplied] = useState<{
+    base: AppSettings;
+    value: AppSettings;
+  } | null>(null);
+  const settings =
+    applied && applied.base === loaderData.settings
+      ? applied.value
+      : loaderData.settings;
+  /*
+   * 差し替えの手続きは作り直さない。設定画面は保存の返事を待ってから
+   * 呼ぶので、そのあいだにシェルが取り直されていると、送る前に掴んだ
+   * 古い手続き（古いローダーの値を base に持つ）を呼ぶことになり、
+   * 差し替えが黙って無視される。いまのローダーの値は ref で読む。
+   */
+  const loaderSettingsRef = useRef(loaderData.settings);
+  useEffect(() => {
+    loaderSettingsRef.current = loaderData.settings;
+  }, [loaderData.settings]);
+  const applySettings = useCallback((value: AppSettings) => {
+    setApplied({ base: loaderSettingsRef.current, value });
+  }, []);
   // 一覧が持っている更新時刻を先読みキャッシュへ伝える。別の端末で
   // 進んだ会話の、古いスナップショットを見せないため
   noteConversations(conversations);
@@ -323,6 +365,17 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   }, [navigation.state, navigation.location]);
 
   const [sidebarClosing, setSidebarClosing] = useState(false);
+  /**
+   * ドロワーを一度でも開いたか。開いたら、閉じても外さずに画面の外で
+   * 持っておく。
+   *
+   * 以前は閉じるたびに外し、開くたびに一覧（最大200行）を作り直して
+   * いた。作り直しは開くスライド（0.24秒）とぼかしの最中に走るので、
+   * 動きがコマ落ちする。スクロール位置や開いていたフォルダの階層も
+   * 開くたびに先頭へ戻っていた。起動時には作らない（開かないかも
+   * しれないもののために、起動の描画を重くしない）。
+   */
+  const [drawerMounted, setDrawerMounted] = useState(false);
   const closeFallback = useRef<ReturnType<typeof setTimeout> | null>(null);
   /*
    * 閉じている途中か。state と同じものを ref にも持つのは、下の開け閉めの
@@ -364,6 +417,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     closingRef.current = false;
     setSidebarClosing(false);
     setSidebarOpen(true);
+    setDrawerMounted(true);
   }, []);
 
   useEffect(() => {
@@ -564,8 +618,8 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
    * ときだけ作り直す。
    */
   const outletContext = useMemo<ShellContext>(
-    () => ({ models, bots, usdJpy, settings, openSidebar }),
-    [models, bots, usdJpy, settings, openSidebar],
+    () => ({ models, bots, usdJpy, settings, applySettings, openSidebar }),
+    [models, bots, usdJpy, settings, applySettings, openSidebar],
   );
 
   return (
@@ -654,22 +708,45 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       {/* モバイル: ドロワー。高さは fixed inset-0 に任せず、本体と同じ
           --app-height で決める。iOSのスタンドアロン（PWA）では fixed の
           基準がズレることがあり、下部のボタンが浮いて見えていた */}
-      {sidebarOpen && (
+      {/*
+        閉じているあいだも外さない（drawerMounted の説明）。そのあいだは
+        visibility:hidden と inert で、見えない・押せない・フォーカスが
+        入らない・支援技術に読まれない状態にし、パネルは画面の左外へ
+        置く（中の行の先読みの監視が「見えている」と取らないように）。
+        ぼかしと合成レイヤの指定も、開いているあいだだけ付ける。
+
+        iPhone の幅のときだけ置く。広い画面では常設のサイドバーが居て、
+        隠れたドロワーまで ⌘K を受けると見えない検索欄が開く。
+      */}
+      {drawerMounted && narrow && (
         <div
-          className="fixed inset-x-0 top-0 z-30 md:hidden"
+          className={`fixed inset-x-0 top-0 z-30 md:hidden ${
+            sidebarOpen ? "" : "invisible pointer-events-none"
+          }`}
           style={{ height: "var(--app-height, 100dvh)" }}
+          inert={!sidebarOpen}
+          data-testid="drawer"
+          data-open={sidebarOpen ? "true" : "false"}
         >
           <div
-            className={`absolute inset-0 bg-black/40 backdrop-blur-sm [will-change:opacity] ${
-              sidebarClosing ? "animate-fade-out" : "animate-fade"
+            className={`absolute inset-0 ${
+              sidebarOpen
+                ? `bg-black/40 backdrop-blur-sm [will-change:opacity] ${
+                    sidebarClosing ? "animate-fade-out" : "animate-fade"
+                  }`
+                : ""
             }`}
             onClick={closeSidebar}
           />
           {/* 遷移先の描画と重なってもコマ落ちしないよう、
               変形はあらかじめ合成レイヤに載せておく */}
           <div
-            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] shadow-xl will-change-transform ${
-              sidebarClosing ? "animate-drawer-out" : "animate-drawer"
+            className={`absolute inset-y-0 left-0 w-72 max-w-[85vw] ${
+              sidebarOpen
+                ? `shadow-xl will-change-transform ${
+                    sidebarClosing ? "animate-drawer-out" : "animate-drawer"
+                  }`
+                : "-translate-x-full"
             }`}
             onAnimationEnd={(e) => {
               if (sidebarClosing && e.target === e.currentTarget) finishClose();

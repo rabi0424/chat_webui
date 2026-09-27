@@ -38,6 +38,7 @@ function renderSettings(settings: Partial<AppSettings>) {
     bots: [],
     usdJpy: 150,
     settings: { ...DEFAULT_APP_SETTINGS, ...settings },
+    applySettings: () => {},
     openSidebar: () => {},
   };
   const loaderData = {
