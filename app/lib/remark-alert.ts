@@ -7,7 +7,7 @@
  * GFM の仕様には入っていないため remark-gfm では解釈されず、そのままだと
  * ただの引用ブロックに潰れてしまう。モデルはこの記法をよく使うので、
  * ここで種類を取り出して `md-alert md-alert-note` のようなクラスに変換し、
- * 見出しと配色は Markdown.tsx / app.css 側で付ける。
+ * 見出しと配色は MarkdownRenderer.tsx / app.css 側で付ける。
  *
  * 変換は mdast の段階で行い、`hName` / `hProperties` でHTML化のときの
  * タグとクラスだけを指定する（生HTMLを挟まないのでサニタイズと衝突しない）。

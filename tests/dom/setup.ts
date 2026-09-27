@@ -7,7 +7,7 @@
  * 呼ばれても落ちないようにするだけ）。
  */
 import "@testing-library/jest-dom/vitest";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeAll, expect, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 if (!Element.prototype.scrollTo) {
@@ -66,4 +66,26 @@ if (!URL.createObjectURL) {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+});
+
+/*
+ * Markdown の描画の本体はあとから読み込む（app/components/Markdown.tsx）。
+ * 届くまでは記法を解釈しない素の段落が出るので、届く前に文字だけを見る
+ * テストは、**本物の描画を見ないまま通ってしまう**（実際に、囲みの文字が
+ * 描画後にも残るかを見るテストが、素の段落の文字で通っていた）。
+ * どのテストも、本体が届いた状態——以前の静的 import と同じ状態——から
+ * 始める。
+ *
+ * 届く前の振る舞いそのものを見るファイルだけは除く。そちらは読み込み口を
+ * 差し替えて、届くタイミングを自分で決める（先に本物を読むと差し替えが
+ * 効かない）。
+ */
+const LAZY_MARKDOWN_TESTS = ["markdown-lazy.test.tsx"];
+beforeAll(async () => {
+  const path = expect.getState().testPath ?? "";
+  if (LAZY_MARKDOWN_TESTS.some((name) => path.endsWith(name))) return;
+  const { preloadMarkdown } = await import("../../app/components/Markdown");
+  if (!(await preloadMarkdown())) {
+    throw new Error("Markdown の描画の本体を読み込めなかった");
+  }
 });

@@ -227,7 +227,7 @@
 
 /*
  * 生成中の本文。届いたばかりの語だけがふわりと浮かび上がる
- * （Markdown.tsx の rehypeStreamTokens が語ごとに span を付ける）。
+ * （MarkdownRenderer.tsx の rehypeStreamTokens が語ごとに span を付ける）。
  */
 @keyframes stream-token {
   from {

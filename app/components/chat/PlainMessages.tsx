@@ -30,7 +30,7 @@
  */
 import type { UiMessage } from "../../lib/types";
 import { languageSample } from "../../lib/content-language";
-import { proseClassName } from "../Markdown";
+import { proseClassName } from "../markdown-prose";
 
 /**
  * 段落に割る。

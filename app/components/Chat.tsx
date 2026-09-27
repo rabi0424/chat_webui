@@ -84,6 +84,7 @@ import {
   IconSliders,
 } from "./icons";
 import { GLASS_PANEL, scrollBehavior } from "../lib/ui";
+import { useMarkdownReady } from "./Markdown";
 
 /** この会話に適用されるボット設定（会話開始時のスナップショット）。 */
 export interface BotContext {
@@ -389,6 +390,20 @@ export function Chat({
     if (renderStage !== "none" && el && shouldStick(el)) pinToBottom(el);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderStage]);
+  /*
+   * Markdown の本体はあとから届く（components/Markdown.tsx）。届くまでは
+   * 素の段落で出しているので、届いた瞬間に表・コード・数式のぶん本文の
+   * 高さが変わる。最下部に貼り付いていたなら貼り直す——でないと、会話を
+   * 開いた直後に最新の発言の途中で止まって見える。
+   * 呼ぶこと自体が「手が空いたら取りに行く」合図も兼ねる（ホームで最初の
+   * 発言を送る前に届いているように）。
+   */
+  const markdownReady = useMarkdownReady();
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (markdownReady && el && shouldStick(el)) pinToBottom(el);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markdownReady]);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingParamsRef = useRef<{ convId: string; next: ParamsState } | null>(null);
   // ガラス面フッターの高さ（コンテンツ下部の余白に使う）
