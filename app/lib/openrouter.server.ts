@@ -554,11 +554,17 @@ export interface PoePointsHit {
 export async function fetchPoeRecentPoints(
   botName: string,
   sinceMs: number,
+  /**
+   * 照会を打ち切る合図。応答を確定させたあとに走るので、ここで待たされる
+   * あいだ実行体が起きたまま課金される（CLAUDE.md の DO の課金）。
+   */
+  signal?: AbortSignal,
 ): Promise<PoePointsHit | null> {
   if (!env.POE_API_KEY) return null;
   try {
     const res = await fetch(`${POE_USAGE_BASE}/points_history`, {
       headers: { Authorization: `Bearer ${env.POE_API_KEY}` },
+      signal,
     });
     if (!res.ok) return null;
     const body = (await res.json()) as Record<string, unknown>;

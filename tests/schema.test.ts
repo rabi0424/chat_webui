@@ -42,6 +42,7 @@ import {
   clearPendingDeletionsSql,
   markRetryAttemptsProcessedSql,
   recordUsageStatement,
+  reconcileUsageStatements,
   generatedImagesSql,
   MARK_THUMBNAIL_SQL,
   PERF_BUILDS_SQL,
@@ -298,6 +299,123 @@ describe("使用量の台帳", () => {
     expect(totals(200).cost_usd).toBeCloseTo(2);
     expect(totals(400).cost_usd).toBeCloseTo(0);
     expect(totals(200).events).toBe(1);
+  });
+
+  /**
+   * 確定のあとで分かった Poe のポイントを書き足す文。
+   *
+   * 確定を先に済ませるようにしたので（照会を待つと「完了」が数秒遅れる）、
+   * ポイントは確定済みの行と台帳へ**後から**足す。確定の時点で台帳に
+   * 行があるか無いかの両方があり、どちらでも1行に収まらないといけない。
+   */
+  describe("確定のあとでポイントを書き足す", () => {
+    const reconcile = (
+      messageId: string,
+      cost: number | null,
+      points: number,
+      extra: { conversationId?: string; modelId?: string; now?: number } = {},
+    ) => {
+      for (const st of reconcileUsageStatements({
+        eventId: `r-${messageId}`,
+        now: extra.now ?? 2000,
+        messageId,
+        conversationId: extra.conversationId ?? "c1",
+        modelId: extra.modelId ?? "poe:A",
+        kind: "chat",
+        usageJson: JSON.stringify({ points, cost: cost ?? undefined }),
+        cost,
+        points,
+        promptTokens: 11,
+        completionTokens: 22,
+      })) {
+        db.prepare(st.sql).run(...st.binds);
+      }
+    };
+    const ledger = () =>
+      db.prepare("SELECT * FROM usage_events ORDER BY id").all() as Record<
+        string,
+        unknown
+      >[];
+
+    it("確定のときに台帳へ何も積まれていなければ、1行積む", () => {
+      // Poe はふつうこちら（額もポイントも無い記録は確定で積まれない）
+      addMessage("m1", "c1", "poe:A");
+      reconcile("m1", 0.02, 40);
+      expect(ledger()).toMatchObject([
+        {
+          id: "r-m1",
+          at: 2000,
+          kind: "chat",
+          provider: "poe",
+          model_id: "poe:A",
+          cost_usd: 0.02,
+          points: 40,
+          prompt_tokens: 11,
+          completion_tokens: 22,
+          conversation_id: "c1",
+          message_id: "m1",
+        },
+      ]);
+      expect(totals()).toMatchObject({ points: 40, points_without_cost: 0 });
+    });
+
+    it("確定のときに額が積まれていれば、同じ行へポイントを足す", () => {
+      addMessage("m1", "c1", "poe:A");
+      record("e1", "m1", 0.5, null);
+      // 照会で額が取れなかった。確定のときの額は消さない
+      reconcile("m1", null, 30);
+      const rows = ledger();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: "e1", at: 1000, cost_usd: 0.5, points: 30 });
+      expect(totals()).toMatchObject({ events: 1, points_without_cost: 0 });
+    });
+
+    it("照会で額が取れたら、その額に置き換える", () => {
+      addMessage("m1", "c1", "poe:A");
+      record("e1", "m1", 0.5, null);
+      reconcile("m1", 0.03, 30);
+      expect(ledger()).toMatchObject([{ id: "e1", cost_usd: 0.03, points: 30 }]);
+    });
+
+    it("額の取れないポイントは、上限の見積もりに回る", () => {
+      addMessage("m1", "c1", "poe:A");
+      reconcile("m1", null, 30);
+      expect(totals()).toMatchObject({ events: 1, points: 30, points_without_cost: 30 });
+    });
+
+    it("確定から書き足すまでに会話を消されても、台帳には載る", () => {
+      // 消しても使った額は減ってはいけない（messages から写す形だと
+      // 行が無くて1件も積まれない）
+      addMessage("m1", "c1", "poe:A");
+      db.prepare("DELETE FROM messages WHERE id = 'm1'").run();
+      reconcile("m1", 0.02, 40);
+      expect(ledger()).toMatchObject([
+        { message_id: "m1", conversation_id: "c1", model_id: "poe:A", points: 40 },
+      ]);
+    });
+
+    it("応答の usage_json を書き換え、書き込み時刻を進める", () => {
+      addMessage("m1", "c1", "poe:A");
+      db.prepare("UPDATE messages SET usage_json = '{}', flushed_at = 1000 WHERE id = 'm1'").run();
+      reconcile("m1", 0.02, 40, { now: 5000 });
+      const row = db
+        .prepare("SELECT usage_json, flushed_at FROM messages WHERE id = 'm1'")
+        .get() as { usage_json: string; flushed_at: number };
+      expect(JSON.parse(row.usage_json)).toEqual({ points: 40, cost: 0.02 });
+      // パスの指紋は flushed_at を見ている。進めないと 304 のまま
+      expect(row.flushed_at).toBe(5000);
+    });
+
+    it("別の応答の行には触らない", () => {
+      addMessage("m1", "c1", "poe:A");
+      addMessage("m2", "c1", "poe:A");
+      record("e2", "m2", 0.5, null);
+      reconcile("m1", null, 30);
+      expect(ledger()).toMatchObject([
+        { id: "e2", message_id: "m2", cost_usd: 0.5, points: null },
+        { id: "r-m1", message_id: "m1", cost_usd: null, points: 30 },
+      ]);
+    });
   });
 });
 

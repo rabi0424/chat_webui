@@ -34,6 +34,7 @@ import {
   finalizeGeneration,
   flushGeneration,
   getAttachments,
+  reconcileMessageUsage,
   recordStandaloneUsage,
 } from "./db.server";
 import {
@@ -979,8 +980,13 @@ function idleGuardedReader(
 /**
  * SSEを読み切る。
  *
- * onProgress は一定間隔で呼ばれ、true を返すと（停止要求）読み取りを
- * 打ち切る。リトライ生成では途中経過を保存しないので渡さない。
+ * onProgress は本文か思考が伸びた読み取りのたびに呼ばれ、true を返すと
+ * （停止要求）読み取りを打ち切る。**保存の間引きはここではしない。**
+ * 以前はここで間隔を見て呼んでいたが、判定がチャンクの届いたときにしか
+ * 走らないので、上流が黙る（Web検索・ツール待ち）と受け取り済みの本文が
+ * 次のチャンクまで画面に出なかった。いつ書くかは、時計を持てる呼ぶ側
+ * （runSingleGeneration）が決める。リトライ生成では途中経過を保存しない
+ * ので渡さない。
  *
  * signal で外から打ち切れる（総時間の締め切り、停止後の猶予切れ）。
  * 打ち切りは interrupted に理由を残して、ここまでの内容で返す。
@@ -990,7 +996,7 @@ export async function readUpstreamStream(
   onProgress?: (partial: {
     content: string;
     reasoning: string;
-  }) => Promise<boolean>,
+  }) => boolean | Promise<boolean>,
   opts: { idleTimeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<StreamResult> {
   const idleTimeoutMs = opts.idleTimeoutMs ?? UPSTREAM_IDLE_TIMEOUT_MS;
@@ -1008,8 +1014,8 @@ export async function readUpstreamStream(
   const imageUrls: string[] = [];
   const citations: UiCitation[] = [];
   let stopped = false;
-  let lastProgress = Date.now();
-  let flushes = 0;
+  /** 前に onProgress へ渡した長さ。伸びていなければ呼ばない。 */
+  let reported = 0;
 
   try {
     for (;;) {
@@ -1080,9 +1086,10 @@ export async function readUpstreamStream(
         }
       }
 
-      if (onProgress && Date.now() - lastProgress >= flushInterval(flushes)) {
-        lastProgress = Date.now();
-        flushes++;
+      // 「処理中」のコメント行だけの読み取りでは呼ばない（伸びていない
+      // ものを書き直すと、書き込みの回数だけが増える）
+      if (onProgress && content.length + reasoning.length !== reported) {
+        reported = content.length + reasoning.length;
         if (await onProgress({ content, reasoning })) {
           stopped = true;
           try {
@@ -1342,7 +1349,7 @@ export async function readUpstreamResponse(
   onProgress?: (partial: {
     content: string;
     reasoning: string;
-  }) => Promise<boolean>,
+  }) => boolean | Promise<boolean>,
   opts: { idleTimeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<StreamResult> {
   const body = upstream.body;
@@ -1410,7 +1417,7 @@ export async function runSingleGeneration(
   /**
    * 上流が無言のあいだも「生きている」印を打ち直す。
    *
-   * 部分保存は上流からチャンクが届いたときにしか走らないため、最初の
+   * 部分保存は受け取った本文があるときにしか走らないため、最初の
    * トークンまで時間のかかるモデル（長考・画像生成）では flushed_at が
    * 更新されないまま sweepStaleStreaming の中断判定（60秒）に掛かる。
    * そうなると生成はまだ走っているのに行だけ確定してしまい、停止も効かず、
@@ -1421,8 +1428,9 @@ export async function runSingleGeneration(
    * ところが画像のモデルはヘッダを返すまでに何分もかかり（API易の同期
    * Images API は 60〜300 秒）、その間に行が中断で確定して、出来上がった
    * 画像は本文に付かず台帳にも載らなかった（監査 S-1）。ストリームの
-   * あとの Poe の突き合わせと画像の取り込みも同じで、8枚取り込むと
-   * 60秒を越えうる（S-15）。
+   * あとの画像の取り込みも同じで、8枚取り込むと60秒を越えうる（S-15）。
+   * （Poe のポイントの突き合わせは確定のあとへ移したので、ここには
+   * 掛からない。）
    *
    * 印を打つついでに停止要求も拾い、拾ったら上流を切る（abort）。
    * 以前は打ち直しの返り値を捨てていたので、上流が黙っているあいだは
@@ -1435,30 +1443,102 @@ export async function runSingleGeneration(
   /** 停止要求を拾った（上流を切ったのはこちらの都合、という印）。 */
   let stopRequested = false;
   const abort = new AbortController();
+  /**
+   * latest のうち、まだ D1 へ書いていない分があるか。
+   *
+   * latest はチャンクが届くたびに更新し、書くのは間隔を見て別に行う。
+   * 以前は書くときにしか latest を更新していなかったので、15秒ごとの
+   * 生存確認は古い本文を書き直すだけだった。
+   */
+  let pending = false;
+  /** いま走っている書き込み。重ねて投げない（古い本文が後から着くと縮む）。 */
+  let inflight: Promise<boolean> | null = null;
+  /** 間隔で書いた回数（flushInterval の段を進める。生存確認の分は数えない）。 */
+  let flushes = 0;
+  /**
+   * 最後に間隔で書いた時刻。最初は -Infinity で、**最初のトークンは
+   * 待たずに書く**。ストリームを開いた時刻から数えていたときは、
+   * 最初の1文字が届いてから画面に出るまで最大 0.5 秒かかっていた。
+   */
+  let lastFlush = -Infinity;
+  /** 黙っている上流のために、書き残しを後から書く時計。 */
+  let trailing: ReturnType<typeof setTimeout> | undefined;
 
-  const write = async (): Promise<boolean> => {
+  const write = (): Promise<boolean> => {
     lastWrite = Date.now();
-    const { stopRequested: stop, applied } = await flushGeneration(
-      job.assistantMessageId,
-      { content: latest.content, reasoning: latest.reasoning },
-    );
-    // 行が消えた・確定済みなら、読み続けても受け取る先が無い。
-    // 停止と同じに扱って上流を切る（読み続けた分も課金される）
-    if (stop || !applied) {
-      stopRequested = true;
-      abort.abort("停止が要求されました");
-      return true;
-    }
-    return false;
+    pending = false;
+    const snapshot = { content: latest.content, reasoning: latest.reasoning };
+    const run = (async () => {
+      const { stopRequested: stop, applied } = await flushGeneration(
+        job.assistantMessageId,
+        snapshot,
+      );
+      // 行が消えた・確定済みなら、読み続けても受け取る先が無い。
+      // 停止と同じに扱って上流を切る（読み続けた分も課金される）
+      if (stop || !applied) {
+        stopRequested = true;
+        abort.abort("停止が要求されました");
+        return true;
+      }
+      return false;
+    })();
+    inflight = run;
+    const settle = () => {
+      if (inflight === run) inflight = null;
+      // 書いているあいだに届いた分を、次の間隔で書く
+      scheduleFlush();
+    };
+    run.then(settle, settle);
+    return run;
   };
 
+  /**
+   * 書き残しがあれば、間隔（flushInterval）が明けしだい書く。
+   *
+   * 判定をチャンクの到着だけに任せると、上流が黙っているあいだ
+   * （Web検索・ツール待ち）受け取り済みの本文が次のチャンクまで——
+   * 最長で生存確認の15秒まで——画面に出ない。間隔が明ける時刻に時計を
+   * 置き、黙っていてもそこで書く。
+   *
+   * 書く回数は以前と変わらない。k 回目を書けるのは k-1 回目から
+   * flushInterval(k-1) 経ってからで、この間隔の段がそのまま総回数の
+   * 上限になる（flush-cadence.ts）。時計は「書くのを遅らせたとき」に
+   * 置くだけなので、回数を増やさない。増えるのは最初の1回を待たずに
+   * 書くぶんの1回だけ。
+   */
+  function scheduleFlush(): void {
+    if (!pending || jobDone || stopRequested || trailing || inflight) return;
+    const wait = lastFlush + flushInterval(flushes) - Date.now();
+    if (wait > 0) {
+      trailing = setTimeout(() => {
+        trailing = undefined;
+        scheduleFlush();
+      }, wait);
+      return;
+    }
+    flushes++;
+    lastFlush = Date.now();
+    // 途中経過の保存の失敗は致命的ではない（生存確認と同じ）。次の回か
+    // 確定で拾う。以前はここで投げて読み取りごと「途中で切れた」扱いに
+    // なっていたが、上流は生きているので読み続けたほうが残るものが多い
+    write().catch((e: unknown) => {
+      console.error("[gen] 途中経過の保存に失敗しました", e);
+    });
+  }
+
+  /*
+   * 印を打つ時点では、latest はもう最後に届いた本文になっている。
+   * 生存確認の書き込みも、書き残しをそのまま運ぶ。
+   */
   const heartbeat = (async () => {
     while (!jobDone && Date.now() - startedAt < MAX_HEARTBEAT_MS) {
       const nap = cancellableSleep(clock.heartbeatMs);
       wakeHeartbeat = nap.cancel;
       await nap.promise;
-      // 直前にチャンクが届いて保存済みなら、打ち直す必要はない
-      if (jobDone || Date.now() - lastWrite < clock.heartbeatMs) continue;
+      // 直前に保存済み（または保存中）なら、打ち直す必要はない
+      if (jobDone || inflight || Date.now() - lastWrite < clock.heartbeatMs) {
+        continue;
+      }
       try {
         await write();
       } catch {
@@ -1473,12 +1553,19 @@ export async function runSingleGeneration(
       ),
     clock.deadlineMs,
   );
-  /** 印を止めて、打ちかけの1回が終わるのを待つ（確定と重ねない）。 */
+  /**
+   * 印と途中経過の保存を止めて、書きかけの1回が終わるのを待つ
+   * （確定と重ねない。確定のあとに途中経過が着いても status 条件で
+   * 当たらないが、確定より前に着く古い本文と競わせる理由も無い）。
+   */
   const settleHeartbeat = async () => {
     jobDone = true;
     clearTimeout(deadline);
+    clearTimeout(trailing);
+    trailing = undefined;
     wakeHeartbeat();
     await heartbeat;
+    await inflight?.catch(() => {});
   };
 
   let upstream: Response;
@@ -1524,12 +1611,16 @@ export async function runSingleGeneration(
 
   const result = await readUpstreamResponse(
     upstream,
-    async (partial) => {
+    (partial) => {
+      // 書くのはここではない。手元の最新だけを更新し、いつ書くかは
+      // scheduleFlush が間隔を見て決める（書き込みを待たずに読み進める）
       latest = {
         content: partial.content,
         reasoning: partial.reasoning || null,
       };
-      return await write();
+      pending = true;
+      scheduleFlush();
+      return stopRequested;
     },
     { idleTimeoutMs: imageTimeoutMs, signal: abort.signal },
   );
@@ -1541,27 +1632,6 @@ export async function runSingleGeneration(
   }
   latest = { content: result.content, reasoning: result.reasoning || null };
   let usageJson = result.usageJson;
-
-  // Poe: ポイント消費はレスポンスに載らないため、Usage APIの履歴を
-  // 突き合わせて usage に合流させる（履歴への反映が遅れることがあるので
-  // 少し待ちながら数回試す。見つからなければ諦めて確定する）
-  if (isPoe && result.content !== "") {
-    for (const delay of [1200, 2500]) {
-      await new Promise((r) => setTimeout(r, delay));
-      const hit = await fetchPoeRecentPoints(modelName, startedAt);
-      if (hit) {
-        const base = usageJson
-          ? (JSON.parse(usageJson) as Record<string, unknown>)
-          : {};
-        usageJson = JSON.stringify({
-          ...base,
-          points: hit.points,
-          cost: hit.costUsd ?? base.cost,
-        });
-        break;
-      }
-    }
-  }
 
   // API易: 額は応答に載らない。価格表から見積もって台帳へ載せる
   // （足さないと cost も points も無い記録として丸ごと捨てられ、
@@ -1591,7 +1661,7 @@ export async function runSingleGeneration(
   const empty = finalContent === "";
 
   await settleHeartbeat();
-  await finalizeGeneration(job.assistantMessageId, {
+  const finalized = await finalizeGeneration(job.assistantMessageId, {
     // 途中で切れた応答は、完結したものと見分けが付かないまま残すと
     // 利用者がそのまま次の話へ進んでしまう。本文に注記を足しておく
     content:
@@ -1613,6 +1683,92 @@ export async function runSingleGeneration(
             }`
       : null,
   });
+
+  // Poe: ポイント消費はレスポンスに載らない。確定を**済ませてから**
+  // Usage API の履歴を突き合わせ、分かったら後から書き足す
+  // （reconcilePoePoints の注記）。確定が当たらなかった（別の経路が
+  // 先に確定させた）ときは、台帳もそちらの扱いに任せる——以前も
+  // その場合は何も載らなかった
+  if (finalized && isPoe && result.content !== "") {
+    await reconcilePoePoints(job, modelName, startedAt, usageJson, budget);
+  }
+}
+
+/**
+ * Usage API の履歴に反映されるのを待つ間隔（照会の前に待つ時間）。
+ * 反映は数秒遅れることがあるので、少し待ちながら数回試す。
+ */
+export const POE_POINTS_RETRY_DELAYS_MS = [1200, 2500];
+/**
+ * 1回の照会に許す時間。
+ *
+ * ここは確定のあと、利用者がもう次を始めているところで走る。上流が
+ * 返事をしないと、アラームの壁（15分）まで実行体が起きたまま課金される
+ * （CLAUDE.md の DO の課金）。待っても得られるのは表示用のポイントだけ。
+ */
+const POE_POINTS_LOOKUP_TIMEOUT_MS = 5_000;
+
+/**
+ * Poe の消費ポイントを突き合わせ、確定済みの応答と台帳へ書き足す。
+ *
+ * **確定の前に待たない。**以前はこれを待ってから確定していたので、
+ * 最後の数文字と「完了」が 1.3〜4 秒遅れて届き、そのあいだ次の
+ * メッセージを送れなかった（送信は生成中のあいだ止めている）。
+ *
+ * 見つからない・書き足しに失敗したときは、確定の時点で載せたもの
+ * （Poe ではふつう何も無い）のまま残る。以前「見つからずに諦めて
+ * 確定した」ときと同じ結果で、月間上限の判定もそれで動く。
+ *
+ * 外部の枠: 照会は枠に数える。以前は画像の取り込みより前に走っていて
+ * 数えていなかった。取り込みは CHUNK_EXTERNAL_LIMIT（44）の手前で止まり、
+ * 最後の1枚がリダイレクトを辿っても 47 件。ここの2件を足して 49 件で、
+ * 50 件の上限に収まる（並べ替えただけで、1回の実行で出す件数は同じ）。
+ */
+async function reconcilePoePoints(
+  job: GenerationJob,
+  modelName: string,
+  startedAt: number,
+  usageJson: string | null,
+  budget: ExternalBudget,
+): Promise<void> {
+  for (const delay of POE_POINTS_RETRY_DELAYS_MS) {
+    await new Promise((r) => setTimeout(r, delay));
+    budget.spend();
+    const hit = await fetchPoeRecentPoints(
+      modelName,
+      startedAt,
+      AbortSignal.timeout(POE_POINTS_LOOKUP_TIMEOUT_MS),
+    );
+    if (!hit) continue;
+    let base: Record<string, unknown> = {};
+    try {
+      base = usageJson ? (JSON.parse(usageJson) as Record<string, unknown>) : {};
+    } catch {
+      // 壊れた usage_json は無いものとして、ポイントだけで組み直す
+    }
+    const num = (v: unknown): number | null => {
+      const n = Number(v);
+      return v != null && Number.isFinite(n) ? n : null;
+    };
+    const cost = hit.costUsd ?? num(base.cost);
+    try {
+      await reconcileMessageUsage({
+        messageId: job.assistantMessageId,
+        conversationId: job.conversationId,
+        modelId: job.model,
+        usageJson: JSON.stringify({ ...base, points: hit.points, cost: cost ?? undefined }),
+        cost,
+        points: hit.points,
+        promptTokens: num(base.promptTokens),
+        completionTokens: num(base.completionTokens),
+      });
+    } catch (e) {
+      // 応答はもう確定している。ここで投げると呼び出し側（アラーム）の
+      // 失敗の扱いに落ちるだけで、得るものが無い。黙りはしない
+      console.error("[usage] Poe のポイントを書き足せませんでした", e);
+    }
+    return;
+  }
 }
 
 // --- 成功するまで生成する（リトライ生成） ---------------------------------

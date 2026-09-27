@@ -67,6 +67,7 @@ import {
   stillReferencedSql,
   undoGenerationStatements,
   recordUsageStatement,
+  reconcileUsageStatements,
   MARK_THUMBNAIL_SQL,
   PERF_BUILDS_SQL,
   PERF_BUILD_TOUCH_SQL,
@@ -2019,6 +2020,34 @@ export async function finalizeGeneration(
     }
   }
   return changed;
+}
+
+/**
+ * 確定したあとで分かった消費を、応答と台帳へ書き足す（Poe のポイント）。
+ *
+ * 2文を1回の batch で流す（サブリクエスト1件）。文の中身と、なぜ
+ * upsert なのかは reconcileUsageStatements の注記にある。
+ */
+export async function reconcileMessageUsage(params: {
+  messageId: string;
+  conversationId: string;
+  modelId: string;
+  kind?: UsageKind;
+  usageJson: string;
+  cost: number | null;
+  points: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+}): Promise<void> {
+  const d = await db();
+  await d.batch(
+    reconcileUsageStatements({
+      ...params,
+      eventId: crypto.randomUUID(),
+      now: Date.now(),
+      kind: params.kind ?? "chat",
+    }).map((st) => d.prepare(st.sql).bind(...st.binds)),
+  );
 }
 
 /**

@@ -73,6 +73,73 @@ export function recordUsageStatement(params: {
 }
 
 /**
+ * 確定した**あとで**分かった消費を、応答と台帳へ書き足す文（Poe のポイント）。
+ *
+ * Poe は応答に額もポイントも載らず、Usage API の履歴に反映されるまで
+ * 数秒かかる。以前はそれを待ってから確定していたので、最後の数文字と
+ * 「完了」が 1.3〜4 秒遅れて届き、そのあいだ次のメッセージも送れなかった。
+ * 確定を先に済ませ、分かった消費はこの文で後から足す。
+ *
+ * 台帳は**上書きではなく upsert**。確定の時点で額が載っていれば
+ * （finalizeGeneration が既に1行積んでいる）、そこへポイントを足す。
+ * 載っていなければ（Poe ではふつうこちら。額もポイントも無い記録は
+ * 積まれない）新しく1行積む。message_id の一意索引は部分索引なので、
+ * 衝突の対象にも同じ WHERE を書く——書かないと SQLite は索引を
+ * 衝突の対象として認めない。
+ *
+ * 行の中身（モデル・会話）は messages から写さず、呼ぶ側が渡す。
+ * 確定から数秒のあいだに会話が消されると、messages から写す形では
+ * 1行も積まれない——**消しても使った額は減ってはいけない**（要件 §3.6）。
+ *
+ * 応答の行は flushed_at も進める。パスの指紋（pathFingerprint）が
+ * これを見ており、進めないと「変わっていない」と 304 を返してしまう。
+ */
+export function reconcileUsageStatements(params: {
+  /** 台帳に新しく積むときの行 ID。既にあれば使われない。 */
+  eventId: string;
+  now: number;
+  messageId: string;
+  conversationId: string;
+  modelId: string;
+  kind: string;
+  /** 突き合わせたあとの usage_json（応答の詳細表示に使う）。 */
+  usageJson: string;
+  cost: number | null;
+  points: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+}): Statement[] {
+  return [
+    {
+      sql: "UPDATE messages SET usage_json = ?, flushed_at = ? WHERE id = ?",
+      binds: [params.usageJson, params.now, params.messageId],
+    },
+    {
+      sql: `INSERT INTO usage_events
+         (id, at, kind, provider, model_id, cost_usd, points,
+          prompt_tokens, completion_tokens, conversation_id, message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(message_id) WHERE message_id IS NOT NULL DO UPDATE SET
+         points = excluded.points,
+         cost_usd = COALESCE(excluded.cost_usd, usage_events.cost_usd)`,
+      binds: [
+        params.eventId,
+        params.now,
+        params.kind,
+        providerOf(params.modelId),
+        params.modelId,
+        params.cost,
+        params.points,
+        params.promptTokens,
+        params.completionTokens,
+        params.conversationId,
+        params.messageId,
+      ],
+    },
+  ];
+}
+
+/**
  * バージョン管理付きのランタイムマイグレーション。配列に追記していく。
  * 適用済みバージョンは meta テーブルに記録される。
  */
