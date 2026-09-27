@@ -81,6 +81,17 @@ function terminalStatus(status: number): boolean {
   return status >= 400 && status < 500;
 }
 
+/**
+ * JSON として同じ中身か。サーバーから届く値（使用量・出典）は毎回
+ * 新しい物として組み立てられるので、同一性では比べられない。
+ * キーの順が違う（別の口から届いた）と「変わった」と見なすが、
+ * そのときは描き直しが1回増えるだけで、表示が古いまま残ることはない。
+ */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /** 中断されたらすぐ起きる待ち。画面を離れた直後に空回りしない。 */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -347,9 +358,8 @@ export function useGenerationTracking({
       const at = prev.findIndex((m) => m.id === messageId);
       // 表示から外れている（別の枝を見ている）なら何もしない
       if (at < 0) return prev;
-      const next = [...prev];
-      const target = next[at];
-      next[at] = {
+      const target = prev[at];
+      const updated: UiMessage = {
         ...target,
         content: remote.content,
         reasoning: remote.reasoning ?? undefined,
@@ -358,6 +368,25 @@ export function useGenerationTracking({
         usage: remote.usage ?? target.usage,
         citations: remote.citations ?? target.citations,
       };
+      /*
+       * 何も変わっていなければ、並びも行も元のものを返す。ポーリングは
+       * 0.4秒ごとに走り、上流が考えているあいだ（本文が伸びない間）も
+       * 同じ中身が届き続ける。そのたびに新しい並びを作ると、Chat から
+       * 会話の全吹き出しまで描き直すことになっていた（長い会話ほど重い）。
+       * usage と citations は届くたびに別の物になるので、中身で比べる。
+       */
+      if (
+        updated.content === target.content &&
+        updated.reasoning === target.reasoning &&
+        updated.status === target.status &&
+        updated.error === target.error &&
+        sameJson(updated.usage, target.usage) &&
+        sameJson(updated.citations, target.citations)
+      ) {
+        return prev;
+      }
+      const next = [...prev];
+      next[at] = updated;
       return next;
     });
   }

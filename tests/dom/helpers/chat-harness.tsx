@@ -8,8 +8,15 @@
  * 差し替えるのは通信だけで、Chat 自身のロジック（楽観表示・IDの
  * 貼り付け・追跡・分岐の組み立て）は本物をそのまま動かす。
  */
+import { useMemo, useState } from "react";
 import { createRoutesStub, Outlet } from "react-router";
-import { render, screen, within, type RenderResult } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  within,
+  type RenderResult,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Chat, type BotContext } from "../../../app/components/Chat";
 import type { BotRow } from "../../../app/lib/db.server";
@@ -292,25 +299,40 @@ export function renderChat(props: {
   initialParams?: ParamsState | null;
   /** アプリ設定の上書き（取り込みの上限など）。 */
   settings?: Partial<AppSettings>;
-}): RenderResult & { user: ReturnType<typeof userEvent.setup> } {
-  const shell = {
+}): RenderResult & {
+  user: ReturnType<typeof userEvent.setup>;
+  /**
+   * シェルのボット一覧を差し替える（サイドバーの読み込み直しの再現）。
+   * 本物のシェルでは、読み込み直すたびに中身が同じでも別の配列になる。
+   */
+  setBots: (bots: BotRow[]) => void;
+} {
+  const base = {
     models: props.models ?? [TEST_MODEL],
-    bots: props.bots ?? [],
     usdJpy: 150,
     settings: { ...DEFAULT_APP_SETTINGS, ...props.settings },
     openSidebar: () => {},
   };
+  let setBots: (bots: BotRow[]) => void = () => {
+    throw new Error("シェルがまだ描かれていません");
+  };
+  function Shell() {
+    const [bots, set] = useState<BotRow[]>(props.bots ?? []);
+    setBots = set;
+    const shell = useMemo(() => ({ ...base, bots }), [bots]);
+    return (
+      <ConfirmProvider>
+        <Outlet context={shell} />
+      </ConfirmProvider>
+    );
+  }
 
   const Stub = createRoutesStub([
     {
       path: "/",
       // シェル役。Chat は useOutletContext でここの値を受け取る。
       // 確認のダイアログもシェルが持つ
-      Component: () => (
-        <ConfirmProvider>
-          <Outlet context={shell} />
-        </ConfirmProvider>
-      ),
+      Component: Shell,
       children: [
         {
           /*
@@ -343,5 +365,13 @@ export function renderChat(props: {
   ]);
 
   const result = render(<Stub initialEntries={["/"]} />);
-  return { ...result, user: userEvent.setup() };
+  return {
+    ...result,
+    user: userEvent.setup(),
+    setBots: (bots) => {
+      act(() => {
+        setBots(bots);
+      });
+    },
+  };
 }
