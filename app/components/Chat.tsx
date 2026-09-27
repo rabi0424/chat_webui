@@ -66,6 +66,7 @@ import { Composer } from "./chat/Composer";
 import { LiveRegion } from "./chat/LiveRegion";
 import { SelectionBar } from "./chat/SelectionBar";
 import { type MessageActions } from "./chat/message-context";
+import { useStableCallback } from "./chat/use-stable-callback";
 import { formatJpy } from "./chat/message-parts";
 import { useEscapeToClose } from "../lib/dismiss";
 import { useConfirm } from "./ConfirmDialog";
@@ -1257,10 +1258,16 @@ export function Chat({
    * モデルを入れてあるので、ここが今の選択に落ちるのは modelId を持たない
    * 古い行だけ（生成中に選択を変えても、走っている応答の見た目は動かない）。
    */
-  const isImageGeneration = (modelId: string | undefined) =>
-    models
-      .find((mm) => mm.id === (modelId ?? model))
-      ?.outputModalities.includes("image") ?? false;
+  // 描画中に呼ばれ、戻り値で見た目が変わるので useStableCallback では
+  // 包まない（同一性が変わらないと、モデル一覧が変わっても吹き出しが
+  // 描き直されない）。元にしている値で作り直す
+  const isImageGeneration = useCallback(
+    (modelId: string | undefined) =>
+      models
+        .find((mm) => mm.id === (modelId ?? model))
+        ?.outputModalities.includes("image") ?? false,
+    [models, model],
+  );
 
   /** 画像入力に対応したモデルか。Poeも supports_images を返すので同じ扱い。 */
   const supportsImages =
@@ -2143,29 +2150,69 @@ export function Chat({
     }
   }
 
+  /*
+   * 一覧（MessageList）へ渡す関数は同一性を保つ。一覧は memo されて
+   * いて、ここが描画のたびに新しい関数を渡すと毎回「変わった」ことに
+   * なる。以前はそうしていて、⚙パネルを開く・値を1つ変えるだけでも
+   * 会話の全吹き出しを描き直し、長い会話ではパネルの操作がもっさり
+   * していた。中身は呼ばれた時点の最新の描画のものが走る。
+   */
+  const stableToggleSelect = useStableCallback(toggleSelect);
+  const stableSwitchBranch = useStableCallback(
+    (id: string) => void switchBranch(id),
+  );
+  const stableFork = useStableCallback((id: string) => void fork(id));
+  const stableRegenerate = useStableCallback(() => regenerate());
+  const stableAttachGenerated = useStableCallback(attachGeneratedImages);
+  const stableFollowBottom = useStableCallback(followBottom);
+  const onSubmitEdit = useStableCallback(() => submitEdit());
+  const onSaveEdit = useStableCallback(() => void saveEdit());
+  const onAddEditFiles = useStableCallback(
+    (files: File[]) => void addEditFiles(files),
+  );
+  const onGenerateFromLast = useStableCallback(() => generateFromLast());
+  const stableOnScroll = useStableCallback(onScroll);
   /**
    * 吹き出しに配る操作一式。
    *
-   * Sidebar と同じく毎回作り直す。中の関数は描画のたびに新しくなるので
-   * 覚えても同一にはならず、吹き出しは親と一緒に描き直される側だから。
+   * 値が変わったときだけ作り直す。毎回作り直すと文脈（MessageProvider）の
+   * 値が変わり、一覧を memo しても全吹き出しが描き直される。
    */
-  const messageActions: MessageActions = {
-    isStreaming,
-    selecting,
-    toggleSelect,
-    startSelect: (id) => setSelecting(new Set([id])),
-    lastIndex: messages.length - 1,
-    isImageGeneration,
-    usdJpy,
-    bots,
-    models,
-    switchBranch: (id) => void switchBranch(id),
-    fork: (id) => void fork(id),
-    regenerate: () => regenerate(),
-    openImage: setLightbox,
-    attachGeneratedImages,
-    followBottom,
-  };
+  const lastIndex = messages.length - 1;
+  const messageActions = useMemo<MessageActions>(
+    () => ({
+      isStreaming,
+      selecting,
+      toggleSelect: stableToggleSelect,
+      startSelect: (id) => setSelecting(new Set([id])),
+      lastIndex,
+      isImageGeneration,
+      usdJpy,
+      bots,
+      models,
+      switchBranch: stableSwitchBranch,
+      fork: stableFork,
+      regenerate: stableRegenerate,
+      openImage: setLightbox,
+      attachGeneratedImages: stableAttachGenerated,
+      followBottom: stableFollowBottom,
+    }),
+    [
+      isStreaming,
+      selecting,
+      stableToggleSelect,
+      lastIndex,
+      isImageGeneration,
+      usdJpy,
+      bots,
+      models,
+      stableSwitchBranch,
+      stableFork,
+      stableRegenerate,
+      stableAttachGenerated,
+      stableFollowBottom,
+    ],
+  );
 
   // 重ねて出しているものは Escape で閉じる。内側から順に1枚ずつ
   const closeParams = useCallback(() => setParamsOpen(false), []);
@@ -2394,17 +2441,17 @@ export function Chat({
         actions={messageActions}
         editing={editing}
         setEditing={setEditing}
-        onSubmitEdit={() => submitEdit()}
-        onSaveEdit={() => void saveEdit()}
-        onAddEditFiles={(files) => void addEditFiles(files)}
+        onSubmitEdit={onSubmitEdit}
+        onSaveEdit={onSaveEdit}
+        onAddEditFiles={onAddEditFiles}
         editFileInputRef={editFileInputRef}
         error={error}
-        onRegenerate={() => regenerate()}
-        onGenerateFromLast={() => generateFromLast()}
+        onRegenerate={stableRegenerate}
+        onGenerateFromLast={onGenerateFromLast}
         emptyState={emptyState}
         scrollRef={scrollRef}
         feedRef={feedRef}
-        onScroll={onScroll}
+        onScroll={stableOnScroll}
         footerHeight={footerHeight}
       />
 

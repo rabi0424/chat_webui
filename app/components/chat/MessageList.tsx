@@ -8,7 +8,7 @@
  * （footerHeight）。固定値にすると、入力欄が複数行に伸びたときに
  * 最後のメッセージが隠れる。
  */
-import { Fragment, type ReactNode, type RefObject, type Dispatch, type SetStateAction } from "react";
+import { Fragment, memo, type ReactNode, type RefObject, type Dispatch, type SetStateAction } from "react";
 import { EmptyState } from "../EmptyState";
 import { IconChatBubble } from "../icons";
 import type { UiMessage } from "../../lib/types";
@@ -31,7 +31,12 @@ import { IconArrowTurnDownLeft } from "../icons";
  */
 export const BOUNDARY_SELECT_PREFIX = "boundary:";
 
-export function MessageList({
+/*
+ * memo で包む。Chat は ⚙パネルの開け閉め・入力欄の1文字ごとにも描き直され、
+ * そのたびに会話の全吹き出しまで描き直していた（長い会話ではパネルの操作が
+ * もっさりしていた）。props はすべて Chat 側で同一性を保って渡している。
+ */
+export const MessageList = memo(function MessageList({
   messages,
   visibleMessages,
   hiddenCount,
@@ -221,4 +226,4 @@ export function MessageList({
       </div>
     </div>
   );
-}
+});
