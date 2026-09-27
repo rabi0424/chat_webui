@@ -9,7 +9,7 @@
  * 貼り付け・追跡・分岐の組み立て）は本物をそのまま動かす。
  */
 import { useMemo, useState } from "react";
-import { createRoutesStub, Outlet } from "react-router";
+import { createRoutesStub, Outlet, useOutletContext } from "react-router";
 import {
   act,
   render,
@@ -317,6 +317,11 @@ export function renderChat(props: {
   bots?: BotRow[];
   /** この会話の担当ボット（ホームで選んだ／会話に記録されているもの）。 */
   bot?: BotContext | null;
+  /**
+   * ボットの選択を外す（チップの ×）。本物のホームと同じく、描くたびに
+   * 新しい関数を渡す。
+   */
+  onClearBot?: () => void;
   initialModel?: string | null;
   systemPrompt?: string | null;
   /** この会話に保存されている生成パラメータ。 */
@@ -369,7 +374,11 @@ export function renderChat(props: {
         },
         {
           index: true,
-          Component: () => (
+          // 本物のホーム（routes/home.tsx）と同じくシェルの値を読み、
+          // シェルが読み込み直すたびに描き直される形にする
+          Component: function ChatRoute() {
+            useOutletContext();
+            return (
             <Chat
               conversationId={
                 props.conversationId === undefined
@@ -378,11 +387,15 @@ export function renderChat(props: {
               }
               initialMessages={props.initialMessages ?? []}
               bot={props.bot ?? null}
+              onClearBot={
+                props.onClearBot ? () => props.onClearBot?.() : undefined
+              }
               initialModel={props.initialModel ?? null}
               initialParams={props.initialParams ?? null}
               systemPrompt={props.systemPrompt ?? null}
             />
-          ),
+            );
+          },
         },
       ],
     },

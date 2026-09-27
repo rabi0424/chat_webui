@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useShortcut } from "../lib/use-shortcut";
+import { useStableCallback } from "./chat/use-stable-callback";
 import { createPortal } from "react-dom";
 import type { ModelInfo } from "../lib/openrouter.server";
 import { useEscapeToClose } from "../lib/dismiss";
@@ -75,21 +84,31 @@ export function shortModelName(m: ModelInfo | undefined, fallback: string): stri
   return i > 0 ? name.slice(i + 2) : name;
 }
 
-/** 一覧の1行。よく使う節と一覧本体で同じ見た目を使う。 */
-function ModelRow({
+/**
+ * 一覧の1行。よく使う節と一覧本体で同じ見た目を使う。
+ *
+ * memo で包む。一覧は数百行あり、開いているあいだに親（会話画面）が
+ * 生成の追いかけや未読の確認で描き直されるたびに全行を描き直すと、
+ * それだけで数十 ms かかっていた。行の props は同一性の変わらない
+ * モデルの行・真偽値・安定した onSelect だけにしてある。
+ */
+const ModelRow = memo(function ModelRow({
   model: m,
+  index,
   selected,
   isNew,
   onSelect,
 }: {
   model: ModelInfo;
+  /** 一覧本体での位置（よく使う節の複製には付けない）。Tab で辿ったとき足すのに使う。 */
+  index?: number;
   selected: boolean;
   /** 公開されたばかり。左端のバーで目立たせる。 */
   isNew: boolean;
   onSelect: (id: string) => void;
 }) {
   return (
-    <li>
+    <li data-index={index}>
       <button
         type="button"
         onClick={() => onSelect(m.id)}
@@ -158,6 +177,159 @@ function ModelRow({
       </button>
     </li>
   );
+});
+
+/**
+ * 一覧を最初に何行まで描くか、スクロールで何行ずつ足すか。
+ *
+ * 一覧は400行を超える。全部を一度に描くと、開くだけで（jsdom で）
+ * 数百 ms、検索の1打ごとにも数十 ms かかっていた。パネルに一度に
+ * 見えるのは十数行なので、最初は見える分に余裕を持たせた数だけ描き、
+ * 底に近づいたら足す。行の高さが揃っていない（新着の印・価格の行の
+ * 有無）ので、位置を計算する仮想化ではなく「足していく」形にした——
+ * 描いた行はそのまま残るので、スクロール位置も Tab の順も崩れない。
+ */
+export const MODEL_LIST_PAGE = 60;
+/** 底からこれだけ（px）手前まで来たら次を足す。数行ぶん。 */
+const EXTEND_MARGIN_PX = 400;
+
+/**
+ * パネルの中の一覧。開いているあいだだけ存在する。
+ *
+ * 本体から分けてあるのは、開くたびに作り直して「何行まで描いたか」を
+ * 開くたびに最初へ戻すため。この部品そのものは memo しない——本体が
+ * 描き直されるたびにここも走るが、行は memo されていて props も
+ * 変わらないので、描き直すのは行の要素を並べる分だけで済む
+ * （重ねて減るのは親の描き直し1回あたり1ms ほど。画面の振る舞いに
+ * 差が出ないのでテストで見張れず、見張れない仕掛けは増やさない）。
+ */
+function ModelList({
+  filtered,
+  recent,
+  value,
+  newModelIds,
+  onSelect,
+  onTouchMove,
+}: {
+  filtered: ModelInfo[];
+  recent: ModelInfo[];
+  value: string;
+  newModelIds: Set<string>;
+  onSelect: (id: string) => void;
+  onTouchMove: () => void;
+}) {
+  /*
+   * 何行まで描くか。絞り込みが変わったら最初の数に戻す——素直に
+   * useEffect で戻すと、一度「前の数のまま新しい結果を全部描く」
+   * 描画が挟まり、減らしたかった手間がそのまま出る。描画中に
+   * 前の結果と比べて決める（React の推奨する形）。
+   */
+  const [shown, setShown] = useState({ list: filtered, count: MODEL_LIST_PAGE });
+  const count = shown.list === filtered ? shown.count : MODEL_LIST_PAGE;
+  const more = count < filtered.length;
+  const extend = useCallback(
+    () =>
+      setShown((s) => ({
+        list: filtered,
+        count: (s.list === filtered ? s.count : MODEL_LIST_PAGE) + MODEL_LIST_PAGE,
+      })),
+    [filtered],
+  );
+
+  return (
+    /* min-h-0: これが無いとflex子はコンテンツ高さより縮めず、
+       一覧自体がスクロール不能になってタッチが背面へ抜ける。
+       onTouchMove: 検索中に一覧をスクロールし始めたら
+       キーボードを閉じる（スクロールがパンに取られるのを防ぐ） */
+    <ul
+      className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1"
+      onTouchMove={onTouchMove}
+      onScroll={
+        more
+          ? (e) => {
+              const el = e.currentTarget;
+              if (
+                el.scrollTop + el.clientHeight >=
+                el.scrollHeight - EXTEND_MARGIN_PX
+              ) {
+                extend();
+              }
+            }
+          : undefined
+      }
+      /*
+       * Tab で下へ辿っていったときも足す。フォーカスが移ればブラウザが
+       * 一覧をスクロールするので scroll でも拾えるが、スクロールが
+       * 起きない高さ（パネルが大きい画面）では届かないため、描いた末尾の
+       * 数行に入ったところで先に足しておく。
+       */
+      onFocus={
+        more
+          ? (e) => {
+              const index = Number(
+                (e.target as HTMLElement).closest<HTMLElement>("[data-index]")
+                  ?.dataset.index,
+              );
+              if (Number.isFinite(index) && index >= count - 5) extend();
+            }
+          : undefined
+      }
+    >
+      {filtered.length === 0 && (
+        <li className="px-3 py-4 text-center text-sm text-neutral-400">
+          該当するモデルがありません
+        </li>
+      )}
+      {/*
+        よく使うモデルの節。検索中は出さない（打ち込んだ語に対する
+        並びが一定になるほうが探しやすいため）。一覧本体からは
+        除かず、上に複製して置くだけにする。
+      */}
+      {recent.length > 0 && (
+        <>
+          <li className="px-3 pb-1 pt-2 text-[11px] font-medium text-ink-3">
+            最近よく使うモデル
+          </li>
+          {recent.map((m) => (
+            <ModelRow
+              key={`recent-${m.id}`}
+              model={m}
+              selected={m.id === value}
+              isNew={newModelIds.has(m.id)}
+              onSelect={onSelect}
+            />
+          ))}
+          <li role="separator" className="mx-3 my-1 border-t border-line" />
+        </>
+      )}
+      {filtered.slice(0, count).map((m, i) => (
+        <ModelRow
+          key={m.id}
+          index={i}
+          model={m}
+          selected={m.id === value}
+          isNew={newModelIds.has(m.id)}
+          onSelect={onSelect}
+        />
+      ))}
+      {more && (
+        /*
+         * まだ描いていない行があることを示す。スクロールで足されるので
+         * ふだんは一瞬しか見えないが、読み上げでは件数が分かるように
+         * しておく（押しても足せる）。
+         */
+        <li>
+          <button
+            type="button"
+            onClick={extend}
+            className="w-full rounded-lg px-3 py-2 text-center text-xs text-ink-3 hover:bg-hover"
+          >
+            さらに表示（残り {filtered.length - count} 件）
+          </button>
+        </li>
+      )}
+    </ul>
+  );
 }
 
 /**
@@ -179,7 +351,14 @@ function measurePanel(container: HTMLElement | null): PanelPlacement {
   );
 }
 
-export function ModelPicker({
+/**
+ * memo で包む。会話画面は生成の追いかけ・未読の確認・入力のたびに
+ * 描き直されるが、この部品の props（一覧・値・安定した関数）は
+ * そのあいだ変わらない。呼ぶ側は onChange と leading の同一性を
+ * 保つこと（Chat では useStableCallback と useMemo）。保てていなくても
+ * 一覧の行は行ごとの memo で守られ、描き直すのはボタンだけで済む。
+ */
+export const ModelPicker = memo(function ModelPicker({
   models,
   value,
   newModelDays,
@@ -236,11 +415,24 @@ export function ModelPicker({
   // 既定モデルの欄まで開くと、どちらが開いたのか分からない
   useShortcut("model", () => { if (!open) openPicker(); }, variant === "chip");
 
-  const select = (id: string) => {
+  /*
+   * 行へ渡す関数は同一性を保つ。親から毎回新しい onChange が来ても、
+   * それを依存に入れると全行の memo が外れる。呼ばれた時点の最新の
+   * onChange へ届けばよいので useStableCallback を通す。
+   */
+  const select = useStableCallback((id: string) => {
     onChange(id);
     setOpen(false);
     setQuery("");
-  };
+  });
+  const blurSearch = useCallback(() => searchRef.current?.blur(), []);
+
+  /*
+   * 絞り込みは遅らせた検索語で行う。打った文字は即座に欄へ出し、
+   * 一覧の描き直しは手が止まった合間に回す——打つたびに一覧を
+   * 同期で描き直すと、速く打ったときに欄の文字が遅れて出ていた。
+   */
+  const deferredQuery = useDeferredValue(query);
 
   /**
    * スペース区切りのAND検索。各語がID・名前のどこかに含まれれば良い
@@ -248,13 +440,17 @@ export function ModelPicker({
    * 語順・区切りに依存しない検索ができるように）。
    */
   const filtered = useMemo(() => {
-    const terms = query.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
+    const terms = deferredQuery
+      .trim()
+      .toLowerCase()
+      .split(/[\s　]+/)
+      .filter(Boolean);
     if (terms.length === 0) return models;
     return models.filter((m) => {
       const haystack = `${m.id} ${m.name}`.toLowerCase();
       return terms.every((t) => haystack.includes(t));
     });
-  }, [models, query]);
+  }, [models, deferredQuery]);
 
   /**
    * 新着モデルのID。一覧が入れ替わったときだけ数え直す
@@ -271,13 +467,14 @@ export function ModelPicker({
   }, [models, newModelDays]);
 
   /** よく使う順の上位。提供終了などで一覧に無いIDは落とす。 */
+  const searching = deferredQuery.trim() !== "";
   const recent = useMemo(() => {
-    if (query.trim() !== "") return [];
+    if (searching) return [];
     return recentIds
       .map((id) => models.find((m) => m.id === id))
       .filter((m): m is ModelInfo => m != null)
       .slice(0, RECENT_LIMIT);
-  }, [models, recentIds, query]);
+  }, [models, recentIds, searching]);
 
   useEffect(() => {
     if (!open) return;
@@ -422,58 +619,18 @@ export function ModelPicker({
             下へ開くとき（設定画面の欄から）は今までどおり上。
           */}
           {pos.bottom == null && search}
-          {/* min-h-0: これが無いとflex子はコンテンツ高さより縮めず、
-              一覧自体がスクロール不能になってタッチが背面へ抜ける。
-              onTouchMove: 検索中に一覧をスクロールし始めたら
-              キーボードを閉じる（スクロールがパンに取られるのを防ぐ） */}
-          <ul
-            className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1"
-            onTouchMove={() => searchRef.current?.blur()}
-          >
-            {filtered.length === 0 && (
-              <li className="px-3 py-4 text-center text-sm text-neutral-400">
-                該当するモデルがありません
-              </li>
-            )}
-            {/*
-              よく使うモデルの節。検索中は出さない（打ち込んだ語に対する
-              並びが一定になるほうが探しやすいため）。一覧本体からは
-              除かず、上に複製して置くだけにする。
-            */}
-            {recent.length > 0 && (
-              <>
-                <li className="px-3 pb-1 pt-2 text-[11px] font-medium text-ink-3">
-                  最近よく使うモデル
-                </li>
-                {recent.map((m) => (
-                  <ModelRow
-                    key={`recent-${m.id}`}
-                    model={m}
-                    selected={m.id === value}
-                    isNew={newModelIds.has(m.id)}
-                    onSelect={select}
-                  />
-                ))}
-                <li
-                  role="separator"
-                  className="mx-3 my-1 border-t border-line"
-                />
-              </>
-            )}
-            {filtered.map((m) => (
-              <ModelRow
-                key={m.id}
-                model={m}
-                selected={m.id === value}
-                isNew={newModelIds.has(m.id)}
-                onSelect={select}
-              />
-            ))}
-          </ul>
+          <ModelList
+            filtered={filtered}
+            recent={recent}
+            value={value}
+            newModelIds={newModelIds}
+            onSelect={select}
+            onTouchMove={blurSearch}
+          />
           {pos.bottom != null && search}
         </div>,
         document.body,
       )}
     </div>
   );
-}
+});
