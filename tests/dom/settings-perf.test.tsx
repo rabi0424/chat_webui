@@ -88,6 +88,7 @@ function renderSettings() {
     bots: [],
     usdJpy: 150,
     settings: DEFAULT_APP_SETTINGS,
+    applySettings: () => {},
     openSidebar: () => {},
   };
   const loaderData = { settings: DEFAULT_APP_SETTINGS, now: 1_700_000_000_000 };

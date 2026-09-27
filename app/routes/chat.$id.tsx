@@ -4,7 +4,7 @@ import {
 } from "react-router";
 import type { Route } from "./+types/chat.$id";
 import { getConversationWithPath } from "../lib/db.server";
-import { getCachedChat, putCachedChat } from "../lib/chat-cache";
+import { getCachedChat, pendingChat, putCachedChat } from "../lib/chat-cache";
 import { toUiMessage } from "../lib/serialize.server";
 import { parseParamsJson } from "../lib/params";
 import {
@@ -81,6 +81,13 @@ export async function clientLoader({
 }: Route.ClientLoaderArgs) {
   const cached = getCachedChat(params.id);
   if (cached) return cached;
+  // 先読みが途中なら、それを待つ（同じ会話を丸ごと引く要求を2本並べない）。
+  // 失敗・追い越し（null）のときだけ自分で取る
+  const pending = pendingChat(params.id);
+  if (pending) {
+    const prefetched = await pending;
+    if (prefetched) return prefetched;
+  }
   const data = await serverLoader();
   putCachedChat(params.id, data);
   return data;

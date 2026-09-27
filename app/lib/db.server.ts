@@ -10,6 +10,7 @@ import {
 import { liveProgressOf, pathFingerprint } from "./polling";
 import { deleteFiles } from "./r2.server";
 import { thumbnailKeyOf } from "./constants";
+import { pinnedMovePatch } from "./sidebar-overlay";
 import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_SYSTEM_PROMPT_MAX,
@@ -706,6 +707,11 @@ export async function updateConversationMeta(
 /**
  * ピン留め一覧（フォルダ + 会話の混在）の中で項目を上下に移動する。
  * sort_order を 1..n に正規化してから隣と入れ替える。
+ *
+ * 手順そのものは `pinnedMovePatch`（lib/sidebar-overlay.ts）にある。
+ * サイドバーは返事を待たずに同じ計算で並びを先に変えて見せるので、
+ * 書き写すと片方だけ直したときに、取り直した一覧が着いた瞬間に並びが
+ * 跳ねる。同じ関数を使う。
  */
 export async function movePinnedItem(
   type: "conversation" | "folder",
@@ -717,35 +723,20 @@ export async function movePinnedItem(
     listFolders(),
     listConversations(),
   ]);
-  const items = [
-    ...folders.filter((f) => f.pinned).map((f) => ({ type: "folder" as const, row: f })),
-    ...conversations.filter((c) => c.pinned).map((c) => ({ type: "conversation" as const, row: c })),
-  ].sort(
-    (a, b) => a.row.sort_order - b.row.sort_order || a.row.created_at - b.row.created_at,
-  );
-
-  const index = items.findIndex((it) => it.type === type && it.row.id === id);
-  if (index === -1) return;
-  const target = direction === "up" ? index - 1 : index + 1;
-  if (target < 0 || target >= items.length) return;
-
-  [items[index], items[target]] = [items[target], items[index]];
-
-  const statements: D1PreparedStatement[] = [];
-  items.forEach((it, i) => {
-    const order = i + 1;
-    if (it.row.sort_order !== order) {
-      statements.push(
-        d
-          .prepare(
-            it.type === "folder"
-              ? "UPDATE folders SET sort_order = ? WHERE id = ?"
-              : "UPDATE conversations SET sort_order = ? WHERE id = ?",
-          )
-          .bind(order, it.row.id),
-      );
-    }
-  });
+  const patch = pinnedMovePatch(conversations, folders, type, id, direction);
+  if (!patch) return;
+  const statements: D1PreparedStatement[] = [
+    ...Object.entries(patch.folders).map(([fid, p]) =>
+      d
+        .prepare("UPDATE folders SET sort_order = ? WHERE id = ?")
+        .bind(p.sort_order, fid),
+    ),
+    ...Object.entries(patch.conversations).map(([cid, p]) =>
+      d
+        .prepare("UPDATE conversations SET sort_order = ? WHERE id = ?")
+        .bind(p.sort_order, cid),
+    ),
+  ];
   if (statements.length > 0) await d.batch(statements);
 }
 

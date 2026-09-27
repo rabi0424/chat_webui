@@ -148,7 +148,7 @@ describe("会話の操作", () => {
     await openMenu(user, "元の名前");
     await user.click(screen.getByRole("menuitem", { name: "名前を変更" }));
     await answerRename(user, null);
-    expect(server.countOf("/api/conversations/c1")).toBe(0);
+    expect(server.writesTo("/api/conversations/c1")).toBe(0);
     expect(screen.getByText("元の名前")).toBeTruthy();
   });
 
@@ -157,7 +157,7 @@ describe("会話の操作", () => {
     await openMenu(user, "元の名前");
     await user.click(screen.getByRole("menuitem", { name: "名前を変更" }));
     await answerRename(user, "元の名前");
-    expect(server.countOf("/api/conversations/c1")).toBe(0);
+    expect(server.writesTo("/api/conversations/c1")).toBe(0);
   });
 
   it("お気に入りを付け外しできる", async () => {
@@ -437,7 +437,7 @@ describe("操作の失敗", () => {
     await user.click(screen.getByText("名前を変更"));
     await answerRename(user, "新しい名前");
 
-    await waitFor(() => expect(server.countOf("/conversations/c1")).toBe(1));
+    await waitFor(() => expect(server.writesTo("/conversations/c1")).toBe(1));
     expect(screen.queryByRole("status")).toBeNull();
   });
 
