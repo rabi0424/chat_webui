@@ -27,6 +27,7 @@ import { MAX_TITLE_LENGTH, providerOf } from "./constants";
 import {
   CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
+  LIST_VERSION_BUMP_SQL,
   DUE_PENDING_DELETIONS_SQL,
   INSERT_USER_MESSAGE_SQL,
   appendAssistantMessageStatements,
@@ -493,15 +494,30 @@ export async function createConversation(params: {
   return row;
 }
 
+/**
+ * 一覧の見た目だけを変える書き込みを、「一覧が動いた」印と一緒に流す。
+ *
+ * タイトル・ピン・フォルダの変更や削除は updated_at の最大値を動かさない
+ * ので、サイドバーの見張り（listConversationFlags）が気づけない。番号を
+ * 同じ batch で進める（サブリクエストは1回のまま）。
+ */
+async function withListBump(
+  d: D1Database,
+  statements: D1PreparedStatement[],
+): Promise<D1Result[]> {
+  return await d.batch([...statements, d.prepare(LIST_VERSION_BUMP_SQL)]);
+}
+
 export async function updateConversationTitle(
   id: string,
   title: string,
 ): Promise<void> {
   const d = await db();
-  await d
-    .prepare("UPDATE conversations SET title = ? WHERE id = ?")
-    .bind(title, id)
-    .run();
+  // 自動タイトルは応答の確定より後に書かれる。印を進めないと、確定で
+  // 取り直した一覧の仮の名前が、次に何かが動くまで残る
+  await withListBump(d, [
+    d.prepare("UPDATE conversations SET title = ? WHERE id = ?").bind(title, id),
+  ]);
 }
 
 export async function updateConversationModel(
@@ -625,12 +641,13 @@ export async function createFolder(name: string): Promise<FolderRow> {
     created_at: now,
     updated_at: now,
   };
-  await d
-    .prepare(
-      "INSERT INTO folders (id, name, pinned, sort_order, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)",
-    )
-    .bind(row.id, row.name, now, now)
-    .run();
+  await withListBump(d, [
+    d
+      .prepare(
+        "INSERT INTO folders (id, name, pinned, sort_order, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)",
+      )
+      .bind(row.id, row.name, now, now),
+  ]);
   return row;
 }
 
@@ -651,17 +668,16 @@ export async function updateFolder(
     binds.unshift(fields.pinned ? 1 : 0);
   }
   binds.push(id);
-  const res = await d
-    .prepare(`UPDATE folders SET ${sets.join(", ")} WHERE id = ?`)
-    .bind(...binds)
-    .run();
+  const [res] = await withListBump(d, [
+    d.prepare(`UPDATE folders SET ${sets.join(", ")} WHERE id = ?`).bind(...binds),
+  ]);
   return (res.meta.changes ?? 0) > 0;
 }
 
 /** フォルダ削除。中の会話はフォルダなしに戻る（会話自体は消えない）。 */
 export async function deleteFolder(id: string): Promise<void> {
   const d = await db();
-  await d.batch([
+  await withListBump(d, [
     d.prepare("UPDATE conversations SET folder_id = NULL WHERE folder_id = ?").bind(id),
     d.prepare("DELETE FROM folders WHERE id = ?").bind(id),
   ]);
@@ -697,10 +713,9 @@ export async function updateConversationMeta(
   }
   if (sets.length === 0) return;
   binds.push(id);
-  await d
-    .prepare(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`)
-    .bind(...binds)
-    .run();
+  await withListBump(d, [
+    d.prepare(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`).bind(...binds),
+  ]);
 }
 
 /**
@@ -746,7 +761,7 @@ export async function movePinnedItem(
       );
     }
   });
-  if (statements.length > 0) await d.batch(statements);
+  if (statements.length > 0) await withListBump(d, statements);
 }
 
 // --- Bots -----------------------------------------------------------------
@@ -842,7 +857,9 @@ export async function deleteConversation(id: string): Promise<void> {
     .prepare("SELECT r2_key FROM attachments WHERE conversation_id = ?")
     .bind(id)
     .all<{ r2_key: string }>();
-  await d.batch([
+  // 消しても updated_at の最大値は動かない（むしろ下がる）ので印を進める。
+  // 進めないと、別の端末で消した会話が次に何かが動くまで一覧に居座る
+  await withListBump(d, [
     d.prepare("DELETE FROM attachments WHERE conversation_id = ?").bind(id),
     // 「成功するまで生成」の進み具合の記録。見出しが消えれば用済み
     d.prepare(
@@ -2078,11 +2095,14 @@ export interface ConversationFlags {
    * 取り直す（並び替え・新しい会話は updated_at を動かす）。何も無ければ 0。
    *
    * **タイトルの書き換えは動かさない**（動かすと名前を変えただけで一覧の
-   * 先頭へ上がる）。別の端末で変えた名前はここでは拾えないので、会話画面は
-   * 開いたときのローダーの名前と一覧の名前の新しいほうを出す
-   * （lib/conversation-title.ts）。
+   * 先頭へ上がる）。そちらは listVersion で拾う。
    */
   latest: number;
+  /**
+   * 一覧の見た目だけを変えた書き込み（タイトル・ピン・フォルダ・削除）の
+   * 通し番号。変わったら取り直す。まだ一度も無ければ 0。
+   */
+  listVersion: number;
 }
 
 /**
@@ -2102,11 +2122,14 @@ export async function listConversationFlags(): Promise<ConversationFlags> {
     (rows as { id: string | null }[])
       .map((r) => r.id)
       .filter((id): id is string => id != null);
-  const newest = (latest.results as { latest: number | null }[])[0]?.latest;
+  const head = (
+    latest.results as { latest: number | null; version: number | null }[]
+  )[0];
   return {
     unread: ids(unread.results),
     generating: ids(generating.results),
-    latest: typeof newest === "number" ? newest : 0,
+    latest: typeof head?.latest === "number" ? head.latest : 0,
+    listVersion: typeof head?.version === "number" ? head.version : 0,
   };
 }
 

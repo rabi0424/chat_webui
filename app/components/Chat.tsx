@@ -2,6 +2,7 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -44,7 +45,7 @@ import { parseParamsJson, type ParamsState } from "../lib/params";
 import { applyMention, parseMention, stripMention } from "../lib/mention";
 import type { BotRow } from "../lib/db.server";
 import { recordModelUse } from "../lib/recent-models";
-import { invalidateChat } from "../lib/chat-cache";
+import { invalidateChat, putCachedChat } from "../lib/chat-cache";
 import { pathTagOf, rememberPathTag, reuseUnchangedRows } from "../lib/polling";
 import { readRetryConfig, type RetryConfig } from "../lib/retry";
 import { isAcceptedImage } from "../lib/image";
@@ -52,7 +53,10 @@ import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
 import { Lightbox } from "./Lightbox";
-import { useGenerationTracking } from "./chat/use-generation-tracking";
+import {
+  useGenerationTracking,
+  type Tracking,
+} from "./chat/use-generation-tracking";
 import {
   useAttachments,
   uploadImage,
@@ -75,6 +79,7 @@ import { readLastUsedModel, writeLastUsedModel } from "../lib/persisted";
 import type {
   CreateConversationResponse,
   ErrorResponse,
+  FullConversationResponse,
   GenerateResponse,
   PathResponse,
 } from "../lib/api-types";
@@ -122,6 +127,37 @@ function contextWindow(history: UiMessage[]): UiMessage[] {
 }
 
 const DEFERRED_TAIL = 24;
+
+/** 開いた直後の描画の段（本文の数で、末尾だけ先に出すかを決める）。 */
+function firstStage(list: UiMessage[]): "tail" | "all" {
+  return list.length > DEFERRED_TAIL ? "tail" : "all";
+}
+
+/**
+ * 新規チャットの1通目のあと、会話ページへ合わせ直すときの引き継ぎ。
+ *
+ * ホームと会話ページは別のルートなので、合わせ直しの遷移で Chat は
+ * **必ず作り直される**（同じ部品でもルートの要素が違えば React は
+ * 使い回さない）。避けるにはルートの組み方ごと変えることになるので、
+ * 作り直しても見た目が変わらないようにする:
+ *
+ * - 本文は遷移の前に先読みの写しへ置く（ローダーがサーバーを待たない）
+ * - 作り直した画面は、素のテキストの段（none）を飛ばして最初から
+ *   Markdown で描く。none はサーバーで描くときのためのもので、画面内の
+ *   遷移では1枚ぶん素の段落が見えてから整形に切り替わる——読み始めた
+ *   本文が数秒後に一瞬崩れて見えていた
+ * - 読んでいた位置を引き継ぐ。作り直すと位置は先頭から測り直され、
+ *   最下部へ貼り付き直すので、応答を上から読んでいた人が末尾へ飛ばされた
+ *
+ * モジュールに置くのは、渡す側と受け取る側が別のインスタンスだから。
+ * 履歴の state に載せると再読み込みで蘇り、サーバーの描画（none）と
+ * 食い違ってハイドレーションが崩れる。次に作られた Chat が1度だけ読む。
+ */
+let arrival: {
+  convId: string;
+  /** 読んでいた位置。null は最下部に貼り付いていた（既定どおり貼り付く）。 */
+  top: number | null;
+} | null = null;
 
 /**
  * 「最下部に貼り付いている」とみなす距離（px）。
@@ -343,6 +379,10 @@ export function Chat({
     pinnedTopRef.current = el.scrollTop;
   }, []);
 
+  /** 1通目のあとの合わせ直しで作り直されたときの引き継ぎ（上の arrival）。 */
+  const [arrived] = useState(() =>
+    arrival != null && arrival.convId === conversationId ? arrival : null,
+  );
   /**
    * 本文をどこまで描くか。none → tail → all と広げる。
    *
@@ -371,12 +411,10 @@ export function Chat({
    * タップが来てもそちらが先に処理される。
    */
   const [renderStage, setRenderStage] = useState<"none" | "tail" | "all">(
-    "none",
+    () => (arrived ? firstStage(initialMessages) : "none"),
   );
   useEffect(() => {
-    startTransition(() =>
-      setRenderStage(initialMessages.length > DEFERRED_TAIL ? "tail" : "all"),
-    );
+    startTransition(() => setRenderStage(firstStage(initialMessages)));
     // 初回マウント時のみ
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -411,6 +449,22 @@ export function Chat({
   const footerRef = useRef<HTMLElement>(null);
   const [footerHeight, setFooterHeight] = useState(88);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /*
+   * 引き継いだ読み位置へ、描く前に戻す（useEffect だと先頭から測った位置で
+   * 1枚描かれてから飛ぶ）。印は1度で捨てる——残すと、あとでこの会話を
+   * 開き直したときに古い位置へ戻される。
+   */
+  useLayoutEffect(() => {
+    arrival = null;
+    const el = scrollRef.current;
+    if (!arrived || arrived.top == null || !el) return;
+    el.scrollTop = arrived.top;
+    pinnedTopRef.current = el.scrollTop;
+    // 離れて読んでいたので、以後の描き直しで最下部へ引き戻さない
+    stickToBottomRef.current = false;
+    // 初回マウント時のみ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   /** 引っぱって更新: 指の動きに合わせて動かす要素（再描画せずに触る）。 */
   const feedRef = useRef<HTMLDivElement>(null);
   const spinnerRef = useRef<HTMLDivElement>(null);
@@ -1466,6 +1520,105 @@ export function Chat({
     for (const page of added) loadPageInto(page.n, page.url!);
   }
 
+  /**
+   * 新規チャットの1通目が確定したあとの後始末（名付けと、会話ページへの
+   * 合わせ直し）。
+   *
+   * 生成の関数の中で直接やらず、状態を立てて効果で動かすのは、**確定した
+   * 本文を読むため**。ポーリングは最後の反映を setMessages で積んで
+   * すぐ返るので、その時点の手元の値はまだ1つ前のことがある。効果は
+   * その反映を描き終えてから走るので、ここの messages は確定したもの。
+   */
+  const [handoff, setHandoff] = useState<{
+    convId: string;
+    assistantId: string;
+    /** 1通目の本文。画像だけの送信は空文字、発言を保存しなかったときは null。 */
+    userText: string | null;
+    track: Tracking;
+  } | null>(null);
+  useEffect(() => {
+    if (!handoff) return;
+    const { convId, assistantId, userText, track } = handoff;
+    /** 名付けが遷移より先に返ったときの名前（写しへ入れる）。 */
+    let named: string | null = null;
+
+    /*
+     * 名付けは待たない。上流のモデルへの往復で数秒かかり、以前はこれを
+     * 待ってから遷移していた——読み始めた本文が数秒後に作り直されて
+     * ちらついていた。名前は届いたところで一覧を取り直して出す（ヘッダーも
+     * 一覧の名前を追う。lib/conversation-title.ts）。サーバーは名前と
+     * 一緒に「一覧が動いた」番号も進めるので、ここで取り直し損ねても
+     * （タブを閉じた等）、次の見張りで届く。
+     *
+     * 本文はポーリングが持っているものを使う。以前は確定した応答を
+     * もう一度 GET で取り直していた。
+     */
+    const reply = messages.find((m) => m.id === assistantId)?.content;
+    if (userText != null && reply) {
+      void fetch(`/api/conversations/${convId}/title`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          // 画像だけの送信でもタイトルは付けたいので、本文が空なら補う
+          userText: userText.trim() || "（画像を送信）",
+          assistantText: reply,
+        }),
+      })
+        .then(async (res) => {
+          if (!res.ok) return;
+          const { title } = (await res.json()) as { title?: string | null };
+          if (!title) return;
+          named = title;
+          // 画面を作り直したあとに返っても効く（ルーター全体の取り直し）
+          void revalidator.revalidate();
+        })
+        .catch(() => {});
+    }
+
+    void (async () => {
+      /*
+       * 会話ページのローダーが引くのと同じもの（/full）を、遷移の前に
+       * 引いて写しに置く。遷移はそこから即座に解決する。手元の本文を
+       * そのまま置かないのは、ポーリングの応答に作成・確定の時刻が
+       * 載っていないため——置くと作り直した画面から「◯秒」が消える
+       * （続きの会話でも、確定のあとにパスを取り直している）。
+       */
+      const full = await fetch(`/api/conversations/${convId}/full`)
+        .then((res) =>
+          res.ok ? (res.json() as Promise<FullConversationResponse>) : null,
+        )
+        .catch(() => null);
+      /*
+       * 2つの歯止め（監査 D-7）。この遷移は画面を作り直すので:
+       * - 待っているあいだに2通目を送られていたら、その進行中の表示ごと
+       *   捨ててしまう。合わせ直しは次に落ち着いたときで間に合う
+       * - 利用者が自分で移っていたら（分岐・別会話）引き戻さない。URL は
+       *   生成開始時に差し替え済みなので、そのままかどうかで見る
+       * ここでの navigate は、React Router 側の現在地（まだ "/"）を会話
+       * ページに合わせ直すためのもの
+       */
+      if (!alive(track) || window.location.pathname !== `/chat/${convId}`) {
+        return;
+      }
+      if (full?.conversation && Array.isArray(full.messages)) {
+        putCachedChat(
+          convId,
+          named
+            ? { ...full, conversation: { ...full.conversation, title: named } }
+            : full,
+        );
+      }
+      const el = scrollRef.current;
+      arrival = {
+        convId,
+        top: el && !shouldStick(el) ? el.scrollTop : null,
+      };
+      await navigate(`/chat/${convId}`, { replace: true });
+    })();
+    // 立てたときに1度だけ動く（messages は立てた時点の確定したもの）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handoff]);
+
   /** 現在のパスをサーバーから取り直す（ページャ・usage・状態の更新）。 */
   /**
    * 生成を開始する。生成はサーバー（Durable Object）側で進行・保存され、
@@ -1642,39 +1795,14 @@ export function Chat({
       if (alive(track)) {
         setIsStreaming(false);
         if (isNew) {
-          // タイトル生成 → 会話ページへ
-          const finalRes = await fetch(
-            `/api/conversations/${convId}/messages/${assistantMessageId}`,
-          ).catch(() => null);
-          const finalBody = finalRes?.ok
-            ? ((await finalRes.json()) as { content: string })
-            : null;
-          if (persistInfo.userContent != null && finalBody?.content) {
-            await fetch(`/api/conversations/${convId}/title`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                // 画像だけの送信でもタイトルは付けたいので、本文が空なら補う
-                userText: persistInfo.userContent.trim() || "（画像を送信）",
-                assistantText: finalBody.content,
-              }),
-            }).catch(() => {});
-          }
-          // タイトル生成中にユーザーが自分で遷移していたら（分岐や別会話
-          // など）、後追いの自動遷移で引き戻さない。新規会話の最初の応答で
-          // 「ここから分岐」した直後に元の会話へ戻されるのはこれが原因。
-          // URLは生成開始時に差し替え済みなので、そのままかどうかで見る。
-          // ここでの navigate は、React Router 側の現在地（まだ "/"）を
-          // 会話ページに合わせ直すためのもの
-          //
-          // alive をここでもう一度見るのは、上の確認から**数秒経っている**
-          // ため。応答の取り直しとタイトル生成を待っているあいだに2通目を
-          // 送られると、その生成が最新になっている。この遷移は画面を作り
-          // 直すので、そのまま走らせると2通目の進行中表示ごと捨てられる
-          // （監査 D-7）。合わせ直しは次に落ち着いたときで間に合う。
-          if (alive(track) && window.location.pathname === `/chat/${convId}`) {
-            await navigate(`/chat/${convId}`, { replace: true });
-          }
+          // 名付けと会話ページへの合わせ直し。確定した本文を読むので、
+          // ポーリングの最後の反映が描かれてから動く（上の handoff の効果）
+          setHandoff({
+            convId,
+            assistantId: assistantMessageId,
+            userText: persistInfo.userContent,
+            track,
+          });
         } else {
           await refreshPath(convId, track);
           revalidator.revalidate();

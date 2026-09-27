@@ -14,6 +14,7 @@ export async function loader() {
       ids: flags.unread,
       generating: flags.generating,
       latest: flags.latest,
+      listVersion: flags.listVersion,
     },
     { headers: { "Cache-Control": "no-store" } },
   );

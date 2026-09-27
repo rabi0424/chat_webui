@@ -250,6 +250,8 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
    * 1つの数字で受け取り、変わったときだけ取り直す。
    */
   const latestRef = useRef<number | null>(null);
+  /** 一覧の見た目だけを変えた書き込みの番号（api-types の listVersion）。 */
+  const versionRef = useRef<number | null>(null);
   const revalidator = useRevalidator();
   /**
    * 取り直しの手続き。ポーリングの effect は貼り替えたくない（貼り替えると
@@ -267,7 +269,8 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       try {
         const res = await fetch("/api/conversations/unread");
         if (!res.ok) return;
-        const { ids, generating, latest } = (await res.json()) as UnreadResponse;
+        const { ids, generating, latest, listVersion } =
+          (await res.json()) as UnreadResponse;
         if (!alive) return;
         // 変わっていなければ手元の Set を返す（同じ値なら React は描き直さない）
         setUnreadIds((prev) => (sameIds(prev, ids) ? prev : new Set(ids)));
@@ -277,7 +280,16 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         // 最初の1回は「いまの値」を控えるだけ（開いた直後に取り直さない）
         const known = latestRef.current;
         if (typeof latest === "number") latestRef.current = latest;
-        if (known != null && typeof latest === "number" && latest > known) {
+        // タイトル・ピン・削除などは時刻を動かさないので、番号でも見る
+        // （新しい会話の自動タイトルは、応答の確定より後に付く）
+        const knownVersion = versionRef.current;
+        if (typeof listVersion === "number") versionRef.current = listVersion;
+        if (
+          (known != null && typeof latest === "number" && latest > known) ||
+          (knownVersion != null &&
+            typeof listVersion === "number" &&
+            listVersion !== knownVersion)
+        ) {
           revalidateRef.current();
         }
       } catch {
