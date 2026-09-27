@@ -1,4 +1,4 @@
-import type { ContentPayload } from "./polling";
+import type { ContentPayload, ReasoningPayload } from "./polling";
 /**
  * APIの応答の形。サーバーとクライアントの両方がここを見る。
  *
@@ -34,8 +34,7 @@ export interface FullConversationResponse {
 }
 
 /** 生成中メッセージ1件の最新状態。 */
-export interface MessageStateResponse extends ContentPayload {
-  reasoning: string | null;
+export interface MessageStateResponse extends ContentPayload, ReasoningPayload {
   status: string;
   error: string | null;
   usage: UiMessage["usage"] | null;

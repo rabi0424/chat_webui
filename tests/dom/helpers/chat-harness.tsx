@@ -25,7 +25,7 @@ import { DEFAULT_APP_SETTINGS, type AppSettings } from "../../../app/lib/setting
 import type { ModelInfo } from "../../../app/lib/openrouter.server";
 import type { UiMessage } from "../../../app/lib/types";
 import type { ParamsState } from "../../../app/lib/params";
-import { contentPayload } from "../../../app/lib/polling";
+import { contentPayload, reasoningPayload } from "../../../app/lib/polling";
 import { isRetryProgress } from "../../../app/lib/retry";
 
 export const TEST_MODEL: ModelInfo = {
@@ -81,21 +81,45 @@ export interface ServerStub {
  * 全文を毎回運ばないため）。ここで同じ規則を通しておくと、画面側の
  * 組み立てが壊れたときに既存のテストがそのまま落ちる——テストの側が
  * 旧い形を喋り続けると、その壊れ方を誰も見張らないことになる。
+ *
+ * 思考（reasoning）も `?rsince=` を見て同じ規則で差分にする。本文と思考は
+ * 別々に変換する——片方だけを手で組み立てた（長さを書いた）テストでも、
+ * もう片方は本物の形で届くように。
  */
 function asWireFormat(path: string, payload: unknown): unknown {
   if (!path.includes("/messages/") || payload == null) return payload;
   const p = payload as Record<string, unknown>;
-  if (typeof p.content !== "string" || p.contentLength != null) return payload;
-  const since = Number(
-    new URLSearchParams(path.split("?")[1] ?? "").get("since") ?? 0,
-  );
-  const appendOnly = p.status === "streaming" && !isRetryProgress(p.content);
-  const { content, ...rest } = p;
-  void content;
-  return {
-    ...rest,
-    ...contentPayload(p.content, Number.isFinite(since) ? since : 0, appendOnly),
+  const params = new URLSearchParams(path.split("?")[1] ?? "");
+  const sinceOf = (key: string) => {
+    const n = Number(params.get(key) ?? 0);
+    return Number.isFinite(n) ? n : 0;
   };
+  const appendOnly =
+    p.status === "streaming" &&
+    !isRetryProgress(typeof p.content === "string" ? p.content : "");
+  let out: Record<string, unknown> = p;
+  if (typeof p.content === "string" && p.contentLength == null) {
+    const { content, ...rest } = out;
+    void content;
+    out = {
+      ...rest,
+      ...contentPayload(p.content, sinceOf("since"), appendOnly),
+    };
+  }
+  // 思考を書いていないテストは「思考なし」とみなす。本物の行には必ず
+  // reasoning の列があり、ルートは常に長さを添えて返すので
+  if (p.reasoningLength == null) {
+    const { reasoning, ...rest } = out;
+    out = {
+      ...rest,
+      ...reasoningPayload(
+        typeof reasoning === "string" ? reasoning : null,
+        sinceOf("rsince"),
+        appendOnly,
+      ),
+    };
+  }
+  return out;
 }
 
 let seq = 0;

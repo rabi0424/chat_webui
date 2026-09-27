@@ -3,7 +3,9 @@ import {
   POLL_BACKOFF_MAX_MS,
   pollBackoffMs,
   applyContentPayload,
+  applyReasoningPayload,
   contentPayload,
+  reasoningPayload,
   parseSince,
   pathFingerprint,
   decodeRunProgress,
@@ -120,6 +122,95 @@ describe("受け取った本文の組み立て", () => {
     const payload = contentPayload(replaced, held.length, false);
     held = applyContentPayload(held, payload)!;
     expect(held).toBe(replaced);
+  });
+});
+
+describe("思考（reasoning）の差分", () => {
+  /*
+   * 考えるモデルでは思考のほうが本文より長い。本文と同じ規則で差分にするが、
+   * 思考には「無い（null）」がある。そこを本文と同じに扱うと壊れる。
+   */
+  const THOUGHT = "まず前提を確かめる。次に場合を分ける。";
+
+  it("rsince は since とは別に読む", () => {
+    const url = "https://x/api?since=5&rsince=12";
+    expect(parseSince(url, "rsince")).toBe(12);
+    expect(parseSince(url)).toBe(5);
+    expect(parseSince("https://x/api?since=5", "rsince")).toBe(0);
+  });
+
+  it("伸びるだけの思考は、その先だけを返す", () => {
+    const p = reasoningPayload(THOUGHT, 4, true);
+    expect(p.reasoningDelta).toBe(THOUGHT.slice(4));
+    expect("reasoning" in p).toBe(false);
+    expect(p.reasoningLength).toBe(THOUGHT.length);
+  });
+
+  it("最初の1回・書き換わりうる状態は全文", () => {
+    for (const p of [
+      reasoningPayload(THOUGHT, 0, true),
+      reasoningPayload(THOUGHT, 4, false),
+    ]) {
+      expect(p.reasoning).toBe(THOUGHT);
+      expect(p.reasoningDelta).toBeUndefined();
+    }
+  });
+
+  it("思考が無い（null）ことを全文で運ぶ（JSON を通っても null が残る）", () => {
+    // キーごと消えると、受け手には差分と区別がつかない
+    const p = JSON.parse(JSON.stringify(reasoningPayload(null, 30, false)));
+    expect(p).toHaveProperty("reasoning", null);
+    expect(p.reasoningLength).toBe(0);
+    expect(applyReasoningPayload(THOUGHT, p)).toEqual({ reasoning: null });
+  });
+
+  it("差分を継ぎ足す・全文は置き換える", () => {
+    expect(
+      applyReasoningPayload("まず", {
+        reasoningDelta: "前提を",
+        reasoningLength: 5,
+      }),
+    ).toEqual({ reasoning: "まず前提を" });
+    expect(
+      applyReasoningPayload("古い思考", {
+        reasoning: "新しい",
+        reasoningLength: 3,
+      }),
+    ).toEqual({ reasoning: "新しい" });
+  });
+
+  it("長さが合わなければ null（取り直させる）", () => {
+    expect(
+      applyReasoningPayload("まず", { reasoningDelta: "前", reasoningLength: 99 }),
+    ).toBeNull();
+    // 手元より縮んだ（サーバーの思考が 2 文字しかない）のに差分で来た
+    expect(
+      applyReasoningPayload("まず前提を", {
+        reasoningDelta: "",
+        reasoningLength: 2,
+      }),
+    ).toBeNull();
+  });
+
+  it("サーバーと往復させても思考が一致し、確定で消えても追従する", () => {
+    const source = "これは長い思考です。".repeat(40);
+    let held = "";
+    for (let n = 1; n <= source.length; n += 11) {
+      const grown = source.slice(0, n);
+      const got = applyReasoningPayload(
+        held,
+        JSON.parse(JSON.stringify(reasoningPayload(grown, held.length, true))),
+      );
+      expect(got).not.toBeNull();
+      held = got!.reasoning ?? "";
+      expect(held).toBe(grown);
+    }
+    // 確定で思考が無くなった（エラーで null を書いた）
+    const last = applyReasoningPayload(
+      held,
+      JSON.parse(JSON.stringify(reasoningPayload(null, held.length, false))),
+    );
+    expect(last).toEqual({ reasoning: null });
   });
 });
 
