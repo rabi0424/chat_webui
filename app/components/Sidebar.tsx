@@ -1,4 +1,5 @@
 import {
+  memo,
   startTransition,
   useCallback,
   useEffect,
@@ -28,6 +29,7 @@ import {
 } from "./sidebar/items";
 import { FAVORITES_ID, usePrefetchOnVisible } from "./sidebar/shared";
 import { useEscapeToClose } from "../lib/dismiss";
+import { invalidateChat } from "../lib/chat-cache";
 import {
   useExpandedFolders,
   writeExpandedFolders,
@@ -163,7 +165,17 @@ function AppMark() {
   );
 }
 
-export function Sidebar({
+/**
+ * 会話一覧。
+ *
+ * memo してある。シェルは自分の都合（ショートカットの一覧・遷移の
+ * 開始と終了・会話画面向けの値の更新）で何度も描き直されるが、ここは
+ * 全行（最大200）を描き直すので、props が同じなら付き合わない。
+ * 渡す側（shell.tsx）は関数も Set も同一性を保って渡す——1つでも
+ * 描画のたびに新しくなると、この memo は黙って効かなくなる
+ * （tests/dom/shell-rerender.test.tsx が数えて見張る）。
+ */
+export const Sidebar = memo(function Sidebar({
   conversations,
   folders,
   unreadIds,
@@ -423,11 +435,20 @@ export function Sidebar({
   // --- 会話操作 -----------------------------------------------------------
 
   async function patchConversation(id: string, body: Record<string, unknown>) {
+    /*
+     * 先読みの写しには会話の行（タイトル・ピン・お気に入り）も入っている。
+     * 会話画面は、写しを作った後に一覧が取り直されていれば一覧のタイトルを
+     * 出すが（lib/conversation-title.ts）、写しのほうが**後から初めて開かれる**
+     * と、写しの古い名前が新しいものとして扱われる。変えたら捨てておく。
+     * 捨てるのは書き終えてから（送っている間に先読みが古い行を写し直す
+     * ことがあるので、先に捨てても残りうる）。
+     */
     await send("会話の更新", `/api/conversations/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    invalidateChat(id);
   }
 
   async function removeConversation(c: ConversationListRow) {
@@ -993,4 +1014,4 @@ export function Sidebar({
       </div>
     </SidebarProvider>
   );
-}
+});

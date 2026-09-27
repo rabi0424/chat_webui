@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -57,6 +58,27 @@ const subscribeNothing = () => () => {};
 
 /** 未読の印を引き直す間隔（表示中のみ）。 */
 const UNREAD_POLL_MS = 5_000;
+
+/**
+ * 引き直した印の集合が、手元のものと同じか。
+ *
+ * 同じなら手元の Set をそのまま使い続ける。5秒ごとに新しい Set を
+ * state に入れると、中身が同じでもシェルが描き直され、サイドバーの
+ * 全行（最大200）と開いている会話画面まで付き合わされていた。
+ */
+function sameIds(prev: Set<string> | null, next: string[]): boolean {
+  if (prev == null) return false;
+  const unique = new Set(next);
+  if (prev.size !== unique.size) return false;
+  for (const id of unique) if (!prev.has(id)) return false;
+  return true;
+}
+
+/**
+ * 常設サイドバーの「畳む」。描画のたびに作り直すと、memo した
+ * サイドバーが props の違いを見て毎回描き直される。
+ */
+const collapseSidebar = () => writeSidebarCollapsed(true);
 
 export interface ShellContext {
   models: ModelInfo[];
@@ -247,8 +269,11 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         if (!res.ok) return;
         const { ids, generating, latest } = (await res.json()) as UnreadResponse;
         if (!alive) return;
-        setUnreadIds(new Set(ids));
-        setGeneratingIds(new Set(generating ?? []));
+        // 変わっていなければ手元の Set を返す（同じ値なら React は描き直さない）
+        setUnreadIds((prev) => (sameIds(prev, ids) ? prev : new Set(ids)));
+        setGeneratingIds((prev) =>
+          sameIds(prev, generating ?? []) ? prev : new Set(generating ?? []),
+        );
         // 最初の1回は「いまの値」を控えるだけ（開いた直後に取り直さない）
         const known = latestRef.current;
         if (typeof latest === "number") latestRef.current = latest;
@@ -299,14 +324,22 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
 
   const [sidebarClosing, setSidebarClosing] = useState(false);
   const closeFallback = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /*
+   * 閉じている途中か。state と同じものを ref にも持つのは、下の開け閉めの
+   * 関数を作り直さずに済ませるため。openSidebar は Outlet の文脈に、
+   * closeSidebar はドロワーのサイドバーに渡る——描画のたびに新しく
+   * なると、文脈を読む会話画面と memo したサイドバーが毎回描き直される。
+   */
+  const closingRef = useRef(false);
 
   /** 退場アニメーションを終えてドロワーを外す。 */
-  const finishClose = () => {
+  const finishClose = useCallback(() => {
     if (closeFallback.current) clearTimeout(closeFallback.current);
     closeFallback.current = null;
+    closingRef.current = false;
     setSidebarOpen(false);
     setSidebarClosing(false);
-  };
+  }, []);
 
   /**
    * 閉じるときも開くときと同じ滑らかさで（退場アニメーション後にアンマウント）。
@@ -317,19 +350,21 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
    * イベントが来ない場合（アニメーション無効・裏に回ったタブ）の保険として
    * 長めのタイマーも張る。
    */
-  const closeSidebar = () => {
-    if (sidebarClosing) return;
+  const closeSidebar = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
     setSidebarClosing(true);
     closeFallback.current = setTimeout(finishClose, 700);
-  };
+  }, [finishClose]);
 
   /** 閉じ切る前に開き直されたら、退場を取り消してそのまま出しておく。 */
-  const openSidebar = () => {
+  const openSidebar = useCallback(() => {
     if (closeFallback.current) clearTimeout(closeFallback.current);
     closeFallback.current = null;
+    closingRef.current = false;
     setSidebarClosing(false);
     setSidebarOpen(true);
-  };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -338,12 +373,8 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
   }, []);
 
   // スマホのドロワーも Escape で閉じる（外付けキーボードやiPadで効く）
-  const dismissSidebar = useCallback(() => {
-    if (!sidebarClosing) closeSidebar();
-    // closeSidebar は毎回新しいが、見ているのは ref とフラグだけ
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sidebarClosing]);
-  useEscapeToClose(sidebarOpen && !sidebarClosing, dismissSidebar);
+  // 閉じている途中なら何もしない判定は closeSidebar 自身が持っている
+  useEscapeToClose(sidebarOpen && !sidebarClosing, closeSidebar);
 
   // --- キーボードショートカット（UI-11） ---------------------------------
   /** デスクトップでサイドバーを畳んでいるか（端末ごとに保存）。 */
@@ -526,6 +557,17 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     swipeRef.current = null;
   };
 
+  /*
+   * 会話画面は useOutletContext でこれを読む。描画のたびに新しい物を
+   * 渡すと、シェルが描き直されるだけで（ショートカットの一覧を開く・
+   * 遷移の開始と終了など）会話画面まで描き直される。中身が変わった
+   * ときだけ作り直す。
+   */
+  const outletContext = useMemo<ShellContext>(
+    () => ({ models, bots, usdJpy, settings, openSidebar }),
+    [models, bots, usdJpy, settings, openSidebar],
+  );
+
   return (
     <ConfirmProvider>
     <div
@@ -548,17 +590,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
     >
       {/* 本文。見た目は右（order-2）だが、文書の中ではサイドバーより先に置く */}
       <div className="order-2 min-w-0 flex-1">
-        <Outlet
-          context={
-            {
-              models,
-              bots,
-              usdJpy,
-              settings,
-              openSidebar,
-            } satisfies ShellContext
-          }
-        />
+        <Outlet context={outletContext} />
       </div>
 
       {/*
@@ -583,7 +615,17 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         畳んだら外す（display:none で残すのではなく）。残すと、隠れた
         サイドバーが ⌘K を受けて見えない検索欄を開く。
       */}
-      {!collapsed && (
+      {/*
+        iPhone の幅では描かない。CSS で隠れていても、描けば全行（最大200）の
+        描画と先読みの監視は走る——見えないもののために毎回払っていた。
+
+        サーバーは幅を知らないので「広い」として描き、ハイドレーションも
+        その値で突き合わせる（useIsNarrow は useSyncExternalStore の server
+        値が false）。iPhone ではその直後に外れるが、md 未満ではもともと
+        CSS で隠れているので画面には何も起きない。デスクトップでは値が
+        変わらないので、出たり消えたりもしない。
+      */}
+      {!collapsed && !narrow && (
         <div className="order-1 hidden w-72 shrink-0 border-r border-black/[0.06] md:block dark:border-white/[0.06]">
           <Sidebar
             conversations={conversations}
@@ -592,7 +634,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
             generatingIds={generatingIds}
             now={now}
             mac={mac}
-            onCollapse={() => writeSidebarCollapsed(true)}
+            onCollapse={collapseSidebar}
           />
         </div>
       )}
