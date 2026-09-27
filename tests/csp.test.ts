@@ -10,6 +10,10 @@ import {
   sha256Base64,
 } from "../app/lib/csp";
 import { APPEARANCE_INIT_SCRIPT } from "../app/lib/appearance-init";
+import {
+  DISPLAY_FONT_CSS_URL,
+  DISPLAY_FONT_FILE_ORIGIN,
+} from "../app/lib/display-font";
 
 /**
  * CSP の主眼は「開いただけで会話が外へ出る」経路を塞ぐこと（E-3）。
@@ -57,6 +61,10 @@ describe("Content-Security-Policy", () => {
     const p = prod();
     expect(p.get("font-src")).toContain("https://fonts.gstatic.com");
     expect(p.get("style-src")).toContain("https://fonts.googleapis.com");
+    // 実際に差し込む CSS の URL と結び付いている（URL だけ変えると、
+    // 見出しがシステム書体に戻るだけで何も出ない）
+    expect(p.get("style-src")).toContain(new URL(DISPLAY_FONT_CSS_URL).origin);
+    expect(p.get("font-src")).toContain(DISPLAY_FONT_FILE_ORIGIN);
     // 通信（connect-src）は緩めない。フォントは読み込むだけ
     expect(p.get("connect-src")).toEqual(["'self'"]);
   });
@@ -144,6 +152,23 @@ describe("CSP の配線", () => {
     // 自前で連結し直すとハッシュが合わなくなる
     expect(src).not.toMatch(/THEME_INIT_SCRIPT\s*\+/);
     expect(src).not.toMatch(/ACCENT_INIT_SCRIPT\s*\+/);
+  });
+
+  /**
+   * 見出しの書体の CSS を <head> に直に置くと、それが届くまで画面全体が
+   * 描かれない（外部のホストなので名前解決と TLS の往復も先に挟まる）。
+   * 描いたあとにスクリプトから差し込む形を崩さない。onload で rel を
+   * 切り替える定番の形も、CSP がインラインのハンドラを止めるので使えない。
+   */
+  it("root.tsx は見出しの書体の CSS を描画を止める形で置かない", () => {
+    const src = read("app/root.tsx");
+    // 外部の stylesheet を <link> で直に置いていない
+    expect(src).not.toMatch(/rel=["']stylesheet["']/);
+    expect(src).not.toContain("fonts.googleapis.com/css");
+    // 属性のハンドラは CSP で実行されない（黙って読まれなくなる）
+    expect(src).not.toMatch(/\bonLoad=/);
+    // 描いたあとに差し込む
+    expect(src).toMatch(/useEffect\(\s*\(\)\s*=>\s*loadDisplayFont\(\)/);
   });
 
   it("entry.server は nonce を ServerRouter へ渡し、ヘッダを付ける", () => {

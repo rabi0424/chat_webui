@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   isRouteErrorResponse,
   Links,
@@ -13,6 +14,11 @@ import { THEME_COLOR_LIGHT } from "./lib/theme";
 import { APPEARANCE_INIT_SCRIPT } from "./lib/appearance-init";
 import { useAppearanceSync } from "./lib/appearance";
 import { conversationLanguage } from "./lib/content-language";
+import {
+  DISPLAY_FONT_CSS_ORIGIN,
+  DISPLAY_FONT_FILE_ORIGIN,
+  loadDisplayFont,
+} from "./lib/display-font";
 import "./app.css";
 
 /**
@@ -45,6 +51,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // <html> に載せた見た目（テーマ等）は React の管理外なので、
   // 描き直しで消されても保存値から貼り直す（lib/appearance.ts）
   useAppearanceSync();
+  // 見出しの書体は描いたあとに読む（最初の描画を外部の CSS で止めない）
+  useEffect(() => loadDisplayFont(), []);
   const lang = useDocumentLanguage();
   return (
     // <html> の class / data-accent / style は下のインラインスクリプトと
@@ -65,15 +73,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {/*
           見出しの書体（Zen Kaku Gothic New）。本文は system-ui のままで、
           見出し・ダイアログの題・使用量の数字にだけ当てる（app.css の
-          --font-display）。読み込みが終わるまでは同系のシステム書体で
-          描かれ、届いたら差し替わる（display=swap）。
+          --font-display）。書体の CSS はここに stylesheet として置かない——
+          外部の CSS が届くまで画面全体の描画が止まる。描いたあとに
+          loadDisplayFont() が差し込む（lib/display-font.ts）。ここでは
+          接続の用意だけを先に始めておく（描画は止めない）。
         */}
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700&display=swap"
-        />
+        <link rel="preconnect" href={DISPLAY_FONT_CSS_ORIGIN} />
+        <link rel="preconnect" href={DISPLAY_FONT_FILE_ORIGIN} crossOrigin="anonymous" />
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
         <meta name="mobile-web-app-capable" content="yes" />

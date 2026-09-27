@@ -12,6 +12,11 @@
  * 枠切れで持ち越し）は表示されなくなるが、**出さないほうが害が小さい**。
  */
 
+import {
+  DISPLAY_FONT_CSS_ORIGIN,
+  DISPLAY_FONT_FILE_ORIGIN,
+} from "./display-font";
+
 /**
  * 出典のファビコンの取得先。送るのはホスト名だけ（`/ip3/<host>.ico`）で、
  * URL のパスやクエリは乗らないので、会話の中身が外へ出る経路にはならない。
@@ -64,10 +69,12 @@ export function contentSecurityPolicy({
     // 中身は乗らない。URL 全体を送る形にはしないこと）
     ["img-src", ["'self'", "data:", "blob:", FAVICON_ORIGIN]],
     // KaTeX のフォントは束ねて同一オリジンから出る。見出しの書体だけ
-    // Google Fonts（root.tsx の <link>）
-    ["font-src", ["'self'", "data:", "https://fonts.gstatic.com"]],
+    // Google Fonts（lib/display-font.ts が描いたあとに差し込む <link>）。
+    // 取得先は同じ定数から取る——書き写すと、片方を変えたときに書体が
+    // 黙って読まれなくなる（見出しがシステム書体になるだけで気づけない）
+    ["font-src", ["'self'", "data:", DISPLAY_FONT_FILE_ORIGIN]],
     // KaTeX・Mermaid・React の style 属性。属性まで許す必要がある
-    ["style-src", ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"]],
+    ["style-src", ["'self'", "'unsafe-inline'", DISPLAY_FONT_CSS_ORIGIN]],
     ["script-src", script],
     ["connect-src", connect],
     ["worker-src", ["'self'", "blob:"]],
