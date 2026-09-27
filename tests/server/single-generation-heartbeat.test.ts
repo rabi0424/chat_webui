@@ -141,6 +141,39 @@ describe("単発生成の生存確認", () => {
     });
   });
 
+  /*
+   * 実行体は行の確認（D1）を待つあいだに添付を読み始め、その結果を
+   * 渡してくる（workers/app.ts）。受け取ったものを使わずに読み直すと、
+   * 重ねたはずの往復がまた直列に並ぶ。
+   */
+  it("先に読み始めた添付の展開を受け取れば、それを上流へ送る", async () => {
+    let body = "";
+    vi.stubGlobal("fetch", (_url: unknown, init: RequestInit) => {
+      body = String(init.body);
+      return realFetch(`${origin}/slow`, init);
+    });
+    await runSingleGeneration(
+      job,
+      { heartbeatMs: HEARTBEAT_MS, deadlineMs: 10_000 },
+      Promise.resolve([{ role: "user", content: "先に読んだ中身" }]),
+    );
+    expect(body).toContain("先に読んだ中身");
+    expect(body).not.toContain('"hi"');
+    expect(db.finalized).toMatchObject({ status: "done" });
+  });
+
+  it("先に読み始めた展開が失敗していれば、接続の失敗として確定する", async () => {
+    routeTo("/slow");
+    await runSingleGeneration(
+      job,
+      { heartbeatMs: HEARTBEAT_MS, deadlineMs: 10_000 },
+      Promise.reject(new Error("R2 が落ちている")),
+    );
+    expect(db.finalized?.status).toBe("error");
+    expect(db.finalized?.error).toContain("接続に失敗しました");
+    expect(db.finalized?.error).toContain("R2 が落ちている");
+  });
+
   it("総時間の締め切りで打ち切り、その旨を残して確定する（S-5）", async () => {
     routeTo("/silent");
     await runSingleGeneration(job, {

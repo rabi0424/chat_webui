@@ -673,6 +673,23 @@ describe("1本担当", () => {
     30_000,
   );
 
+  it("画像だけの窓口では、直近の発言より前の画像を読まない", async () => {
+    // 担当は実行体ごとに添付を読み直すので、要らない履歴の画像を読むと
+    // その数だけ R2 の読み出しと上流へ投げるまでの時間が積もる
+    const gen = await import("../../app/lib/generation.server");
+    const expand = vi.mocked(gen.expandAttachments);
+    expand.mockClear();
+    await runAttemptJob({
+      ...(attemptJob(["w1"]) as unknown as Record<string, unknown>),
+      model: "runware:m",
+    } as never);
+    expect(expand.mock.calls[0][1]).toEqual({ latestUserOnly: true });
+    expand.mockClear();
+    // 会話を送る窓口では、履歴の画像も読む
+    await runAttemptJob(attemptJob(["w2"]));
+    expect(expand.mock.calls[0][1]).toEqual({ latestUserOnly: false });
+  });
+
   it(
     "上流が失敗しても、引き受けた分は決着させる",
     async () => {

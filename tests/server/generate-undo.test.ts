@@ -19,11 +19,12 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../../app/lib/db.server", () => ({
-  getConversation: async () => ({
-    id: "c1",
-    current_leaf_message_id: "old-leaf",
+  readGenerationStart: async () => ({
+    conversation: { id: "c1", current_leaf_message_id: "old-leaf" },
+    settings: { retryAttemptCeiling: 100 },
+    parent: null,
+    userAttachments: [],
   }),
-  getAppSettings: async () => ({ retryAttemptCeiling: 100 }),
   beginGeneration: async () => ({
     userMessageId: "u1",
     assistantMessageId: "a1",
@@ -33,7 +34,7 @@ vi.mock("../../app/lib/db.server", () => ({
   },
 }));
 vi.mock("../../app/lib/limit.server", () => ({
-  checkMonthlyLimit: async () => ({ blocked: state.limitBlocked }),
+  monthlyLimitVerdict: async () => ({ blocked: state.limitBlocked }),
   limitMessage: () => "上限です",
 }));
 
