@@ -1,5 +1,13 @@
 import { env } from "cloudflare:workers";
 import { interruptedGenerationRow } from "./retry";
+import {
+  childrenByParent,
+  decoratePath,
+  groupByMessage,
+  pathRows,
+  type Decorated,
+} from "./path-tree";
+import { liveProgressOf, pathFingerprint } from "./polling";
 import { deleteFiles } from "./r2.server";
 import { thumbnailKeyOf } from "./constants";
 import {
@@ -77,6 +85,15 @@ import {
   perfPathsSql,
   type PerfDimension,
   type PerfSampleRow,
+  PATH_ATTACHMENTS_SQL,
+  PATH_CONVERSATION_SQL,
+  PATH_MESSAGES_SQL,
+  PATH_TAG_ATTACHMENTS_SQL,
+  PATH_TAG_CONVERSATION_SQL,
+  PATH_TAG_MESSAGES_SQL,
+  pathTagMessagesBinds,
+  type PathTagAttachmentRow,
+  type PathTagRow,
 } from "./schema";
 import {
   EMPTY_TOTALS,
@@ -354,6 +371,17 @@ export interface AttachmentRow {
   thumb_at: number | null;
 }
 
+/** 中断とみなす「生成中」の行か。札だけを作る経路も同じ判定を使う。 */
+function isStaleStreaming(
+  m: { status: string; flushed_at: number | null; created_at: number },
+  now: number,
+): boolean {
+  return (
+    m.status === "streaming" &&
+    now - (m.flushed_at ?? m.created_at) > STALE_STREAMING_MS
+  );
+}
+
 /**
  * 「生成中」のまま一定時間更新がない行を、中断とみなして確定させる。
  * 生成プロセスが不慮に落ちてもUIが永久に固まらないための保険。
@@ -364,11 +392,7 @@ export interface AttachmentRow {
  */
 async function sweepStaleStreaming(rows: MessageRow[]): Promise<void> {
   const now = Date.now();
-  const stale = rows.filter(
-    (m) =>
-      m.status === "streaming" &&
-      now - (m.flushed_at ?? m.created_at) > STALE_STREAMING_MS,
-  );
+  const stale = rows.filter((m) => isStaleStreaming(m, now));
   if (stale.length === 0) return;
   const d = await db();
   const statements: D1PreparedStatement[] = [];
@@ -831,13 +855,7 @@ export async function deleteConversation(id: string): Promise<void> {
   await notePossiblyUnreferenced([...new Set(results.map((r) => r.r2_key))]);
 }
 
-export interface PathMessage extends MessageRow {
-  /** 同じ親を持つ兄弟（自分含む、作成順）。 */
-  sibling_ids: string[];
-  sibling_index: number;
-  /** このメッセージに添付された画像（作成順）。 */
-  attachments: AttachmentRow[];
-}
+export type PathMessage = Decorated<MessageRow, AttachmentRow>;
 
 async function loadMessages(conversationId: string): Promise<MessageRow[]> {
   const d = await db();
@@ -848,65 +866,13 @@ async function loadMessages(conversationId: string): Promise<MessageRow[]> {
   return results;
 }
 
-function childrenByParent(all: MessageRow[]): Map<string | null, MessageRow[]> {
-  const map = new Map<string | null, MessageRow[]>();
-  for (const m of all) {
-    const list = map.get(m.parent_id) ?? [];
-    list.push(m);
-    map.set(m.parent_id, list);
-  }
-  for (const list of map.values()) {
-    list.sort((a, b) => a.created_at - b.created_at);
-  }
-  return map;
-}
-
-/**
- * Returns the messages on the currently displayed path (root ->
- * current_leaf) in display order, each annotated with its siblings so the
- * UI can render branch pagers.
- */
-/** current_leaf からルートまで遡り、表示順（古→新）に並べる。 */
-function pathRows(
-  conversation: ConversationRow,
-  all: MessageRow[],
-): MessageRow[] {
-  if (!conversation.current_leaf_message_id) return [];
-  const byId = new Map(all.map((m) => [m.id, m]));
-  const rows: MessageRow[] = [];
-  let cursor = byId.get(conversation.current_leaf_message_id);
-  while (cursor) {
-    rows.push(cursor);
-    cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined;
-  }
-  return rows.reverse();
-}
-
-/** 道筋の各行に兄弟情報と添付を付ける。 */
-function decoratePath(
-  rows: MessageRow[],
-  all: MessageRow[],
-  attachments: Map<string, AttachmentRow[]>,
-): PathMessage[] {
-  const children = childrenByParent(all);
-  return rows.map((current) => {
-    const siblings = children.get(current.parent_id) ?? [current];
-    return {
-      ...current,
-      sibling_ids: siblings.map((s) => s.id),
-      sibling_index: siblings.findIndex((s) => s.id === current.id),
-      attachments: attachments.get(current.id) ?? [],
-    };
-  });
-}
-
 export async function getConversationPath(
   conversation: ConversationRow,
 ): Promise<PathMessage[]> {
   if (!conversation.current_leaf_message_id) return [];
   const all = await loadMessages(conversation.id);
   await sweepStaleStreaming(all);
-  const rows = pathRows(conversation, all);
+  const rows = pathRows(conversation.current_leaf_message_id, all);
   const attachments = await attachmentsOfConversation(conversation.id);
   return decoratePath(rows, all, attachments);
 }
@@ -914,7 +880,7 @@ export async function getConversationPath(
 /**
  * 会話・メッセージ・添付を1回のbatchでまとめて読む画面表示用の入口。
  * 個別に読むと Worker ↔ D1 の往復が直列に3回並び、そのぶんページ遷移が
- * 遅くなるため、chat/:id のローダーはこちらを使う。
+ * 遅くなるため、chat/:id のローダーと /path はこちらを使う。
  * 添付はIN句ではなくJOINで引く（D1のバインド上限100に届かないように）。
  */
 export async function getConversationWithPath(
@@ -922,13 +888,9 @@ export async function getConversationWithPath(
 ): Promise<{ conversation: ConversationRow; path: PathMessage[] } | null> {
   const d = await db();
   const [convRes, msgRes, attRes] = await d.batch([
-    d.prepare("SELECT * FROM conversations WHERE id = ?").bind(id),
-    d.prepare("SELECT * FROM messages WHERE conversation_id = ?").bind(id),
-    d
-      .prepare(
-        "SELECT a.* FROM attachments a JOIN messages m ON a.message_id = m.id WHERE m.conversation_id = ? ORDER BY a.created_at",
-      )
-      .bind(id),
+    d.prepare(PATH_CONVERSATION_SQL).bind(id),
+    d.prepare(PATH_MESSAGES_SQL).bind(id),
+    d.prepare(PATH_ATTACHMENTS_SQL).bind(id),
   ]);
   const conversation =
     (convRes.results as unknown as ConversationRow[])[0] ?? null;
@@ -941,8 +903,55 @@ export async function getConversationWithPath(
   );
   return {
     conversation,
-    path: decoratePath(pathRows(conversation, all), all, attachments),
+    path: decoratePath(
+      pathRows(conversation.current_leaf_message_id, all),
+      all,
+      attachments,
+    ),
   };
+}
+
+/**
+ * 表示中のパスの札だけを、本文を読まずに作る（/path の 304 用）。
+ *
+ * 「成功するまで生成」の追跡は毎秒 /path を叩く。以前は札を作るために
+ * まず本文まで全部読んでいた（会話・全枝の全本文・添付を直列に3〜4往復）
+ * ので、304 で返せても D1 の往復と転送は丸ごと残っていた。札に要る列だけを
+ * 1つの batch で読み、変わっていなければそこで返す。
+ *
+ * 組み立ては本文を読む側（getConversationWithPath）と同じ関数を通す。
+ * 別々に書くと、片方だけ直したときに札が食い違い、304 が二度と返らなく
+ * なる（画面は壊れず、黙って重くなるだけなので気づけない）。
+ *
+ * @returns 会話が無ければ null。etag が null なら札では決めない
+ *   （中断とみなす行があり、確定させる書き込みを本文を読む側に任せる）
+ */
+export async function getConversationPathTag(id: string): Promise<{
+  etag: string | null;
+  /** 生成中の見出しの進捗（304 に添えて返す）。 */
+  progress: { id: string; content: string } | null;
+} | null> {
+  const d = await db();
+  const [convRes, msgRes, attRes] = await d.batch([
+    d.prepare(PATH_TAG_CONVERSATION_SQL).bind(id),
+    d.prepare(PATH_TAG_MESSAGES_SQL).bind(...pathTagMessagesBinds(id)),
+    d.prepare(PATH_TAG_ATTACHMENTS_SQL).bind(id),
+  ]);
+  const conversation = (
+    convRes.results as unknown as { current_leaf_message_id: string | null }[]
+  )[0];
+  if (!conversation) return null;
+  const all = msgRes.results as unknown as PathTagRow[];
+  const now = Date.now();
+  if (all.some((m) => isStaleStreaming(m, now))) {
+    return { etag: null, progress: null };
+  }
+  const path = decoratePath(
+    pathRows(conversation.current_leaf_message_id, all),
+    all,
+    groupByMessage(attRes.results as unknown as PathTagAttachmentRow[]),
+  );
+  return { etag: pathFingerprint(path), progress: liveProgressOf(path) };
 }
 
 /**
@@ -1150,18 +1159,6 @@ export async function getAttachments(ids: string[]): Promise<AttachmentRow[]> {
   return ids
     .map((id) => byId.get(id))
     .filter((a): a is AttachmentRow => a != null);
-}
-
-/** 指定メッセージ群の添付を、メッセージIDごとにまとめて返す。 */
-function groupByMessage(rows: AttachmentRow[]): Map<string, AttachmentRow[]> {
-  const map = new Map<string, AttachmentRow[]>();
-  for (const a of rows) {
-    if (!a.message_id) continue;
-    const list = map.get(a.message_id) ?? [];
-    list.push(a);
-    map.set(a.message_id, list);
-  }
-  return map;
 }
 
 /**

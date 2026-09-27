@@ -8,6 +8,7 @@
  */
 
 import { MODEL_PREFIXES, providerOf } from "./constants";
+import { RETRY_PROGRESS_PREFIX } from "./retry";
 
 /**
  * 台帳の provider 列を、行の model_id から決める CASE 式。
@@ -1029,6 +1030,67 @@ export const FLUSH_STOP_CHECK_SQL =
  */
 export const SWEEP_STALE_STREAMING_SQL =
   "UPDATE messages SET content = ?, status = ?, error = ? WHERE id = ? AND status = 'streaming'";
+
+/**
+ * 表示中のパスを本文ごと読む3文（1つの batch で流す）。
+ *
+ * 並びを `created_at, rowid` で固定している。兄弟の順は作成時刻で並べ直す
+ * が、同じ時刻の兄弟は読んだ順のまま残る。下の「札だけを読む」文と読む順が
+ * 食い違うと、同じ木なのに札が変わり、304 が二度と返らなくなる（画面は
+ * 壊れず、黙って重くなるだけ）。rowid は挿入順なので、並びは以前と変わらない。
+ */
+export const PATH_CONVERSATION_SQL = "SELECT * FROM conversations WHERE id = ?";
+export const PATH_MESSAGES_SQL =
+  "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid";
+export const PATH_ATTACHMENTS_SQL =
+  "SELECT a.* FROM attachments a JOIN messages m ON a.message_id = m.id WHERE m.conversation_id = ? ORDER BY a.created_at, a.rowid";
+
+/**
+ * 札（ETag）だけを作るための、本文を読まない3文。
+ *
+ * 「成功するまで生成」の追跡は毎秒 /path を叩く。積み上がった成功の本文を
+ * 毎回 D1 から Worker へ運ばずに 304 を返すため、札に効く列だけを読む。
+ *
+ * 本文は**生成中の見出しのときだけ**読む（`substr(...) = 進捗の先頭`）。
+ * 見出しは1行の進捗なので軽く、札を作る側は本文の見た目で「見出しか」を
+ * 決める（見出しの書き込み時刻は司令役が毎秒動かすので札に入れない）。
+ * 見出し以外の生成中の行の本文は長いので読まない——その行は書き込み時刻で
+ * 変化が分かる。バインドは (進捗の先頭, 進捗の先頭, 会話ID)。
+ */
+export const PATH_TAG_CONVERSATION_SQL =
+  "SELECT current_leaf_message_id FROM conversations WHERE id = ?";
+export const PATH_TAG_MESSAGES_SQL =
+  "SELECT id, parent_id, created_at, status, flushed_at, context_boundary, CASE WHEN status = 'streaming' AND substr(content, 1, length(?)) = ? THEN content END AS content FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid";
+export const PATH_TAG_ATTACHMENTS_SQL =
+  "SELECT a.id, a.message_id, a.thumb_at FROM attachments a JOIN messages m ON a.message_id = m.id WHERE m.conversation_id = ? ORDER BY a.created_at, a.rowid";
+
+/**
+ * PATH_TAG_MESSAGES_SQL のバインド。並びを呼ぶ側に書かせない——先頭の2つを
+ * 取り違えても SQL は通り、見出しの本文が読めない（＝札が見出しを見分けられず、
+ * 司令役の毎秒の書き込みで札が動く）という形で黙って効かなくなるため。
+ */
+export function pathTagMessagesBinds(conversationId: string): string[] {
+  return [RETRY_PROGRESS_PREFIX, RETRY_PROGRESS_PREFIX, conversationId];
+}
+
+/** PATH_TAG_MESSAGES_SQL の1行。 */
+export interface PathTagRow {
+  id: string;
+  parent_id: string | null;
+  created_at: number;
+  status: string;
+  flushed_at: number | null;
+  context_boundary: number;
+  /** 生成中の見出しの進捗だけ。それ以外は null。 */
+  content: string | null;
+}
+
+/** PATH_TAG_ATTACHMENTS_SQL の1行。 */
+export interface PathTagAttachmentRow {
+  id: string;
+  message_id: string | null;
+  thumb_at: number | null;
+}
 
 export function appendAssistantMessageStatements(params: {
   id: string;

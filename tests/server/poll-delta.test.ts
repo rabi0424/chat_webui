@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * ポーリングのルートが、実際に差分と 304 を返すか。
+ * 1件追いのルートが、実際に差分を返すか。
  *
  * 組み立ての規則そのものは tests/polling.test.ts で見る。ここでは
- * 「ルートがその規則を正しく当てているか」——差分にしてよい条件の判定と、
- * 札の突き合わせ——を、本物のルートを呼んで確かめる。
+ * 「ルートがその規則を正しく当てているか」——差分にしてよい条件の判定——を、
+ * 本物のルートを呼んで確かめる。パス追いの札と 304 は、本物の SQLite で
+ * 動かす tests/server/path-route.test.ts で見る。
  * 規則が正しくても当て方を間違えれば、本文が壊れて画面に出る。
  */
 
@@ -18,18 +19,10 @@ const state = vi.hoisted(() => ({
     usage_json: null as string | null,
     citations_json: null as string | null,
   },
-  path: [] as {
-    id: string;
-    status: string | null;
-    flushed_at: number | null;
-  }[],
 }));
 
 vi.mock("../../app/lib/db.server", () => ({
   getMessage: async () => state.message,
-  getConversation: async () => ({ id: "c1", current_leaf_message_id: "m1" }),
-  getConversationPath: async () => state.path,
-  switchToBranch: async () => true,
 }));
 vi.mock("../../app/lib/serialize.server", () => ({
   toUiMessage: (m: { id: string }) => ({
@@ -43,7 +36,6 @@ vi.mock("../../app/lib/serialize.server", () => ({
 
 const messageRoute =
   await import("../../app/routes/api.conversations.$id.messages.$mid");
-const pathRoute = await import("../../app/routes/api.conversations.$id.path");
 
 const BODY = "これは生成中の本文です。".repeat(20);
 
@@ -72,10 +64,6 @@ beforeEach(() => {
     usage_json: null,
     citations_json: null,
   };
-  state.path = [
-    { id: "m1", status: "streaming", flushed_at: 100 },
-    { id: "m2", status: null, flushed_at: 90 },
-  ];
 });
 
 describe("1件追いのルート", () => {
@@ -118,51 +106,5 @@ describe("1件追いのルート", () => {
     const got = await poll(5);
     expect(got.contentDelta).toBeUndefined();
     expect(got.content).toBe(state.message.content);
-  });
-});
-
-describe("パス追いのルート", () => {
-  const get = (etag?: string) =>
-    pathRoute.loader({
-      request: new Request("https://x/api/conversations/c1/path", {
-        headers: etag ? { "If-None-Match": etag } : undefined,
-      }),
-      params: { id: "c1" },
-    } as never) as Promise<Response>;
-
-  it("札を返す", async () => {
-    const res = await get();
-    expect(res.status).toBe(200);
-    expect(res.headers.get("ETag")).toBeTruthy();
-  });
-
-  it("同じ札を送り返すと 304（本文を運ばない）", async () => {
-    const first = await get();
-    const etag = first.headers.get("ETag")!;
-    const second = await get(etag);
-    expect(second.status).toBe(304);
-    expect(await second.text()).toBe("");
-  });
-
-  it("本文が伸びたら 200 で返る", async () => {
-    const etag = (await get()).headers.get("ETag")!;
-    state.path[0].flushed_at = 101;
-    expect((await get(etag)).status).toBe(200);
-  });
-
-  it("応答が積まれたら 200 で返る", async () => {
-    const etag = (await get()).headers.get("ETag")!;
-    state.path.push({ id: "m3", status: null, flushed_at: 101 });
-    expect((await get(etag)).status).toBe(200);
-  });
-
-  it("枝が切り替わったら 200 で返る（件数が同じでも）", async () => {
-    const etag = (await get()).headers.get("ETag")!;
-    state.path[1] = { id: "other", status: null, flushed_at: 90 };
-    expect((await get(etag)).status).toBe(200);
-  });
-
-  it("古い札を送っても 304 にはならない", async () => {
-    expect((await get('W/"0-zzz"')).status).toBe(200);
   });
 });

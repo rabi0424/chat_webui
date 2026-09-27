@@ -6,7 +6,14 @@ import {
   contentPayload,
   parseSince,
   pathFingerprint,
+  decodeRunProgress,
+  encodeRunProgress,
+  liveProgressOf,
+  pathTagOf,
+  rememberPathTag,
+  reuseUnchangedRows,
 } from "../app/lib/polling";
+import { formatRetryProgress } from "../app/lib/retry";
 
 /**
  * 生成中のポーリングで運ぶ量を減らす仕掛け。
@@ -159,6 +166,61 @@ describe("パスの指紋", () => {
     expect(pathFingerprint(a)).not.toBe(pathFingerprint(b));
   });
 
+  const HEADING = formatRetryProgress({
+    target: 3,
+    successes: 1,
+    attempts: 2,
+    maxAttempts: 10,
+    refusals: 1,
+    emptyResponses: 0,
+    transients: 0,
+    running: 1,
+    slots: 2,
+    waitSeconds: 0,
+    stopping: false,
+  });
+
+  it("生成中の見出しは、書き込み時刻が動いても・進捗が変わっても同じ札", () => {
+    /*
+     * 司令役は見出しを毎秒書き直す（数字が同じでも時刻は動く）。札に
+     * 入れると最初の2分はほぼ一度も 304 にならなかった。進捗は 304 に
+     * 添えて別に届けるので、札には入れない。
+     */
+    const at = (flushed: number, content: string) => [
+      { id: "h1", status: "streaming", flushed_at: flushed, content },
+      row("s1", "done", 5),
+    ];
+    const before = pathFingerprint(at(100, HEADING));
+    expect(pathFingerprint(at(101, HEADING))).toBe(before);
+    expect(
+      pathFingerprint(at(102, HEADING.replace("成功 1/3", "成功 2/3"))),
+    ).toBe(before);
+  });
+
+  it("見出しでも、確定した瞬間には変わる", () => {
+    const heading = { id: "h1", status: "streaming", flushed_at: 1, content: HEADING };
+    const after = { ...heading, status: "done", content: "**完了**" };
+    expect(pathFingerprint([after])).not.toBe(pathFingerprint([heading]));
+  });
+
+  it("区切り線・兄弟・添付・縮小版の有無で変わる", () => {
+    const base = {
+      id: "m1",
+      status: "done",
+      flushed_at: 1,
+      context_boundary: 0,
+      sibling_ids: ["m1"],
+      attachments: [{ id: "f1", thumb_at: null as number | null }],
+    };
+    const tag = pathFingerprint([base]);
+    expect(pathFingerprint([{ ...base, context_boundary: 1 }])).not.toBe(tag);
+    expect(pathFingerprint([{ ...base, sibling_ids: ["m1", "m2"] }])).not.toBe(tag);
+    expect(
+      pathFingerprint([{ ...base, attachments: [...base.attachments, { id: "f2", thumb_at: null }] }]),
+    ).not.toBe(tag);
+    expect(pathFingerprint([{ ...base, attachments: [{ id: "f1", thumb_at: 5 }] }])).not.toBe(tag);
+  });
+
   it("ETag の形をしている", () => {
     expect(pathFingerprint([row("m1")])).toMatch(/^W\/"[\w-]+"$/);
   });
@@ -173,5 +235,92 @@ describe("失敗が続くときの待ち", () => {
     expect(pollBackoffMs(6, 400)).toBe(POLL_BACKOFF_MAX_MS);
     // 桁が大きくても伸び続けない（2**n が Infinity になっても上限）
     expect(pollBackoffMs(2000, 400)).toBe(POLL_BACKOFF_MAX_MS);
+  });
+});
+
+describe("304 に添える見出しの進捗", () => {
+  it("日本語の1行をヘッダーに載せて、読み戻せる", () => {
+    const p = { id: "h1", content: "生成中… 成功 1/3・待ち 2本" };
+    const raw = encodeRunProgress(p);
+    // ヘッダーは ASCII しか通らない
+    expect(raw).toMatch(/^[\x21-\x7e]+$/);
+    expect(decodeRunProgress(raw)).toEqual(p);
+  });
+
+  it("壊れた値・無い値は null（画面を壊れた値で上書きしない）", () => {
+    expect(decodeRunProgress(null)).toBeNull();
+    expect(decodeRunProgress("%E0%A4%A")).toBeNull();
+    expect(decodeRunProgress(encodeURIComponent("{\"id\":1}"))).toBeNull();
+  });
+
+  it("パスの中の生成中の見出しを拾う（確定した見出し・ふつうの生成中は拾わない）", () => {
+    const heading = "生成中… 成功 0/1・投げた 0/5";
+    expect(
+      liveProgressOf([
+        { id: "n1", status: "streaming", content: null },
+        { id: "h1", status: "streaming", content: heading },
+      ]),
+    ).toEqual({ id: "h1", content: heading });
+    expect(liveProgressOf([{ id: "h1", status: "done", content: heading }])).toBeNull();
+    expect(liveProgressOf([{ id: "n1", status: "streaming", content: "ふつうの本文" }])).toBeNull();
+  });
+});
+
+describe("変わっていない行を使い回す", () => {
+  const a = { id: "a", content: "一", status: undefined as string | undefined };
+  const b = { id: "b", content: "二", attachments: [{ id: "f1" }] };
+
+  it("中身が同じ行は前の物をそのまま使い、全部同じなら配列ごと前の物を返す", () => {
+    const prev = [a, b];
+    // JSON から作り直した行（中身は同じでも別の物）
+    const fresh = JSON.parse(JSON.stringify(prev)) as typeof prev;
+    expect(fresh[0]).not.toBe(a);
+    const next = reuseUnchangedRows(prev, fresh);
+    expect(next).toBe(prev);
+  });
+
+  it("変わった行だけ新しい物になる", () => {
+    const prev = [a, b];
+    const fresh = [
+      { id: "a", content: "一" },
+      { id: "b", content: "二", attachments: [{ id: "f1" }, { id: "f2" }] },
+      { id: "c", content: "三" },
+    ];
+    const next = reuseUnchangedRows(prev, fresh);
+    expect(next).not.toBe(prev);
+    expect(next[0]).toBe(a);
+    expect(next[1]).toBe(fresh[1]);
+    expect(next[2]).toBe(fresh[2]);
+  });
+
+  it("入れ子の中身まで比べる（添付が入れ替わったら新しい物）", () => {
+    const fresh = [a, { id: "b", content: "二", attachments: [{ id: "f9" }] }];
+    const next = reuseUnchangedRows([a, b], fresh);
+    expect(next[1]).toBe(fresh[1]);
+  });
+
+  it("並びが変わったら、行が同じでも配列は新しくする", () => {
+    const next = reuseUnchangedRows([a, b], [b, a]);
+    expect(next).toEqual([b, a]);
+    expect(next[0]).toBe(b);
+  });
+
+  it("行が減ったら配列は新しくする", () => {
+    const next = reuseUnchangedRows([a, b], [a]);
+    expect(next).toEqual([a]);
+  });
+});
+
+describe("並びに結んだ札", () => {
+  it("札で受け取った並びそのものにだけ札が付く", () => {
+    const list = [{ id: "a" }];
+    rememberPathTag(list, 'W/"1-x"');
+    expect(pathTagOf(list)).toBe('W/"1-x"');
+    // 中身が同じでも別の並び（手元で作り直した）には付かない
+    expect(pathTagOf([...list])).toBeNull();
+    // 札が無い応答では何も結ばない
+    const other = [{ id: "b" }];
+    rememberPathTag(other, null);
+    expect(pathTagOf(other)).toBeNull();
   });
 });
