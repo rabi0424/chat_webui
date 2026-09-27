@@ -45,6 +45,7 @@ import { applyMention, parseMention, stripMention } from "../lib/mention";
 import type { BotRow } from "../lib/db.server";
 import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
+import { pathTagOf, rememberPathTag, reuseUnchangedRows } from "../lib/polling";
 import { readRetryConfig, type RetryConfig } from "../lib/retry";
 import { isAcceptedImage } from "../lib/image";
 import { ModelPicker } from "./ModelPicker";
@@ -970,9 +971,27 @@ export function Chat({
    * 差が黙って生まれる）。
    */
   async function syncFeed(convId: string): Promise<void> {
+    /*
+     * 画面の並びが前回受け取ったまま動いていなければ、その札を送る。
+     * アプリを行き来するたびに、何も進んでいない会話の全文を運び直して
+     * いた。並びが動いたあと（送信・枝の移動・途中経過）は札を送らない
+     * （`pathTagOf` の注記）。
+     */
+    const held = messages;
+    const tag = pathTagOf(held);
     try {
-      const res = await fetch(`/api/conversations/${convId}/path`);
+      const res = await fetch(
+        `/api/conversations/${convId}/path`,
+        tag ? { headers: { "If-None-Match": tag } } : undefined,
+      );
+      if (res.status === 304) {
+        // サーバーの並びは手元と同じ。取り直した場合と同じ後始末だけをする
+        setError(null);
+        if (!isStreaming && !savingRef.current) trackRunning(convId, held);
+        return;
+      }
       if (!res.ok) return;
+      const etag = res.headers.get("ETag");
       const { messages: fresh } = (await res.json()) as PathResponse;
       /*
        * まだサーバーに無いメッセージが画面にある間は差し替えない。
@@ -995,7 +1014,13 @@ export function Chat({
          * 全部効かなくなっていた（監査 C-5）。サーバーの並びを採り、
          * その発言は末尾に残す（消すと打った本文が失われる）
          */
-        return unsaved.length > 0 ? [...fresh, ...unsaved] : fresh;
+        // 変わっていない行は前の物を使う（吹き出しを描き直させない）
+        const next = reuseUnchangedRows(
+          prev,
+          unsaved.length > 0 ? [...fresh, ...unsaved] : fresh,
+        );
+        rememberPathTag(next, etag);
+        return next;
       });
       if (replaced) {
         setError(null);

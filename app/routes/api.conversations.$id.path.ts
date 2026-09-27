@@ -1,11 +1,16 @@
 import type { Route } from "./+types/api.conversations.$id.path";
 import {
   getConversation,
-  getConversationPath,
+  getConversationPathTag,
+  getConversationWithPath,
   switchToBranch,
 } from "../lib/db.server";
 import { toUiMessage } from "../lib/serialize.server";
-import { pathFingerprint } from "../lib/polling";
+import {
+  encodeRunProgress,
+  pathFingerprint,
+  RUN_PROGRESS_HEADER,
+} from "../lib/polling";
 import { apiError, apiJson, requireMethod, type PathResponse } from "../lib/api-types";
 
 /**
@@ -20,22 +25,33 @@ async function pathResponse(
   id: string,
   ifNoneMatch?: string | null,
 ): Promise<Response> {
-  const conversation = await getConversation(id);
-  if (!conversation) return apiError("会話が見つかりません", 404);
-  const path = await getConversationPath(conversation);
   /*
-   * 「成功するまで生成」の追跡は1秒ごとにここを叩く。積み上がった成功の
-   * 本文まで毎回運ぶので、実行が長引くほど重くなる。中身が変わっていない
-   * ことを札で伝えられれば、本文はまるごと省ける（D1を読む分は変わらない）。
+   * 札を持って来たときは、まず本文を読まずに札だけを作る（1往復）。
+   * 「成功するまで生成」の追跡は毎秒ここを叩き、その大半は何も変わって
+   * いない。以前は札を作るために会話・全枝の本文・添付を直列に読んで
+   * いたので、304 で返せても D1 の往復と転送は丸ごと残っていた。
+   * 変わっていたときだけ本文を読む（もう1往復）。札を持って来ない呼び出し
+   * （初回・枝の切り替え）は、札だけを読むのが無駄なので直接本文へ行く。
    */
-  const etag = pathFingerprint(path);
-  if (ifNoneMatch && ifNoneMatch === etag) {
-    return new Response(null, {
-      status: 304,
-      headers: { ETag: etag, ...NO_STORE.headers },
-    });
+  if (ifNoneMatch) {
+    const tag = await getConversationPathTag(id);
+    if (!tag) return apiError("会話が見つかりません", 404);
+    if (tag.etag && tag.etag === ifNoneMatch) {
+      const headers: Record<string, string> = {
+        ETag: tag.etag,
+        ...NO_STORE.headers,
+      };
+      // 札は見出しの進捗を見ないので、進捗だけはここで添える
+      if (tag.progress) {
+        headers[RUN_PROGRESS_HEADER] = encodeRunProgress(tag.progress);
+      }
+      return new Response(null, { status: 304, headers });
+    }
   }
-  return apiJson<PathResponse>({ messages: path.map(toUiMessage) }, {
+  const found = await getConversationWithPath(id);
+  if (!found) return apiError("会話が見つかりません", 404);
+  const etag = pathFingerprint(found.path);
+  return apiJson<PathResponse>({ messages: found.path.map(toUiMessage) }, {
     headers: { ...NO_STORE.headers, ETag: etag },
   });
 }

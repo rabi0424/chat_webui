@@ -23,6 +23,15 @@ import {
   RETRY_ATTEMPT_FINISH_SQL,
   RETRY_ATTEMPT_INSERT_SQL,
   ORPHAN_ATTACHMENTS_SQL,
+  PATH_ATTACHMENTS_SQL,
+  PATH_CONVERSATION_SQL,
+  PATH_MESSAGES_SQL,
+  PATH_TAG_ATTACHMENTS_SQL,
+  PATH_TAG_CONVERSATION_SQL,
+  PATH_TAG_MESSAGES_SQL,
+  pathTagMessagesBinds,
+  type PathTagAttachmentRow,
+  type PathTagRow,
   REWRITE_MESSAGE_CONTENT_SQL,
   RETRY_RUN_ADD_COORDINATOR_MS_SQL,
   RETRY_ATTEMPTS_PRUNE_SQL,
@@ -60,6 +69,14 @@ import {
   undoGenerationStatements,
 } from "../app/lib/schema";
 import { MODEL_PREFIXES, providerOf } from "../app/lib/constants";
+import {
+  decoratePath,
+  groupByMessage,
+  pathRows,
+  type TreeRow,
+} from "../app/lib/path-tree";
+import { pathFingerprint } from "../app/lib/polling";
+import { formatRetryProgress } from "../app/lib/retry";
 
 /**
  * スキーマを本物の SQLite に流す。
@@ -2008,5 +2025,191 @@ describe("紐づく先の無い添付", () => {
   it("送られなかったものと、メッセージが消えたものを、猶予を過ぎた分だけ拾う", () => {
     expect(orphans(50)).toEqual(["ghost", "unsent"]);
     expect(orphans(1_000)).toEqual(["ghost", "unsent", "young"]);
+  });
+});
+
+/**
+ * パスの札（ETag）。
+ *
+ * 「成功するまで生成」の追跡は毎秒 /path を叩き、変わっていなければ 304 で
+ * 返す。札は**本文を読まない軽い問い合わせ**から作り、変わっていたときだけ
+ * 本文を読む。両方の札が食い違うと 304 が二度と返らない（画面は壊れず、
+ * 黙って重くなるだけ）ので、同じ木に両方を流して一致を確かめる。
+ */
+describe("パスの札", () => {
+  const PROGRESS = formatRetryProgress({
+    target: 3,
+    successes: 1,
+    attempts: 4,
+    maxAttempts: 100,
+    refusals: 3,
+    emptyResponses: 0,
+    transients: 0,
+    running: 2,
+    slots: 3,
+    waitSeconds: 0,
+    stopping: false,
+  });
+  const LONG = "積み上がった成功の本文。".repeat(30);
+
+  beforeEach(() => {
+    migrate(db);
+    const conv = db.prepare(
+      "INSERT INTO conversations (id, title, current_leaf_message_id, created_at, updated_at) VALUES (?, 't', ?, 1, 1)",
+    );
+    conv.run("c1", "s2");
+    conv.run("c2", "n1");
+    const add = db.prepare(
+      "INSERT INTO messages (id, conversation_id, parent_id, role, content, status, flushed_at, context_boundary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    add.run("u1", "c1", null, "user", "猫の絵", "done", null, 1, 1);
+    add.run("h1", "c1", "u1", "assistant", PROGRESS, "streaming", 50, 0, 2);
+    // 同じ時刻の兄弟。読む順が食い違うとページャの並びが変わり、札も変わる
+    add.run("s1x", "c1", "h1", "assistant", "兄弟", "done", 3, 0, 3);
+    add.run("s1", "c1", "h1", "assistant", LONG, "done", 3, 0, 3);
+    add.run("s2", "c1", "s1", "assistant", LONG, "done", 4, 0, 4);
+    // ふつうの生成中の行。本文は長くなるので、札のためには読まない
+    add.run("q1", "c2", null, "user", "質問", "done", null, 0, 1);
+    add.run("n1", "c2", "q1", "assistant", LONG, "streaming", 70, 0, 2);
+    const att = db.prepare(
+      "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, size, created_at, kind, thumb_at) VALUES (?, ?, 'c1', ?, 'image/png', 1, 3, 'generated', ?)",
+    );
+    att.run("f2", "s1", "k2", null);
+    att.run("f1", "s1", "k1", 9);
+  });
+
+  const leafOf = (id: string) =>
+    (
+      db.prepare(PATH_TAG_CONVERSATION_SQL).get(id) as {
+        current_leaf_message_id: string | null;
+      }
+    ).current_leaf_message_id;
+
+  /** 札だけを読む側（本番の /path が 304 を決める経路）。 */
+  function light(id: string) {
+    const rows = db
+      .prepare(PATH_TAG_MESSAGES_SQL)
+      .all(...pathTagMessagesBinds(id)) as unknown as PathTagRow[];
+    const atts = db
+      .prepare(PATH_TAG_ATTACHMENTS_SQL)
+      .all(id) as unknown as PathTagAttachmentRow[];
+    const path = decoratePath(
+      pathRows(leafOf(id), rows),
+      rows,
+      groupByMessage(atts),
+    );
+    return { rows, path, tag: pathFingerprint(path) };
+  }
+
+  /** 本文まで読む側（200 で返す経路）。 */
+  function full(id: string) {
+    const conv = db.prepare(PATH_CONVERSATION_SQL).get(id) as {
+      current_leaf_message_id: string | null;
+    };
+    const rows = db.prepare(PATH_MESSAGES_SQL).all(id) as unknown as (TreeRow & {
+      status: string;
+      flushed_at: number | null;
+      content: string;
+      context_boundary: number;
+    })[];
+    const atts = db.prepare(PATH_ATTACHMENTS_SQL).all(id) as unknown as {
+      id: string;
+      message_id: string | null;
+      thumb_at: number | null;
+    }[];
+    const path = decoratePath(
+      pathRows(conv.current_leaf_message_id, rows),
+      rows,
+      groupByMessage(atts),
+    );
+    return { path, tag: pathFingerprint(path) };
+  }
+
+  it("本文を読まない側と読む側で、同じ札になる", () => {
+    expect(light("c1").tag).toBe(full("c1").tag);
+    expect(light("c2").tag).toBe(full("c2").tag);
+    // 札に効くものが実際に入っている（空の札どうしの一致ではない）
+    const path = full("c1").path;
+    expect(path.map((m) => m.id)).toEqual(["u1", "h1", "s1", "s2"]);
+    expect(path[2].sibling_ids).toEqual(["s1x", "s1"]);
+    expect(path[2].attachments.map((a) => a.id)).toEqual(["f2", "f1"]);
+  });
+
+  it("本文は生成中の見出しのときだけ読む", () => {
+    const content = (id: string, conv: string) =>
+      light(conv).rows.find((r) => r.id === id)?.content;
+    expect(content("h1", "c1")).toBe(PROGRESS);
+    expect(content("s1", "c1")).toBeNull();
+    // ふつうの生成中の行も読まない（長いうえに、書き込み時刻で変化が分かる）
+    expect(content("n1", "c2")).toBeNull();
+    // 確定した見出しの本文（要約）は長くなりうるので読まない
+    db.prepare("UPDATE messages SET status = 'done' WHERE id = 'h1'").run();
+    expect(content("h1", "c1")).toBeNull();
+  });
+
+  it("司令役が見出しを打ち直しただけでは札が変わらない", () => {
+    const before = light("c1").tag;
+    db.prepare(FLUSH_GENERATION_SQL).run(PROGRESS, null, 51, "h1");
+    expect(light("c1").tag).toBe(before);
+    // 数字が動いても札は変えない（進捗は 304 に添えて別に届ける）
+    const moved = PROGRESS.replace("待ち 2本", "待ち 1本");
+    expect(moved).not.toBe(PROGRESS);
+    db.prepare(FLUSH_GENERATION_SQL).run(moved, null, 52, "h1");
+    expect(light("c1").rows.find((r) => r.id === "h1")?.content).toBe(moved);
+    expect(light("c1").tag).toBe(before);
+    expect(light("c1").tag).toBe(full("c1").tag);
+  });
+
+  it("ふつうの生成中の行は、書き込むたびに札が変わる", () => {
+    const before = light("c2").tag;
+    db.prepare(FLUSH_GENERATION_SQL).run(LONG + "続き", null, 71, "n1");
+    expect(light("c2").tag).not.toBe(before);
+  });
+
+  it("画面に出るものが変わったら、札も変わる", () => {
+    const changes: [string, () => void][] = [
+      [
+        "見出しの確定",
+        () => db.prepare("UPDATE messages SET status = 'done' WHERE id = 'h1'").run(),
+      ],
+      [
+        "本文の差し替え（S-7）",
+        () => db.prepare(REWRITE_MESSAGE_CONTENT_SQL).run("![](/api/files/x)", 99, "s2"),
+      ],
+      [
+        "区切り線",
+        () => db.prepare("UPDATE messages SET context_boundary = 1 WHERE id = 's2'").run(),
+      ],
+      ["縮小版", () => db.prepare(MARK_THUMBNAIL_SQL).run(10, "f2")],
+      [
+        "兄弟が増えた",
+        () =>
+          db
+            .prepare(
+              "INSERT INTO messages (id, conversation_id, parent_id, role, content, created_at) VALUES ('s2b', 'c1', 's1', 'assistant', 'x', 9)",
+            )
+            .run(),
+      ],
+      [
+        "成功が積まれた",
+        () => {
+          db.prepare(
+            "INSERT INTO messages (id, conversation_id, parent_id, role, content, flushed_at, created_at) VALUES ('s3', 'c1', 's2', 'assistant', 'x', 9, 9)",
+          ).run();
+          db.prepare(
+            "UPDATE conversations SET current_leaf_message_id = 's3' WHERE id = 'c1'",
+          ).run();
+        },
+      ],
+    ];
+    for (const [label, change] of changes) {
+      db.exec("SAVEPOINT change");
+      const before = light("c1").tag;
+      change();
+      expect(light("c1").tag, label).not.toBe(before);
+      expect(light("c1").tag, label).toBe(full("c1").tag);
+      db.exec("ROLLBACK TO change");
+      db.exec("RELEASE change");
+    }
   });
 });
