@@ -68,6 +68,10 @@ import {
   statementsOf,
   stillReferencedSql,
   undoGenerationStatements,
+  ATTACHMENTS_BY_ID_CHUNK,
+  attachmentsByIdsSql,
+  MESSAGE_IN_CONVERSATION_SQL,
+  META_TWO_VALUES_SQL,
 } from "../app/lib/schema";
 import { MODEL_PREFIXES, providerOf } from "../app/lib/constants";
 import {
@@ -2329,5 +2333,60 @@ describe("パスの札", () => {
       db.exec("ROLLBACK TO change");
       db.exec("RELEASE change");
     }
+  });
+});
+
+describe("生成の開始で読む文", () => {
+  beforeEach(() => {
+    migrate(db);
+    db.exec(
+      "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('c1', 't', 1, 1), ('c2', 't', 1, 1)",
+    );
+  });
+
+  it("meta の2つの値を1文で引く（無いほうは返らない）", () => {
+    db.prepare("INSERT INTO meta (key, value) VALUES ('app_settings', '{}')").run();
+    db.prepare("INSERT INTO meta (key, value) VALUES ('other', 'x')").run();
+    const rows = db
+      .prepare(META_TWO_VALUES_SQL)
+      .all("app_settings", "usd_jpy") as { key: string; value: string }[];
+    expect(rows).toEqual([{ key: "app_settings", value: "{}" }]);
+    db.prepare("INSERT INTO meta (key, value) VALUES ('usd_jpy', '150')").run();
+    const both = db
+      .prepare(META_TWO_VALUES_SQL)
+      .all("app_settings", "usd_jpy") as { key: string }[];
+    expect(both.map((r) => r.key).sort()).toEqual(["app_settings", "usd_jpy"]);
+  });
+
+  it("繋ぎ先は、その会話の発言だけを引く", () => {
+    db.exec(
+      "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('m1', 'c1', 'user', 'a', 1), ('m2', 'c2', 'user', 'b', 1)",
+    );
+    const hit = db.prepare(MESSAGE_IN_CONVERSATION_SQL).all("m1", "c1") as {
+      id: string;
+    }[];
+    expect(hit.map((r) => r.id)).toEqual(["m1"]);
+    // 別の会話の発言IDを渡されても当たらない（どこにも繋がらない発言を作らない）
+    expect(db.prepare(MESSAGE_IN_CONVERSATION_SQL).all("m2", "c1")).toEqual([]);
+  });
+
+  it("添付はバインドの上限の内（90個）まで1文で引ける", () => {
+    const ids = Array.from({ length: ATTACHMENTS_BY_ID_CHUNK }, (_, i) => `a${i}`);
+    const add = db.prepare(
+      "INSERT INTO attachments (id, r2_key, mime_type, size, created_at) VALUES (?, ?, 'image/png', 1, 1)",
+    );
+    for (const id of ids) add.run(id, `k/${id}`);
+    add.run("other", "k/other");
+    const rows = db
+      .prepare(attachmentsByIdsSql(ids.length))
+      .all(...ids) as { id: string }[];
+    expect(rows.map((r) => r.id).sort()).toEqual([...ids].sort());
+    expect(ATTACHMENTS_BY_ID_CHUNK).toBeLessThan(100);
+  });
+
+  it("添付の文は、上限を越える数や0個では作らない（D1 に落とさずここで止める）", () => {
+    expect(() => attachmentsByIdsSql(ATTACHMENTS_BY_ID_CHUNK + 1)).toThrow();
+    expect(() => attachmentsByIdsSql(0)).toThrow();
+    expect(attachmentsByIdsSql(1)).toBe("SELECT * FROM attachments WHERE id IN (?)");
   });
 });

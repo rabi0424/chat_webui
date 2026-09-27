@@ -25,6 +25,7 @@ import {
 import { buildGenerationPayload, type ParamsState } from "./params";
 import { RETRY_ATTEMPT_DEADLINE_MS, type RetryConfig } from "./retry";
 import { classifyUpstreamFailure } from "./upstream-outcome";
+import { usesLatestUserImagesOnly } from "./upstream-shape";
 import { isFetchableImageUrl, looksLikeImageUrl } from "./image-url";
 import { sniffImageFormat } from "./image-signature";
 import { readBounded } from "./read-bounded";
@@ -103,26 +104,72 @@ export interface OutgoingMessage {
  */
 export async function expandAttachments(
   messages: ChatMessage[],
+  opts: {
+    /**
+     * 直近のユーザー発言の画像だけを読む（usesLatestUserImagesOnly）。
+     * それより前の発言は添付を外した文字だけで返す。
+     */
+    latestUserOnly?: boolean;
+  } = {},
 ): Promise<OutgoingMessage[]> {
+  let latestUser = -1;
+  if (opts.latestUserOnly) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        latestUser = i;
+        break;
+      }
+    }
+  }
+  const idsOf = (m: ChatMessage, i: number): string[] =>
+    opts.latestUserOnly && i !== latestUser ? [] : (m.attachmentIds ?? []);
+
+  /*
+   * 添付の行は全発言ぶんを1回で引く。以前は画像のある発言ごとに D1 を
+   * 1往復し、そのあと1枚ずつ R2 を待っていたので、画像の多い会話ほど
+   * 上流へ投げるまでが直列に延びていた。
+   */
+  const rows = await getAttachments(messages.flatMap(idsOf));
+  const byId = new Map(rows.map((a) => [a.id, a]));
+
+  // 同じ添付を2つの発言が指していても、実体は1度だけ読む
+  const urls = new Map<string, Promise<string | null>>();
+  const limit = createConcurrencyLimit(R2_READ_CONCURRENCY);
+  const read = (id: string): Promise<string | null> => {
+    const a = byId.get(id);
+    if (!a) return Promise.resolve(null);
+    let url = urls.get(id);
+    if (!url) {
+      url = limit(async () => {
+        try {
+          const object = await getFile(a.r2_key);
+          if (!object) return null;
+          return `data:${a.mime_type};base64,${toBase64(
+            await object.arrayBuffer(),
+          )}`;
+        } catch {
+          // 1枚読めなくても送信自体は続ける
+          return null;
+        }
+      });
+      urls.set(id, url);
+    }
+    return url;
+  };
+
+  // 読み出しは全部先に投げ、並びは発言と添付の順のまま組み立てる
+  // （読み終わった順に並べると、依頼文の「図1／図2」と画像がずれる）
+  const pending = messages.map((m, i) => idsOf(m, i).map(read));
   const out: OutgoingMessage[] = [];
-  for (const m of messages) {
-    if (!m.attachmentIds || m.attachmentIds.length === 0) {
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (pending[i].length === 0) {
       out.push({ role: m.role, content: m.content });
       continue;
     }
-    const rows = await getAttachments(m.attachmentIds);
     const parts: ContentPart[] = [];
-    for (const a of rows) {
-      try {
-        const object = await getFile(a.r2_key);
-        if (!object) continue;
-        const url = `data:${a.mime_type};base64,${toBase64(
-          await object.arrayBuffer(),
-        )}`;
-        parts.push({ type: "image_url", image_url: { url } });
-      } catch {
-        // 1枚読めなくても送信自体は続ける
-      }
+    for (const url of await Promise.all(pending[i])) {
+      if (url) parts.push({ type: "image_url", image_url: { url } });
     }
     // 画像 → テキストの順（Anthropicの推奨。他社も同等に扱う）
     if (m.content) parts.push({ type: "text", text: m.content });
@@ -132,6 +179,52 @@ export async function expandAttachments(
     });
   }
   return out;
+}
+
+/**
+ * R2 から同時に読む本数。
+ *
+ * Workers は1回の呼び出しで同時に開いておける接続が6本まで
+ * （CLAUDE.md の「応答ヘッダを同時に待てる接続」）。全部を一度に投げても
+ * 7本目以降は実行環境の側で順番待ちになるだけだが、そのあいだ生存確認の
+ * 書き込み（D1）も同じ列に並ぶ。4本に抑えて、残りを空けておく。
+ */
+export const R2_READ_CONCURRENCY = 4;
+
+/** 同時に走らせる数を n までに抑える（渡した順に始める）。 */
+function createConcurrencyLimit(n: number) {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  return <T>(task: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const start = () => {
+        running++;
+        task()
+          .then(resolve, reject)
+          .finally(() => {
+            running--;
+            waiting.shift()?.();
+          });
+      };
+      if (running < n) start();
+      else waiting.push(start);
+    });
+}
+
+/**
+ * このジョブの上流に合わせて添付を展開する。
+ *
+ * 画像だけの窓口は直近のユーザー発言の画像しか使わない（imageRequestOf）
+ * ので、それより前の画像は R2 から読みもしない。
+ */
+export function expandAttachmentsFor(job: {
+  model: string;
+  imageOutput?: boolean;
+  messages: ChatMessage[];
+}): Promise<OutgoingMessage[]> {
+  return expandAttachments(job.messages, {
+    latestUserOnly: usesLatestUserImagesOnly(job),
+  });
 }
 
 /**
@@ -1403,6 +1496,13 @@ export async function runSingleGeneration(
     heartbeatMs: IDLE_HEARTBEAT_MS,
     deadlineMs: SINGLE_GENERATION_DEADLINE_MS,
   },
+  /**
+   * 呼ぶ側が先に読み始めた添付の展開（expandAttachmentsFor）。
+   * 実行体は行の状態を確かめる往復のあいだに R2 を読み始めておき、
+   * ここで受け取る。省けばここで読む。失敗はここで読んだときと同じく
+   * 「接続に失敗しました」として確定させる。
+   */
+  expanded?: Promise<OutgoingMessage[]>,
 ): Promise<void> {
   const startedAt = Date.now();
   const provider = providerOf(job.model);
@@ -1574,7 +1674,7 @@ export async function runSingleGeneration(
     // （DOのストレージに実体を持ち込まないため、ジョブにはIDだけを載せている）
     upstream = await requestUpstream(
       job,
-      await expandAttachments(job.messages),
+      await (expanded ?? expandAttachmentsFor(job)),
       budget.spend,
       { connectTimeoutMs: imageTimeoutMs, signal: abort.signal },
     );

@@ -1227,6 +1227,50 @@ export function searchConversationsSql(counts: {
 export const INSERT_USER_MESSAGE_SQL =
   "INSERT INTO messages (id, conversation_id, parent_id, role, content, status, created_at) VALUES (?, ?, ?, 'user', ?, 'done', ?)";
 
+/**
+ * 会話の中の1件（生成中の行のポーリング、繋ぎ先の確認）。
+ *
+ * 会話IDも条件に入れる。IDだけで引くと、古いタブから別の会話の発言IDを
+ * 渡されたときに「この会話にある」と読み違え、どこにも繋がっていない
+ * 発言を作ってしまう（api.conversations.$id.generate.ts の注記）。
+ * バインドは (発言ID, 会話ID)。
+ */
+export const MESSAGE_IN_CONVERSATION_SQL =
+  "SELECT * FROM messages WHERE id = ? AND conversation_id = ?";
+
+/**
+ * meta から2つの値をまとめて読む。バインドは (キー, キー)。
+ *
+ * 生成の開始はアプリ設定と保存済みの為替を両方使う。別々に読むと
+ * 往復が2回になるので、1文で引く。返る行は見つかった分だけ（無ければ
+ * 0〜1行）で、並びは決めない——呼ぶ側は key で見分ける。
+ */
+export const META_TWO_VALUES_SQL =
+  "SELECT key, value FROM meta WHERE key IN (?, ?)";
+
+/**
+ * 1文で引く添付IDの数の上限。D1 のバインド変数は1文あたり100個まで
+ * （超えると文が丸ごと失敗し、送信そのものが通らなくなる）。
+ */
+export const ATTACHMENTS_BY_ID_CHUNK = 90;
+
+/**
+ * 指定IDの添付を引く文。バインドは添付ID（count 個）。
+ *
+ * 並びは決めない（IN 句は渡した順を守らない）。表示順は呼ぶ側が渡した
+ * ID の順に並べ直す。上限を超える数を渡されたら、黙って D1 に落とさず
+ * ここで投げる——分割し忘れは本番でしか出ない形で壊れるため。
+ */
+export function attachmentsByIdsSql(count: number): string {
+  if (!Number.isInteger(count) || count < 1 || count > ATTACHMENTS_BY_ID_CHUNK) {
+    throw new Error(
+      `添付IDは1文に1〜${ATTACHMENTS_BY_ID_CHUNK}個まで（渡されたのは ${count} 個）`,
+    );
+  }
+  const placeholders = Array.from({ length: count }, () => "?").join(",");
+  return `SELECT * FROM attachments WHERE id IN (${placeholders})`;
+}
+
 /* ------------------------------------------------------------------ *
  * 画面遷移と起動の実測（perf_samples / perf_builds）
  * ------------------------------------------------------------------ */

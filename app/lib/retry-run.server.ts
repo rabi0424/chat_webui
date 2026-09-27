@@ -44,6 +44,7 @@ import {
   type RetryConfig,
 } from "./retry";
 import { planRetrySlots } from "./retry-slots";
+import { usesLatestUserImagesOnly } from "./upstream-shape";
 import { checkMonthlyLimit } from "./limit.server";
 import {
   appendRetrySuccess,
@@ -816,7 +817,11 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
 
   let messages: OutgoingMessage[];
   try {
-    messages = await expandAttachments(job.messages);
+    // 画像だけの窓口は直近の発言の画像しか使わないので、履歴の画像は
+    // 読まない（担当の実行体ごとに読み直すので、無駄がその数だけ積もる）
+    messages = await expandAttachments(job.messages, {
+      latestUserOnly: usesLatestUserImagesOnly(job),
+    });
   } catch (e) {
     await giveUp(queue, `添付の読み出しに失敗しました: ${(e as Error).message}`);
     return;

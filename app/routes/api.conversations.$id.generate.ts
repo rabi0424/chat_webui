@@ -2,13 +2,12 @@ import type { Route } from "./+types/api.conversations.$id.generate";
 import { cloudflareContext } from "../lib/cloudflare-context";
 import {
   beginGeneration,
-  getAppSettings,
-  getConversation,
-  getMessage,
+  readGenerationStart,
   undoGeneration,
 } from "../lib/db.server";
 import { readRetryConfig } from "../lib/retry";
-import { checkMonthlyLimit, limitMessage } from "../lib/limit.server";
+import { limitMessage, monthlyLimitVerdict } from "../lib/limit.server";
+import { monthStartJst } from "../lib/usage";
 import type { ChatMessage } from "../lib/openrouter.server";
 import type { ParamsState } from "../lib/params";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "../lib/r2.server";
@@ -55,7 +54,27 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     return apiError("model と messages は必須です", 400);
   }
 
-  const conversation = await getConversation(params.id);
+  const parentId = body.parentId ?? null;
+  const userContent = body.userContent ?? null;
+  // 添付を紐づけるのは新しい発言があるときだけ（beginGeneration）。
+  // 再生成で添付IDが来ても読まない
+  const userAttachmentIds =
+    userContent != null && Array.isArray(body.userAttachmentIds)
+      ? body.userAttachmentIds.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)
+      : [];
+
+  // 書く前に要るものは、1つの batch でまとめて読む。以前は会話・上限
+  // （設定・台帳・為替）・設定をもう一度・繋ぎ先・添付を直列に読んでいて、
+  // 送信してから上流へ投げるまでに D1 との往復が6〜7回並んでいた。
+  // 読んだあとの判定の順（404 → 402 → 400）は以前のまま
+  const now = Date.now();
+  const start = await readGenerationStart({
+    conversationId: params.id,
+    parentId,
+    userAttachmentIds,
+    usageSince: monthStartJst(now),
+  });
+  const { conversation, settings } = start;
   if (!conversation) {
     return apiError("会話が見つかりません", 404);
   }
@@ -64,7 +83,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // （クライアント側の無効化は見た目だけで、信用しない）。
   // 「成功するまで生成」は1回の依頼で何度も投げるため、走り出したあとの
   // 歯止めは発射ループの側にも要る（generation.server.ts）
-  const limit = await checkMonthlyLimit();
+  const limit = await monthlyLimitVerdict(start, now);
   if (limit.blocked) {
     return apiError(limitMessage(limit), 402);
   }
@@ -73,7 +92,6 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // クライアントの値は信用せずここで通す
   // 成功の判定が「画像が返ったか」なので、画像を出せるモデル以外では
   // 何度投げても成功しない。モデル側の条件もここで見る
-  const settings = await getAppSettings();
   const retry =
     body.imageOutput === true
       ? readRetryConfig(body.params, settings.retryAttemptCeiling)
@@ -84,20 +102,17 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // いない発言**ができ、パスがそこで途切れて会話が2件のやり取りに置き換わった
   // ように見える（行は残るのに、画面から戻る手立てが無い）。
   // 「保存だけ」の入口（api.conversations.$id.messages.ts）と同じ確認。
-  if (body.parentId != null) {
-    const parent = await getMessage(params.id, body.parentId);
-    if (!parent) {
-      return apiError("親メッセージが見つかりません", 400);
-    }
+  if (parentId != null && !start.parent) {
+    return apiError("親メッセージが見つかりません", 400);
   }
 
   const { userMessageId, assistantMessageId } = await beginGeneration({
     conversationId: params.id,
-    parentId: body.parentId ?? null,
-    userContent: body.userContent ?? null,
-    userAttachmentIds: Array.isArray(body.userAttachmentIds)
-      ? body.userAttachmentIds.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)
-      : [],
+    parentId,
+    userContent,
+    userAttachmentIds,
+    // 上でもう読んである。渡さないと beginGeneration が読み直して往復が増える
+    userAttachments: start.userAttachments,
     modelId: body.model,
   });
 
