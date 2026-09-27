@@ -38,7 +38,7 @@ import { isImeKeystroke } from "../../lib/ime";
 import { applyMention, parseMention, stripMention } from "../../lib/mention";
 import type { BotRow } from "../../lib/db.server";
 import { IconPlus } from "../icons";
-import { useMessageActions } from "./message-context";
+import { useEditorOptions } from "./message-context";
 import { MentionSuggest } from "./MentionSuggest";
 import { MentionAddressee } from "./MentionAddressee";
 import { useMentionSuggest } from "./use-mention-suggest";
@@ -85,7 +85,7 @@ export function MessageEditor({
   const empty = !editing.text.trim() && editing.attachments.length === 0;
   const busy = editing.uploads > 0;
 
-  const { bots, models } = useMessageActions();
+  const { bots, models } = useEditorOptions();
   const boxRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);

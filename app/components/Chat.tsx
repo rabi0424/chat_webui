@@ -65,7 +65,7 @@ import {
 import { Composer } from "./chat/Composer";
 import { LiveRegion } from "./chat/LiveRegion";
 import { SelectionBar } from "./chat/SelectionBar";
-import { type MessageActions } from "./chat/message-context";
+import { type EditorOptions, type MessageActions } from "./chat/message-context";
 import { useStableCallback } from "./chat/use-stable-callback";
 import { formatJpy } from "./chat/message-parts";
 import { useEscapeToClose } from "../lib/dismiss";
@@ -2178,18 +2178,14 @@ export function Chat({
    * 値が変わったときだけ作り直す。毎回作り直すと文脈（MessageProvider）の
    * 値が変わり、一覧を memo しても全吹き出しが描き直される。
    */
-  const lastIndex = messages.length - 1;
   const messageActions = useMemo<MessageActions>(
     () => ({
       isStreaming,
       selecting,
       toggleSelect: stableToggleSelect,
       startSelect: (id) => setSelecting(new Set([id])),
-      lastIndex,
       isImageGeneration,
       usdJpy,
-      bots,
-      models,
       switchBranch: stableSwitchBranch,
       fork: stableFork,
       regenerate: stableRegenerate,
@@ -2201,17 +2197,23 @@ export function Chat({
       isStreaming,
       selecting,
       stableToggleSelect,
-      lastIndex,
       isImageGeneration,
       usdJpy,
-      bots,
-      models,
       stableSwitchBranch,
       stableFork,
       stableRegenerate,
       stableAttachGenerated,
       stableFollowBottom,
     ],
+  );
+  /**
+   * 編集欄だけが使うもの。操作一式とは別に配る——ボットの一覧はシェルの
+   * 読み込み直しのたびに別の配列になり、同じ文脈に入れると全吹き出しを
+   * 描き直すことになる（message-context）。
+   */
+  const editorOptions = useMemo<EditorOptions>(
+    () => ({ bots, models }),
+    [bots, models],
   );
 
   // 重ねて出しているものは Escape で閉じる。内側から順に1枚ずつ
@@ -2439,6 +2441,7 @@ export function Chat({
         hiddenCount={hiddenCount}
         bodyDeferred={renderStage === "none"}
         actions={messageActions}
+        editorOptions={editorOptions}
         editing={editing}
         setEditing={setEditing}
         onSubmitEdit={onSubmitEdit}
