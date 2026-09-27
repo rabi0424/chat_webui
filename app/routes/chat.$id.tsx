@@ -1,18 +1,58 @@
+import {
+  useRouteLoaderData,
+  type ShouldRevalidateFunctionArgs,
+} from "react-router";
 import type { Route } from "./+types/chat.$id";
 import { getConversationWithPath } from "../lib/db.server";
 import { getCachedChat, putCachedChat } from "../lib/chat-cache";
 import { toUiMessage } from "../lib/serialize.server";
 import { parseParamsJson } from "../lib/params";
+import {
+  conversationTitle,
+  SHELL_ROUTE_ID,
+  type ShellTitles,
+} from "../lib/conversation-title";
 import { Chat } from "../components/Chat";
 
-export function meta({ loaderData }: Route.MetaArgs) {
-  return [
-    {
-      title: loaderData
-        ? `${loaderData.conversation.title} - Chat`
-        : "Chat",
-    },
-  ];
+export function meta({ loaderData, matches }: Route.MetaArgs) {
+  if (!loaderData) return [{ title: "Chat" }];
+  // ヘッダーと同じ決め方（サイドバーで名前を変えたら、タブの名前も追う）
+  const shell = matches.find((m) => m?.id === SHELL_ROUTE_ID)?.loaderData as
+    | ShellTitles
+    | undefined;
+  return [{ title: `${conversationTitle(loaderData, shell)} - Chat` }];
+}
+
+/**
+ * 同じ会話のままの取り直しでは、このローダーを走らせない。
+ *
+ * revalidator.revalidate() は、生成の終わり・サイドバーの操作・一覧が
+ * 動いたことを未読の引き直しが見つけたとき（送信1通につき2回以上）に
+ * 呼ばれ、既定では開いている画面のローダーも全部走り直す。ここは会話を
+ * 丸ごと（全メッセージ）引くうえ、画面側は本文が動くたびに先読みの写しを
+ * 捨てている（Chat.tsx）ので、ほぼ毎回サーバーまで行っていた。
+ *
+ * それでいて、受け取ったものはほとんど使われない。Chat は本文を
+ * 開いた瞬間にしか読まず（以後は自分で追いかける）、key が会話IDなので
+ * 作り直されもしない。効いていたのはタイトルだけで、それはシェルの
+ * 会話一覧から取る（lib/conversation-title.ts）。
+ *
+ * 別の会話へ移るとき（:id が変わる）とフォームの送信は、これまでどおり
+ * 既定に任せる。読み込みに失敗して例外の受け皿が出ているときは、
+ * このルートのデータが無いので React Router がここを見ずに必ず走らせる
+ * （受け皿の「再試行」は効く）。
+ */
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  formMethod,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
+  // :id はパスそのものなので、パスが同じなら同じ会話
+  if (formMethod == null && currentUrl.pathname === nextUrl.pathname) {
+    return false;
+  }
+  return defaultShouldRevalidate;
 }
 
 export async function loader({ params }: Route.LoaderArgs) {
@@ -48,6 +88,7 @@ export async function clientLoader({
 
 export default function ChatRoute({ loaderData }: Route.ComponentProps) {
   const { conversation, messages } = loaderData;
+  const shell = useRouteLoaderData(SHELL_ROUTE_ID) as ShellTitles;
   const bot =
     conversation.bot_name != null
       ? {
@@ -65,7 +106,7 @@ export default function ChatRoute({ loaderData }: Route.ComponentProps) {
       initialMessages={messages}
       bot={bot}
       initialModel={conversation.model_id}
-      title={conversation.title}
+      title={conversationTitle(loaderData, shell)}
       initialParams={parseParamsJson(conversation.params_json)}
       // 作ったときの写し。あとで既定やボットを変えても遡らない
       systemPrompt={conversation.system_prompt}

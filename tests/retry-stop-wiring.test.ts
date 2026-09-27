@@ -323,7 +323,7 @@ describe("DO の振り分けと単発の生成", () => {
 
   it("単発の生成も、行が消えたら読むのをやめる", () => {
     const single = fn(gen, "runSingleGeneration");
-    const write = single.match(/const write = async[\s\S]*?\n {2}};/)![0];
+    const write = single.match(/const write = [\s\S]*?\n {2}};/)![0];
     expect(write).toContain("!applied");
   });
 });

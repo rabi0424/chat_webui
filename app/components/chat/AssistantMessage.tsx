@@ -71,16 +71,22 @@ export function briefMeta(m: UiMessage, usdJpy: number | null): string | null {
 export function AssistantMessage({
   m,
   index,
+  isLast,
 }: {
   m: UiMessage;
   index: number;
+  /**
+   * 会話の末尾か（カーソル・再生成・再試行を出す）。末尾の位置そのもの
+   * ではなく、この行の真偽で受け取る——位置を受け取ると、発言が1つ
+   * 増えるたびに全行の props が変わり、一覧の memo が効かなくなる。
+   */
+  isLast: boolean;
 }) {
   const {
     isStreaming,
     selecting,
     toggleSelect,
     startSelect,
-    lastIndex,
     isImageGeneration,
     usdJpy,
     switchBranch,
@@ -91,7 +97,6 @@ export function AssistantMessage({
     followBottom,
   } = useMessageActions();
   const selectable = selecting != null && m.id != null;
-  const isLast = index === lastIndex;
   const generatingImage = m.status === "streaming" && isImageGeneration(m.modelId);
   const meta = briefMeta(m, usdJpy);
 

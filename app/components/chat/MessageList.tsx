@@ -13,7 +13,12 @@ import { EmptyState } from "../EmptyState";
 import { IconChatBubble } from "../icons";
 import type { UiMessage } from "../../lib/types";
 import { ContextBoundaryLine } from "./message-parts";
-import { MessageProvider, type MessageActions } from "./message-context";
+import {
+  EditorOptionsProvider,
+  MessageProvider,
+  type EditorOptions,
+  type MessageActions,
+} from "./message-context";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { MessageBoundary } from "./MessageBoundary";
@@ -32,6 +37,19 @@ import { IconArrowTurnDownLeft } from "../icons";
 export const BOUNDARY_SELECT_PREFIX = "boundary:";
 
 /*
+ * 吹き出しは1行ずつ memo する。一覧は生成中のポーリング（0.4秒ごと）や
+ * 編集欄の1文字ごとに描き直されるが、そこで変わるのは1行だけ。以前は
+ * そのたびに全行を描き直していて、長い会話では生成中ずっと重かった。
+ *
+ * memo は部品の側ではなくここで掛ける。どの値が行ごとに違い、どれが
+ * 全行に共通か（文脈に置くか）を決めているのが一覧だから——props に
+ * 全行で変わる値を1つ混ぜれば memo は黙って効かなくなるので、その
+ * 取り決めと同じ場所に置いておく。
+ */
+const UserRow = memo(UserMessage);
+const AssistantRow = memo(AssistantMessage);
+
+/*
  * memo で包む。Chat は ⚙パネルの開け閉め・入力欄の1文字ごとにも描き直され、
  * そのたびに会話の全吹き出しまで描き直していた（長い会話ではパネルの操作が
  * もっさりしていた）。props はすべて Chat 側で同一性を保って渡している。
@@ -42,6 +60,7 @@ export const MessageList = memo(function MessageList({
   hiddenCount,
   bodyDeferred,
   actions,
+  editorOptions,
   editing,
   setEditing,
   onSubmitEdit,
@@ -70,6 +89,8 @@ export const MessageList = memo(function MessageList({
    */
   bodyDeferred: boolean;
   actions: MessageActions;
+  /** 編集欄だけが使うもの。操作一式とは別の文脈で配る（message-context）。 */
+  editorOptions: EditorOptions;
   editing: EditingState | null;
   setEditing: Dispatch<SetStateAction<EditingState | null>>;
   onSubmitEdit: () => void;
@@ -89,6 +110,7 @@ export const MessageList = memo(function MessageList({
 }) {
   const { isStreaming, selecting, toggleSelect } = actions;
   const lastMessage = messages[messages.length - 1];
+  const lastIndex = messages.length - 1;
 
   return (
     <div
@@ -132,59 +154,61 @@ export const MessageList = memo(function MessageList({
           <PlainMessages messages={messages} />
         )}
         <MessageProvider value={actions}>
-          <div className="space-y-6">
-            {visibleMessages.map((m, vi) => {
-              const i = vi + hiddenCount;
-              /*
-                1件ずつ受け皿に入れる。画面翻訳が節点を差し替えたあとの
-                描き直しで落ちても、画面ごと「読み込めませんでした」に
-                差し替わらないようにする（MessageBoundary）。
+          <EditorOptionsProvider value={editorOptions}>
+            <div className="space-y-6">
+              {visibleMessages.map((m, vi) => {
+                const i = vi + hiddenCount;
+                /*
+                  1件ずつ受け皿に入れる。画面翻訳が節点を差し替えたあとの
+                  描き直しで落ちても、画面ごと「読み込めませんでした」に
+                  差し替わらないようにする（MessageBoundary）。
 
-                key は一覧に並ぶ要素——つまり受け皿——に付ける。中身に
-                付けたままだと一覧から見た並びに key が無いことになり、
-                順番が変わったときに React が別のものと取り違える
-              */
-              const inner =
-                m.role === "user" ? (
-                  <UserMessage
-                    m={m}
-                    // 編集中かどうかはIDで見る。添字で見ていたころは、
-                    // 枝を切り替えた先の同じ位置の発言に編集欄が
-                    // 付き替わっていた（監査 C-2）
-                    editing={editing?.id === m.id ? editing : null}
-                    setEditing={setEditing}
-                    onSubmitEdit={onSubmitEdit}
-                    onSaveEdit={onSaveEdit}
-                    onAddEditFiles={onAddEditFiles}
-                    editFileInputRef={editFileInputRef}
-                  />
-                ) : (
-                  <AssistantMessage m={m} index={i} />
+                  key は一覧に並ぶ要素——つまり受け皿——に付ける。中身に
+                  付けたままだと一覧から見た並びに key が無いことになり、
+                  順番が変わったときに React が別のものと取り違える
+                */
+                const inner =
+                  m.role === "user" ? (
+                    <UserRow
+                      m={m}
+                      // 編集中かどうかはIDで見る。添字で見ていたころは、
+                      // 枝を切り替えた先の同じ位置の発言に編集欄が
+                      // 付き替わっていた（監査 C-2）
+                      editing={editing?.id === m.id ? editing : null}
+                      setEditing={setEditing}
+                      onSubmitEdit={onSubmitEdit}
+                      onSaveEdit={onSaveEdit}
+                      onAddEditFiles={onAddEditFiles}
+                      editFileInputRef={editFileInputRef}
+                    />
+                  ) : (
+                    <AssistantRow m={m} index={i} isLast={i === lastIndex} />
+                  );
+                const body = (
+                  <MessageBoundary
+                    key={m.id ?? `${m.role === "user" ? "u" : "a"}${i}`}
+                  >
+                    {inner}
+                  </MessageBoundary>
                 );
-              const body = (
-                <MessageBoundary
-                  key={m.id ?? `${m.role === "user" ? "u" : "a"}${i}`}
-                >
-                  {inner}
-                </MessageBoundary>
-              );
-              // 境界線はメッセージの「後ろ」に置く。Fragment なので
-              // 一覧の space-y はメッセージと同じ間隔のまま効く
-              const boundaryKey = BOUNDARY_SELECT_PREFIX + m.id;
-              return m.contextBoundary ? (
-                <Fragment key={`w${m.id ?? i}`}>
-                  {body}
-                  <ContextBoundaryLine
-                    selecting={selecting != null && m.id != null}
-                    selected={selecting?.has(boundaryKey) ?? false}
-                    onToggle={() => toggleSelect(boundaryKey)}
-                  />
-                </Fragment>
-              ) : (
-                body
-              );
-            })}
-          </div>
+                // 境界線はメッセージの「後ろ」に置く。Fragment なので
+                // 一覧の space-y はメッセージと同じ間隔のまま効く
+                const boundaryKey = BOUNDARY_SELECT_PREFIX + m.id;
+                return m.contextBoundary ? (
+                  <Fragment key={`w${m.id ?? i}`}>
+                    {body}
+                    <ContextBoundaryLine
+                      selecting={selecting != null && m.id != null}
+                      selected={selecting?.has(boundaryKey) ?? false}
+                      onToggle={() => toggleSelect(boundaryKey)}
+                    />
+                  </Fragment>
+                ) : (
+                  body
+                );
+              })}
+            </div>
+          </EditorOptionsProvider>
         </MessageProvider>
 
         {error && (

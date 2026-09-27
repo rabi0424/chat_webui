@@ -45,6 +45,7 @@ import { applyMention, parseMention, stripMention } from "../lib/mention";
 import type { BotRow } from "../lib/db.server";
 import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat } from "../lib/chat-cache";
+import { pathTagOf, rememberPathTag, reuseUnchangedRows } from "../lib/polling";
 import { readRetryConfig, type RetryConfig } from "../lib/retry";
 import { isAcceptedImage } from "../lib/image";
 import { ModelPicker } from "./ModelPicker";
@@ -65,7 +66,7 @@ import {
 import { Composer } from "./chat/Composer";
 import { LiveRegion } from "./chat/LiveRegion";
 import { SelectionBar } from "./chat/SelectionBar";
-import { type MessageActions } from "./chat/message-context";
+import { type EditorOptions, type MessageActions } from "./chat/message-context";
 import { useStableCallback } from "./chat/use-stable-callback";
 import { formatJpy } from "./chat/message-parts";
 import { useEscapeToClose } from "../lib/dismiss";
@@ -84,6 +85,7 @@ import {
   IconSliders,
 } from "./icons";
 import { GLASS_PANEL, scrollBehavior } from "../lib/ui";
+import { useMarkdownReady } from "./Markdown";
 
 /** この会話に適用されるボット設定（会話開始時のスナップショット）。 */
 export interface BotContext {
@@ -389,6 +391,20 @@ export function Chat({
     if (renderStage !== "none" && el && shouldStick(el)) pinToBottom(el);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderStage]);
+  /*
+   * Markdown の本体はあとから届く（components/Markdown.tsx）。届くまでは
+   * 素の段落で出しているので、届いた瞬間に表・コード・数式のぶん本文の
+   * 高さが変わる。最下部に貼り付いていたなら貼り直す——でないと、会話を
+   * 開いた直後に最新の発言の途中で止まって見える。
+   * 呼ぶこと自体が「手が空いたら取りに行く」合図も兼ねる（ホームで最初の
+   * 発言を送る前に届いているように）。
+   */
+  const markdownReady = useMarkdownReady();
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (markdownReady && el && shouldStick(el)) pinToBottom(el);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markdownReady]);
   const paramsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingParamsRef = useRef<{ convId: string; next: ParamsState } | null>(null);
   // ガラス面フッターの高さ（コンテンツ下部の余白に使う）
@@ -970,9 +986,27 @@ export function Chat({
    * 差が黙って生まれる）。
    */
   async function syncFeed(convId: string): Promise<void> {
+    /*
+     * 画面の並びが前回受け取ったまま動いていなければ、その札を送る。
+     * アプリを行き来するたびに、何も進んでいない会話の全文を運び直して
+     * いた。並びが動いたあと（送信・枝の移動・途中経過）は札を送らない
+     * （`pathTagOf` の注記）。
+     */
+    const held = messages;
+    const tag = pathTagOf(held);
     try {
-      const res = await fetch(`/api/conversations/${convId}/path`);
+      const res = await fetch(
+        `/api/conversations/${convId}/path`,
+        tag ? { headers: { "If-None-Match": tag } } : undefined,
+      );
+      if (res.status === 304) {
+        // サーバーの並びは手元と同じ。取り直した場合と同じ後始末だけをする
+        setError(null);
+        if (!isStreaming && !savingRef.current) trackRunning(convId, held);
+        return;
+      }
       if (!res.ok) return;
+      const etag = res.headers.get("ETag");
       const { messages: fresh } = (await res.json()) as PathResponse;
       /*
        * まだサーバーに無いメッセージが画面にある間は差し替えない。
@@ -995,7 +1029,13 @@ export function Chat({
          * 全部効かなくなっていた（監査 C-5）。サーバーの並びを採り、
          * その発言は末尾に残す（消すと打った本文が失われる）
          */
-        return unsaved.length > 0 ? [...fresh, ...unsaved] : fresh;
+        // 変わっていない行は前の物を使う（吹き出しを描き直させない）
+        const next = reuseUnchangedRows(
+          prev,
+          unsaved.length > 0 ? [...fresh, ...unsaved] : fresh,
+        );
+        rememberPathTag(next, etag);
+        return next;
       });
       if (replaced) {
         setError(null);
@@ -2178,18 +2218,14 @@ export function Chat({
    * 値が変わったときだけ作り直す。毎回作り直すと文脈（MessageProvider）の
    * 値が変わり、一覧を memo しても全吹き出しが描き直される。
    */
-  const lastIndex = messages.length - 1;
   const messageActions = useMemo<MessageActions>(
     () => ({
       isStreaming,
       selecting,
       toggleSelect: stableToggleSelect,
       startSelect: (id) => setSelecting(new Set([id])),
-      lastIndex,
       isImageGeneration,
       usdJpy,
-      bots,
-      models,
       switchBranch: stableSwitchBranch,
       fork: stableFork,
       regenerate: stableRegenerate,
@@ -2201,17 +2237,23 @@ export function Chat({
       isStreaming,
       selecting,
       stableToggleSelect,
-      lastIndex,
       isImageGeneration,
       usdJpy,
-      bots,
-      models,
       stableSwitchBranch,
       stableFork,
       stableRegenerate,
       stableAttachGenerated,
       stableFollowBottom,
     ],
+  );
+  /**
+   * 編集欄だけが使うもの。操作一式とは別に配る——ボットの一覧はシェルの
+   * 読み込み直しのたびに別の配列になり、同じ文脈に入れると全吹き出しを
+   * 描き直すことになる（message-context）。
+   */
+  const editorOptions = useMemo<EditorOptions>(
+    () => ({ bots, models }),
+    [bots, models],
   );
 
   // 重ねて出しているものは Escape で閉じる。内側から順に1枚ずつ
@@ -2439,6 +2481,7 @@ export function Chat({
         hiddenCount={hiddenCount}
         bodyDeferred={renderStage === "none"}
         actions={messageActions}
+        editorOptions={editorOptions}
         editing={editing}
         setEditing={setEditing}
         onSubmitEdit={onSubmitEdit}

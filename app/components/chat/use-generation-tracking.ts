@@ -10,7 +10,15 @@
  */
 import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { isRetryProgress } from "../../lib/retry";
-import { applyContentPayload , POLL_GIVE_UP_MS, pollBackoffMs } from "../../lib/polling";
+import {
+  applyContentPayload,
+  decodeRunProgress,
+  POLL_GIVE_UP_MS,
+  pollBackoffMs,
+  rememberPathTag,
+  reuseUnchangedRows,
+  RUN_PROGRESS_HEADER,
+} from "../../lib/polling";
 import type { UiCitation, UiMessage } from "../../lib/types";
 import type {
   MessageStateResponse,
@@ -71,6 +79,17 @@ function terminalStatus(status: number): boolean {
   // 408（タイムアウト）と429（混雑）は待てば直るので除く
   if (status === 408 || status === 429) return false;
   return status >= 400 && status < 500;
+}
+
+/**
+ * JSON として同じ中身か。サーバーから届く値（使用量・出典）は毎回
+ * 新しい物として組み立てられるので、同一性では比べられない。
+ * キーの順が違う（別の口から届いた）と「変わった」と見なすが、
+ * そのときは描き直しが1回増えるだけで、表示が古いまま残ることはない。
+ */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** 中断されたらすぐ起きる待ち。画面を離れた直後に空回りしない。 */
@@ -225,11 +244,29 @@ export function useGenerationTracking({
           },
         );
         if (res.status === 304) {
-          // 何も変わっていない＝まだ実行中。終われば行の状態が動き、札も変わる
+          // 積まれた応答は何も変わっていない＝まだ実行中。終われば見出しの
+          // 状態が動き、札も変わる
           failures.reset();
+          /*
+           * 札は見出しの進捗（成功・投げた・待ちの数）を見ない——司令役が
+           * 毎秒書き直すので、入れると 304 がほぼ返らなくなる。進捗は 304 に
+           * ヘッダーで添えて届くので、見出しの1行だけをここで差し替える。
+           * 数字が同じなら並びごと前の物を返し、何も描き直させない。
+           */
+          const live = decodeRunProgress(res.headers.get(RUN_PROGRESS_HEADER));
+          if (live && live.id === statusId) {
+            setMessages((prev) => {
+              const at = prev.findIndex((m) => m.id === live.id);
+              if (at < 0 || prev[at].content === live.content) return prev;
+              const next = [...prev];
+              next[at] = { ...prev[at], content: live.content };
+              return next;
+            });
+          }
         } else if (res.ok) {
           failures.reset();
-          etag = res.headers.get("ETag");
+          const tag = res.headers.get("ETag");
+          etag = tag;
           const { messages: fresh } = (await res.json()) as PathResponse;
           if (!alive(track)) return;
           // 見ているあいだに枝が変わっていたら、上書きせず見出しを見に行く
@@ -237,7 +274,17 @@ export function useGenerationTracking({
             runRef.current.following = false;
             continue;
           }
-          setMessages(fresh);
+          /*
+           * 変わっていない行は前の物を使い回す。丸ごと差し替えると、成功が
+           * 1件増えるたびに積み上がった応答を全部描き直すことになる。
+           * 受け取った札を並びに結んでおくと、終わったあとの取り直し
+           * （画面へ戻ったとき）が 304 で済む。
+           */
+          setMessages((prev) => {
+            const next = reuseUnchangedRows(prev, fresh);
+            rememberPathTag(next, tag);
+            return next;
+          });
           if (!fresh.some((m) => m.status === "streaming")) return;
         } else {
           // 会話が消えた等の確定的な失敗は、待っても直らない
@@ -311,9 +358,8 @@ export function useGenerationTracking({
       const at = prev.findIndex((m) => m.id === messageId);
       // 表示から外れている（別の枝を見ている）なら何もしない
       if (at < 0) return prev;
-      const next = [...prev];
-      const target = next[at];
-      next[at] = {
+      const target = prev[at];
+      const updated: UiMessage = {
         ...target,
         content: remote.content,
         reasoning: remote.reasoning ?? undefined,
@@ -322,6 +368,25 @@ export function useGenerationTracking({
         usage: remote.usage ?? target.usage,
         citations: remote.citations ?? target.citations,
       };
+      /*
+       * 何も変わっていなければ、並びも行も元のものを返す。ポーリングは
+       * 0.4秒ごとに走り、上流が考えているあいだ（本文が伸びない間）も
+       * 同じ中身が届き続ける。そのたびに新しい並びを作ると、Chat から
+       * 会話の全吹き出しまで描き直すことになっていた（長い会話ほど重い）。
+       * usage と citations は届くたびに別の物になるので、中身で比べる。
+       */
+      if (
+        updated.content === target.content &&
+        updated.reasoning === target.reasoning &&
+        updated.status === target.status &&
+        updated.error === target.error &&
+        sameJson(updated.usage, target.usage) &&
+        sameJson(updated.citations, target.citations)
+      ) {
+        return prev;
+      }
+      const next = [...prev];
+      next[at] = updated;
       return next;
     });
   }

@@ -10,7 +10,8 @@ import { prepareMarkdown } from "../lib/markdown";
  * そのまま描くと文章が塊で「ぶつっ」と現れる。ここでは
  *
  *  1. 届いた本文を少しずつ切り出して（useRevealedText）
- *  2. 塊に分け、伸びている末尾の塊だけを描き直し（splitBlocks + memo）
+ *  2. 塊に分け、伸びている末尾の塊だけを描き直し（splitBlocks + memo。
+ *     分けるのはこの画面で流れてきた応答だけ——下の blockMode）
  *  3. 新しく現れた語だけをふわりと浮かび上がらせる（animate）
  *
  * という3段で、届き方に関係なく一定の速さで滑らかに流れて見せる。
@@ -180,9 +181,26 @@ export function StreamingMessage({
    * 戻っていた（監査 E-7）。末尾も同じ入れ物の中の塊として置けば、
    * 生成が終わっても並びは変わらず、中身が伸びるだけになる。
    */
+  /*
+   * ただし塊に分けるのは、**この画面で流れてきた**応答だけ。分けて得を
+   * するのは伸びている間だけで、確定済みの応答を分けても解析し直す
+   * ものは無い。一方で塊ごとに ReactMarkdown が解析の道具を組み直す
+   * ので、分けるほど重くなる（2.6KB の応答が 81 塊に分かれ、1つで描く
+   * ときの約3.6倍かかっていた）。会話を開いたときに並ぶのはほとんどが
+   * 確定済みなので、そこは1つの Markdown として描く。
+   *
+   * 「いま生成中か」ではなく「生成中だったことがあるか」で決める。
+   * 終わったところで1つに切り替えると、上に書いた作り直し（E-7）が
+   * そのまま起きる。一度でも流れてきたら、この画面にある間は塊のまま。
+   * 逆向き（確定済み → 生成中）はここで切り替えるが、そのときは本文が
+   * 書き直されるところなので、残しておくべき図や表の状態が無い。
+   */
+  const [blockMode, setBlockMode] = useState(streaming);
+  if (streaming && !blockMode) setBlockMode(true);
+
   const blocks = useMemo(
-    () => (revealed ? splitBlocks(prepareMarkdown(revealed)) : []),
-    [revealed],
+    () => (blockMode && revealed ? splitBlocks(prepareMarkdown(revealed)) : []),
+    [revealed, blockMode],
   );
 
   const reveal = useRef(onReveal);
@@ -198,17 +216,23 @@ export function StreamingMessage({
    */
   return (
     <div className={proseClassName()}>
-      {blocks.map((block, i) => (
-        <MarkdownBody
-          key={i}
-          prepared
-          streaming={!done}
-          animate={!done && i === blocks.length - 1}
-          onImageClick={onImageClick}
-        >
-          {block}
-        </MarkdownBody>
-      ))}
+      {blockMode
+        ? blocks.map((block, i) => (
+            <MarkdownBody
+              key={i}
+              prepared
+              streaming={!done}
+              animate={!done && i === blocks.length - 1}
+              onImageClick={onImageClick}
+            >
+              {block}
+            </MarkdownBody>
+          ))
+        : revealed && (
+            <MarkdownBody streaming={!done} onImageClick={onImageClick}>
+              {revealed}
+            </MarkdownBody>
+          )}
     </div>
   );
 }
