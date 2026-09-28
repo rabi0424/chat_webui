@@ -893,12 +893,31 @@ export const GENERATING_CONVERSATIONS_SQL = `SELECT DISTINCT conversation_id AS 
  * なら、updated_at の索引の端を1行見るだけで済む。値が動いたときだけ
  * 一覧を取り直す。
  *
- * 拾えないのは削除だけ（消しても最大値は動かない）。消したのが自分の
- * 端末なら操作の直後に取り直しているので、残るのは「別の端末で消した
- * 会話が、次に何かが動くまで一覧に居座る」場合だけ。開けば404になる。
+ * 最大値だけでは拾えないものがある。削除（消しても最大値は動かない）と、
+ * タイトル・ピン・お気に入り・フォルダの変更（updated_at を動かさない。
+ * 動かすと名前を変えただけで一覧の先頭へ上がる）。とくに**新しい会話の
+ * 自動タイトル**は、応答が確定した**後**に書かれるので、確定で一覧を
+ * 取り直した時点ではまだ仮の名前のまま——そのあと何も動かなければ、
+ * 付いた名前がサイドバーに一度も出なかった。
+ *
+ * そこで、一覧の見た目だけを変える書き込みでは meta の番号
+ * （`LIST_VERSION_BUMP_SQL`）を1つ進め、同じ1文で受け取る。番号が
+ * 変わったら取り直す。meta の主キーを1行引くだけなので、読む行は増えない。
+ * 一度も進めていなければ version は NULL。
  */
-export const CONVERSATIONS_LATEST_SQL =
-  "SELECT MAX(updated_at) AS latest FROM conversations";
+export const CONVERSATIONS_LATEST_SQL = `SELECT
+         (SELECT MAX(updated_at) FROM conversations) AS latest,
+         (SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'list_version') AS version`;
+
+/**
+ * 一覧の見た目だけを変えた書き込みの印（番号を1つ進める）。
+ *
+ * 時刻ではなく番号にするのは、端末や Worker の時計の食い違いで
+ * 「前より小さい値」を書いてしまうと、見る側が変化に気づけないため。
+ * 書き込みの本体と同じ batch に入れる（サブリクエストを増やさない）。
+ */
+export const LIST_VERSION_BUMP_SQL = `INSERT INTO meta (key, value) VALUES ('list_version', '1')
+  ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1`;
 
 /**
  * サイドバーに出す会話の一覧。
@@ -1226,6 +1245,50 @@ export function searchConversationsSql(counts: {
  */
 export const INSERT_USER_MESSAGE_SQL =
   "INSERT INTO messages (id, conversation_id, parent_id, role, content, status, created_at) VALUES (?, ?, ?, 'user', ?, 'done', ?)";
+
+/**
+ * 会話の中の1件（生成中の行のポーリング、繋ぎ先の確認）。
+ *
+ * 会話IDも条件に入れる。IDだけで引くと、古いタブから別の会話の発言IDを
+ * 渡されたときに「この会話にある」と読み違え、どこにも繋がっていない
+ * 発言を作ってしまう（api.conversations.$id.generate.ts の注記）。
+ * バインドは (発言ID, 会話ID)。
+ */
+export const MESSAGE_IN_CONVERSATION_SQL =
+  "SELECT * FROM messages WHERE id = ? AND conversation_id = ?";
+
+/**
+ * meta から2つの値をまとめて読む。バインドは (キー, キー)。
+ *
+ * 生成の開始はアプリ設定と保存済みの為替を両方使う。別々に読むと
+ * 往復が2回になるので、1文で引く。返る行は見つかった分だけ（無ければ
+ * 0〜1行）で、並びは決めない——呼ぶ側は key で見分ける。
+ */
+export const META_TWO_VALUES_SQL =
+  "SELECT key, value FROM meta WHERE key IN (?, ?)";
+
+/**
+ * 1文で引く添付IDの数の上限。D1 のバインド変数は1文あたり100個まで
+ * （超えると文が丸ごと失敗し、送信そのものが通らなくなる）。
+ */
+export const ATTACHMENTS_BY_ID_CHUNK = 90;
+
+/**
+ * 指定IDの添付を引く文。バインドは添付ID（count 個）。
+ *
+ * 並びは決めない（IN 句は渡した順を守らない）。表示順は呼ぶ側が渡した
+ * ID の順に並べ直す。上限を超える数を渡されたら、黙って D1 に落とさず
+ * ここで投げる——分割し忘れは本番でしか出ない形で壊れるため。
+ */
+export function attachmentsByIdsSql(count: number): string {
+  if (!Number.isInteger(count) || count < 1 || count > ATTACHMENTS_BY_ID_CHUNK) {
+    throw new Error(
+      `添付IDは1文に1〜${ATTACHMENTS_BY_ID_CHUNK}個まで（渡されたのは ${count} 個）`,
+    );
+  }
+  const placeholders = Array.from({ length: count }, () => "?").join(",");
+  return `SELECT * FROM attachments WHERE id IN (${placeholders})`;
+}
 
 /* ------------------------------------------------------------------ *
  * 画面遷移と起動の実測（perf_samples / perf_builds）

@@ -39,11 +39,11 @@ const messageRoute =
 
 const BODY = "これは生成中の本文です。".repeat(20);
 
-async function poll(since: number | null) {
-  const url =
-    since == null
-      ? "https://x/api/conversations/c1/messages/m1"
-      : `https://x/api/conversations/c1/messages/m1?since=${since}`;
+async function poll(since: number | null, rsince?: number) {
+  const q = new URLSearchParams();
+  if (since != null) q.set("since", String(since));
+  if (rsince != null) q.set("rsince", String(rsince));
+  const url = `https://x/api/conversations/c1/messages/m1${q.size ? `?${q}` : ""}`;
   const res = await messageRoute.loader({
     request: new Request(url),
     params: { id: "c1", mid: "m1" },
@@ -52,6 +52,9 @@ async function poll(since: number | null) {
     content?: string;
     contentDelta?: string;
     contentLength: number;
+    reasoning?: string | null;
+    reasoningDelta?: string;
+    reasoningLength: number;
   };
 }
 
@@ -106,5 +109,37 @@ describe("1件追いのルート", () => {
     const got = await poll(5);
     expect(got.contentDelta).toBeUndefined();
     expect(got.content).toBe(state.message.content);
+  });
+
+  describe("思考（reasoning）", () => {
+    const THOUGHT = "まず前提を確かめる。".repeat(30);
+    beforeEach(() => {
+      state.message.reasoning = THOUGHT;
+    });
+
+    it("生成中の思考は、rsince から先だけを返す（本文の since とは別に）", async () => {
+      // 本文は全文（since=0）、思考は差分——取り違えればどちらかが壊れる
+      const got = await poll(0, 25);
+      expect(got.reasoningDelta).toBe(THOUGHT.slice(25));
+      expect("reasoning" in got).toBe(false);
+      expect(got.reasoningLength).toBe(THOUGHT.length);
+      expect(got.content).toBe(BODY);
+    });
+
+    it("rsince を付けない（古い画面・最初の1回）なら全文", async () => {
+      const got = await poll(10);
+      expect(got.reasoning).toBe(THOUGHT);
+      expect(got.reasoningDelta).toBeUndefined();
+      expect(got.contentDelta).toBe(BODY.slice(10));
+    });
+
+    it("確定したら全文で返す（思考が消えた null も運ぶ）", async () => {
+      state.message.status = "error";
+      state.message.reasoning = null;
+      const got = await poll(10, 25);
+      expect(got).toHaveProperty("reasoning", null);
+      expect(got.reasoningDelta).toBeUndefined();
+      expect(got.reasoningLength).toBe(0);
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRoutesStub, useLocation } from "react-router";
 import Shell from "../../app/routes/shell";
@@ -65,7 +65,19 @@ async function renderShell(initialPath = "/") {
   // ルーターのスタブはローダーを待ってから描く。描かれる前に押しても
   // 拾う相手が居ない
   await screen.findByTestId("path");
+  await settleEffects();
   return userEvent.setup();
+}
+
+/**
+ * 描かれたあとの effect を流し切る。
+ *
+ * スタブはローダーを待ってから act の外で描くので、要素が見えた時点で
+ * キーを拾う側（useEffect で登録）がまだ付いていないことがある。全体を
+ * 並べて走らせて負荷が高いときだけ、押したキーが素通りして落ちていた。
+ */
+async function settleEffects() {
+  await act(async () => {});
 }
 
 const path = () => screen.getByTestId("path").textContent;
@@ -173,6 +185,7 @@ describe("そのほか", () => {
     ]);
     render(<Stub initialEntries={["/"]} />);
     await screen.findByTestId("path");
+    await settleEffects();
     fireEvent.keyDown(document.body, { key: "c", metaKey: true });
     expect(handler).not.toHaveBeenCalled();
     fireEvent.keyDown(document.body, { key: "C", metaKey: true, shiftKey: true });

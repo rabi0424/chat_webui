@@ -9,6 +9,7 @@ import {
   readAccessConfig,
 } from "../app/lib/access-jwt.server";
 import {
+  expandAttachmentsFor,
   runSingleGeneration,
   type GenerationJob,
 } from "../app/lib/generation.server";
@@ -135,7 +136,11 @@ export class GenerationRunner extends DurableObject {
       await this.putJob(job as GenerationJob);
       // 新しいジョブなので、前のジョブの残骸が居たら捨てる
       await this.ctx.storage.delete(STATE_KEY);
-      await this.ctx.storage.setAlarm(Date.now() + 50);
+      // 待つ理由が無いので「いま」に置く（以前は +50ms で、送信から上流へ
+      // 投げるまでにそのまま足されていた）。アラームはこの fetch が
+      // 返って書き込みが確定してから走るので、ジョブを読み損ねることはない。
+      // 実行体の起きている時間（課金）は縮みこそすれ増えない
+      await this.ctx.storage.setAlarm(Date.now());
       return Response.json({ ok: true }, { status: 202 });
     } catch (e) {
       const reason = (e as Error).message ?? String(e);
@@ -158,6 +163,19 @@ export class GenerationRunner extends DurableObject {
       return;
     }
     const state = (await this.ctx.storage.get<RetryRunState>(STATE_KEY)) ?? null;
+    /*
+     * 単発の生成は、下の行の確認（D1 の往復）を待つあいだに添付の読み出し
+     * （D1 と R2）を始めておく。以前は確認が済んでから読み始めていたので、
+     * 画像のある会話では往復がもう1回、上流へ投げる前に直列に並んでいた。
+     *
+     * 確認は省かない。行が消えた・止められた・前の実行が失われた、の
+     * どれかなら上流へは投げない——読み出しは内部の通信だけで課金されない
+     * ので、無駄になっても捨てればよいが、投げてしまった依頼は取り消せない。
+     * 使わなかったときの失敗は握り潰す（使うときは runSingleGeneration が
+     * 受け取って、接続の失敗として確定させる）。
+     */
+    const expanded = job.retry ? undefined : expandAttachmentsFor(job);
+    expanded?.catch(() => {});
     try {
       const row = await getMessage(job.conversationId, job.assistantMessageId);
       if (row && row.status === "streaming") {
@@ -188,7 +206,8 @@ export class GenerationRunner extends DurableObject {
         } else {
           const outcome = job.retry
             ? await runRetryGenerationJob(job, job.retry, state)
-            : ((await runSingleGeneration(job)), { done: true as const });
+            : ((await runSingleGeneration(job, undefined, expanded)),
+              { done: true as const });
           if (!outcome.done) {
             // サブリクエストの枠を使い切った。続きは次のアラームで
             await this.ctx.storage.put(STATE_KEY, outcome.state);

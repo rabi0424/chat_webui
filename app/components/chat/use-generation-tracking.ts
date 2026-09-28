@@ -12,6 +12,7 @@ import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { isRetryProgress } from "../../lib/retry";
 import {
   applyContentPayload,
+  applyReasoningPayload,
   decodeRunProgress,
   POLL_GIVE_UP_MS,
   pollBackoffMs,
@@ -348,6 +349,7 @@ export function useGenerationTracking({
   function applyRemoteState(messageId: string, remote: {
     /** 組み立て済みの全文。差分のまま渡してはならない。 */
     content: string;
+    /** 組み立て済みの思考。こちらも差分のまま渡してはならない。 */
     reasoning: string | null;
     status: string;
     error: string | null;
@@ -434,14 +436,19 @@ export function useGenerationTracking({
      * いた（400ms ごとに走るため、実測で二桁の無駄になる。§3.3）。
      *
      * 空から始めるので、最初の1回は全文が返る。
+     *
+     * 思考も同じく `rsince` で持っている長さを伝える。考えるモデルでは
+     * 思考のほうが長く、本文だけを差分にしても1回の重さはほとんど
+     * 減らなかった。思考が無い（null）ときは "" として 0 を伝える。
      */
     let held = "";
+    let heldReasoning = "";
     noteRunning(messageId);
     for (;;) {
       if (!alive(track)) return;
       try {
         const res = await fetch(
-          `/api/conversations/${convId}/messages/${messageId}?since=${held.length}`,
+          `/api/conversations/${convId}/messages/${messageId}?since=${held.length}&rsince=${heldReasoning.length}`,
           { signal: track.signal },
         );
         if (!res.ok) {
@@ -456,16 +463,26 @@ export function useGenerationTracking({
         const remote = (await res.json()) as MessageStateResponse;
         if (!alive(track)) return;
         const content = applyContentPayload(held, remote);
-        if (content == null) {
-          // 継ぎ足した結果が、サーバーの言う長さと合わない。本文が置き換わった
-          // （書き直し・確定）ので、次の回で全文を取り直す。黙って継ぎ足すと
-          // 壊れた本文を表示し続けることになる
-          held = "";
+        const thought = applyReasoningPayload(heldReasoning, remote);
+        if (content == null || thought == null) {
+          // 継ぎ足した結果が、サーバーの言う長さと合わない。本文か思考が
+          // 置き換わった（書き直し・確定）ので、次の回で全文を取り直す。
+          // 黙って継ぎ足すと壊れた本文を表示し続けることになる。
+          // 取り直すのは**食い違った側だけ**。合った側は正しく組み上がって
+          // いるので、手元をそこまで進めておけば次の回も差分で済む。
+          // この回は表示しない（片方だけ新しい状態を出すことになるため）
+          held = content ?? "";
+          heldReasoning = thought ? (thought.reasoning ?? "") : "";
           await sleep(POLL_INTERVAL_MS, track.signal);
           continue;
         }
         held = content;
-        applyRemoteState(messageId, { ...remote, content });
+        heldReasoning = thought.reasoning ?? "";
+        applyRemoteState(messageId, {
+          ...remote,
+          content,
+          reasoning: thought.reasoning,
+        });
         if (remote.status !== "streaming") return;
         // リトライ生成だと分かったら、パスごと追う方へ移る。見出しの下に
         // 成功が積まれていくので、1件だけ見張っていても増えた応答に

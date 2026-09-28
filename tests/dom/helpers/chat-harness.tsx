@@ -9,7 +9,7 @@
  * 貼り付け・追跡・分岐の組み立て）は本物をそのまま動かす。
  */
 import { useMemo, useState } from "react";
-import { createRoutesStub, Outlet } from "react-router";
+import { createRoutesStub, Outlet, useOutletContext } from "react-router";
 import {
   act,
   render,
@@ -25,7 +25,7 @@ import { DEFAULT_APP_SETTINGS, type AppSettings } from "../../../app/lib/setting
 import type { ModelInfo } from "../../../app/lib/openrouter.server";
 import type { UiMessage } from "../../../app/lib/types";
 import type { ParamsState } from "../../../app/lib/params";
-import { contentPayload } from "../../../app/lib/polling";
+import { contentPayload, reasoningPayload } from "../../../app/lib/polling";
 import { isRetryProgress } from "../../../app/lib/retry";
 
 export const TEST_MODEL: ModelInfo = {
@@ -81,21 +81,45 @@ export interface ServerStub {
  * 全文を毎回運ばないため）。ここで同じ規則を通しておくと、画面側の
  * 組み立てが壊れたときに既存のテストがそのまま落ちる——テストの側が
  * 旧い形を喋り続けると、その壊れ方を誰も見張らないことになる。
+ *
+ * 思考（reasoning）も `?rsince=` を見て同じ規則で差分にする。本文と思考は
+ * 別々に変換する——片方だけを手で組み立てた（長さを書いた）テストでも、
+ * もう片方は本物の形で届くように。
  */
 function asWireFormat(path: string, payload: unknown): unknown {
   if (!path.includes("/messages/") || payload == null) return payload;
   const p = payload as Record<string, unknown>;
-  if (typeof p.content !== "string" || p.contentLength != null) return payload;
-  const since = Number(
-    new URLSearchParams(path.split("?")[1] ?? "").get("since") ?? 0,
-  );
-  const appendOnly = p.status === "streaming" && !isRetryProgress(p.content);
-  const { content, ...rest } = p;
-  void content;
-  return {
-    ...rest,
-    ...contentPayload(p.content, Number.isFinite(since) ? since : 0, appendOnly),
+  const params = new URLSearchParams(path.split("?")[1] ?? "");
+  const sinceOf = (key: string) => {
+    const n = Number(params.get(key) ?? 0);
+    return Number.isFinite(n) ? n : 0;
   };
+  const appendOnly =
+    p.status === "streaming" &&
+    !isRetryProgress(typeof p.content === "string" ? p.content : "");
+  let out: Record<string, unknown> = p;
+  if (typeof p.content === "string" && p.contentLength == null) {
+    const { content, ...rest } = out;
+    void content;
+    out = {
+      ...rest,
+      ...contentPayload(p.content, sinceOf("since"), appendOnly),
+    };
+  }
+  // 思考を書いていないテストは「思考なし」とみなす。本物の行には必ず
+  // reasoning の列があり、ルートは常に長さを添えて返すので
+  if (p.reasoningLength == null) {
+    const { reasoning, ...rest } = out;
+    out = {
+      ...rest,
+      ...reasoningPayload(
+        typeof reasoning === "string" ? reasoning : null,
+        sinceOf("rsince"),
+        appendOnly,
+      ),
+    };
+  }
+  return out;
 }
 
 let seq = 0;
@@ -293,6 +317,11 @@ export function renderChat(props: {
   bots?: BotRow[];
   /** この会話の担当ボット（ホームで選んだ／会話に記録されているもの）。 */
   bot?: BotContext | null;
+  /**
+   * ボットの選択を外す（チップの ×）。本物のホームと同じく、描くたびに
+   * 新しい関数を渡す。
+   */
+  onClearBot?: () => void;
   initialModel?: string | null;
   systemPrompt?: string | null;
   /** この会話に保存されている生成パラメータ。 */
@@ -345,7 +374,11 @@ export function renderChat(props: {
         },
         {
           index: true,
-          Component: () => (
+          // 本物のホーム（routes/home.tsx）と同じくシェルの値を読み、
+          // シェルが読み込み直すたびに描き直される形にする
+          Component: function ChatRoute() {
+            useOutletContext();
+            return (
             <Chat
               conversationId={
                 props.conversationId === undefined
@@ -354,11 +387,15 @@ export function renderChat(props: {
               }
               initialMessages={props.initialMessages ?? []}
               bot={props.bot ?? null}
+              onClearBot={
+                props.onClearBot ? () => props.onClearBot?.() : undefined
+              }
               initialModel={props.initialModel ?? null}
               initialParams={props.initialParams ?? null}
               systemPrompt={props.systemPrompt ?? null}
             />
-          ),
+            );
+          },
         },
       ],
     },

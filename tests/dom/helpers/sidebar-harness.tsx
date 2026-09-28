@@ -18,6 +18,11 @@ export interface SidebarServer {
   calls: { method: string; path: string; body: unknown }[];
   lastBody(match: string): unknown;
   countOf(match: string): number;
+  /**
+   * その宛先への書き込み（GET 以外）の数。行に指やポインタが乗ると会話の
+   * 先読み（GET …/full）が飛ぶので、「何も送らない」を見るときはこちら。
+   */
+  writesTo(match: string): number;
   /** 以後のすべての要求を失敗させる（操作の失敗の見え方を見るため）。 */
   failAll(status: number): void;
   /** 以後のすべての要求で通信そのものを失敗させる（圏外・切断）。 */
@@ -69,6 +74,8 @@ export function installSidebarServer(): SidebarServer {
     lastBody: (m) =>
       [...calls].reverse().find((c) => c.path.includes(m))?.body ?? null,
     countOf: (m) => calls.filter((c) => c.path.includes(m)).length,
+    writesTo: (m) =>
+      calls.filter((c) => c.method !== "GET" && c.path.includes(m)).length,
     failAll: (status) => {
       failStatus = status;
     },

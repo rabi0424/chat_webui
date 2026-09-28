@@ -10,6 +10,7 @@ import {
 import { liveProgressOf, pathFingerprint } from "./polling";
 import { deleteFiles } from "./r2.server";
 import { thumbnailKeyOf } from "./constants";
+import { pinnedMovePatch } from "./sidebar-overlay";
 import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_SYSTEM_PROMPT_MAX,
@@ -27,6 +28,7 @@ import { MAX_TITLE_LENGTH, providerOf } from "./constants";
 import {
   CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
+  LIST_VERSION_BUMP_SQL,
   DUE_PENDING_DELETIONS_SQL,
   INSERT_USER_MESSAGE_SQL,
   appendAssistantMessageStatements,
@@ -92,6 +94,10 @@ import {
   PATH_TAG_CONVERSATION_SQL,
   PATH_TAG_MESSAGES_SQL,
   pathTagMessagesBinds,
+  ATTACHMENTS_BY_ID_CHUNK,
+  attachmentsByIdsSql,
+  MESSAGE_IN_CONVERSATION_SQL,
+  META_TWO_VALUES_SQL,
   type PathTagAttachmentRow,
   type PathTagRow,
 } from "./schema";
@@ -241,19 +247,30 @@ export interface MessageRow {
 
 const APP_SETTINGS_KEY = "app_settings";
 
+/**
+ * 保存してあるアプリ設定の値（JSON）を読む。無い・壊れていれば既定。
+ *
+ * 単独で読む getAppSettings と、生成の開始でまとめて読む
+ * readGenerationStart の両方がここを通す。解釈を2か所に書くと、片方だけ
+ * 既定の補い方が変わったときに「開始のときだけ設定が違う」ことになる。
+ */
+function parseAppSettings(value: string | null | undefined): AppSettings {
+  if (value == null) return { ...DEFAULT_APP_SETTINGS };
+  try {
+    const parsed = JSON.parse(value) as Partial<AppSettings>;
+    return { ...DEFAULT_APP_SETTINGS, ...parsed };
+  } catch {
+    return { ...DEFAULT_APP_SETTINGS };
+  }
+}
+
 export async function getAppSettings(): Promise<AppSettings> {
   const d = await db();
   const row = await d
     .prepare("SELECT value FROM meta WHERE key = ?")
     .bind(APP_SETTINGS_KEY)
     .first<{ value: string }>();
-  if (!row) return { ...DEFAULT_APP_SETTINGS };
-  try {
-    const parsed = JSON.parse(row.value) as Partial<AppSettings>;
-    return { ...DEFAULT_APP_SETTINGS, ...parsed };
-  } catch {
-    return { ...DEFAULT_APP_SETTINGS };
-  }
+  return parseAppSettings(row?.value);
 }
 
 /** 渡された項目だけを更新する。不正値は現在値のまま。 */
@@ -493,15 +510,30 @@ export async function createConversation(params: {
   return row;
 }
 
+/**
+ * 一覧の見た目だけを変える書き込みを、「一覧が動いた」印と一緒に流す。
+ *
+ * タイトル・ピン・フォルダの変更や削除は updated_at の最大値を動かさない
+ * ので、サイドバーの見張り（listConversationFlags）が気づけない。番号を
+ * 同じ batch で進める（サブリクエストは1回のまま）。
+ */
+async function withListBump(
+  d: D1Database,
+  statements: D1PreparedStatement[],
+): Promise<D1Result[]> {
+  return await d.batch([...statements, d.prepare(LIST_VERSION_BUMP_SQL)]);
+}
+
 export async function updateConversationTitle(
   id: string,
   title: string,
 ): Promise<void> {
   const d = await db();
-  await d
-    .prepare("UPDATE conversations SET title = ? WHERE id = ?")
-    .bind(title, id)
-    .run();
+  // 自動タイトルは応答の確定より後に書かれる。印を進めないと、確定で
+  // 取り直した一覧の仮の名前が、次に何かが動くまで残る
+  await withListBump(d, [
+    d.prepare("UPDATE conversations SET title = ? WHERE id = ?").bind(title, id),
+  ]);
 }
 
 export async function updateConversationModel(
@@ -625,12 +657,13 @@ export async function createFolder(name: string): Promise<FolderRow> {
     created_at: now,
     updated_at: now,
   };
-  await d
-    .prepare(
-      "INSERT INTO folders (id, name, pinned, sort_order, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)",
-    )
-    .bind(row.id, row.name, now, now)
-    .run();
+  await withListBump(d, [
+    d
+      .prepare(
+        "INSERT INTO folders (id, name, pinned, sort_order, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)",
+      )
+      .bind(row.id, row.name, now, now),
+  ]);
   return row;
 }
 
@@ -651,17 +684,16 @@ export async function updateFolder(
     binds.unshift(fields.pinned ? 1 : 0);
   }
   binds.push(id);
-  const res = await d
-    .prepare(`UPDATE folders SET ${sets.join(", ")} WHERE id = ?`)
-    .bind(...binds)
-    .run();
+  const [res] = await withListBump(d, [
+    d.prepare(`UPDATE folders SET ${sets.join(", ")} WHERE id = ?`).bind(...binds),
+  ]);
   return (res.meta.changes ?? 0) > 0;
 }
 
 /** フォルダ削除。中の会話はフォルダなしに戻る（会話自体は消えない）。 */
 export async function deleteFolder(id: string): Promise<void> {
   const d = await db();
-  await d.batch([
+  await withListBump(d, [
     d.prepare("UPDATE conversations SET folder_id = NULL WHERE folder_id = ?").bind(id),
     d.prepare("DELETE FROM folders WHERE id = ?").bind(id),
   ]);
@@ -697,15 +729,19 @@ export async function updateConversationMeta(
   }
   if (sets.length === 0) return;
   binds.push(id);
-  await d
-    .prepare(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`)
-    .bind(...binds)
-    .run();
+  await withListBump(d, [
+    d.prepare(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`).bind(...binds),
+  ]);
 }
 
 /**
  * ピン留め一覧（フォルダ + 会話の混在）の中で項目を上下に移動する。
  * sort_order を 1..n に正規化してから隣と入れ替える。
+ *
+ * 手順そのものは `pinnedMovePatch`（lib/sidebar-overlay.ts）にある。
+ * サイドバーは返事を待たずに同じ計算で並びを先に変えて見せるので、
+ * 書き写すと片方だけ直したときに、取り直した一覧が着いた瞬間に並びが
+ * 跳ねる。同じ関数を使う。
  */
 export async function movePinnedItem(
   type: "conversation" | "folder",
@@ -717,36 +753,21 @@ export async function movePinnedItem(
     listFolders(),
     listConversations(),
   ]);
-  const items = [
-    ...folders.filter((f) => f.pinned).map((f) => ({ type: "folder" as const, row: f })),
-    ...conversations.filter((c) => c.pinned).map((c) => ({ type: "conversation" as const, row: c })),
-  ].sort(
-    (a, b) => a.row.sort_order - b.row.sort_order || a.row.created_at - b.row.created_at,
-  );
-
-  const index = items.findIndex((it) => it.type === type && it.row.id === id);
-  if (index === -1) return;
-  const target = direction === "up" ? index - 1 : index + 1;
-  if (target < 0 || target >= items.length) return;
-
-  [items[index], items[target]] = [items[target], items[index]];
-
-  const statements: D1PreparedStatement[] = [];
-  items.forEach((it, i) => {
-    const order = i + 1;
-    if (it.row.sort_order !== order) {
-      statements.push(
-        d
-          .prepare(
-            it.type === "folder"
-              ? "UPDATE folders SET sort_order = ? WHERE id = ?"
-              : "UPDATE conversations SET sort_order = ? WHERE id = ?",
-          )
-          .bind(order, it.row.id),
-      );
-    }
-  });
-  if (statements.length > 0) await d.batch(statements);
+  const patch = pinnedMovePatch(conversations, folders, type, id, direction);
+  if (!patch) return;
+  const statements: D1PreparedStatement[] = [
+    ...Object.entries(patch.folders).map(([fid, p]) =>
+      d
+        .prepare("UPDATE folders SET sort_order = ? WHERE id = ?")
+        .bind(p.sort_order, fid),
+    ),
+    ...Object.entries(patch.conversations).map(([cid, p]) =>
+      d
+        .prepare("UPDATE conversations SET sort_order = ? WHERE id = ?")
+        .bind(p.sort_order, cid),
+    ),
+  ];
+  if (statements.length > 0) await withListBump(d, statements);
 }
 
 // --- Bots -----------------------------------------------------------------
@@ -842,7 +863,9 @@ export async function deleteConversation(id: string): Promise<void> {
     .prepare("SELECT r2_key FROM attachments WHERE conversation_id = ?")
     .bind(id)
     .all<{ r2_key: string }>();
-  await d.batch([
+  // 消しても updated_at の最大値は動かない（むしろ下がる）ので印を進める。
+  // 進めないと、別の端末で消した会話が次に何かが動くまで一覧に居座る
+  await withListBump(d, [
     d.prepare("DELETE FROM attachments WHERE conversation_id = ?").bind(id),
     // 「成功するまで生成」の進み具合の記録。見出しが消えれば用済み
     d.prepare(
@@ -1139,26 +1162,48 @@ function chunked<T>(items: T[], size = BIND_CHUNK): T[][] {
   return out;
 }
 
-/** 指定IDの添付を、渡されたID順（= 表示順）で返す。 */
-export async function getAttachments(ids: string[]): Promise<AttachmentRow[]> {
-  if (ids.length === 0) return [];
-  const d = await db();
-  const rows: AttachmentRow[] = [];
-  for (const part of chunked(ids)) {
-    const { results } = await d
-      .prepare(
-        `SELECT * FROM attachments WHERE id IN (${part
-          .map(() => "?")
-          .join(",")})`,
-      )
-      .bind(...part)
-      .all<AttachmentRow>();
-    rows.push(...results);
-  }
+/**
+ * 添付IDを引く文を、バインドの上限に収まる単位に切って作る。
+ *
+ * 同じIDが何度出てきても1度だけ引く（履歴の複数の発言が同じ添付を
+ * 指すことがあり、そのぶん上限に早く届くだけで得るものが無い）。
+ */
+function attachmentStatements(
+  d: D1Database,
+  ids: string[],
+): D1PreparedStatement[] {
+  const unique = [...new Set(ids)];
+  return chunked(unique, ATTACHMENTS_BY_ID_CHUNK).map((part) =>
+    d.prepare(attachmentsByIdsSql(part.length)).bind(...part),
+  );
+}
+
+/** 引いた行を、渡されたID順（= 表示順）に並べ直す。見つからないIDは落とす。 */
+function orderAttachments(
+  ids: string[],
+  rows: AttachmentRow[],
+): AttachmentRow[] {
   const byId = new Map(rows.map((a) => [a.id, a]));
   return ids
     .map((id) => byId.get(id))
     .filter((a): a is AttachmentRow => a != null);
+}
+
+/**
+ * 指定IDの添付を、渡されたID順（= 表示順）で返す。
+ *
+ * 分割した文は1つの batch で流す。以前は分割ごとに往復していたので、
+ * 履歴の画像を読む生成の開始（expandAttachments）では画像の数に比例して
+ * 上流へ投げるまでの時間が延びていた。batch は全体で1サブリクエスト。
+ */
+export async function getAttachments(ids: string[]): Promise<AttachmentRow[]> {
+  if (ids.length === 0) return [];
+  const d = await db();
+  const results = await d.batch<AttachmentRow>(attachmentStatements(d, ids));
+  return orderAttachments(
+    ids,
+    results.flatMap((r) => r.results),
+  );
 }
 
 /**
@@ -1491,6 +1536,12 @@ export async function beginGeneration(params: {
   userContent: string | null;
   /** 新しいユーザーメッセージに添付する画像（アップロード済みID）。 */
   userAttachmentIds?: string[];
+  /**
+   * 上の添付を既に読んであれば、その行（readGenerationStart の結果）。
+   * 渡されればもう一度は読まない——生成の開始では、読むものを全部
+   * 1つの batch にまとめてあり、ここで読み直すと往復が1回増える。
+   */
+  userAttachments?: AttachmentRow[];
   modelId: string;
 }): Promise<{ userMessageId: string | null; assistantMessageId: string }> {
   const d = await db();
@@ -1506,7 +1557,9 @@ export async function beginGeneration(params: {
         .prepare(INSERT_USER_MESSAGE_SQL)
         .bind(userMessageId, params.conversationId, parent, params.userContent, now),
     );
-    const attachments = await getAttachments(params.userAttachmentIds ?? []);
+    const attachments =
+      params.userAttachments ??
+      (await getAttachments(params.userAttachmentIds ?? []));
     statements.push(
       ...linkAttachmentStatements(d, attachments, {
         messageId: userMessageId,
@@ -1661,14 +1714,110 @@ export async function storeUsdJpy(rate: number): Promise<void> {
     .run();
 }
 
+/** 保存してある為替の値を読む。無い・壊れていれば null。 */
+function parseUsdJpy(value: string | null | undefined): number | null {
+  const n = Number(value);
+  return value != null && Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export async function readStoredUsdJpy(): Promise<number | null> {
   const d = await db();
   const row = await d
     .prepare("SELECT value FROM meta WHERE key = ?")
     .bind(USD_JPY_KEY)
     .first<{ value: string }>();
-  const n = Number(row?.value);
-  return Number.isFinite(n) && n > 0 ? n : null;
+  return parseUsdJpy(row?.value);
+}
+
+/** 生成の開始で、書く前に読んでおくもの。 */
+export interface GenerationStartReads {
+  conversation: ConversationRow | null;
+  settings: AppSettings;
+  /** 保存済みの USD/JPY（上限の判定用）。無ければ null。 */
+  storedUsdJpy: number | null;
+  /** usageSince 以降の台帳の合計（上限の判定用）。 */
+  usageTotals: UsageTotals;
+  /** 繋ぎ先。parentId を渡さなければ、または見つからなければ null。 */
+  parent: MessageRow | null;
+  /** 新しい発言に付ける添付の行（渡したID順。見つからないものは落とす）。 */
+  userAttachments: AttachmentRow[];
+}
+
+/**
+ * 生成の開始が書く前に読むものを、**1つの batch で**読む。
+ *
+ * 以前は会話 → アプリ設定 → 台帳の合計と為替 → アプリ設定（もう一度）→
+ * 繋ぎ先 → 添付 → 書き込み、と Worker ↔ D1 の往復が直列に6〜7回並び、
+ * 送信してから上流へ投げるまでの待ちの大半がここだった。どれも互いの
+ * 結果に依らずに引けるので、まとめる（batch は全体で1サブリクエスト）。
+ *
+ * 台帳の合計は上限を設けていなくても読む。読まないために往復を分けると
+ * 本末転倒で、1か月分の集計は軽い（索引 `at` で引く）。
+ *
+ * 判定の順（会話が無い → 上限 → 繋ぎ先が無い）は呼ぶ側が決める。ここは
+ * 読むだけで、何も弾かない。
+ */
+export async function readGenerationStart(params: {
+  conversationId: string;
+  parentId: string | null;
+  userAttachmentIds: string[];
+  /** 台帳の合計をこの時刻以降で取る（今月の初め）。 */
+  usageSince: number;
+}): Promise<GenerationStartReads> {
+  const d = await db();
+  const statements: D1PreparedStatement[] = [
+    d.prepare(PATH_CONVERSATION_SQL).bind(params.conversationId),
+    d.prepare(META_TWO_VALUES_SQL).bind(APP_SETTINGS_KEY, USD_JPY_KEY),
+    d.prepare(USAGE_TOTALS_SQL).bind(params.usageSince),
+  ];
+  if (params.parentId != null) {
+    statements.push(
+      d
+        .prepare(MESSAGE_IN_CONVERSATION_SQL)
+        .bind(params.parentId, params.conversationId),
+    );
+  }
+  const attachmentChunks =
+    params.userAttachmentIds.length > 0
+      ? attachmentStatements(d, params.userAttachmentIds)
+      : [];
+  statements.push(...attachmentChunks);
+
+  const results = await d.batch(statements);
+  const [convRes, metaRes, usageRes] = results;
+  const parentRes = params.parentId != null ? results[3] : null;
+  const attachmentRes = results.slice(results.length - attachmentChunks.length);
+
+  const meta = new Map(
+    (metaRes.results as unknown as { key: string; value: string }[]).map(
+      (r) => [r.key, r.value],
+    ),
+  );
+  const conversation =
+    (convRes.results as unknown as ConversationRow[])[0] ?? null;
+  const parent =
+    (parentRes?.results as unknown as MessageRow[] | undefined)?.[0] ?? null;
+  // 繋ぎ先が中断されたまま残っていれば、単独で読んだとき（getMessage）と
+  // 同じく確定させる。会話が無いなら 404 で終わるので触らない
+  if (conversation && parent) await sweepStaleStreaming([parent]);
+  return {
+    conversation,
+    settings: parseAppSettings(meta.get(APP_SETTINGS_KEY)),
+    storedUsdJpy: parseUsdJpy(meta.get(USD_JPY_KEY)),
+    usageTotals: toTotals(
+      (usageRes.results as unknown as UsageTotalsRow[])[0],
+    ),
+    parent,
+    userAttachments:
+      attachmentChunks.length > 0
+        ? orderAttachments(
+            params.userAttachmentIds,
+            attachmentRes.flatMap(
+              (r) => r.results as unknown as AttachmentRow[],
+            ),
+          )
+        : [],
+  };
 }
 
 /** 台帳に載せる種別。何にいくら使ったかを後から分けて見るため。 */
@@ -2078,11 +2227,14 @@ export interface ConversationFlags {
    * 取り直す（並び替え・新しい会話は updated_at を動かす）。何も無ければ 0。
    *
    * **タイトルの書き換えは動かさない**（動かすと名前を変えただけで一覧の
-   * 先頭へ上がる）。別の端末で変えた名前はここでは拾えないので、会話画面は
-   * 開いたときのローダーの名前と一覧の名前の新しいほうを出す
-   * （lib/conversation-title.ts）。
+   * 先頭へ上がる）。そちらは listVersion で拾う。
    */
   latest: number;
+  /**
+   * 一覧の見た目だけを変えた書き込み（タイトル・ピン・フォルダ・削除）の
+   * 通し番号。変わったら取り直す。まだ一度も無ければ 0。
+   */
+  listVersion: number;
 }
 
 /**
@@ -2102,11 +2254,14 @@ export async function listConversationFlags(): Promise<ConversationFlags> {
     (rows as { id: string | null }[])
       .map((r) => r.id)
       .filter((id): id is string => id != null);
-  const newest = (latest.results as { latest: number | null }[])[0]?.latest;
+  const head = (
+    latest.results as { latest: number | null; version: number | null }[]
+  )[0];
   return {
     unread: ids(unread.results),
     generating: ids(generating.results),
-    latest: typeof newest === "number" ? newest : 0,
+    latest: typeof head?.latest === "number" ? head.latest : 0,
+    listVersion: typeof head?.version === "number" ? head.version : 0,
   };
 }
 
@@ -2290,7 +2445,7 @@ export async function getMessage(
 ): Promise<MessageRow | null> {
   const d = await db();
   const row = await d
-    .prepare("SELECT * FROM messages WHERE id = ? AND conversation_id = ?")
+    .prepare(MESSAGE_IN_CONVERSATION_SQL)
     .bind(messageId, conversationId)
     .first<MessageRow>();
   if (row) await sweepStaleStreaming([row]);

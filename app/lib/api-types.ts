@@ -1,4 +1,4 @@
-import type { ContentPayload } from "./polling";
+import type { ContentPayload, ReasoningPayload } from "./polling";
 /**
  * APIの応答の形。サーバーとクライアントの両方がここを見る。
  *
@@ -34,8 +34,7 @@ export interface FullConversationResponse {
 }
 
 /** 生成中メッセージ1件の最新状態。 */
-export interface MessageStateResponse extends ContentPayload {
-  reasoning: string | null;
+export interface MessageStateResponse extends ContentPayload, ReasoningPayload {
   status: string;
   error: string | null;
   usage: UiMessage["usage"] | null;
@@ -72,6 +71,13 @@ export interface UnreadResponse {
    * ずっと200行の読み出しが続く）。
    */
   latest: number;
+  /**
+   * 一覧の見た目だけを変えた書き込みの通し番号（タイトル・ピン・フォルダ・
+   * 削除）。これらは latest を動かさないので、こちらが変わったときも
+   * 取り直す。応答の確定より後に付く自動タイトルがサイドバーに届くのは
+   * これのおかげ。
+   */
+  listVersion: number;
 }
 
 /** モデル一覧。 */

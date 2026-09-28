@@ -33,7 +33,10 @@ describe("差分で受け取る", () => {
    */
   const WHOLE = "むかしむかしあるところにおじいさんとおばあさんがいました";
 
-  function streaming(contentAt: (turn: number) => string) {
+  function streaming(
+    contentAt: (turn: number) => string,
+    reasoningAt: (turn: number) => string | null = () => null,
+  ) {
     server.on("/generate", () => ({
       userMessageId: "u1",
       assistantMessageId: "a1",
@@ -47,7 +50,7 @@ describe("差分で受け取る", () => {
     let turn = 0;
     server.on("/messages/", () => ({
       content: contentAt(++turn),
-      reasoning: null,
+      reasoning: reasoningAt(turn),
       // 生成中のまま。確定させると全文が返り、継ぎ足しの誤りが隠れる
       status: "streaming",
       error: null,
@@ -99,6 +102,80 @@ describe("差分で受け取る", () => {
     );
     expect(document.body.textContent).toContain(SHORT);
   });
+
+  /*
+   * 思考も同じく差分で受け取る（考えるモデルでは本文より長い）。
+   * 本文と思考は長さを別々に持つ——取り違えると、片方の長さで
+   * もう片方を切り出して、欠けた・二重の思考が出る。
+   */
+  const THOUGHT = "まず前提を確かめるそのうえで場合を分けて順に検討していく";
+
+  async function openThought(user: ReturnType<typeof renderChat>["user"]) {
+    const header = await screen.findByRole("button", { name: /思考プロセス/ });
+    if (header.getAttribute("aria-expanded") !== "true") await user.click(header);
+  }
+
+  it("伸びていく思考を継ぎ足して、全体を表示する（本文と並行して）", async () => {
+    streaming(
+      // 本文は思考より遅く伸びる。両方の長さが違うので、取り違えれば崩れる
+      (turn) => WHOLE.slice(0, Math.min(turn * 3, 12)),
+      (turn) => THOUGHT.slice(0, Math.min(turn * 7, THOUGHT.length)),
+    );
+    const { user } = renderChat({});
+    await send(user, "質問");
+    // 本文が出始めると思考のカードは畳まれるので、開いて中身を見る
+    await openThought(user);
+
+    // 生成中のまま、思考の全体が出る（差分だけなら最後の断片しか出ない）
+    await waitFor(
+      () => {
+        expect(document.body.textContent).toContain(THOUGHT);
+        // 本文は少しずつ現れるので、待つ側に入れる
+        expect(document.body.textContent).toContain(WHOLE.slice(0, 12));
+      },
+      { timeout: 5000 },
+    );
+    // まだ生成中（確定の全文で上書きされて正しく見えているのではない）
+    expect(screen.getByRole("button", { name: /停止/ })).toBeTruthy();
+
+    // 思考の長さを本文とは別に伝えている
+    const polls = server.calls.filter((c) => c.path.includes("/messages/"));
+    expect(polls[0].path).toContain("rsince=0");
+    const asked = polls.map((c) => {
+      const q = new URL(c.path, "https://x").searchParams;
+      return { since: Number(q.get("since")), rsince: Number(q.get("rsince")) };
+    });
+    expect(asked.some((a) => a.rsince > 0 && a.rsince !== a.since)).toBe(true);
+  }, 20_000);
+
+  it("思考が縮んだら、継ぎ足さずに取り直す", async () => {
+    const LONG_T = "取り込み前の長い思考がここにあります";
+    const SHORT_T = "短い思考";
+    streaming(
+      () => "本文",
+      (turn) => (turn <= 2 ? LONG_T : SHORT_T),
+    );
+    const { user } = renderChat({});
+    await send(user, "質問");
+    await openThought(user);
+
+    await waitFor(
+      () => expect(document.body.textContent).toContain(LONG_T),
+      { timeout: 5000 },
+    );
+    await waitFor(
+      () => expect(document.body.textContent).not.toContain(LONG_T),
+      { timeout: 5000 },
+    );
+    expect(document.body.textContent).toContain(SHORT_T);
+    // 本文は取り直しに巻き込まれず出たまま
+    expect(document.body.textContent).toContain("本文");
+    // 取り直すのは思考だけ。本文まで空から取り直していない
+    const sinces = server.calls
+      .filter((c) => c.path.includes("/messages/"))
+      .map((c) => new URL(c.path, "https://x").searchParams.get("since"));
+    expect(sinces.slice(1).every((n) => n === String("本文".length))).toBe(true);
+  }, 20_000);
 });
 
 describe("途中経過を追う", () => {

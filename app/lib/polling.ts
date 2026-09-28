@@ -20,13 +20,49 @@ export interface ContentPayload {
   contentLength: number;
 }
 
-/** `?since=` を読む。壊れた値は 0（＝全文を返す）に倒す。 */
-export function parseSince(url: string): number {
-  const raw = new URL(url).searchParams.get("since");
+/**
+ * 思考（reasoning）も本文と同じ形で差分にする。
+ *
+ * 考えるモデルでは思考のほうが本文より長いことが多く、思考だけが伸びて
+ * いる数十秒のあいだ、400ms ごとに数十KBの全文を運び直していた。本文だけを
+ * 差分にしても、重さの大半はこちらに残っていた。
+ *
+ * 本文と違い**思考は無い（null）ことがある**。全文で返すときは null も
+ * そのまま運ぶ（キーごと省くと、差分で返したのと区別がつかない）。長さは
+ * null を 0 と数える。
+ */
+export interface ReasoningPayload {
+  /** 全文（無ければ null）。差分で返したときは undefined（キーごと無い）。 */
+  reasoning?: string | null;
+  /** rsince 以降の追記分。全文で返したときは undefined。 */
+  reasoningDelta?: string;
+  /** サーバーが持っている思考の長さ（null は 0）。検算に使う。 */
+  reasoningLength: number;
+}
+
+/**
+ * `?since=`（本文）・`?rsince=`（思考）を読む。壊れた値は 0（＝全文を返す）に倒す。
+ */
+export function parseSince(url: string, key = "since"): number {
+  const raw = new URL(url).searchParams.get(key);
   if (raw == null) return 0;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return Math.floor(n);
+}
+
+/** 本文・思考に共通の「全文か差分か」の判断。 */
+function textPayload(
+  text: string,
+  since: number,
+  appendOnly: boolean,
+): { full?: string; delta?: string; length: number } {
+  const length = text.length;
+  if (!appendOnly || since <= 0) return { full: text, length };
+  // 手元のほうが長いと言われたら、追記は無い。継ぎ足した結果の長さが
+  // 合わなくなるので、クライアント側が気づいて取り直す
+  const from = Math.min(since, length);
+  return { delta: text.slice(from), length };
 }
 
 /**
@@ -45,12 +81,27 @@ export function contentPayload(
   since: number,
   appendOnly: boolean,
 ): ContentPayload {
-  const contentLength = content.length;
-  if (!appendOnly || since <= 0) return { content, contentLength };
-  // 手元のほうが長いと言われたら、追記は無い。継ぎ足した結果の長さが
-  // 合わなくなるので、クライアント側が気づいて取り直す
-  const from = Math.min(since, contentLength);
-  return { contentDelta: content.slice(from), contentLength };
+  const p = textPayload(content, since, appendOnly);
+  return p.full != null
+    ? { content: p.full, contentLength: p.length }
+    : { contentDelta: p.delta, contentLength: p.length };
+}
+
+/**
+ * クライアントへ返す思考を決める。差分にしてよい条件は本文と同じ
+ * （生成中は上流から届いた分を末尾に足していくだけ。確定では書き直しうる）。
+ */
+export function reasoningPayload(
+  reasoning: string | null,
+  since: number,
+  appendOnly: boolean,
+): ReasoningPayload {
+  const p = textPayload(reasoning ?? "", since, appendOnly);
+  // 全文のときは元の null を返す。"" に変えると、確定で思考が消えた
+  // （null になった）ことと、空の思考があることの区別が画面側で崩れる
+  return p.full != null
+    ? { reasoning, reasoningLength: p.length }
+    : { reasoningDelta: p.delta, reasoningLength: p.length };
 }
 
 /**
@@ -69,6 +120,32 @@ export function applyContentPayload(
   // 検算。サーバー側で本文が置き換わっていた（縮んだ・書き直された）場合に
   // ここで気づく。黙って継ぎ足すと、壊れた本文を表示し続けることになる
   return full.length === payload.contentLength ? full : null;
+}
+
+/**
+ * 受け取った思考を組み立てる。
+ *
+ * 思考は null（無い）がありうるので、「組み立てた結果が null」と
+ * 「食い違った」を戻り値の null 1つで兼ねられない。食い違いは外側の null、
+ * 思考が無いのは `{ reasoning: null }` で返す。
+ *
+ * @param held 手元の思考（無ければ ""。null で持つと rsince を数えにくい）
+ * @returns 組み立てた思考。食い違っていれば null（呼ぶ側は全文を取り直す）
+ */
+export function applyReasoningPayload(
+  held: string,
+  payload: ReasoningPayload,
+): { reasoning: string | null } | null {
+  // 全文は null でも「全文」。`!= null` で見ると、思考が消えた（null の
+  // 全文）ときに手元の古い思考へ継ぎ足しに行き、検算で毎回食い違って
+  // 取り直しを繰り返す
+  const full =
+    payload.reasoning !== undefined
+      ? payload.reasoning
+      : held + (payload.reasoningDelta ?? "");
+  return (full ?? "").length === payload.reasoningLength
+    ? { reasoning: full }
+    : null;
 }
 
 /** 札を作るのに要る、パスの1行ぶん（本文を読んだ行でも、読まない行でもよい）。 */
