@@ -39,4 +39,23 @@ describe("アプリの高さ", () => {
       appHeightValue({ standalone: true, measured: 712, overflow: 20 }),
     ).toBe("100vh");
   });
+
+  /**
+   * はみ出しが実測値以上なら、箱の高さのせいではない。差し引くと 0 以下に
+   * なり、負の height は CSS で無効なので箱が中身の高さまで伸びきって
+   * 戻れなくなった（設定画面で実際に起きた）。
+   */
+  it("はみ出しが実測値以上なら差し引かない", () => {
+    expect(
+      appHeightValue({ standalone: false, measured: 664, overflow: 2985 }),
+    ).toBe("664px");
+    expect(
+      appHeightValue({ standalone: false, measured: 664, overflow: 664 }),
+    ).toBe("664px");
+    // 境目の手前は今までどおり縮める
+    expect(
+      appHeightValue({ standalone: false, measured: 664, overflow: 663 }),
+    ).toBe("1px");
+  });
 });
+

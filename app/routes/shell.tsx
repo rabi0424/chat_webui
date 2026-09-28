@@ -538,6 +538,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
    * ホーム画面から開いた全画面表示では実測値を使わず 100vh にする
    * （理由は lib/app-height.ts）。
    */
+  const appBoxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -565,9 +566,17 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       );
       // 実測値が文書のスクロールできる範囲より大きいと、画面ごと少し
       // 動いてしまう（lib/app-height.ts）。当てた直後にはみ出しを読み、
-      // あればその分だけ縮めて当て直す
+      // あればその分だけ縮めて当て直す。
+      //
+      // 読むのは**箱自身の**下端のはみ出し。文書全体のはみ出し
+      // （scrollHeight − clientHeight）を使っていたころは、箱と関係の無い
+      // 要素（設定画面の sr-only の印）が文書を伸ばしていただけで高さが
+      // 負になり、画面が崩れた——箱を縮めても減らない量を差し引いていた
       const root = document.scrollingElement ?? html;
-      const overflow = root.scrollHeight - root.clientHeight;
+      const box = appBoxRef.current;
+      const overflow = box
+        ? box.getBoundingClientRect().bottom + window.scrollY - root.clientHeight
+        : 0;
       if (!standalone && overflow > 0) {
         html.style.setProperty(
           "--app-height",
@@ -646,6 +655,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         ②翻訳を出せたとき、日本語のままでよいボタン名まで訳される。
         やり取り本文だけは MessageList が会話の言語で上書きする。
       */
+      ref={appBoxRef}
       lang="ja"
       className="flex overflow-x-hidden bg-surface text-ink"
       style={{ height: "var(--app-height, 100dvh)" }}

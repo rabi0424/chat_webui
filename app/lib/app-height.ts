@@ -27,11 +27,23 @@ export function appHeightValue(opts: {
   standalone: boolean;
   /** visualViewport.height（CSS px）。 */
   measured: number;
-  /** 実測値を当てたとき、文書がスクロールできた量（CSS px）。 */
+  /**
+   * 実測値を当てたとき、**アプリの箱が**文書の表示範囲からはみ出した量
+   * （CSS px）。文書全体のはみ出し（scrollHeight − clientHeight）ではない
+   * ——箱の外の要素が文書を伸ばしていると、箱をいくら縮めても減らない。
+   */
   overflow?: number;
 }): string {
   if (opts.standalone) return "100vh";
   const over = Math.max(0, opts.overflow ?? 0);
+  /*
+   * はみ出しが実測値以上なら、それは箱の高さのせいではない（箱が
+   * 0px でも文書がはみ出したまま）。差し引くと 0 以下になり、CSS では
+   * 負の height は無効なので箱が中身の高さまで伸びきる——文書がさらに
+   * はみ出して、戻る手立てが無くなる（設定画面で実際に起きた。ドロワーも
+   * 高さ0で背景の無い部品だけが本文に重なった）。そのときは実測値のまま
+   */
+  if (over >= opts.measured) return `${opts.measured}px`;
   return `${opts.measured - over}px`;
 }
 
