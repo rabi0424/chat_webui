@@ -236,7 +236,14 @@ export function Row({
   const stacked = stack === true;
   return (
     <div
-      className={`px-4 py-3 ${
+      /*
+       * relative は「保存しました」の印（SavedMark）のため。出していない
+       * ときは sr-only＝absolute で、位置の基準になる祖先が無いと画面全体
+       * （初期包含ブロック）を基準に置かれる。設定画面の下のほうの行の印が
+       * 文書を 4000px 近くまで伸ばし、スクロールの箱の外で文書そのものが
+       * スクロールできる状態になっていた。行の中に留める
+       */
+      className={`relative px-4 py-3 ${
         stacked
           ? ""
           : narrow
