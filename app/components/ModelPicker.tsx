@@ -45,7 +45,7 @@ const RECENT_LIMIT = 5;
  * そのまま使い、日が経てば自然に外れるようにしてある。
  * 何日出すかは設定画面（モデル一覧 > 新着として出す日数）で変えられる。
  */
-function isNewModel(m: ModelInfo, now: number, windowDays: number): boolean {
+export function isNewModel(m: ModelInfo, now: number, windowDays: number): boolean {
   if (!m.createdAt || windowDays <= 0) return false;
   const published = m.createdAt * 1000;
   return (
