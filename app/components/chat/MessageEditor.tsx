@@ -122,6 +122,8 @@ export function MessageEditor({
   return (
     <div
       ref={boxRef}
+      // 再読み込みで戻したとき、会話画面がここへ合わせる目印
+      data-message-editor=""
       className="rounded-2xl border border-accent/50 bg-neutral-50 p-3 dark:bg-neutral-900"
     >
       {(editing.attachments.length > 0 || editing.uploads > 0) && (

@@ -63,6 +63,7 @@ import {
   type PendingAttachment,
 } from "./chat/use-attachments";
 import { type EditingState } from "./chat/MessageEditor";
+import { readEditDraft, writeEditDraft } from "../lib/edit-draft";
 import {
   MessageList,
   BOUNDARY_SELECT_PREFIX,
@@ -727,6 +728,76 @@ export function Chat({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /*
+   * 書き直しの途中を戻す（マウント時のみ）。
+   *
+   * 戻すだけでは足りない。開いた直後の画面は最下部へ貼り付いていて、
+   * 本文の段階描画・Markdown の到着のたびに最下部へ貼り直すので、
+   * 編集欄は画面の外に置かれたまま戻ったことに気づけない。貼り付きを
+   * 外し、編集欄が描かれて高さが落ち着くまで、そこへ合わせ直す
+   * （revealEditRef）。
+   *
+   * 発言が今の枝に無いとき（別の端末で枝を切り替えた等）は、戻したうえで
+   * 下の「枝に無ければ畳む」に任せる。黙って捨てず、理由を知らせて畳む。
+   */
+  const revealEditRef = useRef(false);
+  /*
+   * useLayoutEffect なのは、最下部へ合わせる効果（段階描画・Markdown の
+   * 到着。どれも useEffect）より**先に**貼り付きを外すため。後だと、
+   * 開いた直後にいったん最下部へ合わせてしまい、その動きの通知が遅れて
+   * 届いて「最下部に居る」と読まれ、外した貼り付きが戻る——デスクトップの
+   * Chromium で、編集欄に合わせたあと最下部へ引き戻された。
+   */
+  useLayoutEffect(() => {
+    const saved = readEditDraft(draftScope);
+    if (!saved) return;
+    // 枝に無い発言なら、戻してもすぐ畳まれる（理由の知らせはそちらで
+    // 出す）。合わせる先が無いので、いつもどおり最下部から始める
+    if (initialMessages.some((m) => m.id === saved.id)) {
+      stickToBottomRef.current = false;
+      revealEditRef.current = true;
+    }
+    // 端末の保存はサーバーの描画には無いので、描いたあとでしか読めない
+    // （描く前の画面に出るより先に差し替わるので、ちらつきはしない）
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setEditing(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  /*
+   * 編集中は打つたびに控える。消すのは「開いていた編集を閉じた」ときだけ。
+   * 開いた直後（editing はまだ null）に「閉じている」として消すと、
+   * 上で読む前に持ち越しが消える——どちらが先に走るかは宣言の順で
+   * 決まっていて、並べ替えただけで壊れる。
+   */
+  const wasEditingRef = useRef(false);
+  useEffect(() => {
+    if (editing) writeEditDraft(draftScope, editing);
+    else if (wasEditingRef.current) writeEditDraft(draftScope, null);
+    wasEditingRef.current = editing != null;
+  }, [editing, draftScope]);
+  useLayoutEffect(() => {
+    if (!revealEditRef.current) return;
+    const box = scrollRef.current;
+    const editor = box?.querySelector<HTMLElement>("[data-message-editor]");
+    // まだ描かれていない（末尾だけの段・戻した直後の1回目）なら、次の
+    // 描き直しを待つ。ここで editing を見て「畳まれた」と判断しては
+    // ならない——戻した直後の1回目は、同じ描画の中で戻したばかりで
+    // editing がまだ null に見え、合わせる前にやめてしまう（ブラウザでは
+    // 入力欄へのフォーカスが動かすぶんで、たまたま見えていただけだった）
+    if (!box || !editor) return;
+    // scrollIntoView は使わない。外側の要素まで動かすので、iOS では
+    // ページ全体がずれてヘッダーが画面の外へ出る。この箱の中だけで、
+    // 編集欄が真ん中に来る位置を測って合わせる
+    const boxRect = box.getBoundingClientRect();
+    const rect = editor.getBoundingClientRect();
+    box.scrollTop +=
+      rect.top - boxRect.top - Math.max(0, (box.clientHeight - rect.height) / 2);
+    pinnedTopRef.current = box.scrollTop;
+    // 上の本文がすべて描かれ、Markdown が届いて高さが確定したら終わる。
+    // それまでは描き直しのたびに合わせ直す（上が伸びると編集欄が押し下がる）
+    if (renderStage === "all" && markdownReady) revealEditRef.current = false;
+  }, [renderStage, markdownReady, editing]);
 
   // アップロードが終わった添付だけを控える（送信すると破棄する）
   useEffect(() => {
