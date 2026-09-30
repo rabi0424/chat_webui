@@ -103,6 +103,25 @@ function num(v: unknown): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+/**
+ * 上流が申告する公開日を秒へそろえる。読めなければ 0（日付不明）。
+ *
+ * OpenRouter の `created` は秒だが、Poe は同じ名前で**ミリ秒**を返す。
+ * そのまま秒として渡すと、新着の判定（ModelPicker）で1000倍されて
+ * 数万年先の日付になり、「まだ公開されていない」扱いで Poe のモデルには
+ * 新着の印が一度も付かなかった（名前順で一覧の末尾に並ぶので、新しい
+ * モデルが来ても検索しない限り目に入らない）。
+ *
+ * 単位は値の大きさで見分ける。1e11 は秒なら西暦5000年代、ミリ秒なら
+ * 1973年で、どちらの読みでも現実の公開日と取り違えない。Poe が秒に
+ * 改めても、このまま正しく読める。
+ */
+export function epochSeconds(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n >= 1e11 ? Math.floor(n / 1000) : n;
+}
+
 /** 100万トークン単価 → 1トークン単価の文字列。 */
 function perMillionToPerToken(v: unknown): string | undefined {
   const n = Number(v);
@@ -254,7 +273,7 @@ async function fetchPoeModels(): Promise<ModelInfo[]> {
         reasoningBudget,
         botParameters: parseBotParameters(m.parameters),
         provider: "poe",
-        createdAt: Number(m.created ?? 0),
+        createdAt: epochSeconds(m.created),
       };
     });
   } catch {
