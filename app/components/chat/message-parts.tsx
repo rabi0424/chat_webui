@@ -58,6 +58,8 @@ export function MessageImages({
           key={a.id}
           type="button"
           onClick={() => onOpen(`/api/files/${a.id}`)}
+          // 拡大表示から隣へ払うときの並び（lib/lightbox-gallery）
+          data-lightbox-src={`/api/files/${a.id}`}
           title={a.name ?? "画像"}
           /*
             読み込みが終わるまでの下敷き。高さゼロから一気に伸びるのを

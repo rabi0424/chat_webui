@@ -236,6 +236,8 @@ const MarkdownImage: Components["img"] = ({ src, alt }) => {
     <button
       type="button"
       onClick={() => onImageClick(url)}
+      // 拡大表示から隣へ払うときの並び（lib/lightbox-gallery）
+      data-lightbox-src={url}
       title="タップで拡大"
       /* 画像の余白は prose が img に付けている。囲みは大きさを持たない */
       className="block cursor-zoom-in transition active:opacity-80"

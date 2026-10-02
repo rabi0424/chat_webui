@@ -53,6 +53,7 @@ import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
 import { Lightbox } from "./Lightbox";
+import { collectLightboxSources } from "../lib/lightbox-gallery";
 import {
   useGenerationTracking,
   type Tracking,
@@ -279,8 +280,28 @@ export function Chat({
   });
   /** ドラッグ&ドロップのハイライト。 */
   const [dragOver, setDragOver] = useState(false);
-  /** 原寸表示中の画像のURL（添付も、本文の中の画像も同じ入口で開く）。 */
-  const [lightbox, setLightbox] = useState<string | null>(null);
+  /**
+   * 原寸表示中の画像（添付も、本文の中の画像も同じ入口で開く）。
+   *
+   * 開いた時点の会話の画像の並びも一緒に持ち、払うと隣へ移る。並びは
+   * 開くたび・移るたびに画面から拾い直す——開いたまま応答が画像を
+   * 返しても、次に払ったときには並びに入っている。
+   */
+  const [lightbox, setLightbox] = useState<{
+    list: string[];
+    index: number;
+  } | null>(null);
+  /** src を中心に、いま画面にある開ける画像を並べ直す。 */
+  const lightboxAt = useCallback((src: string) => {
+    const list = collectLightboxSources(scrollRef.current);
+    const index = list.indexOf(src);
+    // 並びに無い（印の付かない場所から開いた）ときは、その1枚だけ
+    return index < 0 ? { list: [src], index: 0 } : { list, index };
+  }, []);
+  const openImage = useCallback(
+    (src: string) => setLightbox(lightboxAt(src)),
+    [lightboxAt],
+  );
   /**
    * 「成功するまで生成」の実行確認待ち。
    * 何度も生成する＝そのぶん課金されるので、走り出す前にパラメータを見せる。
@@ -2441,7 +2462,7 @@ export function Chat({
       switchBranch: stableSwitchBranch,
       fork: stableFork,
       regenerate: stableRegenerate,
-      openImage: setLightbox,
+      openImage,
       attachGeneratedImages: stableAttachGenerated,
       followBottom: stableFollowBottom,
     }),
@@ -2454,6 +2475,7 @@ export function Chat({
       stableSwitchBranch,
       stableFork,
       stableRegenerate,
+      openImage,
       stableAttachGenerated,
       stableFollowBottom,
     ],
@@ -2894,7 +2916,26 @@ export function Chat({
       )}
 
       {lightbox && (
-        <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
+        <Lightbox
+          src={lightbox.list[lightbox.index]}
+          prevSrc={lightbox.list[lightbox.index - 1]}
+          nextSrc={lightbox.list[lightbox.index + 1]}
+          /*
+            端では渡さない。渡さないほうへ払うと戻るだけになるので、
+            「これ以上は無い」が指に返る
+          */
+          onPrev={
+            lightbox.index > 0
+              ? () => setLightbox(lightboxAt(lightbox.list[lightbox.index - 1]))
+              : undefined
+          }
+          onNext={
+            lightbox.index < lightbox.list.length - 1
+              ? () => setLightbox(lightboxAt(lightbox.list[lightbox.index + 1]))
+              : undefined
+          }
+          onClose={() => setLightbox(null)}
+        />
       )}
     </div>
   );
