@@ -685,6 +685,27 @@ describe("検索欄を開く", () => {
   });
 });
 
+describe("検索結果の印", () => {
+  it("お気に入りの会話には、一覧と同じ★が付く", async () => {
+    const { user } = renderSidebar({ conversations: [] });
+    server.onSearch(() => ({
+      results: [
+        { id: "r1", title: "お気に入りの結果", favorite: 1, snippet: null },
+        { id: "r2", title: "ふつうの結果", favorite: 0, snippet: null },
+      ],
+    }));
+    await user.click(screen.getByLabelText("会話を検索"));
+    // 題名に含まれない語で探す（含まれると太字で分割され、文字列で引けない）
+    await user.type(screen.getByLabelText("会話を検索"), "x");
+    const starred = (await screen.findByText("お気に入りの結果")).closest(
+      "li",
+    ) as HTMLElement;
+    expect(within(starred).getByLabelText("お気に入り")).toBeTruthy();
+    const plain = screen.getByText("ふつうの結果").closest("li") as HTMLElement;
+    expect(within(plain).queryByLabelText("お気に入り")).toBeNull();
+  });
+});
+
 describe("検索の順序", () => {
   it("古い結果が後から返っても、最新の語の結果が残る", async () => {
     const { user } = renderSidebar({ conversations: [] });

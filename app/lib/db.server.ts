@@ -602,6 +602,8 @@ export async function updateConversationParams(
 export interface SearchResult {
   id: string;
   title: string;
+  /** お気に入りの印（一覧の行と同じ 0/1）。検索中も印が消えないように。 */
+  favorite: number;
   /** 本文がヒットした場合の抜粋（タイトルのみヒット時は null）。 */
   snippet: string | null;
 }
@@ -658,7 +660,7 @@ export async function searchConversations(
   const { results } = await d
     .prepare(sql)
     .bind(...binds)
-    .all<{ id: string; title: string; hit: string | null }>();
+    .all<{ id: string; title: string; favorite: number; hit: string | null }>();
 
   // 抜粋: 最初の検索語が本文にヒットした位置の前後を切り出す
   return results.map((row) => {
@@ -671,7 +673,7 @@ export async function searchConversations(
         row.hit.slice(start, start + 90).replace(/\n/g, " ") +
         (start + 90 < row.hit.length ? "…" : "");
     }
-    return { id: row.id, title: row.title, snippet };
+    return { id: row.id, title: row.title, favorite: row.favorite, snippet };
   });
 }
 

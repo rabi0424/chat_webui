@@ -1260,7 +1260,9 @@ export function searchConversationsSql(counts: {
   const matchClause =
     "(c.title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\'))";
   let sql =
-    "SELECT c.id, c.title, (SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\' LIMIT 1) AS hit FROM conversations c WHERE 1=1";
+    // favorite も載せる。検索結果の行は一覧の行と別の形なので、ここで
+    // 引かないとお気に入りの印だけが検索中に消える
+    "SELECT c.id, c.title, c.favorite, (SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\' LIMIT 1) AS hit FROM conversations c WHERE 1=1";
   for (let i = 0; i < counts.positives; i++) sql += ` AND ${matchClause}`;
   for (let i = 0; i < counts.negatives; i++) sql += ` AND NOT ${matchClause}`;
   sql += " ORDER BY c.updated_at DESC LIMIT 50";

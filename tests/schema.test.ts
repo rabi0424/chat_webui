@@ -1320,6 +1320,15 @@ describe("会話検索", () => {
     expect(search(["猫"]).map((r) => r.id)).toEqual(["c1", "c2"]);
   });
 
+  it("お気に入りの印が同じ行に載る（検索中だけ印が消えないように）", () => {
+    db.prepare("UPDATE conversations SET favorite = 1 WHERE id = 'c2'").run();
+    const rows = search(["猫"]) as ({ favorite?: number } & { id: string })[];
+    expect(rows.map((r) => [r.id, r.favorite])).toEqual([
+      ["c1", 0],
+      ["c2", 1],
+    ]);
+  });
+
   it("抜粋の元になる本文が同じ行に載る", () => {
     const rows = search(["猫"]);
     expect(rows[0].hit).toBe("うちの猫はよく寝る");

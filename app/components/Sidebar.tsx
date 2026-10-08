@@ -121,8 +121,16 @@ function SearchResultItem({
         onClick={onNavigate}
         className={`block rounded-lg px-3 py-2 ${ROW_IDLE}`}
       >
-        <span className="block truncate text-[0.9375rem]">
-          <Highlight text={r.title} terms={terms} />
+        <span className="flex items-center gap-1.5 text-[0.9375rem]">
+          {/* 一覧の行と同じ印。検索中だけ消えると、付けたか分からなくなる */}
+          {r.favorite === 1 && (
+            <span role="img" aria-label="お気に入り" title="お気に入り" className="shrink-0">
+              <IconStarSolid className="h-3.5 w-3.5 text-neutral-500 dark:text-neutral-300" />
+            </span>
+          )}
+          <span className="min-w-0 truncate">
+            <Highlight text={r.title} terms={terms} />
+          </span>
         </span>
         {r.snippet && (
           <span className="mt-0.5 block truncate text-[0.8125rem] text-ink-3">
