@@ -31,6 +31,11 @@ export interface SidebarServer {
   succeed(): void;
   /** 検索の応答を差し替える（語を受け取って本文を返す）。 */
   onSearch(handler: (q: string) => unknown | Promise<unknown>): void;
+  /**
+   * お気に入りの全件（GET /api/conversations/favorites）の応答。
+   * 指定しなければ空（＝手元の一覧の中の分だけが出る）。
+   */
+  onFavorites(handler: () => unknown | Promise<unknown>): void;
 }
 
 export function installSidebarServer(): SidebarServer {
@@ -38,6 +43,7 @@ export function installSidebarServer(): SidebarServer {
   let failStatus: number | null = null;
   let throwing = false;
   let searchHandler: ((q: string) => unknown | Promise<unknown>) | null = null;
+  let favoritesHandler: (() => unknown | Promise<unknown>) | null = null;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof input === "string" ? input : String(input);
     let body: unknown = null;
@@ -61,6 +67,15 @@ export function installSidebarServer(): SidebarServer {
     if (failStatus != null) {
       return new Response(JSON.stringify({ error: "失敗" }), {
         status: failStatus,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (path.includes("/api/conversations/favorites")) {
+      const payload = favoritesHandler
+        ? await favoritesHandler()
+        : { conversations: [] };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
         headers: { "Content-Type": "application/json" },
       });
     }
@@ -88,6 +103,9 @@ export function installSidebarServer(): SidebarServer {
     },
     onSearch: (handler) => {
       searchHandler = handler;
+    },
+    onFavorites: (handler) => {
+      favoritesHandler = handler;
     },
   };
 }
@@ -174,6 +192,11 @@ function Location() {
 
 export function renderSidebar(props: {
   conversations?: ConversationListRow[];
+  /**
+   * お気に入りの件数（ローダーが全件を数えたもの）。省略すると渡した
+   * 一覧の中を数える（＝全部が200件の中にある状態）。
+   */
+  favoriteCount?: number;
   folders?: FolderRow[];
   unreadIds?: Set<string> | null;
   /** いま生成が走っている会話。 */
@@ -192,6 +215,10 @@ export function renderSidebar(props: {
           <Location />
           <Sidebar
             conversations={props.conversations ?? []}
+            favoriteCount={
+              props.favoriteCount ??
+              (props.conversations ?? []).filter((c) => c.favorite === 1).length
+            }
             folders={props.folders ?? []}
             unreadIds={props.unreadIds ?? null}
             generatingIds={props.generatingIds ?? null}

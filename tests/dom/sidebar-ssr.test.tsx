@@ -32,6 +32,7 @@ function serverHtml(count: number): string {
         <ConfirmProvider>
           <Sidebar
             conversations={conversations}
+            favoriteCount={0}
             folders={[]}
             unreadIds={null}
             generatingIds={null}

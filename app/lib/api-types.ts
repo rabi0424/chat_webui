@@ -12,6 +12,7 @@ import type { ContentPayload, ReasoningPayload } from "./polling";
  * どちらか一方だけ変えると型が合わなくなる。
  */
 import type {
+  ConversationListRow,
   ConversationRow,
   GeneratedImageRow,
   PerfBuildRow,
@@ -21,6 +22,16 @@ import type {
 import type { PerfDimension } from "./schema";
 import type { ModelInfo } from "./openrouter.server";
 import type { UiMessage } from "./types";
+
+/**
+ * お気に入りの会話の全件（GET /api/conversations/favorites）。
+ *
+ * サイドバーは最新200件しか持たないので、「お気に入り」を開いたときに
+ * ここから残りを取る。行の形はサイドバーの一覧と同じ。
+ */
+export interface FavoritesResponse {
+  conversations: ConversationListRow[];
+}
 
 /** 表示中のパス（会話ツリーのうち、いま見えている一本道）。 */
 export interface PathResponse {

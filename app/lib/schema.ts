@@ -933,14 +933,45 @@ export const LIST_VERSION_BUMP_SQL = `INSERT INTO meta (key, value) VALUES ('lis
  * `SELECT *` なら気づけないため、実際の SQLite に流して確かめる
  * （tests/schema.test.ts）。
  */
-export const CONVERSATIONS_SIDEBAR_SQL = `SELECT
-         id, title, model_id, pinned, current_leaf_message_id,
+/**
+ * 一覧の行の列。サイドバーの一覧とお気に入りの一覧が同じ列を引く。
+ * 片方にだけ列を足すと、同じ行の型（ConversationListRow）を名乗りながら
+ * 中身が違う行が混ざり、印や並べ替えが片方でだけ黙って効かなくなる。
+ */
+const CONVERSATION_LIST_COLUMNS = `id, title, model_id, pinned, current_leaf_message_id,
          bot_id, bot_name, bot_icon,
          folder_id, sort_order, unread, favorite,
-         created_at, updated_at
+         created_at, updated_at`;
+
+export const CONVERSATIONS_SIDEBAR_SQL = `SELECT
+         ${CONVERSATION_LIST_COLUMNS}
        FROM conversations
       ORDER BY pinned DESC, updated_at DESC
       LIMIT 200`;
+
+/**
+ * お気に入りの会話を**全件**引く。
+ *
+ * サイドバーの一覧は最新200件で切っている（上の文）。お気に入りをその
+ * 中から拾うと、古いお気に入りが200件からこぼれた時点で「お気に入り」
+ * フォルダから黙って消える。ピン留めは `ORDER BY pinned DESC` で先頭に
+ * 残るが、お気に入りには並びの優遇が無い。印を付けた会話は利用者が
+ * 選んだものなので件数は限られ、上限を設けない。
+ *
+ * サイドバーの最初の描画には載せない。件数（FAVORITE_COUNT_SQL）だけを
+ * 一覧と同じ batch で受け取り、中身は開いたときにブラウザが取りに来る。
+ */
+export const FAVORITE_CONVERSATIONS_SQL = `SELECT
+         ${CONVERSATION_LIST_COLUMNS}
+       FROM conversations
+      WHERE favorite = 1
+      ORDER BY updated_at DESC`;
+
+/**
+ * お気に入りの件数。サイドバーの「お気に入り」の行に、開く前から出す。
+ * 索引（idx_conversations_favorite）だけで数えられる。
+ */
+export const FAVORITE_COUNT_SQL = `SELECT COUNT(*) AS n FROM conversations WHERE favorite = 1`;
 
 /**
  * 保管しているものの大きさ（使用量の画面に出す）。
@@ -1229,7 +1260,9 @@ export function searchConversationsSql(counts: {
   const matchClause =
     "(c.title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\'))";
   let sql =
-    "SELECT c.id, c.title, (SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\' LIMIT 1) AS hit FROM conversations c WHERE 1=1";
+    // favorite も載せる。検索結果の行は一覧の行と別の形なので、ここで
+    // 引かないとお気に入りの印だけが検索中に消える
+    "SELECT c.id, c.title, c.favorite, (SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\' LIMIT 1) AS hit FROM conversations c WHERE 1=1";
   for (let i = 0; i < counts.positives; i++) sql += ` AND ${matchClause}`;
   for (let i = 0; i < counts.negatives; i++) sql += ` AND NOT ${matchClause}`;
   sql += " ORDER BY c.updated_at DESC LIMIT 50";

@@ -363,6 +363,131 @@ describe("お気に入りフォルダ", () => {
     expect(screen.getByText("お気に入りの会話")).toBeTruthy();
     expect(screen.queryByText("ふつうの会話")).toBeNull();
   });
+
+  it("階層表示から専用ページへ行ける", async () => {
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "お気に入りの会話", { favorite: 1 })],
+    });
+    await user.click(screen.getByTitle("お気に入り（削除できない常設フォルダ）"));
+    expect(
+      screen.getByLabelText("お気に入りのページを開く").getAttribute("href"),
+    ).toBe("/favorites");
+  });
+});
+
+/**
+ * お気に入りは全件。
+ *
+ * ローダーの一覧は最新200件で切られているので、お気に入りはその外にも
+ * ある。件数はローダーが数えて持ってきたものを出し、中身は開いたときに
+ * 取りに行く。
+ */
+describe("お気に入りの全件", () => {
+  const favoritesRow = () =>
+    screen
+      .getByTitle("お気に入り（削除できない常設フォルダ）")
+      .closest("li") as HTMLElement;
+  /** 200件の外にある（ローダーの一覧には無い）お気に入り。 */
+  const outside = () =>
+    conv("old", "一覧の外のお気に入り", { favorite: 1, updated_at: 1 });
+
+  it("件数はローダーが数えた全件で、一覧の中を数えたものではない", () => {
+    renderSidebar({
+      conversations: [conv("c1", "手元のお気に入り", { favorite: 1 })],
+      favoriteCount: 7,
+    });
+    expect(within(favoritesRow()).getByText("7")).toBeTruthy();
+    expect(within(favoritesRow()).queryByText("1")).toBeNull();
+  });
+
+  it("開く前は取りに行かない", () => {
+    renderSidebar({
+      conversations: [conv("c1", "手元のお気に入り", { favorite: 1 })],
+      favoriteCount: 2,
+    });
+    expect(server.countOf("/api/conversations/favorites")).toBe(0);
+  });
+
+  it("展開すると全件を取り、一覧の外のお気に入りも並ぶ（同じ会話は二重にしない）", async () => {
+    server.onFavorites(() => ({
+      conversations: [
+        conv("c1", "手元のお気に入り", { favorite: 1 }),
+        outside(),
+      ],
+    }));
+    const { user } = renderSidebar({
+      conversations: [
+        conv("c1", "手元のお気に入り", { favorite: 1 }),
+        conv("c2", "ふつうの会話"),
+      ],
+      favoriteCount: 2,
+    });
+    const row = favoritesRow();
+    await user.click(within(row).getByLabelText("展開"));
+    expect(await within(row).findByText("一覧の外のお気に入り")).toBeTruthy();
+    expect(within(row).getAllByText("手元のお気に入り")).toHaveLength(1);
+    expect(within(row).queryByText("ふつうの会話")).toBeNull();
+    expect(server.countOf("/api/conversations/favorites")).toBe(1);
+  });
+
+  it("届くまでは手元の分を出し、残りを読んでいると分かる", async () => {
+    let deliver: (() => void) | null = null;
+    server.onFavorites(
+      () =>
+        new Promise((resolve) => {
+          deliver = () => resolve({ conversations: [outside()] });
+        }),
+    );
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "手元のお気に入り", { favorite: 1 })],
+      favoriteCount: 2,
+    });
+    const row = favoritesRow();
+    await user.click(within(row).getByLabelText("展開"));
+    // 手元の分は待たずに出る
+    expect(within(row).getByText("手元のお気に入り")).toBeTruthy();
+    expect(within(row).getByText("残りを読み込み中…")).toBeTruthy();
+    deliver!();
+    expect(await within(row).findByText("一覧の外のお気に入り")).toBeTruthy();
+    expect(within(row).queryByText("残りを読み込み中…")).toBeNull();
+  });
+
+  it("取れなかったら、手元の分を出したまま失敗を伝える", async () => {
+    server.failAll(500);
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "手元のお気に入り", { favorite: 1 })],
+      favoriteCount: 2,
+    });
+    const row = favoritesRow();
+    await user.click(within(row).getByLabelText("展開"));
+    expect(
+      await screen.findByText("お気に入りの読み込みに失敗しました"),
+    ).toBeTruthy();
+    expect(within(row).getByText("手元のお気に入り")).toBeTruthy();
+    // 「読み込み中」のまま残さない（もう来ない）
+    expect(within(row).queryByText("残りを読み込み中…")).toBeNull();
+  });
+
+  it("一覧の外のお気に入りを外すと、押した時点で行が消えて件数が減る", async () => {
+    server.onFavorites(() => ({ conversations: [outside()] }));
+    const { user } = renderSidebar({
+      conversations: [conv("c1", "手元のお気に入り", { favorite: 1 })],
+      favoriteCount: 2,
+    });
+    const row = favoritesRow();
+    await user.click(within(row).getByLabelText("展開"));
+    const target = (await within(row).findByText("一覧の外のお気に入り")).closest(
+      "li",
+    ) as HTMLElement;
+    await user.click(within(target).getByLabelText("メニュー"));
+    await user.click(screen.getByRole("menuitem", { name: "お気に入りから外す" }));
+    expect(server.lastBody("/api/conversations/old")).toEqual({ favorite: false });
+    await waitFor(() =>
+      expect(within(row).queryByText("一覧の外のお気に入り")).toBeNull(),
+    );
+    expect(within(row).getByText("1")).toBeTruthy();
+    expect(within(row).getByText("手元のお気に入り")).toBeTruthy();
+  });
 });
 
 /**
@@ -557,6 +682,27 @@ describe("検索欄を開く", () => {
     await user.click(screen.getByLabelText("会話を検索"));
     const box = screen.getByRole("textbox", { name: "会話を検索" });
     expect(document.activeElement).toBe(box);
+  });
+});
+
+describe("検索結果の印", () => {
+  it("お気に入りの会話には、一覧と同じ★が付く", async () => {
+    const { user } = renderSidebar({ conversations: [] });
+    server.onSearch(() => ({
+      results: [
+        { id: "r1", title: "お気に入りの結果", favorite: 1, snippet: null },
+        { id: "r2", title: "ふつうの結果", favorite: 0, snippet: null },
+      ],
+    }));
+    await user.click(screen.getByLabelText("会話を検索"));
+    // 題名に含まれない語で探す（含まれると太字で分割され、文字列で引けない）
+    await user.type(screen.getByLabelText("会話を検索"), "x");
+    const starred = (await screen.findByText("お気に入りの結果")).closest(
+      "li",
+    ) as HTMLElement;
+    expect(within(starred).getByLabelText("お気に入り")).toBeTruthy();
+    const plain = screen.getByText("ふつうの結果").closest("li") as HTMLElement;
+    expect(within(plain).queryByLabelText("お気に入り")).toBeNull();
   });
 });
 
