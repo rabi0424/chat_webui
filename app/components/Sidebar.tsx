@@ -15,6 +15,7 @@ import type {
   FolderRow,
   SearchResult,
 } from "../lib/db.server";
+import type { FavoritesResponse } from "../lib/api-types";
 import {
   SidebarProvider,
   type MenuTarget,
@@ -23,6 +24,7 @@ import {
 import {
   ConversationItem,
   FavoritesFolderItem,
+  FavoritesLoading,
   FolderItem,
   RenameField,
   ROW_ACTIVE,
@@ -46,6 +48,7 @@ import { DATE_GROUP_LABELS, groupByDate } from "../lib/date-groups";
 import { useConfirm } from "./ConfirmDialog";
 import {
   IconArrowLeft,
+  IconArrowTopRight,
   IconBot,
   IconChartBar,
   IconCog,
@@ -208,6 +211,7 @@ interface PendingOp extends OverlayPatch {
  */
 export const Sidebar = memo(function Sidebar({
   conversations: loadedConversations,
+  favoriteCount,
   folders: loadedFolders,
   unreadIds,
   generatingIds,
@@ -217,6 +221,11 @@ export const Sidebar = memo(function Sidebar({
   mac,
 }: {
   conversations: ConversationListRow[];
+  /**
+   * お気に入りの件数（全件）。一覧は最新200件で切られているので、
+   * その中を数えても全件にはならない。ローダーが別に数えて持ってくる。
+   */
+  favoriteCount: number;
   folders: FolderRow[];
   /** 最新の未読状態。null のあいだは行の値を使う。 */
   unreadIds?: Set<string> | null;
@@ -391,8 +400,6 @@ export const Sidebar = memo(function Sidebar({
     view && view !== FAVORITES_ID
       ? folders.find((f) => f.id === view) ?? null
       : null;
-  const favoriteConversations = conversations.filter((c) => c.favorite === 1);
-
   /** 太字ハイライト対象の検索語（マイナス検索の除外語は含めない）。 */
   const highlightTerms = useMemo(
     () =>
@@ -498,6 +505,123 @@ export const Sidebar = memo(function Sidebar({
     errorTimer.current = setTimeout(() => setError(null), 5000);
   };
 
+  // --- お気に入り（全件） ------------------------------------------------
+
+  /*
+   * ローダーの一覧は最新200件で切られていて、お気に入りはその外にもある
+   * （ピン留めと違い、並びの優遇が無い）。かといって全件を全ページの
+   * 土台に載せると、どの画面を開いてもそのぶんHTMLとCPUに乗る。
+   *
+   * そこで、開く前は件数（favoriteCount）だけを出し、シェブロンで展開
+   * するか階層に入ったときに全件を取りに行く。届くまでと、届かなかった
+   * ときは、手元の200件の中のお気に入りを出す——空にしておくと、取る
+   * までの間「無い」ように見える。
+   *
+   * 取り直すのは、ローダーの一覧が入れ替わったとき。並びは更新順なので、
+   * お気に入りの会話に返事が付けば一覧も動いていて、そのときに取り直せば
+   * 並びも揃う。開いていないあいだは何もしない（取り直しのたびに1件ずつ
+   * サブリクエストを使うのは、見ているときだけにする）。
+   */
+  const favoritesOpen = expanded.has(FAVORITES_ID) || view === FAVORITES_ID;
+  const [fetchedFavorites, setFetchedFavorites] = useState<{
+    rows: ConversationListRow[];
+    /** どのローダーの一覧に対して取ったか。入れ替わったら取り直す。 */
+    forLoaded: unknown;
+    /** 取れなかった（手元の分だけを出している）。 */
+    ok: boolean;
+  } | null>(null);
+  useEffect(() => {
+    if (!favoritesOpen) return;
+    if (fetchedFavorites?.forLoaded === loadedConversations) return;
+    let alive = true;
+    void (async () => {
+      let rows: ConversationListRow[] | null = null;
+      try {
+        const res = await fetch("/api/conversations/favorites");
+        if (res.ok) {
+          const body = (await res.json()) as Partial<FavoritesResponse>;
+          if (Array.isArray(body.conversations)) rows = body.conversations;
+        }
+      } catch {
+        // 下で「取れなかった」として扱う
+      }
+      if (!alive) return;
+      if (rows) {
+        setFetchedFavorites({ rows, forLoaded: loadedConversations, ok: true });
+      } else {
+        // 黙って200件の中だけを出し続けると、消えたお気に入いりが「外れた」
+        // ように見える。取れなかったことは伝える
+        fail("お気に入りの読み込み");
+        setFetchedFavorites({ rows: [], forLoaded: loadedConversations, ok: false });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [favoritesOpen, loadedConversations, fetchedFavorites]);
+
+  /**
+   * 見せるお気に入り。取った全件と、手元の200件の中のお気に入りの合併。
+   *
+   * 同じ会話が両方にあれば手元の行を使う（未読などの印が新しい）。
+   * 取った行にも送った変更を重ねる——200件の外の会話を「お気に入りから
+   * 外す」と、重ねないかぎり返事が来るまで印が付いたままになる。
+   * 並びは取る文と同じ更新順にする。
+   */
+  const favoriteConversations = useMemo(() => {
+    const live = ops.filter(isLive).map((op) => op.conversations);
+    const fetched = applyOverlay(fetchedFavorites?.rows ?? [], live);
+    const loadedById = new Map(conversations.map((c) => [c.id, c]));
+    const seen = new Set<string>();
+    const out: ConversationListRow[] = [];
+    for (const row of fetched) {
+      seen.add(row.id);
+      out.push(loadedById.get(row.id) ?? row);
+    }
+    for (const c of conversations) if (!seen.has(c.id)) out.push(c);
+    return out
+      .filter((c) => c.favorite === 1)
+      .sort((a, b) => b.updated_at - a.updated_at);
+    // isLive は描画のたびに作り直されるが、中身は ops と props だけを読む
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ops, conversations, fetchedFavorites]);
+
+  /**
+   * 操作の対象を引くための、見えている会話の全部。
+   *
+   * 「…」メニュー・名前の変更・フォルダへの移動は ID から行を引く。
+   * 200件の一覧だけを見ていると、全件から出てきた（一覧の外の）
+   * お気に入りの行で「…」を押しても**何も出ない**——行は見えているのに
+   * 操作だけが黙って効かない。
+   */
+  const knownConversations = useMemo(() => {
+    const ids = new Set(conversations.map((c) => c.id));
+    const extra = favoriteConversations.filter((c) => !ids.has(c.id));
+    return extra.length === 0 ? conversations : [...conversations, ...extra];
+  }, [conversations, favoriteConversations]);
+
+  /**
+   * 行に出す件数。ローダーの件数に、取り直しの着いていない操作のぶんを
+   * 足し引きする。全件を取った後なら一覧の長さでもよいが、取る前と
+   * 同じ数え方にしておく——2通りあると、取れた瞬間に数字が跳ねる。
+   */
+  const favoriteTotal = useMemo(() => {
+    let delta = 0;
+    // conversations は loadedConversations に重ねたもので、順も長さも同じ
+    for (let i = 0; i < conversations.length; i++) {
+      delta += conversations[i].favorite - loadedConversations[i].favorite;
+    }
+    // 200件の外の行は、取った時点では全部お気に入り。外したぶんだけ引く
+    const live = ops.filter(isLive).map((op) => op.conversations);
+    const loadedIds = new Set(loadedConversations.map((c) => c.id));
+    for (const row of applyOverlay(fetchedFavorites?.rows ?? [], live)) {
+      if (!loadedIds.has(row.id)) delta += row.favorite - 1;
+    }
+    return Math.max(0, favoriteCount + delta);
+    // isLive は描画のたびに作り直されるが、中身は ops と props だけを読む
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ops, conversations, loadedConversations, fetchedFavorites, favoriteCount]);
+
   /**
    * 送って、失敗したら伝える。成功・失敗どちらでも一覧は取り直す
    * （refresh: false のときは呼ぶ側が取り直す）。
@@ -555,6 +679,15 @@ export const Sidebar = memo(function Sidebar({
       void refresh();
       return null;
     }
+    /*
+     * 取った全件のお気に入りにも、書けた変更を焼き込んでおく。取り直しの
+     * 一覧が着くと重ねるのをやめるが、全件のほうはその後に取り直すので、
+     * その間だけ200件の外の会話が古い値（外したのに付いたまま）に戻る。
+     */
+    setFetchedFavorites(
+      (prev) =>
+        prev && { ...prev, rows: applyOverlay(prev.rows, [patch.conversations]) },
+    );
     await refresh();
     // 取り直しの結果がもう描かれていれば、ここで控えるのは新しい一覧
     // （重ねた値と同じなので、次に一覧が動くまで重ねたままでも見た目は
@@ -602,6 +735,13 @@ export const Sidebar = memo(function Sidebar({
     const res = await send("会話の削除", `/api/conversations/${c.id}`, {
       method: "DELETE",
     });
+    // 消した会話が取った全件に残っていると、取り直すまで行が残って見える
+    if (res) {
+      setFetchedFavorites(
+        (prev) =>
+          prev && { ...prev, rows: prev.rows.filter((r) => r.id !== c.id) },
+      );
+    }
     // 消せていないのに画面だけ移ると、消えたように見えてしまう
     if (res && params.id === c.id) navigate("/");
   }
@@ -643,7 +783,7 @@ export const Sidebar = memo(function Sidebar({
     setRenaming(null);
     if (name == null) return;
     if (target.type === "conversation") {
-      const c = conversations.find((x) => x.id === target.id);
+      const c = knownConversations.find((x) => x.id === target.id);
       if (!c || c.title === name) return;
       void patchConversation(c.id, { title: name });
     } else {
@@ -675,7 +815,7 @@ export const Sidebar = memo(function Sidebar({
   }
 
   const moveConv = moveTarget
-    ? conversations.find((c) => c.id === moveTarget)
+    ? knownConversations.find((c) => c.id === moveTarget)
     : null;
 
   // 重ねて出しているものは、どれも Escape で閉じられるようにする。
@@ -698,7 +838,7 @@ export const Sidebar = memo(function Sidebar({
    * 覚えておく利点が無い。
    */
   const actions: SidebarActions = {
-    conversations,
+    conversations: knownConversations,
     folders,
     menu,
     setMenu,
@@ -710,6 +850,9 @@ export const Sidebar = memo(function Sidebar({
     setView,
     conversationsIn: folderConversations,
     favorites: favoriteConversations,
+    favoriteTotal,
+    favoritesPending:
+      favoritesOpen && fetchedFavorites?.forLoaded !== loadedConversations,
     renaming,
     startRename: setRenaming,
     finishRename,
@@ -877,13 +1020,27 @@ export const Sidebar = memo(function Sidebar({
                 >
                   <IconArrowLeft className="h-4 w-4" />
                 </button>
-                <span className="flex items-center gap-1.5 truncate text-[0.9375rem] font-medium">
+                <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[0.9375rem] font-medium">
                   <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-300" />
                   お気に入り
+                  <span className="text-xs font-normal tabular-nums text-ink-2">
+                    {favoriteTotal}
+                  </span>
                 </span>
+                {/* 専用ページ。日付やモデルを添えて広く見る */}
+                <NavLink
+                  to="/favorites"
+                  prefetch="intent"
+                  onClick={onNavigate}
+                  aria-label="お気に入りのページを開く"
+                  title="お気に入りのページを開く"
+                  className="rounded-lg p-1.5 text-ink-2 hover:bg-black/[0.06] dark:hover:bg-white/10"
+                >
+                  <IconArrowTopRight className="h-4 w-4" />
+                </NavLink>
               </div>
               <ul className="space-y-0.5">
-                {favoriteConversations.length === 0 && (
+                {favoriteConversations.length === 0 && favoriteTotal === 0 && (
                   <li className="px-3 py-6 text-center text-[0.8125rem] leading-relaxed text-ink-2">
                     まだありません。
                     <br />
@@ -895,6 +1052,7 @@ export const Sidebar = memo(function Sidebar({
                 {rows(favoriteConversations).map((c) => (
                   <ConversationItem key={c.id} c={c} />
                 ))}
+                <FavoritesLoading />
               </ul>
             </>
           ) : viewFolder ? (

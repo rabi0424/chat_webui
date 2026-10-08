@@ -28,6 +28,8 @@ import { MAX_TITLE_LENGTH, providerOf } from "./constants";
 import {
   CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
+  FAVORITE_CONVERSATIONS_SQL,
+  FAVORITE_COUNT_SQL,
   LIST_VERSION_BUMP_SQL,
   DUE_PENDING_DELETIONS_SQL,
   INSERT_USER_MESSAGE_SQL,
@@ -443,6 +445,43 @@ export async function listConversations(): Promise<ConversationListRow[]> {
   const d = await db();
   const { results } = await d
     .prepare(CONVERSATIONS_SIDEBAR_SQL)
+    .all<ConversationListRow>();
+  return results;
+}
+
+/**
+ * シェルのローダーが引く、サイドバーの一覧とお気に入りの件数。
+ *
+ * 2文を batch でまとめる（全体で1サブリクエスト）。別々に投げると、
+ * どの画面を開いても1件ずつ増える。
+ *
+ * お気に入りの中身はここでは引かない。全件になりうるものを全ページの
+ * 土台に載せたくないので、件数だけを先に出し、中身は開いたときに
+ * `listFavoriteConversations` で取る。
+ */
+export async function listSidebar(): Promise<{
+  conversations: ConversationListRow[];
+  favoriteCount: number;
+}> {
+  const d = await db();
+  const [list, count] = await d.batch([
+    d.prepare(CONVERSATIONS_SIDEBAR_SQL),
+    d.prepare(FAVORITE_COUNT_SQL),
+  ]);
+  const head = (count.results as { n: number | null }[])[0];
+  return {
+    conversations: list.results as ConversationListRow[],
+    favoriteCount: typeof head?.n === "number" ? head.n : 0,
+  };
+}
+
+/** お気に入りの会話を全件（200件の壁の外のものも）。 */
+export async function listFavoriteConversations(): Promise<
+  ConversationListRow[]
+> {
+  const d = await db();
+  const { results } = await d
+    .prepare(FAVORITE_CONVERSATIONS_SQL)
     .all<ConversationListRow>();
   return results;
 }

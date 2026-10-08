@@ -9,7 +9,7 @@ import type {
   ConversationListRow,
   FolderRow,
 } from "../../app/lib/db.server";
-import { answerRename, conv, folder } from "./helpers/sidebar-harness";
+import { answerDialog, answerRename, conv, folder } from "./helpers/sidebar-harness";
 
 /**
  * サイドバーの操作は、返事を待たずに一覧へ映す。
@@ -39,11 +39,26 @@ function deliver(next: Loaded) {
 }
 
 let held: { method: string; path: string; body: unknown; resolve: (ok: boolean) => void }[];
+/** お気に入りの全件（GET）も止めておく。届く前と後の見え方を見るため。 */
+let heldFavorites: ((rows: ConversationListRow[]) => void)[];
 function installHeldFetch() {
   held = [];
+  heldFavorites = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     const method = init?.method ?? "GET";
+    if (method === "GET" && path.includes("/api/conversations/favorites")) {
+      return new Promise<Response>((resolve) => {
+        heldFavorites.push((rows) =>
+          resolve(
+            new Response(JSON.stringify({ conversations: rows }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          ),
+        );
+      });
+    }
     // 先読み（GET）は待たせない。書き込みだけを止める
     if (method === "GET") {
       return new Response("{}", { status: 404 });
@@ -65,6 +80,14 @@ function installHeldFetch() {
   }) as typeof fetch;
 }
 
+/** 止めてあるお気に入りの全件を届ける。 */
+async function deliverFavorites(i: number, rows: ConversationListRow[]) {
+  await act(async () => {
+    heldFavorites[i](rows);
+    for (let k = 0; k < 10; k++) await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
 /** 止めてある返事を返し、その後の取り直しと描画まで流す。 */
 async function answer(i: number, ok: boolean) {
   await act(async () => {
@@ -84,6 +107,7 @@ function LiveSidebar() {
   return (
     <Sidebar
       conversations={data.conversations}
+      favoriteCount={data.conversations.filter((c) => c.favorite === 1).length}
       folders={data.folders}
       unreadIds={null}
       generatingIds={null}
@@ -209,6 +233,59 @@ describe("ピン留め・お気に入り・フォルダへの移動", () => {
     await answer(0, false);
     expect(sectionOf("対象")).not.toBe("ピン留め");
     expect(screen.queryByText("ピン留め")).toBeNull();
+  });
+
+  it("一覧の外のお気に入りを外したあと、全件を取り直すまでの間も戻らない", async () => {
+    /*
+     * 一覧（200件）の取り直しが着くと重ねたものは外れる。全件のほうは
+     * その後に取り直すので、外した会話が取った全件に残ったままだと、
+     * 届くまでのあいだ「外したのに付いたまま」に戻って見える。
+     */
+    const user = renderLive({
+      conversations: [conv("c1", "手元")],
+      folders: [],
+    });
+    const row = screen
+      .getByTitle("お気に入り（削除できない常設フォルダ）")
+      .closest("li") as HTMLElement;
+    await user.click(within(row).getByLabelText("展開"));
+    await deliverFavorites(0, [conv("old", "一覧の外", { favorite: 1 })]);
+    expect(within(row).getByText("一覧の外")).toBeInTheDocument();
+
+    await openMenu(user, "一覧の外");
+    await user.click(screen.getByRole("menuitem", { name: "お気に入りから外す" }));
+    expect(held[0].path).toBe("/api/conversations/old");
+    expect(within(row).queryByText("一覧の外")).toBeNull();
+
+    // 書けて、200件の一覧が着いた。全件の取り直しは始まったが、まだ届かない
+    await answer(0, true);
+    deliver({ conversations: [conv("c1", "手元")], folders: [] });
+    expect(heldFavorites).toHaveLength(2);
+    expect(within(row).queryByText("一覧の外")).toBeNull();
+
+    // 届いた全件にも無い
+    await deliverFavorites(1, []);
+    expect(within(row).queryByText("一覧の外")).toBeNull();
+  });
+
+  it("一覧の外のお気に入りを消したあとも、全件を取り直すまでの間に行が戻らない", async () => {
+    const user = renderLive({ conversations: [conv("c1", "手元")], folders: [] });
+    const row = screen
+      .getByTitle("お気に入り（削除できない常設フォルダ）")
+      .closest("li") as HTMLElement;
+    await user.click(within(row).getByLabelText("展開"));
+    await deliverFavorites(0, [conv("old", "一覧の外", { favorite: 1 })]);
+
+    await openMenu(user, "一覧の外");
+    await user.click(screen.getByRole("menuitem", { name: "削除" }));
+    await answerDialog(user, true);
+    expect(held[0]).toMatchObject({ method: "DELETE", path: "/api/conversations/old" });
+
+    // 消せて、200件の一覧が着いた。全件の取り直しはまだ届かない
+    await answer(0, true);
+    deliver({ conversations: [conv("c1", "手元")], folders: [] });
+    expect(heldFavorites).toHaveLength(2);
+    expect(within(row).queryByText("一覧の外")).toBeNull();
   });
 
   it("お気に入りは押した時点で印が付く", async () => {

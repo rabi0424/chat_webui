@@ -16,7 +16,11 @@ export type MenuTarget =
   | { type: "folder"; id: string };
 
 export interface SidebarActions {
-  /** いま表示している会話とフォルダ（メニューの中身を組み立てるのに使う）。 */
+  /**
+   * いま表示している会話とフォルダ（メニューの中身を組み立てるのに使う）。
+   * 会話は一覧の200件に、全件から出てきたお気に入りを足したもの——
+   * 一覧の外の行でも「…」が効くように。
+   */
   conversations: ConversationListRow[];
   folders: FolderRow[];
 
@@ -40,8 +44,15 @@ export interface SidebarActions {
 
   /** そのフォルダに属する会話。 */
   conversationsIn: (folderId: string) => ConversationListRow[];
-  /** お気に入りの会話。 */
+  /**
+   * お気に入りの会話。開く前は手元の200件の中の分、開いて全件が届けば
+   * 全件（Sidebar の favoriteConversations）。
+   */
   favorites: ConversationListRow[];
+  /** お気に入りの件数（全件。ローダーが数えたものに手元の操作を足し引き）。 */
+  favoriteTotal: number;
+  /** 全件を取りに行っている最中（届くまで手元の分しか出ていない）。 */
+  favoritesPending: boolean;
 
   /**
    * 名前をその場で書き換えている行。行はこれを見て、名前の代わりに

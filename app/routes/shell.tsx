@@ -18,8 +18,8 @@ import type { Route } from "./+types/shell";
 import {
   getAppSettings,
   listBots,
-  listConversations,
   listFolders,
+  listSidebar,
   type BotRow,
 } from "../lib/db.server";
 import type { AppSettings } from "../lib/settings";
@@ -105,18 +105,26 @@ export async function loader() {
   // モデル一覧（コールドスタート時は数MBの上流取得）と為替は
   // ここでは待たない。D1だけで最初の画面を出し、モデルは
   // クライアントが /api/models から遅れて読む（Shell内のuseEffect）。
-  const [conversations, bots, folders, settings] = await Promise.all([
-    listConversations(),
-    listBots(),
-    listFolders(),
-    getAppSettings(),
-  ]);
+  const [{ conversations, favoriteCount }, bots, folders, settings] =
+    await Promise.all([
+      listSidebar(),
+      listBots(),
+      listFolders(),
+      getAppSettings(),
+    ]);
   // 初回表示・コールドスタートの重さを数字で追うための実測
   console.log(`[perf] shell loader ${Date.now() - started}ms`);
   // サイドバーの「今日・昨日」の基準。サーバーとブラウザで同じ値を使う
   // ためにここで決める（描画のたびに時計を読むと、日付の境でハイドレー
   // ションが失敗する）。一覧を取り直すたびに新しくなる
-  return { conversations, bots, folders, settings, now: Date.now() };
+  return {
+    conversations,
+    favoriteCount,
+    bots,
+    folders,
+    settings,
+    now: Date.now(),
+  };
 }
 
 /**
@@ -154,7 +162,7 @@ function flush(): void {
 }
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { conversations, bots, folders, now } = loaderData;
+  const { conversations, favoriteCount, bots, folders, now } = loaderData;
   /*
    * 設定画面で保存した値。**どのローダーの値の上に貼ったか**も控え、
    * ローダーが取り直されたら（別の操作や一覧の動きで）そちらを正とする
@@ -705,6 +713,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
         <div className="order-1 hidden w-72 shrink-0 border-r border-black/[0.06] md:block dark:border-white/[0.06]">
           <Sidebar
             conversations={conversations}
+            favoriteCount={favoriteCount}
             folders={folders}
             unreadIds={unreadIds}
             generatingIds={generatingIds}
@@ -776,6 +785,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
           >
             <Sidebar
               conversations={conversations}
+              favoriteCount={favoriteCount}
               folders={folders}
               unreadIds={unreadIds}
               generatingIds={generatingIds}

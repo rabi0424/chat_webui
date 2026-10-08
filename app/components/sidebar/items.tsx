@@ -435,7 +435,8 @@ const DISCLOSURE =
  * （名前の変更も削除もできないため、出すものが無い）。
  */
 export function FavoritesFolderItem() {
-  const { expanded, toggleExpanded, setView, favorites } = useSidebar();
+  const { expanded, toggleExpanded, setView, favorites, favoriteTotal } =
+    useSidebar();
   const isExpanded = expanded.has(FAVORITES_ID);
   const children = favorites;
   return (
@@ -460,13 +461,14 @@ export function FavoritesFolderItem() {
           <IconStarSolid className="h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-300" />
           <span className="min-w-0 flex-1 truncate">
             お気に入り
-            <Count n={children.length} />
+            {/* 件数は全件（一覧の200件の中を数えたものではない） */}
+            <Count n={favoriteTotal} />
           </span>
         </button>
       </div>
       {isExpanded && (
         <ul className="mt-0.5 space-y-0.5">
-          {children.length === 0 && (
+          {children.length === 0 && favoriteTotal === 0 && (
             <li className="ml-5 px-3 py-1.5 text-[0.8125rem] text-ink-2">
               （まだありません）
             </li>
@@ -474,8 +476,29 @@ export function FavoritesFolderItem() {
           {children.map((c) => (
             <ConversationItem key={c.id} c={c} indent />
           ))}
+          <FavoritesLoading indent />
         </ul>
       )}
+    </li>
+  );
+}
+
+/**
+ * お気に入りの全件が届くまでの印。
+ *
+ * 開いた直後は手元の200件の中の分しか並んでいない。件数より行が少ない
+ * あいだ黙っていると、「数は合わないのに行が無い」ように見える。
+ * 全件が届いたか、届かなかった（そのときは別に失敗を出す）後は消える。
+ */
+export function FavoritesLoading({ indent = false }: { indent?: boolean }) {
+  const { favorites, favoriteTotal, favoritesPending } = useSidebar();
+  if (!favoritesPending || favorites.length >= favoriteTotal) return null;
+  return (
+    <li
+      role="status"
+      className={`${indent ? "ml-5" : ""} px-3 py-1.5 text-[0.8125rem] text-ink-2`}
+    >
+      残りを読み込み中…
     </li>
   );
 }

@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
+  FAVORITE_CONVERSATIONS_SQL,
+  FAVORITE_COUNT_SQL,
   LIST_VERSION_BUMP_SQL,
   DAILY_DO_MS_SQL,
   DUE_PENDING_DELETIONS_SQL,
@@ -525,6 +527,64 @@ describe("サイドバーの会話一覧", () => {
     addConversation("新", { updatedAt: 300 });
     addConversation("ピン", { pinned: 1, updatedAt: 1 });
     expect(list().map((r) => r.id)).toEqual(["ピン", "新", "古"]);
+  });
+});
+
+/**
+ * お気に入りの全件。
+ *
+ * サイドバーの一覧は最新200件で切られているので、古いお気に入りは
+ * その中から拾うと消える。専用の文で全件を引く。
+ */
+describe("お気に入りの全件", () => {
+  beforeEach(() => migrate(db));
+
+  const add = (
+    id: string,
+    o: { favorite?: number; pinned?: number; updatedAt: number },
+  ) =>
+    db
+      .prepare(
+        `INSERT INTO conversations (id, title, favorite, pinned, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?)`,
+      )
+      .run(id, `題 ${id}`, o.favorite ?? 0, o.pinned ?? 0, o.updatedAt);
+  const ids = (sql: string) =>
+    (db.prepare(sql).all() as { id: string }[]).map((r) => r.id);
+  const count = () => (db.prepare(FAVORITE_COUNT_SQL).get() as { n: number }).n;
+
+  it("200件の外にこぼれたお気に入りも引ける", () => {
+    // 新しい会話が201件あれば、古いお気に入りはサイドバーの一覧から落ちる
+    for (let i = 0; i < 201; i++) add(`n${i}`, { updatedAt: 1000 + i });
+    add("古い", { favorite: 1, updatedAt: 1 });
+    // 落ちていることを先に見る。落ちないなら、この文は要らない
+    expect(ids(CONVERSATIONS_SIDEBAR_SQL)).not.toContain("古い");
+    expect(ids(FAVORITE_CONVERSATIONS_SQL)).toEqual(["古い"]);
+    expect(count()).toBe(1);
+  });
+
+  it("お気に入りだけを更新の新しい順に。ピン留めは先頭に上げない", () => {
+    add("a", { favorite: 1, updatedAt: 100 });
+    add("b", { updatedAt: 200 });
+    add("c", { favorite: 1, updatedAt: 300 });
+    add("p", { favorite: 1, pinned: 1, updatedAt: 50 });
+    expect(ids(FAVORITE_CONVERSATIONS_SQL)).toEqual(["c", "a", "p"]);
+    expect(count()).toBe(3);
+  });
+
+  it("行の列はサイドバーの一覧と同じ（同じ型を名乗る）", () => {
+    add("a", { favorite: 1, updatedAt: 1 });
+    const [sidebar] = db.prepare(CONVERSATIONS_SIDEBAR_SQL).all() as object[];
+    const [favorite] = db.prepare(FAVORITE_CONVERSATIONS_SQL).all() as object[];
+    expect(Object.keys(favorite)).toEqual(Object.keys(sidebar));
+    // 重い列は付いてこない（サイドバーと同じ理由）
+    expect(Object.keys(favorite)).not.toContain("system_prompt");
+  });
+
+  it("1つも無ければ空で、件数は 0", () => {
+    add("a", { updatedAt: 1 });
+    expect(ids(FAVORITE_CONVERSATIONS_SQL)).toEqual([]);
+    expect(count()).toBe(0);
   });
 });
 
