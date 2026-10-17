@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  CLEAR_CONVERSATION_BOT_SQL,
+  SWITCH_CONVERSATION_BOT_SQL,
   CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
   FAVORITE_CONVERSATIONS_SQL,
@@ -585,6 +587,72 @@ describe("お気に入りの全件", () => {
     add("a", { updatedAt: 1 });
     expect(ids(FAVORITE_CONVERSATIONS_SQL)).toEqual([]);
     expect(count()).toBe(0);
+  });
+});
+
+/**
+ * 会話の担当ボットの差し替え（入力欄のモデル一覧でボットを選ぶ）。
+ * 本番と同じ文を流し、書いた列と**書かない列**の両方を見る。
+ */
+describe("担当ボットの差し替え", () => {
+  beforeEach(() => {
+    migrate(db);
+    db.prepare(
+      `INSERT INTO conversations (id, title, model_id, pinned,
+         current_leaf_message_id, bot_id, bot_name, bot_icon,
+         system_prompt, params_json, created_at, updated_at)
+       VALUES ('c', '題', 'old/model', 0, NULL, 'b0', '前の', '🔍',
+               '前のプロンプト', '{"temperature":"1.9"}', 1, 5)`,
+    ).run();
+    // 隣の会話。WHERE を落とすと、ここまで書き換わる
+    db.prepare(
+      `INSERT INTO conversations (id, title, model_id, bot_name, created_at, updated_at)
+       VALUES ('other', '隣', 'other/model', '隣のボット', 1, 1)`,
+    ).run();
+  });
+  const row = (id = "c") =>
+    db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as Record<
+      string,
+      unknown
+    >;
+
+  it("ボットを写すと、モデルとパラメータも一緒に替わる", () => {
+    db.prepare(SWITCH_CONVERSATION_BOT_SQL).run(
+      "b1",
+      "翻訳",
+      "🌐",
+      "あなたは翻訳者です。",
+      '{"temperature":"0.1"}',
+      "new/model",
+      "c",
+    );
+    expect(row()).toMatchObject({
+      bot_id: "b1",
+      bot_name: "翻訳",
+      bot_icon: "🌐",
+      system_prompt: "あなたは翻訳者です。",
+      params_json: '{"temperature":"0.1"}',
+      model_id: "new/model",
+      // 並び順（更新の新しい順）は動かさない
+      updated_at: 5,
+    });
+    expect(row("other")).toMatchObject({
+      bot_name: "隣のボット",
+      model_id: "other/model",
+    });
+  });
+
+  it("外すとボットの欄とプロンプトだけが替わり、モデルとパラメータは残る", () => {
+    db.prepare(CLEAR_CONVERSATION_BOT_SQL).run("既定のプロンプト", "c");
+    expect(row()).toMatchObject({
+      bot_id: null,
+      bot_name: null,
+      bot_icon: null,
+      system_prompt: "既定のプロンプト",
+      model_id: "old/model",
+      params_json: '{"temperature":"1.9"}',
+    });
+    expect(row("other").bot_name).toBe("隣のボット");
   });
 });
 

@@ -1,8 +1,10 @@
 import type { Route } from "./+types/api.conversations.$id";
 import {
   deleteConversation,
+  getBot,
   getConversation,
   markConversationRead,
+  switchConversationBot,
   updateConversationMeta,
   updateConversationModel,
   updateConversationParams,
@@ -31,6 +33,8 @@ export async function action({ request, params }: Route.ActionArgs) {
 
   let body: {
     modelId?: string;
+    /** 担当ボットの差し替え。null で外す。 */
+    botId?: string | null;
     params?: Record<string, unknown> | null;
     title?: string;
     pinned?: boolean;
@@ -43,6 +47,21 @@ export async function action({ request, params }: Route.ActionArgs) {
     body = (await request.json()) as typeof body;
   } catch {
     return apiError("不正なリクエストです", 400);
+  }
+  /*
+   * ボットは他の書き込みより先に確かめる。消えたボットを指定されたとき、
+   * 同じ依頼の残り（モデル・パラメータ）だけ書いて 404 を返すと、
+   * 半端に変わった会話が残る。
+   *
+   * 書くのもモデルより先。ボットの写しはモデルとパラメータも書き換える
+   * ので、同じ依頼でモデルも指定されていればそちらが勝つようにする。
+   */
+  if (typeof body.botId === "string") {
+    const bot = await getBot(body.botId);
+    if (!bot) return apiError("ボットが見つかりません", 404);
+    await switchConversationBot(params.id, bot);
+  } else if (body.botId === null) {
+    await switchConversationBot(params.id, null);
   }
   if (body.modelId) {
     await updateConversationModel(params.id, body.modelId);

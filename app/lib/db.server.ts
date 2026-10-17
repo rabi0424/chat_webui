@@ -26,11 +26,13 @@ import {
 } from "./settings";
 import { MAX_TITLE_LENGTH, providerOf } from "./constants";
 import {
+  CLEAR_CONVERSATION_BOT_SQL,
   CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
   FAVORITE_CONVERSATIONS_SQL,
   FAVORITE_COUNT_SQL,
   LIST_VERSION_BUMP_SQL,
+  SWITCH_CONVERSATION_BOT_SQL,
   DUE_PENDING_DELETIONS_SQL,
   INSERT_USER_MESSAGE_SQL,
   appendAssistantMessageStatements,
@@ -584,6 +586,38 @@ export async function updateConversationModel(
     .prepare("UPDATE conversations SET model_id = ? WHERE id = ?")
     .bind(modelId, id)
     .run();
+}
+
+/**
+ * 会話の担当ボットを差し替える（null で外す）。
+ *
+ * システムプロンプトは作るときと同じ関数で決める（空なら入れない・
+ * 外したらアプリ既定）。画面の側も同じ関数で先に差し替えて見せるので、
+ * 書き写すと読み直したときに食い違う。
+ *
+ * 一覧が動いた印は進めない。サイドバーはボットの印を出さないので、
+ * 進めるとシェル（会話200件・ボット・フォルダ）を取り直すだけになる。
+ */
+export async function switchConversationBot(
+  id: string,
+  bot: BotRow | null,
+): Promise<void> {
+  const d = await db();
+  const systemPrompt = conversationSystemPrompt(bot, await getAppSettings());
+  const statement = bot
+    ? d
+        .prepare(SWITCH_CONVERSATION_BOT_SQL)
+        .bind(
+          bot.id,
+          bot.name,
+          bot.icon,
+          systemPrompt,
+          bot.params_json,
+          bot.model_id,
+          id,
+        )
+    : d.prepare(CLEAR_CONVERSATION_BOT_SQL).bind(systemPrompt, id);
+  await statement.run();
 }
 
 export async function updateConversationParams(

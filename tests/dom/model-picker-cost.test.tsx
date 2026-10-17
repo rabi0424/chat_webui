@@ -266,9 +266,11 @@ describe("会話画面から渡す props", () => {
     installServer();
     const model = counted({ ...TEST_MODEL });
     const cleared = vi.fn();
+    // 会話がまだ無いホーム（× を受けるのはホーム。会話があれば
+    // この画面が担当ボットを外す）
     const { user, setBots } = renderChat({
       onClearBot: cleared,
-      conversationId: "c1",
+      conversationId: null,
       models: [model],
       initialModel: model.id,
       bot: {

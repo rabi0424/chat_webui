@@ -322,6 +322,8 @@ export function renderChat(props: {
    * 新しい関数を渡す。
    */
   onClearBot?: () => void;
+  /** まだ会話が無いときに一覧でボットを選んだ（ホームが渡すもの）。 */
+  onSelectBot?: (bot: BotRow) => void;
   initialModel?: string | null;
   systemPrompt?: string | null;
   /** この会話に保存されている生成パラメータ。 */
@@ -390,6 +392,7 @@ export function renderChat(props: {
               onClearBot={
                 props.onClearBot ? () => props.onClearBot?.() : undefined
               }
+              onSelectBot={props.onSelectBot}
               initialModel={props.initialModel ?? null}
               initialParams={props.initialParams ?? null}
               systemPrompt={props.systemPrompt ?? null}

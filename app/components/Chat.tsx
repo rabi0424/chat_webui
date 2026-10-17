@@ -10,6 +10,7 @@ import {
 import { useShortcut } from "../lib/use-shortcut";
 import { useLocation, useNavigate, useOutletContext, useRevalidator } from "react-router";
 import type { ShellContext } from "../routes/shell";
+import { conversationSystemPrompt } from "../lib/settings";
 import type { UiAttachment, UiMessage } from "../lib/types";
 import { findUrls, pastedUrl } from "../lib/page-url";
 import {
@@ -103,6 +104,24 @@ export interface BotContext {
   params: ParamsState | null;
 }
 
+/** モデルの一覧がボットの行に出す欄。これが同じなら同じ一覧とみなす。 */
+function pickerBotsKey(bots: readonly BotRow[]): string {
+  return bots
+    .map((b) => [b.id, b.name, b.icon, b.model_id].join("\u0000"))
+    .join("\u0001");
+}
+
+/** ボットの定義から、会話の担当として持つ形を作る（ホームと会話画面で共通）。 */
+export function botContextOf(bot: BotRow): BotContext {
+  return {
+    id: bot.id,
+    name: bot.name,
+    icon: bot.icon,
+    systemPrompt: bot.system_prompt,
+    params: parseParamsJson(bot.params_json),
+  };
+}
+
 
 /* 引っぱって更新の寸法は lib/pull-to-refresh.ts に集約（画像一覧と共通） */
 
@@ -180,18 +199,28 @@ export function Chat({
   bot = null,
   initialModel = null,
   initialParams = null,
-  systemPrompt = null,
+  systemPrompt: initialSystemPrompt = null,
   emptyState,
   title = null,
   onClearBot,
+  onSelectBot,
 }: {
   conversationId: string | null;
   initialMessages: UiMessage[];
   bot?: BotContext | null;
   /** ツールバーの中央に出す会話の名前。無ければ「新規チャット」。 */
   title?: string | null;
-  /** ホームでボットを選んでいるとき、その選択を外す（チップの ×）。 */
+  /**
+   * まだ会話が無いときにボットの選択を外す（チップの ×）。ホームが渡す。
+   * 会話があれば、この画面が会話の担当ボットを外す。
+   */
   onClearBot?: () => void;
+  /**
+   * まだ会話が無いときに、モデルの一覧でボットを選んだ。ホームが渡し、
+   * ランチャーで選んだのと同じ状態にする（見出しの大きなアイコンも
+   * 揃う）。会話があれば、この画面が会話の担当ボットを差し替える。
+   */
+  onSelectBot?: (bot: BotRow) => void;
   initialModel?: string | null;
   /** この会話の生成パラメータ（会話 or ボットのスナップショット）。 */
   initialParams?: ParamsState | null;
@@ -214,6 +243,12 @@ export function Chat({
   const [model, setModel] = useState(
     initialModel ?? settings.defaultModelId ?? DEFAULT_MODEL,
   );
+  /**
+   * 会話の担当ボットとシステムプロンプト。会話の途中でもモデルの一覧から
+   * 差し替えられる（selectBot）ので、受け取った値は出発点として持つ。
+   */
+  const [activeBot, setActiveBot] = useState<BotContext | null>(bot);
+  const [systemPrompt, setSystemPrompt] = useState(initialSystemPrompt);
   const [params, setParams] = useState<ParamsState>(
     initialParams ?? bot?.params ?? (settings.defaultParams as ParamsState),
   );
@@ -610,14 +645,90 @@ export function Chat({
   // モデル一覧のチップに渡すもの。上と同じ理由で同一性を保つ
   const botMark = useMemo(
     () =>
-      bot ? (
-        <span aria-hidden title={bot.name} className="-ml-0.5 text-[15px] leading-none">
-          {bot.icon}
+      activeBot ? (
+        <span aria-hidden title={activeBot.name} className="-ml-0.5 text-[15px] leading-none">
+          {activeBot.icon}
         </span>
       ) : undefined,
-    [bot],
+    [activeBot],
   );
-  const clearBot = useStableCallback(() => onClearBot?.());
+
+  /*
+   * モデルの一覧に渡すボット。シェルは読み込み直すたびに（中身が同じでも）
+   * 別の配列を返すので、そのまま渡すと一覧の部品の memo が外れ、未読の
+   * 見張りのたびにチップまで描き直す。一覧が出す欄（ID・名前・印・
+   * モデル）が変わったときだけ差し替える。選んだあとの写しは、その時点の
+   * シェルの一覧から引き直す（selectBot）ので、ここが古くても効かない。
+   * 描画中に前の値と比べて決める（ModelList の「何行まで描くか」と同じ形）。
+   */
+  const [pickerBots, setPickerBots] = useState(bots);
+  if (pickerBots !== bots && pickerBotsKey(pickerBots) !== pickerBotsKey(bots)) {
+    setPickerBots(bots);
+  }
+
+  /** 溜めている⚙の変更を送らずに捨てる。 */
+  const dropPendingParams = () => {
+    if (paramsSaveTimer.current) clearTimeout(paramsSaveTimer.current);
+    paramsSaveTimer.current = null;
+    pendingParamsRef.current = null;
+  };
+
+  /**
+   * モデルの一覧でボットを選んだ。会話の担当ボットを差し替える。
+   *
+   * 宛先（`@ボット名`）が1通だけなのに対し、こちらは会話に残る——毎回
+   * `@` を書かずに済むようにするためのもの。モデルを選び直すのと同じ
+   * 扱いで、次の1通からそのボットのモデル・システムプロンプト・
+   * パラメータで出す。パラメータまで差し替えるのは宛先と同じ理由
+   * （プロバイダごとに別物）。サーバー側も同じものを写し取る。
+   */
+  const selectBot = useStableCallback((id: string) => {
+    const b = bots.find((x) => x.id === id);
+    if (!b) return;
+    const convId = convIdRef.current;
+    if (!convId && onSelectBot) {
+      onSelectBot(b);
+      return;
+    }
+    setActiveBot(botContextOf(b));
+    setModel(b.model_id);
+    setParams(parseParamsJson(b.params_json));
+    setSystemPrompt(conversationSystemPrompt(b, settings));
+    if (!convId) return;
+    // 待たせている⚙の保存は前の担当のパラメータ。あとから届くと、
+    // 写したばかりのボットのパラメータを古い値で上書きする
+    dropPendingParams();
+    // モデルと同じ理由（先読みに古い担当が残り、戻ると巻き戻って見える）
+    invalidateChat(convId);
+    void fetch(`/api/conversations/${convId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ botId: b.id }),
+    }).catch(() => {});
+  });
+
+  /**
+   * チップの × 。担当ボットを外す。
+   *
+   * システムプロンプトはアプリ既定へ戻すが、モデルとパラメータは残す
+   * （外した直後に答えるモデルが黙って変わると、意図と違う額がかかる）。
+   */
+  const clearBot = useStableCallback(() => {
+    const convId = convIdRef.current;
+    if (!convId && onClearBot) {
+      onClearBot();
+      return;
+    }
+    setActiveBot(null);
+    setSystemPrompt(conversationSystemPrompt(null, settings));
+    if (!convId) return;
+    invalidateChat(convId);
+    void fetch(`/api/conversations/${convId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ botId: null }),
+    }).catch(() => {});
+  });
 
   /**
    * Web検索の有効/無効。既定はオンで、オフにしたときだけ
@@ -1796,7 +1907,7 @@ export function Chat({
               黙って別のボットが答えることになる
             */
             modelId: gen.model,
-            botId: addressee?.id ?? bot?.id ?? undefined,
+            botId: addressee?.id ?? activeBot?.id ?? undefined,
             params:
               Object.keys(gen.params).length > 0 ? gen.params : undefined,
             title: (firstUser?.content?.trim() || "新しいチャット").slice(0, MAX_TITLE_LENGTH),
@@ -2576,7 +2687,7 @@ export function Chat({
         </div>
         <div className="min-w-0 flex-1 text-center">
           <p className="truncate text-[0.9375rem] font-semibold leading-tight">
-            {title ?? (bot ? bot.name : "新規チャット")}
+            {title ?? (activeBot ? activeBot.name : "新規チャット")}
           </p>
           {conversationSummary && (
             <p className="truncate text-xs leading-tight text-ink-2 tabular-nums">
@@ -2638,7 +2749,7 @@ export function Chat({
             </div>
             <p className="mb-3 text-xs text-ink-3">
               この会話にのみ適用されます
-              {bot ? "（ボットの設定が初期状態です）" : ""}
+              {activeBot ? "（ボットの設定が初期状態です）" : ""}
             </p>
             {supportsWebSearch(model) && (
               <div className="mb-3 flex items-center gap-3 rounded-xl border border-neutral-200/80 p-3 dark:border-white/10">
@@ -2818,8 +2929,11 @@ export function Chat({
                 onChange={selectModel}
                 variant="chip"
                 leading={botMark}
-                onClear={bot && onClearBot ? clearBot : undefined}
+                onClear={activeBot ? clearBot : undefined}
                 clearLabel="ボットの選択を解除"
+                bots={pickerBots}
+                botId={activeBot?.id ?? null}
+                onSelectBot={selectBot}
               />
             }
             mention={mention}
