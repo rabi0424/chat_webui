@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useOutletContext } from "react-router";
 import type { ShellContext } from "./shell";
-import { parseParamsJson } from "../lib/params";
-import { Chat, type BotContext } from "../components/Chat";
+import type { BotRow } from "../lib/db.server";
+import { Chat, botContextOf, type BotContext } from "../components/Chat";
 import { HomeEmptyState } from "../components/HomeEmptyState";
 
 export function meta() {
@@ -29,6 +29,12 @@ export default function Home() {
     setSelectedModel(null);
   }, [location.key]);
 
+  /** ランチャーでも入力欄のモデル一覧でも、選んだら同じ状態にする。 */
+  const selectBot = (bot: BotRow) => {
+    setSelected(botContextOf(bot));
+    setSelectedModel(bot.model_id);
+  };
+
   const modelNames = useMemo(
     () => new Map(models.map((m) => [m.id, m.name])),
     [models],
@@ -39,17 +45,7 @@ export default function Home() {
       <HomeEmptyState
         bots={bots}
         modelNames={modelNames}
-        onSelect={(b) => {
-          const bot = bots.find((x) => x.id === b.id)!;
-          setSelected({
-            id: bot.id,
-            name: bot.name,
-            icon: bot.icon,
-            systemPrompt: bot.system_prompt,
-            params: parseParamsJson(bot.params_json),
-          });
-          setSelectedModel(bot.model_id);
-        }}
+        onSelect={(b) => selectBot(bots.find((x) => x.id === b.id)!)}
       />
     ) : selected ? (
       <div className="text-center">
@@ -95,6 +91,7 @@ export default function Home() {
         setSelected(null);
         setSelectedModel(null);
       }}
+      onSelectBot={selectBot}
     />
   );
 }

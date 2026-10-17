@@ -968,6 +968,30 @@ export const FAVORITE_CONVERSATIONS_SQL = `SELECT
       ORDER BY updated_at DESC`;
 
 /**
+ * 会話の担当ボットを差し替える（入力欄のモデル一覧でボットを選んだとき）。
+ *
+ * 作るときと同じく、ボットの**いまの定義を写し取る**。参照にすると、
+ * あとでボットを編集したとき既にある会話の前提が入れ替わる（§3.2）。
+ * モデルとパラメータも一緒に書き換える——名前とプロンプトだけ移して
+ * モデルを残すと、読み直したときに「ボットの印なのに別のモデル」で開く。
+ */
+export const SWITCH_CONVERSATION_BOT_SQL = `UPDATE conversations
+    SET bot_id = ?, bot_name = ?, bot_icon = ?,
+        system_prompt = ?, params_json = ?, model_id = ?
+  WHERE id = ?`;
+
+/**
+ * 会話の担当ボットを外す（チップの ×）。
+ *
+ * システムプロンプトだけはアプリ既定の写しに戻す（ボットを使わない会話と
+ * 同じ扱い）。モデルとパラメータは残す——外した直後に答えるモデルが
+ * 黙って変わると、意図と違う額がかかる。
+ */
+export const CLEAR_CONVERSATION_BOT_SQL = `UPDATE conversations
+    SET bot_id = NULL, bot_name = NULL, bot_icon = NULL, system_prompt = ?
+  WHERE id = ?`;
+
+/**
  * お気に入りの件数。サイドバーの「お気に入り」の行に、開く前から出す。
  * 索引（idx_conversations_favorite）だけで数えられる。
  */

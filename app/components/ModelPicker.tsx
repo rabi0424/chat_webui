@@ -11,6 +11,7 @@ import { useShortcut } from "../lib/use-shortcut";
 import { useStableCallback } from "./chat/use-stable-callback";
 import { createPortal } from "react-dom";
 import type { ModelInfo } from "../lib/openrouter.server";
+import type { BotRow } from "../lib/db.server";
 import { useEscapeToClose } from "../lib/dismiss";
 import { IconChevronDown, IconX } from "./icons";
 import { GLASS_PANEL, TERSE_INPUT } from "../lib/ui";
@@ -180,6 +181,81 @@ const ModelRow = memo(function ModelRow({
 });
 
 /**
+ * 検索語に当たるか。スペース区切りの AND（全部の語がどこかに含まれる）。
+ *
+ * モデルとボットで同じ規則を使う。片方だけ OR にすると、同じ語で
+ * 引いたのにボットだけ関係の無いものまで並ぶ。
+ */
+function matchesTerms(haystack: string, terms: readonly string[]): boolean {
+  const h = haystack.toLowerCase();
+  return terms.every((t) => h.includes(t));
+}
+
+/** ボットの節の1件。使うモデルを一覧から引いて添える。 */
+interface BotEntry {
+  bot: BotRow;
+  /** ボットが使うモデル。一覧から消えていれば undefined。 */
+  model: ModelInfo | undefined;
+  /** モデルが一覧から消えている（提供終了・名前変更）。選べなくする。 */
+  missing: boolean;
+}
+
+/**
+ * ボットの行。モデルの行と同じ理由で memo する（行の props は同一性の
+ * 変わらない値と安定した onSelect だけ）。
+ *
+ * 2行目にはボットが**実際に使うモデル**を出す。選ぶと答えるモデルも
+ * 変わるので、名前だけでは額の見当が付かない。
+ */
+const BotPickerRow = memo(function BotPickerRow({
+  entry: { bot, model, missing },
+  selected,
+  onSelect,
+}: {
+  entry: BotEntry;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        disabled={missing}
+        onClick={() => onSelect(bot.id)}
+        // 読み上げでは「名前（使うモデル）」の形にする。中身をそのまま
+        // 読ませると名前とモデルが切れ目なくつながる
+        aria-label={`${bot.name}（${shortModelName(model, bot.model_id)}${
+          missing ? "・一覧に無いモデル" : ""
+        }）`}
+        className={`w-full rounded-lg px-3 py-2 text-left hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent ${
+          selected ? "bg-neutral-100 dark:bg-white/10" : ""
+        }`}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span aria-hidden className="shrink-0 text-[15px] leading-none">
+            {bot.icon}
+          </span>
+          <span className="truncate text-sm font-medium text-neutral-800 dark:text-neutral-100">
+            {bot.name}
+          </span>
+        </span>
+        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-ink-3">
+          <span
+            aria-hidden
+            className="h-2 w-2 shrink-0 rounded-[2px]"
+            style={{ backgroundColor: providerColor(bot.model_id) }}
+          />
+          <span className="truncate">
+            {shortModelName(model, bot.model_id)}
+            {missing && "（一覧に無いモデル）"}
+          </span>
+        </span>
+      </button>
+    </li>
+  );
+});
+
+/**
  * 一覧を最初に何行まで描くか、スクロールで何行ずつ足すか。
  *
  * 一覧は400行を超える。全部を一度に描くと、開くだけで（jsdom で）
@@ -206,16 +282,24 @@ const EXTEND_MARGIN_PX = 400;
 function ModelList({
   filtered,
   recent,
+  bots,
+  botId,
   value,
   newModelIds,
   onSelect,
+  onSelectBot,
   onTouchMove,
 }: {
   filtered: ModelInfo[];
   recent: ModelInfo[];
+  /** 検索で絞ったボット。ボットを並べない欄では空。 */
+  bots: BotEntry[];
+  /** いま担当しているボット。 */
+  botId: string | null;
   value: string;
   newModelIds: Set<string>;
   onSelect: (id: string) => void;
+  onSelectBot: (id: string) => void;
   onTouchMove: () => void;
 }) {
   /*
@@ -275,10 +359,33 @@ function ModelList({
           : undefined
       }
     >
-      {filtered.length === 0 && (
+      {filtered.length === 0 && bots.length === 0 && (
         <li className="px-3 py-4 text-center text-sm text-neutral-400">
           該当するモデルがありません
         </li>
+      )}
+      {/*
+        ボットの節。よく使うモデルより上に置く——数が少なく、選べば
+        会話の前提（システムプロンプト）ごと変わるので、モデルの中に
+        混ぜずに見出しで分ける。検索中も出す（名前でもモデルでも引ける）。
+      */}
+      {bots.length > 0 && (
+        <>
+          <li className="px-3 pb-1 pt-2 text-[11px] font-medium text-ink-3">
+            ボット
+          </li>
+          {bots.map((b) => (
+            <BotPickerRow
+              key={`bot-${b.bot.id}`}
+              entry={b}
+              selected={b.bot.id === botId}
+              onSelect={onSelectBot}
+            />
+          ))}
+          {filtered.length > 0 && (
+            <li role="separator" className="mx-3 my-1 border-t border-line" />
+          )}
+        </>
       )}
       {/*
         よく使うモデルの節。検索中は出さない（打ち込んだ語に対する
@@ -367,6 +474,9 @@ export const ModelPicker = memo(function ModelPicker({
   leading,
   onClear,
   clearLabel,
+  bots,
+  botId = null,
+  onSelectBot,
 }: {
   models: ModelInfo[];
   value: string;
@@ -385,6 +495,15 @@ export const ModelPicker = memo(function ModelPicker({
   /** チップの末尾に × を出し、押したときに呼ぶ（ボットの選択を外す）。 */
   onClear?: () => void;
   clearLabel?: string;
+  /**
+   * 一覧の先頭に並べるボット。入力欄のチップだけが渡す（設定画面や
+   * ボットの編集画面で選ぶのはモデルそのものなので、ボットは出さない）。
+   * 呼ぶ側は onSelectBot と一緒に渡し、同一性を保つこと。
+   */
+  bots?: readonly BotRow[];
+  /** いま担当しているボット（行に選択の印を付ける）。 */
+  botId?: string | null;
+  onSelectBot?: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -425,6 +544,11 @@ export const ModelPicker = memo(function ModelPicker({
     setOpen(false);
     setQuery("");
   });
+  const pickBot = useStableCallback((id: string) => {
+    onSelectBot?.(id);
+    setOpen(false);
+    setQuery("");
+  });
   const blurSearch = useCallback(() => searchRef.current?.blur(), []);
 
   /*
@@ -439,18 +563,43 @@ export const ModelPicker = memo(function ModelPicker({
    * （OpenRouterとPoeで命名規則が違うため、"opus 4.6" のような
    * 語順・区切りに依存しない検索ができるように）。
    */
+  const terms = useMemo(
+    () =>
+      deferredQuery
+        .trim()
+        .toLowerCase()
+        .split(/[\s　]+/)
+        .filter(Boolean),
+    [deferredQuery],
+  );
   const filtered = useMemo(() => {
-    const terms = deferredQuery
-      .trim()
-      .toLowerCase()
-      .split(/[\s　]+/)
-      .filter(Boolean);
     if (terms.length === 0) return models;
-    return models.filter((m) => {
-      const haystack = `${m.id} ${m.name}`.toLowerCase();
-      return terms.every((t) => haystack.includes(t));
-    });
-  }, [models, deferredQuery]);
+    return models.filter((m) => matchesTerms(`${m.id} ${m.name}`, terms));
+  }, [models, terms]);
+
+  /**
+   * ボットは名前に加えて**使うモデル**（IDと名前）でも引く。モデルの名前で
+   * 探したとき、そのモデルを使うボットも並ぶほうが、素のモデルとボットの
+   * どちらで話すかをその場で選べる。
+   */
+  const botEntries = useMemo(() => {
+    if (!bots || !onSelectBot) return [];
+    return bots
+      .map((bot): BotEntry => {
+        const model = models.find((m) => m.id === bot.model_id);
+        return {
+          bot,
+          model,
+          // 一覧がまだ届いていないあいだは消えたと決めつけない
+          missing: models.length > 0 && model === undefined,
+        };
+      })
+      .filter(
+        ({ bot, model }) =>
+          terms.length === 0 ||
+          matchesTerms(`${bot.name} ${bot.model_id} ${model?.name ?? ""}`, terms),
+      );
+  }, [bots, onSelectBot, models, terms]);
 
   /**
    * 新着モデルのID。一覧が入れ替わったときだけ数え直す
@@ -553,7 +702,9 @@ export const ModelPicker = memo(function ModelPicker({
         type="text"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="モデルを検索…"
+        placeholder={
+          bots?.length && onSelectBot ? "モデル・ボットを検索…" : "モデルを検索…"
+        }
         aria-label="モデルを検索"
         {...TERSE_INPUT}
         className="w-full rounded-lg bg-neutral-100 px-3 py-2 text-base outline-none placeholder:text-neutral-400 sm:text-sm dark:bg-white/10 dark:text-neutral-100"
@@ -622,9 +773,12 @@ export const ModelPicker = memo(function ModelPicker({
           <ModelList
             filtered={filtered}
             recent={recent}
+            bots={botEntries}
+            botId={botId}
             value={value}
             newModelIds={newModelIds}
             onSelect={select}
+            onSelectBot={pickBot}
             onTouchMove={blurSearch}
           />
           {pos.bottom != null && search}
