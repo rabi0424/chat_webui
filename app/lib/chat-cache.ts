@@ -25,11 +25,11 @@
  * 20行ほどが一度に画面に入り、それぞれが会話を丸ごと引く要求を同時に
  * 投げて、押した会話の読み込みがその後ろに並んでいた。
  */
-import type { ConversationRow } from "./db.server";
+import type { ConversationView } from "./db.server";
 import type { UiMessage } from "./types";
 
 export interface ChatData {
-  conversation: ConversationRow;
+  conversation: ConversationView;
   messages: UiMessage[];
 }
 

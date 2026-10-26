@@ -14,6 +14,8 @@ export default function BotNew() {
         models={models}
         retryCeiling={settings.retryAttemptCeiling}
         newModelDays={settings.newModelDays}
+        fileMaxChars={settings.pageMaxChars}
+        fileMaxBytes={settings.pageMaxMb * 1024 * 1024}
       />
     </div>
   );

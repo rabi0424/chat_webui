@@ -13,7 +13,7 @@ import type { ContentPayload, ReasoningPayload } from "./polling";
  */
 import type {
   ConversationListRow,
-  ConversationRow,
+  ConversationView,
   GeneratedImageRow,
   PerfBuildRow,
   PerfGroupRow,
@@ -40,7 +40,7 @@ export interface PathResponse {
 
 /** 会話画面をまとめて読む入口（先読みキャッシュもこの形で持つ）。 */
 export interface FullConversationResponse {
-  conversation: ConversationRow;
+  conversation: ConversationView;
   messages: UiMessage[];
 }
 

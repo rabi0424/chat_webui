@@ -1,6 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  BOT_FILES_FOR_GENERATION_SQL,
+  BOTS_LIST_SQL,
+  INSERT_CONVERSATION_SQL,
   CLEAR_CONVERSATION_BOT_SQL,
   SWITCH_CONVERSATION_BOT_SQL,
   CONVERSATIONS_LATEST_SQL,
@@ -604,10 +607,13 @@ describe("担当ボットの差し替え", () => {
        VALUES ('c', '題', 'old/model', 0, NULL, 'b0', '前の', '🔍',
                '前のプロンプト', '{"temperature":"1.9"}', 1, 5)`,
     ).run();
+    db.prepare(
+      `UPDATE conversations SET bot_files_json = '[{"name":"前.txt","content":"前"}]' WHERE id = 'c'`,
+    ).run();
     // 隣の会話。WHERE を落とすと、ここまで書き換わる
     db.prepare(
-      `INSERT INTO conversations (id, title, model_id, bot_name, created_at, updated_at)
-       VALUES ('other', '隣', 'other/model', '隣のボット', 1, 1)`,
+      `INSERT INTO conversations (id, title, model_id, bot_name, bot_files_json, created_at, updated_at)
+       VALUES ('other', '隣', 'other/model', '隣のボット', '[{"name":"隣.txt","content":"隣"}]', 1, 1)`,
     ).run();
   });
   const row = (id = "c") =>
@@ -624,6 +630,7 @@ describe("担当ボットの差し替え", () => {
       "あなたは翻訳者です。",
       '{"temperature":"0.1"}',
       "new/model",
+      '[{"name":"用語集.md","content":"A=甲"}]',
       "c",
     );
     expect(row()).toMatchObject({
@@ -633,12 +640,14 @@ describe("担当ボットの差し替え", () => {
       system_prompt: "あなたは翻訳者です。",
       params_json: '{"temperature":"0.1"}',
       model_id: "new/model",
+      bot_files_json: '[{"name":"用語集.md","content":"A=甲"}]',
       // 並び順（更新の新しい順）は動かさない
       updated_at: 5,
     });
     expect(row("other")).toMatchObject({
       bot_name: "隣のボット",
       model_id: "other/model",
+      bot_files_json: '[{"name":"隣.txt","content":"隣"}]',
     });
   });
 
@@ -651,8 +660,119 @@ describe("担当ボットの差し替え", () => {
       system_prompt: "既定のプロンプト",
       model_id: "old/model",
       params_json: '{"temperature":"1.9"}',
+      // 外したボットの資料が、ボットの無い会話に付いて回らない
+      bot_files_json: null,
     });
-    expect(row("other").bot_name).toBe("隣のボット");
+    expect(row("other")).toMatchObject({
+      bot_name: "隣のボット",
+      bot_files_json: '[{"name":"隣.txt","content":"隣"}]',
+    });
+  });
+});
+
+/**
+ * ボットの添付ファイル（`lib/bot-files.ts`）を扱う文。
+ *
+ * 一覧はシェル（全ページの土台）が引くので、ファイルの中身を載せない。
+ * 生成の入口は「会話の写しで足りるときは引かない」を SQL の中で決めて
+ * いるので、条件の向きを取り違えると、写しを使うべきときに**いまの**
+ * ファイルが付く（＝ボットを編集すると既にある会話の資料が変わる）。
+ */
+describe("ボットの添付ファイル", () => {
+  beforeEach(() => {
+    migrate(db);
+    const bot = db.prepare(
+      `INSERT INTO bots (id, name, icon, model_id, system_prompt, params_json, files_json, created_at, updated_at)
+       VALUES (?, ?, '🤖', 'm', 'p', NULL, ?, ?, 1)`,
+    );
+    bot.run("b2", "後", '[{"name":"b2.txt","content":"二"}]', 2);
+    bot.run("b1", "先", '[{"name":"b1.txt","content":"一"}]', 1);
+    db.prepare(
+      `INSERT INTO conversations (id, title, bot_id, bot_files_json, created_at, updated_at)
+       VALUES ('c', '題', 'b1', '[{"name":"写し.txt","content":"写"}]', 1, 1)`,
+    ).run();
+  });
+
+  it("一覧はファイルの中身を引かず、作成順に並ぶ", () => {
+    const rows = db.prepare(BOTS_LIST_SQL).all() as Record<string, unknown>[];
+    expect(rows.map((r) => r.id)).toEqual(["b1", "b2"]);
+    expect(Object.keys(rows[0]).sort()).toEqual(
+      [
+        "id",
+        "name",
+        "icon",
+        "model_id",
+        "system_prompt",
+        "params_json",
+        "created_at",
+        "updated_at",
+      ].sort(),
+    );
+  });
+
+  const current = (botId: string, fromConversation: boolean, conv = "c") =>
+    db
+      .prepare(BOT_FILES_FOR_GENERATION_SQL)
+      .all(botId, fromConversation ? 1 : 0, conv) as { files_json: string }[];
+
+  it("担当として送られ、会話の担当がそのボットのままなら引かない（写しを使う）", () => {
+    expect(current("b1", true)).toEqual([]);
+  });
+
+  it("担当が食い違えば（切り替えの書き込みより先に届いた送信）、いまのファイルを引く", () => {
+    expect(current("b2", true)).toEqual([
+      { files_json: '[{"name":"b2.txt","content":"二"}]' },
+    ]);
+  });
+
+  it("宛先なら、会話の担当と同じボットでもいまのファイルを引く", () => {
+    expect(current("b1", false)).toEqual([
+      { files_json: '[{"name":"b1.txt","content":"一"}]' },
+    ]);
+  });
+
+  it("担当の無い会話・無い会話でも、いまのファイルを引く", () => {
+    db.prepare(
+      "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('plain', '素', 1, 1)",
+    ).run();
+    expect(current("b1", true, "plain")).toHaveLength(1);
+    expect(current("b1", true, "gone")).toHaveLength(1);
+  });
+
+  it("消えたボットは0行", () => {
+    expect(current("gone", false)).toEqual([]);
+  });
+
+  it("会話を作る文は、束縛の並びどおりの列に入る", () => {
+    db.prepare(INSERT_CONVERSATION_SQL).run(
+      "n",
+      "題",
+      "m/x",
+      "b1",
+      "名",
+      "🌐",
+      "プロンプト",
+      '{"t":1}',
+      '[{"name":"f","content":"中"}]',
+      10,
+      20,
+    );
+    expect(
+      db.prepare("SELECT * FROM conversations WHERE id = 'n'").get(),
+    ).toMatchObject({
+      title: "題",
+      model_id: "m/x",
+      pinned: 0,
+      current_leaf_message_id: null,
+      bot_id: "b1",
+      bot_name: "名",
+      bot_icon: "🌐",
+      system_prompt: "プロンプト",
+      params_json: '{"t":1}',
+      bot_files_json: '[{"name":"f","content":"中"}]',
+      created_at: 10,
+      updated_at: 20,
+    });
   });
 });
 

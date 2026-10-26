@@ -76,7 +76,13 @@ describe("描かれた入力欄の属性", () => {
         path: "/",
         Component: () => (
           <ConfirmProvider>
-            <BotForm models={[TEST_MODEL]} retryCeiling={5} newModelDays={7} />
+            <BotForm
+              models={[TEST_MODEL]}
+              retryCeiling={5}
+              newModelDays={7}
+              fileMaxChars={40_000}
+              fileMaxBytes={2 * 1024 * 1024}
+            />
           </ConfirmProvider>
         ),
       },

@@ -26,7 +26,15 @@ import {
 } from "./settings";
 import { MAX_TITLE_LENGTH, providerOf } from "./constants";
 import {
+  botFilesForGeneration,
+  type BotFile,
+  type BotFilesRequest,
+} from "./bot-files";
+import {
+  BOT_FILES_FOR_GENERATION_SQL,
+  BOTS_LIST_SQL,
   CLEAR_CONVERSATION_BOT_SQL,
+  INSERT_CONVERSATION_SQL,
   CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
   FAVORITE_CONVERSATIONS_SQL,
@@ -204,6 +212,12 @@ export interface ConversationRow {
   favorite: number;
   created_at: number;
   updated_at: number;
+  /**
+   * 担当ボットのファイルの写し（`lib/bot-files.ts` の JSON）。画面へは
+   * 返さない（`getConversationWithPath`）——足すのは生成の入口で、
+   * 画面は中身を読まない。
+   */
+  bot_files_json: string | null;
 }
 
 export interface FolderRow {
@@ -215,6 +229,7 @@ export interface FolderRow {
   updated_at: number;
 }
 
+/** 一覧（シェル）が受け取るボットの行。ファイルの中身は載せない（BOTS_LIST_SQL）。 */
 export interface BotRow {
   id: string;
   name: string;
@@ -224,6 +239,11 @@ export interface BotRow {
   params_json: string | null;
   created_at: number;
   updated_at: number;
+}
+
+/** 1件を引いたときの行。添付ファイルの中身（`lib/bot-files.ts` の JSON）まで持つ。 */
+export interface BotDetailRow extends BotRow {
+  files_json: string | null;
 }
 
 export type MessageStatus = "streaming" | "done" | "error";
@@ -440,7 +460,7 @@ async function sweepStaleStreaming(rows: MessageRow[]): Promise<void> {
  */
 export type ConversationListRow = Omit<
   ConversationRow,
-  "system_prompt" | "params_json"
+  "system_prompt" | "params_json" | "bot_files_json"
 >;
 
 export async function listConversations(): Promise<ConversationListRow[]> {
@@ -502,7 +522,7 @@ export async function createConversation(params: {
   title: string;
   modelId: string;
   /** ボット開始時はボットの設定をスナップショットして保持する。 */
-  bot?: BotRow | null;
+  bot?: BotDetailRow | null;
 }): Promise<ConversationRow> {
   const d = await db();
   const now = Date.now();
@@ -530,11 +550,10 @@ export async function createConversation(params: {
     sort_order: 0,
     created_at: now,
     updated_at: now,
+    bot_files_json: bot?.files_json ?? null,
   };
   await d
-    .prepare(
-      "INSERT INTO conversations (id, title, model_id, pinned, current_leaf_message_id, bot_id, bot_name, bot_icon, system_prompt, params_json, created_at, updated_at) VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)",
-    )
+    .prepare(INSERT_CONVERSATION_SQL)
     .bind(
       row.id,
       row.title,
@@ -544,6 +563,7 @@ export async function createConversation(params: {
       row.bot_icon,
       row.system_prompt,
       row.params_json,
+      row.bot_files_json,
       now,
       now,
     )
@@ -600,7 +620,7 @@ export async function updateConversationModel(
  */
 export async function switchConversationBot(
   id: string,
-  bot: BotRow | null,
+  bot: BotDetailRow | null,
 ): Promise<void> {
   const d = await db();
   const systemPrompt = conversationSystemPrompt(bot, await getAppSettings());
@@ -614,6 +634,7 @@ export async function switchConversationBot(
           systemPrompt,
           bot.params_json,
           bot.model_id,
+          bot.files_json,
           id,
         )
     : d.prepare(CLEAR_CONVERSATION_BOT_SQL).bind(systemPrompt, id);
@@ -847,21 +868,19 @@ export async function movePinnedItem(
 
 // --- Bots -----------------------------------------------------------------
 
-/**
- * ボット一覧。作成順（古い順）で、新しいものは後ろに足される。
- * 更新順にすると編集のたびに並びが変わり、選ぶ位置を覚えられない。
- */
+/** ボット一覧（ファイルの中身は引かない。BOTS_LIST_SQL）。 */
 export async function listBots(): Promise<BotRow[]> {
   const d = await db();
-  const { results } = await d
-    .prepare("SELECT * FROM bots ORDER BY created_at, id")
-    .all<BotRow>();
+  const { results } = await d.prepare(BOTS_LIST_SQL).all<BotRow>();
   return results;
 }
 
-export async function getBot(id: string): Promise<BotRow | null> {
+export async function getBot(id: string): Promise<BotDetailRow | null> {
   const d = await db();
-  return await d.prepare("SELECT * FROM bots WHERE id = ?").bind(id).first<BotRow>();
+  return await d
+    .prepare("SELECT * FROM bots WHERE id = ?")
+    .bind(id)
+    .first<BotDetailRow>();
 }
 
 export async function createBot(params: {
@@ -870,24 +889,36 @@ export async function createBot(params: {
   modelId: string;
   systemPrompt: string;
   paramsJson: string | null;
-}): Promise<BotRow> {
+  filesJson: string | null;
+}): Promise<BotDetailRow> {
   const d = await db();
   const now = Date.now();
-  const row: BotRow = {
+  const row: BotDetailRow = {
     id: crypto.randomUUID(),
     name: params.name,
     icon: params.icon,
     model_id: params.modelId,
     system_prompt: params.systemPrompt,
     params_json: params.paramsJson,
+    files_json: params.filesJson,
     created_at: now,
     updated_at: now,
   };
   await d
     .prepare(
-      "INSERT INTO bots (id, name, icon, model_id, system_prompt, params_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO bots (id, name, icon, model_id, system_prompt, params_json, files_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(row.id, row.name, row.icon, row.model_id, row.system_prompt, row.params_json, now, now)
+    .bind(
+      row.id,
+      row.name,
+      row.icon,
+      row.model_id,
+      row.system_prompt,
+      row.params_json,
+      row.files_json,
+      now,
+      now,
+    )
     .run();
   return row;
 }
@@ -900,12 +931,13 @@ export async function updateBot(
     modelId: string;
     systemPrompt: string;
     paramsJson: string | null;
+    filesJson: string | null;
   },
 ): Promise<void> {
   const d = await db();
   await d
     .prepare(
-      "UPDATE bots SET name = ?, icon = ?, model_id = ?, system_prompt = ?, params_json = ?, updated_at = ? WHERE id = ?",
+      "UPDATE bots SET name = ?, icon = ?, model_id = ?, system_prompt = ?, params_json = ?, files_json = ?, updated_at = ? WHERE id = ?",
     )
     .bind(
       params.name,
@@ -913,6 +945,7 @@ export async function updateBot(
       params.modelId,
       params.systemPrompt,
       params.paramsJson,
+      params.filesJson,
       Date.now(),
       id,
     )
@@ -981,9 +1014,15 @@ export async function getConversationPath(
  * 遅くなるため、chat/:id のローダーと /path はこちらを使う。
  * 添付はIN句ではなくJOINで引く（D1のバインド上限100に届かないように）。
  */
+/**
+ * 画面へ返す会話の行。ボットのファイルの写しは外す——画面は中身を読まず
+ * （足すのは生成の入口）、会話を開くたびに数十万字を運ぶことになる。
+ */
+export type ConversationView = Omit<ConversationRow, "bot_files_json">;
+
 export async function getConversationWithPath(
   id: string,
-): Promise<{ conversation: ConversationRow; path: PathMessage[] } | null> {
+): Promise<{ conversation: ConversationView; path: PathMessage[] } | null> {
   const d = await db();
   const [convRes, msgRes, attRes] = await d.batch([
     d.prepare(PATH_CONVERSATION_SQL).bind(id),
@@ -999,8 +1038,10 @@ export async function getConversationWithPath(
   const attachments = groupByMessage(
     attRes.results as unknown as AttachmentRow[],
   );
+  const view: Partial<ConversationRow> = { ...conversation };
+  delete view.bot_files_json;
   return {
-    conversation,
+    conversation: view as ConversationView,
     path: decoratePath(
       pathRows(conversation.current_leaf_message_id, all),
       all,
@@ -1111,9 +1152,7 @@ export async function forkConversation(
     // ボット・システムプロンプト・生成パラメータも引き継ぐ。落とすと、
     // ボットの会話を分岐した先だけ性格と設定が消えて応答が変わる
     d
-      .prepare(
-        "INSERT INTO conversations (id, title, model_id, pinned, current_leaf_message_id, bot_id, bot_name, bot_icon, system_prompt, params_json, created_at, updated_at) VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)",
-      )
+      .prepare(INSERT_CONVERSATION_SQL)
       .bind(
         newConvId,
         title,
@@ -1123,6 +1162,7 @@ export async function forkConversation(
         conversation.bot_icon,
         conversation.system_prompt,
         conversation.params_json,
+        conversation.bot_files_json,
         now,
         now,
       ),
@@ -1816,6 +1856,11 @@ export interface GenerationStartReads {
   parent: MessageRow | null;
   /** 新しい発言に付ける添付の行（渡したID順。見つからないものは落とす）。 */
   userAttachments: AttachmentRow[];
+  /**
+   * 足すボットのファイル（`botFilesForGeneration`）。会話の写しを使う
+   * ときと、申告が無いときは空。
+   */
+  botFiles: BotFile[];
 }
 
 /**
@@ -1838,13 +1883,31 @@ export async function readGenerationStart(params: {
   userAttachmentIds: string[];
   /** 台帳の合計をこの時刻以降で取る（今月の初め）。 */
   usageSince: number;
+  /** 画面が申告した、システムプロンプトの元のボット。 */
+  botFiles?: BotFilesRequest | null;
 }): Promise<GenerationStartReads> {
   const d = await db();
+  const botFiles = params.botFiles ?? null;
   const statements: D1PreparedStatement[] = [
     d.prepare(PATH_CONVERSATION_SQL).bind(params.conversationId),
     d.prepare(META_TWO_VALUES_SQL).bind(APP_SETTINGS_KEY, USD_JPY_KEY),
     d.prepare(USAGE_TOTALS_SQL).bind(params.usageSince),
   ];
+  // 会話の写しで足りるなら0行で返る（BOT_FILES_FOR_GENERATION_SQL）。
+  // 同じ batch に入れるので往復は増えない
+  if (botFiles) {
+    statements.push(
+      d
+        .prepare(BOT_FILES_FOR_GENERATION_SQL)
+        .bind(
+          botFiles.botId,
+          botFiles.fromConversation ? 1 : 0,
+          params.conversationId,
+        ),
+    );
+  }
+  const botAt = botFiles ? statements.length - 1 : -1;
+  const parentAt = params.parentId != null ? statements.length : -1;
   if (params.parentId != null) {
     statements.push(
       d
@@ -1860,7 +1923,8 @@ export async function readGenerationStart(params: {
 
   const results = await d.batch(statements);
   const [convRes, metaRes, usageRes] = results;
-  const parentRes = params.parentId != null ? results[3] : null;
+  const botRes = botAt >= 0 ? results[botAt] : null;
+  const parentRes = parentAt >= 0 ? results[parentAt] : null;
   const attachmentRes = results.slice(results.length - attachmentChunks.length);
 
   const meta = new Map(
@@ -1883,6 +1947,14 @@ export async function readGenerationStart(params: {
       (usageRes.results as unknown as UsageTotalsRow[])[0],
     ),
     parent,
+    botFiles: conversation
+      ? botFilesForGeneration(
+          botFiles,
+          conversation,
+          (botRes?.results as { files_json: string | null }[] | undefined)?.[0]
+            ?.files_json,
+        )
+      : [],
     userAttachments:
       attachmentChunks.length > 0
         ? orderAttachments(

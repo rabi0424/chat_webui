@@ -1946,6 +1946,16 @@ export function Chat({
           parentId: persistInfo.parentId,
           userContent: persistInfo.userContent,
           userAttachmentIds: persistInfo.userAttachmentIds ?? [],
+          /*
+            system に入れたプロンプトの元のボット。そのボットの添付
+            ファイルはサーバーが足す（中身はここに無い）。宛先ならボットの
+            いまの定義、担当なら会話に写したもの——プロンプトと同じ選び方
+          */
+          botFiles: addressee
+            ? { botId: addressee.id, fromConversation: false }
+            : activeBot?.id
+              ? { botId: activeBot.id, fromConversation: true }
+              : null,
           messages: [
             ...(gen.systemPrompt
               ? [{ role: "system", content: gen.systemPrompt }]

@@ -11,6 +11,11 @@ import { monthStartJst } from "../lib/usage";
 import type { ChatMessage } from "../lib/openrouter.server";
 import type { ParamsState } from "../lib/params";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "../lib/r2.server";
+import {
+  readBotFilesRequest,
+  withBotFiles,
+  type BotFilesRequest,
+} from "../lib/bot-files";
 import { apiError, apiJson, requireMethod, type GenerateResponse } from "../lib/api-types";
 
 interface GenerateBody {
@@ -33,6 +38,12 @@ interface GenerateBody {
   userContent?: string | null;
   /** 新規のユーザー発言に添付する画像（アップロード済みの添付ID）。 */
   userAttachmentIds?: string[];
+  /**
+   * messages の system に入れたプロンプトが、どのボットのものか。
+   * そのボットの添付ファイルをここで足す（`lib/bot-files.ts`）。
+   * ボットを使わない送信では省く。
+   */
+  botFiles?: BotFilesRequest | null;
 }
 
 /**
@@ -73,6 +84,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     parentId,
     userAttachmentIds,
     usageSince: monthStartJst(now),
+    botFiles: readBotFilesRequest(body.botFiles),
   });
   const { conversation, settings } = start;
   if (!conversation) {
@@ -105,6 +117,11 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   if (parentId != null && !start.parent) {
     return apiError("親メッセージが見つかりません", 400);
   }
+
+  // ボットのファイルはシステムプロンプトの後ろに足す。画面は中身を
+  // 持たない（シェルに載せると全ページの HTML に乗る）。組み立ては
+  // 書く前に済ませる——書いたあとで投げると、取り消しの手前で抜ける
+  const messages = withBotFiles(body.messages, start.botFiles);
 
   const { userMessageId, assistantMessageId } = await beginGeneration({
     conversationId: params.id,
@@ -165,7 +182,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         workerConcurrency: settings.retryWorkerConcurrency,
         dailyDoSecondsBudget: settings.dailyDoSecondsBudget,
         paramsState: body.params ?? null,
-        messages: body.messages.map((m) => ({
+        messages: messages.map((m) => ({
           role: m.role,
           content: m.content,
           attachmentIds: Array.isArray(m.attachmentIds)

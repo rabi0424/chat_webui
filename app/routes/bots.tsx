@@ -154,6 +154,8 @@ export default function Bots() {
           modelId: bot.model_id,
           systemPrompt: bot.system_prompt,
           params: bot.params_json ? JSON.parse(bot.params_json) : null,
+          // 一覧はファイルの中身を持たないので、写すのはサーバーに任せる
+          filesFrom: bot.id,
         }),
       });
       if (!res.ok) setError(await failureOf(res, "複製できませんでした"));

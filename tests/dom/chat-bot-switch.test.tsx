@@ -77,6 +77,8 @@ type GenerateBody = {
   params: Record<string, string>;
   messages: { role: string; content: string }[];
   userContent: string;
+  /** system に入れたプロンプトの元のボット（そのファイルをサーバーが足す）。 */
+  botFiles: { botId: string; fromConversation: boolean } | null;
 };
 
 async function send(
@@ -184,6 +186,7 @@ describe("既存の会話でボットを選ぶ", () => {
     });
     expect(first.params).toEqual({ temperature: "0.1" });
     expect(first.userContent).toBe("これを訳して");
+    expect(first.botFiles).toEqual({ botId: "bot-1", fromConversation: true });
 
     // 1通で終わらない（宛先との違い）
     const second = await send(user, "もう一つ", 2);
@@ -199,10 +202,13 @@ describe("既存の会話でボットを選ぶ", () => {
     const once = await send(user, "@検索係 調べて", 1);
     expect(once.model).toBe(TEST_MODEL.id);
     expect(once.messages[0].content).toBe("調べものを手伝います。");
+    // ファイルも宛先のボットのいまのもの（プロンプトと同じ選び方）
+    expect(once.botFiles).toEqual({ botId: "bot-3", fromConversation: false });
 
     const back = await send(user, "ありがとう", 2);
     expect(back.model).toBe(BOT_MODEL.id);
     expect(back.messages[0].content).toBe("あなたは翻訳者です。");
+    expect(back.botFiles).toEqual({ botId: "bot-1", fromConversation: true });
   });
 
   it("待たせている⚙の保存は捨てる（ボットのパラメータを古い値で上書きしない）", async () => {
@@ -251,6 +257,8 @@ describe("既存の会話でボットを選ぶ", () => {
       role: "system",
       content: "既定のプロンプト",
     });
+    // 外したボットの資料は付けない
+    expect(body.botFiles).toBeNull();
   });
 
   it("元から担当のボットが居る会話でも × で外せる", async () => {
@@ -268,6 +276,27 @@ describe("既存の会話でボットを選ぶ", () => {
     await waitFor(() =>
       expect(patches().some((p) => p.body.botId === null)).toBe(true),
     );
+  });
+
+  it("元から担当のボットが居る会話は、そのボットの写しを使うと申告する", async () => {
+    const { user } = renderChat({
+      ...options,
+      bot: {
+        id: "bot-3",
+        name: "検索係",
+        icon: "🔍",
+        systemPrompt: "調べものを手伝います。",
+        params: null,
+      },
+    });
+    const body = await send(user, "調べて", 1);
+    expect(body.botFiles).toEqual({ botId: "bot-3", fromConversation: true });
+  });
+
+  it("ボットの居ない会話では申告しない", async () => {
+    const { user } = renderChat(options);
+    const body = await send(user, "こんにちは", 1);
+    expect(body.botFiles).toBeNull();
   });
 });
 

@@ -214,6 +214,15 @@ function neutralizeMarks(text: string): string {
 }
 
 /**
+ * ファイルの囲み。入力欄の札とボットの添付ファイル（`lib/bot-files.ts`）が
+ * 同じものを使う——印を均す規則が片方にだけ効くと、もう片方の印を
+ * 書いておくだけで囲みの外へ抜けられる。
+ */
+export function fileEnvelope(name: string, text: string): string {
+  return `${FILE_OPEN}${name}\n${neutralizeMarks(text)}\n${FILE_CLOSE}`;
+}
+
+/**
  * 札が本文に戻るときの中身。
  *
  * ページは、どこから取ったものかが分かる囲みに入れて渡す。素の文章
@@ -234,9 +243,7 @@ function neutralizeMarks(text: string): string {
  * 持ってきた文書ではない。
  */
 export function pasteBody(p: CollapsedPaste): string {
-  if (p.file) {
-    return `${FILE_OPEN}${p.file}\n${neutralizeMarks(p.text)}\n${FILE_CLOSE}`;
-  }
+  if (p.file) return fileEnvelope(p.file, p.text);
   if (!p.url) return p.text;
   if (p.status !== "ready" || p.text.trim() === "") return p.url;
   // 読んだ先（転送のあと）を書く。短縮URLのままでは参照できない

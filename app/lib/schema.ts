@@ -469,6 +469,18 @@ CREATE INDEX IF NOT EXISTS idx_perf_builds_last ON perf_builds(last_at);
   `
 ALTER TABLE retry_attempts ADD COLUMN started_at INTEGER;
 `,
+  // v25: ボットに添付するファイル（参照用の資料。`lib/bot-files.ts`）。
+  //
+  // 中身はテキストなので R2 ではなくここに持つ（JSON の配列）。会話の側
+  // には始めたときの写しを持つ——システムプロンプトと同じく、あとで
+  // ボットのファイルを差し替えても既にある会話の前提は変えない（§3.2）。
+  // どちらも列の**末尾**に足す。SQLite は行の中で後ろにある長い値を、
+  // それより前の列だけを引く問い合わせでは読まずに済ませる
+  // （BOTS_LIST_SQL・CONVERSATIONS_SIDEBAR_SQL はこの列を引かない）。
+  `
+ALTER TABLE bots ADD COLUMN files_json TEXT;
+ALTER TABLE conversations ADD COLUMN bot_files_json TEXT;
+`,
 ];
 
 /**
@@ -977,7 +989,7 @@ export const FAVORITE_CONVERSATIONS_SQL = `SELECT
  */
 export const SWITCH_CONVERSATION_BOT_SQL = `UPDATE conversations
     SET bot_id = ?, bot_name = ?, bot_icon = ?,
-        system_prompt = ?, params_json = ?, model_id = ?
+        system_prompt = ?, params_json = ?, model_id = ?, bot_files_json = ?
   WHERE id = ?`;
 
 /**
@@ -988,8 +1000,56 @@ export const SWITCH_CONVERSATION_BOT_SQL = `UPDATE conversations
  * 黙って変わると、意図と違う額がかかる。
  */
 export const CLEAR_CONVERSATION_BOT_SQL = `UPDATE conversations
-    SET bot_id = NULL, bot_name = NULL, bot_icon = NULL, system_prompt = ?
+    SET bot_id = NULL, bot_name = NULL, bot_icon = NULL, system_prompt = ?,
+        bot_files_json = NULL
   WHERE id = ?`;
+
+/**
+ * 会話を作る（新規・分岐の両方）。
+ *
+ * 2か所に書いていた INSERT を1つにした。列を足すたびに両方を直す形だと、
+ * 片方だけ直し忘れたとき**分岐した先でだけ**設定が消える（ボットの会話を
+ * 分岐すると性格が変わる、という形で出て、画面にはエラーが出ない）。
+ *
+ * 束縛: id・題・モデル・ボットID・名前・アイコン・システムプロンプト・
+ * パラメータ・ボットのファイルの写し・作成時刻・更新時刻。
+ */
+export const INSERT_CONVERSATION_SQL = `INSERT INTO conversations
+    (id, title, model_id, pinned, current_leaf_message_id,
+     bot_id, bot_name, bot_icon, system_prompt, params_json, bot_files_json,
+     created_at, updated_at)
+  VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+/**
+ * ボットの一覧（シェルが全ページに載せる）。
+ *
+ * `SELECT *` にしない。添付ファイルの中身（files_json）は1本で数万字に
+ * なり、全ページの HTML にその全文が乗る。一覧・ホーム・宛先の候補は
+ * どれも中身を読まない（足すのは生成の入口。`lib/bot-files.ts`）。
+ * 中身が要る編集画面は1件だけを `SELECT *` で引く。
+ *
+ * 作成順（古い順）で、新しいものは後ろに足される。更新順にすると
+ * 編集のたびに並びが変わり、選ぶ位置を覚えられない。
+ */
+export const BOTS_LIST_SQL = `SELECT id, name, icon, model_id, system_prompt, params_json,
+         created_at, updated_at
+    FROM bots
+   ORDER BY created_at, id`;
+
+/**
+ * 生成の入口で、ボットの**いまの**ファイルを引く（`readGenerationStart`）。
+ *
+ * 担当として送られ、会話の担当がそのボットのままなら、会話に写した
+ * ファイルを使うので引かない（0行）。その場合が送信のほとんどで、
+ * 毎回数十万字を読み出さずに済む。条件は会話の行と同じ batch の中で
+ * 決まるので、写しを使うかどうかの判定（`botFilesForGeneration`）と
+ * 食い違わない。
+ *
+ * 束縛: ボットID・担当として送ったか（1/0）・会話ID。
+ */
+export const BOT_FILES_FOR_GENERATION_SQL = `SELECT files_json FROM bots
+  WHERE id = ?
+    AND NOT (? = 1 AND id IS (SELECT bot_id FROM conversations WHERE id = ?))`;
 
 /**
  * お気に入りの件数。サイドバーの「お気に入り」の行に、開く前から出す。

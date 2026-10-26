@@ -24,6 +24,7 @@ vi.mock("../../app/lib/db.server", () => ({
     settings: { retryAttemptCeiling: 100 },
     parent: null,
     userAttachments: [],
+    botFiles: [],
   }),
   beginGeneration: async () => ({
     userMessageId: "u1",

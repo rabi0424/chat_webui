@@ -3,6 +3,7 @@ import { deleteBot, getBot, updateBot } from "../lib/db.server";
 import { MAX_TITLE_LENGTH } from "../lib/constants";
 import type { ParamsState } from "../lib/params";
 import { apiError, requireMethod } from "../lib/api-types";
+import { botFilesJson, sanitizeBotFiles } from "../lib/bot-files";
 
 interface BotBody {
   name?: string;
@@ -10,6 +11,8 @@ interface BotBody {
   modelId?: string;
   systemPrompt?: string;
   params?: ParamsState | null;
+  /** 添付ファイル（`lib/bot-files.ts`）。省略したら今のまま。 */
+  files?: unknown;
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -45,6 +48,12 @@ export async function action({ request, params }: Route.ActionArgs) {
     modelId: body.modelId,
     systemPrompt: body.systemPrompt ?? "",
     paramsJson: body.params ? JSON.stringify(body.params) : null,
+    // 省略は「触れない」。空の配列（全部外した）と取り違えると、
+    // ファイルを知らない呼び出しで黙って消える
+    filesJson:
+      body.files === undefined
+        ? bot.files_json
+        : botFilesJson(sanitizeBotFiles(body.files)),
   });
   return Response.json({ ok: true });
   

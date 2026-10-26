@@ -25,6 +25,8 @@ export default function BotEdit({ loaderData }: Route.ComponentProps) {
         initial={loaderData.bot}
         retryCeiling={settings.retryAttemptCeiling}
         newModelDays={settings.newModelDays}
+        fileMaxChars={settings.pageMaxChars}
+        fileMaxBytes={settings.pageMaxMb * 1024 * 1024}
       />
     </div>
   );
