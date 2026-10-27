@@ -726,8 +726,9 @@ describe("画像一覧のページ送り", () => {
       .run(id, key, at);
 
   /** 本番と同じSQL（書き写さない。片方だけ直したときに気づけなくなる）。 */
+  const NO_FILTER = { favoritesOnly: false, terms: 0 };
   const page = (before: number, limit = 2) =>
-    db.prepare(generatedImagesSql([])).all(before, limit) as {
+    db.prepare(generatedImagesSql(NO_FILTER)).all(before, limit) as {
       id: string;
       created_at: number;
     }[];
@@ -762,7 +763,7 @@ describe("画像一覧のページ送り", () => {
       { id: "o1", thumb_at: null },
     ]);
 
-    const listed = db.prepare(generatedImagesSql([])).all(
+    const listed = db.prepare(generatedImagesSql(NO_FILTER)).all(
       Number.MAX_SAFE_INTEGER,
       10,
     ) as { id: string; thumb_at: number | null }[];
@@ -804,6 +805,47 @@ describe("画像一覧のページ送り", () => {
     }
     expect(seen).toEqual([300, 200, 50]);
     expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it("同じ実体の行が同じ時刻に2つあっても、1件にまとまる", () => {
+    // フォークの写しが元と同じ時刻を持つ場合。時刻だけで「もっと新しい
+    // 行が無い」を見ると、どちらも最新になって2件出る
+    addImage("t1", "shared", 100);
+    addImage("t2", "shared", 100);
+    expect(page(Number.MAX_SAFE_INTEGER, 10).map((r) => r.id)).toEqual(["t2"]);
+  });
+
+  /**
+   * 検索語は会話のタイトルにも当たる。フォーク先とでタイトルが違うと、
+   * 同じ実体の**古いほうの行だけ**が当たることがある。「最新の行か」を
+   * 条件を外して見ると、新しいほうの行（当たらない）に負けて、検索から
+   * 画像ごと消える。
+   */
+  it("検索に当たるのが古いほうの行だけでも、その画像は出る", () => {
+    db.exec(
+      `INSERT INTO conversations (id, title, created_at, updated_at) VALUES
+         ('orig', '猫の絵', 1, 1), ('fork', 'べつの話', 1, 1)`,
+    );
+    db.exec(
+      `INSERT INTO attachments (id, message_id, conversation_id, r2_key,
+         mime_type, name, size, kind, favorite, prompt, created_at) VALUES
+         ('o1', NULL, 'orig', 'shared', 'image/png', NULL, 1, 'generated', 0, NULL, 100),
+         ('f1', NULL, 'fork', 'shared', 'image/png', NULL, 1, 'generated', 0, NULL, 200)`,
+    );
+    const search = (...likes: string[]) =>
+      (
+        db
+          .prepare(generatedImagesSql({ favoritesOnly: false, terms: likes.length }))
+          .all(...likes, Number.MAX_SAFE_INTEGER, 10) as { id: string }[]
+      ).map((r) => r.id);
+
+    // 当たった行（会話へ戻るときに開く枝）で出る
+    expect(search("%猫%")).toEqual(["o1"]);
+    // 両方に当たる語なら、ふだんどおり新しいほうの行で1件
+    expect(search("%%")).toEqual(["f1"]);
+    // 語は AND。番号付きのバインドが語ごとに別の値を指していること
+    expect(search("%猫%", "%べつ%")).toEqual([]);
+    expect(search("%猫%", "%絵%")).toEqual(["o1"]);
   });
 
   it("まとめる前で切ると、重複する（以前の作り）", () => {
@@ -1481,6 +1523,35 @@ describe("索引が効いている", () => {
     expect(p).toMatch(/status_id=\? AND processed=\?/);
     // 並べ替えのための一時 B-tree も要らない（索引の順で出る）
     expect(p).not.toContain("TEMP B-TREE");
+  });
+
+  /**
+   * 生成画像の一覧。30件を出すのに生成画像の**全行**を読んでいた
+   * （まとめてから切る形だったため）。画像7千枚ほどで1回2万行になり、
+   * 一覧を開いて送るだけで D1 の1日500万行を使い切って、**アプリ全体が
+   * 開かなくなった**。
+   *
+   * 並べ替えの一時 B-tree が出たら、全部読んでから並べている印。
+   * 内側（同じ実体のもっと新しい行）が r2_key の索引でないなら、1行
+   * ごとに生成画像をなめている。
+   */
+  it("画像一覧は、返す行の近くしか読まない", () => {
+    for (const opts of [
+      { favoritesOnly: false, terms: 0 },
+      { favoritesOnly: true, terms: 0 },
+      { favoritesOnly: false, terms: 2 },
+      { favoritesOnly: true, terms: 2 },
+    ]) {
+      const p = plan(generatedImagesSql(opts));
+      expect(p, JSON.stringify(opts)).not.toContain("TEMP B-TREE");
+      // 外側は作成時刻の索引を before から辿る
+      expect(p, JSON.stringify(opts)).toMatch(
+        /SEARCH a USING INDEX \S+ \((kind|favorite)=\? AND created_at<\?\)/,
+      );
+      expect(p, JSON.stringify(opts)).toContain(
+        "SEARCH b USING INDEX idx_attachments_key (r2_key=?)",
+      );
+    }
   });
 
   it("走っている本数の数え上げは、決着済みの行をまたがない", () => {

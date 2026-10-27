@@ -784,36 +784,86 @@ export function statementsOf(sql: string): string[] {
  * 本体（db.server.ts）と、SQLite に流して確かめるテストの両方が
  * これを使う。手で書き写すと、片方だけ直したときに気づけない。
  *
- * 続きを読む位置（before）は HAVING で切る。WHERE で切ると、まとめる前の
- * 1行ずつに効いてしまう——フォークで実体を共有する画像は行が複数あるので、
- * 1ページ目に新しいほうの行で出たあと、2ページ目では古いほうの行が残って
- * **同じ画像がもう一度出る**。
+ * フォークで実体（r2_key）を共有する画像は行が複数あるので、実体ごとに
+ * **条件に合う行のうち最新の1行**だけを出す。
  *
- * HAVING では別名（created_at）ではなく MAX(a.created_at) と書く。
- * messages にも created_at があるため、別名だとどちらを指すのか
- * 決まらず「ambiguous column name」で問い合わせごと失敗する。
+ * 素直に書くと `GROUP BY a.r2_key` で全行をまとめてから HAVING・
+ * ORDER BY・LIMIT で切る形になる（以前はそうだった）。それだと30件を
+ * 出すのに**生成画像の全行**を、会話とメッセージの結合つきで読む。
+ * D1 は読んだ行数で数え、無料枠は1日500万行——画像が7千枚ほどで
+ * 1回2万行になり、一覧を開いて送るだけで枠を使い切って**アプリ全体が
+ * 開かなくなった**。
  *
- * @param conditions WHERE に足す条件（お気に入りのみ・検索語など）
+ * そこで「同じ実体のもっと新しい行が無い」行だけを、作成時刻の索引を
+ * 新しい順に辿って拾う。索引の順に出るので並べ替えが要らず、30件
+ * 揃った時点で止まる。読むのは返す行と、途中で飛ばした古い行の数だけ。
+ *
+ * 続きを読む位置（before）は、まとめた後の行（＝その実体の最新の行）で
+ * 切ることになる。まとめる前の行で切ると、1ページ目に新しいほうの行で
+ * 出た共有画像が、2ページ目で古いほうの行で**もう一度出る**。
+ *
+ * 「もっと新しい行」も同じ条件（お気に入り・検索語）で見る。検索語は
+ * 会話のタイトルにも当たるので、フォーク先とでタイトルが違うと、
+ * 古いほうの行だけが当たることがある。条件を外して最新の行かどうかを
+ * 見ると、その画像が検索から消える。
+ *
+ * 同じ時刻の行が2つあれば id の大きいほうを最新とみなす。時刻だけで
+ * 比べると、どちらも「もっと新しい行が無い」になって2件出る。
+ *
+ * バインドは番号付き: ?1〜?terms が検索語の LIKE 形（1語を3列に使い、
+ * 外と内の両方で同じ値を引く）、続く2つが before と limit。
  */
-export function generatedImagesSql(conditions: string[]): string {
-  const where = ["a.kind = 'generated'", ...conditions].join(" AND ");
-  // MAX() と併記した列はその最大行の値になる（SQLiteの規定の挙動）ので、
-  // まとめたあとに残るのは最新の1行。**この挙動は MAX/MIN が1つのとき
-  // だけ**——thumb_at を MAX() で取ろうとしたら id や message_id が
-  // どの行のものか決まらなくなった（テストで捕まえた）。thumb_at は
-  // 共有する行にまとめて付ける（MARK_THUMBNAIL_SQL）ので素の列でよい
+export function generatedImagesSql(opts: {
+  favoritesOnly: boolean;
+  terms: number;
+}): string {
+  /*
+   * 内側の kind・favorite には + を付けて索引の選択から外す。外さないと
+   * SQLite が内側でも (kind, created_at) や (favorite, created_at) の
+   * 索引を選び、1行ごとに生成画像を全部なめる（実測で以前の8倍遅く
+   * なった）。内側は r2_key の索引で、同じ実体の数行だけを引く。
+   */
+  const conditions = (a: string, c: string, m: string, inner = false): string[] => {
+    const col = (name: string) => `${inner ? "+" : ""}${a}.${name}`;
+    const list = [`${col("kind")} = 'generated'`];
+    if (opts.favoritesOnly) list.push(`${col("favorite")} = 1`);
+    for (let i = 1; i <= opts.terms; i++) {
+      // エスケープの仕方は会話検索と揃える。% と _ を落としてしまうと
+      // 「50%」のような語が「50」として検索されて結果が変わる
+      list.push(
+        `(LOWER(COALESCE(${a}.prompt, '')) LIKE ?${i} ESCAPE '\\'
+          OR LOWER(COALESCE(${m}.model_id, '')) LIKE ?${i} ESCAPE '\\'
+          OR LOWER(COALESCE(${c}.title, '')) LIKE ?${i} ESCAPE '\\')`,
+      );
+    }
+    return list;
+  };
+  // 検索語が無ければ内側では会話もメッセージも見ない
+  const innerJoins =
+    opts.terms > 0
+      ? `LEFT JOIN conversations bc ON bc.id = b.conversation_id
+            LEFT JOIN messages bm ON bm.id = b.message_id`
+      : "";
+  const before = opts.terms + 1;
+  const limit = opts.terms + 2;
   return `SELECT a.id, a.conversation_id, a.message_id,
-              MAX(a.created_at) AS created_at,
+              a.created_at AS created_at,
               a.favorite, a.prompt, a.thumb_at,
               c.title AS title, m.model_id AS model_id
          FROM attachments a
          LEFT JOIN conversations c ON c.id = a.conversation_id
          LEFT JOIN messages m ON m.id = a.message_id
-        WHERE ${where}
-        GROUP BY a.r2_key
-       HAVING MAX(a.created_at) < ?
-        ORDER BY created_at DESC
-        LIMIT ?`;
+        WHERE ${conditions("a", "c", "m").join(" AND ")}
+          AND a.created_at < ?${before}
+          AND NOT EXISTS (
+            SELECT 1 FROM attachments b
+            ${innerJoins}
+             WHERE b.r2_key = a.r2_key
+               AND (b.created_at > a.created_at
+                    OR (b.created_at = a.created_at AND b.id > a.id))
+               AND ${conditions("b", "bc", "bm", true).join(" AND ")})
+        ORDER BY a.created_at DESC
+        LIMIT ?${limit}`;
 }
 
 /** 実行する1文。バインドする値と組で返す。 */
