@@ -1444,25 +1444,19 @@ export async function listGeneratedImages(params: {
     .filter(Boolean)
     .slice(0, 5);
 
-  const conditions: string[] = [];
-  const binds: (string | number)[] = [];
-  if (params.favoritesOnly) conditions.push("a.favorite = 1");
-  for (const term of terms) {
-    conditions.push(
-      // エスケープの仕方は会話検索と揃える。% と _ を落としてしまうと
-      // 「50%」のような語が「50」として検索されて結果が変わる
-      `(LOWER(COALESCE(a.prompt, '')) LIKE ? ESCAPE '\\'
-        OR LOWER(COALESCE(m.model_id, '')) LIKE ? ESCAPE '\\'
-        OR LOWER(COALESCE(c.title, '')) LIKE ? ESCAPE '\\')`,
-    );
-    const like = `%${escapeLike(term)}%`;
-    binds.push(like, like, like);
-  }
+  const binds: (string | number)[] = terms.map(
+    (term) => `%${escapeLike(term)}%`,
+  );
   binds.push(params.before ?? Number.MAX_SAFE_INTEGER);
   binds.push(params.limit);
 
   const { results } = await d
-    .prepare(generatedImagesSql(conditions))
+    .prepare(
+      generatedImagesSql({
+        favoritesOnly: params.favoritesOnly === true,
+        terms: terms.length,
+      }),
+    )
     .bind(...binds)
     .all<GeneratedImageRow>();
   return results;
