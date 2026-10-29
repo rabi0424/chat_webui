@@ -160,10 +160,10 @@ describe("テキストファイルを落とす", () => {
    * 受け付けないものを落としたときは、そうと言う。黙って落ちると
    * 「添付したつもり」で送ることになる。
    */
-  it("画像でもテキストでもないものは、受け付けないと出す", async () => {
+  it("画像・PDF・テキストのどれでもないものは、受け付けないと出す", async () => {
     renderChat({});
     drop([new File([new Uint8Array([1, 2])], "a.zip", { type: "application/zip" })]);
-    await screen.findByText("画像とテキストファイルだけ添付できます。");
+    await screen.findByText("画像・PDF・テキストファイルだけ添付できます。");
   });
 
   /*

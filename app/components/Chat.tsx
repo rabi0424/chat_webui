@@ -32,7 +32,9 @@ import {
   DEFAULT_MODEL,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
   MAX_TITLE_LENGTH,
+  PDF_TYPE,
   PROVIDER_LABELS,
+  acceptsPdf,
   supportsWebSearch,
 } from "../lib/constants";
 import {
@@ -49,7 +51,7 @@ import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat, putCachedChat } from "../lib/chat-cache";
 import { pathTagOf, rememberPathTag, reuseUnchangedRows } from "../lib/polling";
 import { readRetryConfig, type RetryConfig } from "../lib/retry";
-import { isAcceptedImage } from "../lib/image";
+import { isAcceptedAttachment } from "../lib/image";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
@@ -61,7 +63,7 @@ import {
 } from "./chat/use-generation-tracking";
 import {
   useAttachments,
-  uploadImage,
+  uploadAttachment,
   type PendingAttachment,
 } from "./chat/use-attachments";
 import { type EditingState } from "./chat/MessageEditor";
@@ -840,14 +842,16 @@ export function Chat({
     try {
       const saved = JSON.parse(
         localStorage.getItem(attachKey) ?? "[]",
-      ) as { id: string; name: string; size: number }[];
+      ) as { id: string; name: string; size: number; mimeType?: string }[];
       const restored = saved
         .filter((a) => a && typeof a.id === "string")
         .slice(0, MAX_ATTACHMENTS)
         .map(
           (a): PendingAttachment => ({
             localId: crypto.randomUUID(),
-            previewUrl: `/api/files/${a.id}`,
+            // 型を控えていない下書きは、PDF を添付できる前のもの（＝画像）
+            mimeType: typeof a.mimeType === "string" ? a.mimeType : "image/*",
+            previewUrl: a.mimeType === PDF_TYPE ? "" : `/api/files/${a.id}`,
             name: a.name ?? "画像",
             size: Number(a.size) || 0,
             status: "ready",
@@ -935,7 +939,7 @@ export function Chat({
   useEffect(() => {
     const ready = pending
       .filter((p) => p.status === "ready" && p.id)
-      .map((p) => ({ id: p.id!, name: p.name, size: p.size }));
+      .map((p) => ({ id: p.id!, name: p.name, size: p.size, mimeType: p.mimeType }));
     try {
       if (ready.length > 0) {
         localStorage.setItem(attachKey, JSON.stringify(ready));
@@ -1143,7 +1147,7 @@ export function Chat({
   }
 
   /**
-   * 受け取ったファイルを、画像とテキストに振り分ける。
+   * 受け取ったファイルを、添付（画像・PDF）とテキストに振り分ける。
    *
    * 落とす・選ぶ・貼るの3つの入口が同じ振り分けを通る。片方の入口だけ
    * に書くと、同じファイルが「落とすと入るのに選ぶと弾かれる」という
@@ -1584,7 +1588,7 @@ export function Chat({
     !selectedModel || selectedModel.inputModalities.includes("image");
 
   /**
-   * 編集中メッセージへの画像追加。縮小 → アップロードし、完了したものから
+   * 編集中メッセージへの画像・PDF の追加。（画像は縮小 →）アップロードし、完了したものから
    * editing.attachments に加える（表示は /api/files/:id 経由）。
    */
   async function addEditFiles(files: File[]) {
@@ -1592,7 +1596,9 @@ export function Chat({
     if (!current) return;
     const room =
       MAX_ATTACHMENTS - current.attachments.length - current.uploads;
-    const images = files.filter(isAcceptedImage).slice(0, Math.max(0, room));
+    const images = files
+      .filter(isAcceptedAttachment)
+      .slice(0, Math.max(0, room));
     if (images.length === 0) {
       if (files.length > 0 && room <= 0) {
         setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
@@ -1605,7 +1611,7 @@ export function Chat({
     for (const file of images) {
       try {
         // 入力欄からの追加と同じ手順（縮小 → アップロード）を使う
-        const uploaded = await uploadImage(file);
+        const uploaded = await uploadAttachment(file);
         setEditing((prev) =>
           prev
             ? {
@@ -1654,7 +1660,7 @@ export function Chat({
   /** 入力欄への貼り付け（スクショの直接添付・ファイル・長い文・リンク）。 */
   function onPaste(e: React.ClipboardEvent) {
     const files = [...e.clipboardData.files];
-    if (files.some(isAcceptedImage) || files.some(isTextFile)) {
+    if (files.some(isAcceptedAttachment) || files.some(isTextFile)) {
       e.preventDefault();
       receiveFiles(files);
       return;
@@ -1942,6 +1948,7 @@ export function Chat({
             supportsWebSearch(gen.model) &&
             (genInfo?.supportedParameters.includes("tools") ?? false),
           imageOutput: genInfo?.outputModalities.includes("image") ?? false,
+          nativePdf: genInfo?.inputModalities.includes("file") ?? false,
           params: gen.params,
           parentId: persistInfo.parentId,
           userContent: persistInfo.userContent,
@@ -2070,7 +2077,7 @@ export function Chat({
       .filter((p) => p.status === "ready" && p.id)
       .map((p) => ({
         id: p.id!,
-        mimeType: "image/*",
+        mimeType: p.mimeType,
         name: p.name,
         size: p.size,
       }));
@@ -2891,6 +2898,7 @@ export function Chat({
             pending={pending}
             onRemovePending={removePending}
             supportsImages={supportsImages}
+            supportsPdf={acceptsPdf(model)}
             fileInputRef={fileInputRef}
             onPickFiles={receiveFiles}
             onOpenFilePicker={openFilePicker}

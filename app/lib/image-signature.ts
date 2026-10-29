@@ -42,6 +42,28 @@ export function sniffImageFormat(buffer: ArrayBuffer): ImageFormat | null {
 }
 
 /**
+ * PDF の目印（`%PDF-`）を探す範囲。
+ *
+ * 仕様では先頭にあるべきだが、Acrobat は先頭 1024 バイトのどこかに
+ * あれば開く（書き出したツールが手前に余計なものを付けた PDF が実際に
+ * ある）。先頭だけを見ると、手元のビューアでは開ける PDF が「PDF として
+ * 読めない」と断られる。範囲を広げても、ここで防ぎたい「PDF のふりを
+ * した HTML」は通らない——配信は `application/pdf` と `nosniff` で
+ * 返すので、手前に何が付いていてもブラウザは HTML として描かない。
+ */
+const PDF_MARKER_WINDOW = 1024;
+
+/** 中身が PDF か（`%PDF-` が先頭 1024 バイトの中にあるか）。 */
+export function looksLikePdf(buffer: ArrayBuffer): boolean {
+  const b = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, PDF_MARKER_WINDOW));
+  const sig = [0x25, 0x50, 0x44, 0x46, 0x2d]; // "%PDF-"
+  for (let at = 0; at + sig.length <= b.length; at++) {
+    if (startsWith(b, sig, at)) return true;
+  }
+  return false;
+}
+
+/**
  * 申告された形式と中身が合っているか。
  *
  * JPEG は image/jpeg と image/jpg の両方で申告されうるので、
@@ -51,6 +73,7 @@ export function matchesDeclared(
   buffer: ArrayBuffer,
   declared: string,
 ): boolean {
+  if (declared === "application/pdf") return looksLikePdf(buffer);
   const actual = sniffImageFormat(buffer);
   if (!actual) return false;
   const normalized = declared === "image/jpg" ? "image/jpeg" : declared;

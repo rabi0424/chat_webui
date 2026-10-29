@@ -19,6 +19,8 @@ import {
 import {
   IMAGE_ACCEPT,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
+  PDF_ACCEPT,
+  PDF_TYPE,
 } from "../../lib/constants";
 import { TEXT_FILE_ACCEPT } from "../../lib/text-file";
 import { formatBytes } from "../../lib/image";
@@ -39,6 +41,7 @@ import {
 } from "../icons";
 import { hostLabel } from "../../lib/page-url";
 import type { PendingAttachment } from "./use-attachments";
+import { PDF_TILE, PdfCardBody } from "./PdfCard";
 import {
   countLines,
   snapSelectionOutsideTokens,
@@ -73,6 +76,7 @@ export function Composer({
   pending,
   onRemovePending,
   supportsImages,
+  supportsPdf,
   fileInputRef,
   onPickFiles,
   onOpenFilePicker,
@@ -107,6 +111,8 @@ export function Composer({
   onRemovePending: (localId: string) => void;
   /** 選んでいるモデルが画像入力に対応しているか。 */
   supportsImages: boolean;
+  /** 選んでいるモデルの窓口へ PDF を渡せるか（acceptsPdf）。 */
+  supportsPdf: boolean;
   fileInputRef: RefObject<HTMLInputElement | null>;
   onPickFiles: (files: File[]) => void;
   onOpenFilePicker: () => void;
@@ -191,7 +197,9 @@ export function Composer({
             {pending.map((p) => (
               <div
                 key={p.localId}
-                className={`group/att relative h-16 w-16 overflow-hidden rounded-xl border ${
+                className={`group/att relative ${
+                  p.mimeType === PDF_TYPE ? PDF_TILE : "h-16 w-16"
+                } overflow-hidden rounded-xl border ${
                   p.status === "error"
                     ? "border-red-300 dark:border-red-800"
                     : "border-neutral-200 dark:border-neutral-700"
@@ -202,13 +210,23 @@ export function Composer({
                     : `${p.name}（${formatBytes(p.size)}）`
                 }
               >
-                <img
-                  src={p.previewUrl}
-                  alt={p.name}
-                  className={`h-full w-full object-cover ${
-                    p.status === "ready" ? "" : "opacity-40"
-                  }`}
-                />
+                {p.mimeType === PDF_TYPE ? (
+                  <span
+                    className={`block h-full w-full ${
+                      p.status === "ready" ? "" : "opacity-40"
+                    }`}
+                  >
+                    <PdfCardBody name={p.name} size={p.size} />
+                  </span>
+                ) : (
+                  <img
+                    src={p.previewUrl}
+                    alt={p.name}
+                    className={`h-full w-full object-cover ${
+                      p.status === "ready" ? "" : "opacity-40"
+                    }`}
+                  />
+                )}
                 {p.status === "uploading" && (
                   <span className="absolute inset-0 grid place-items-center">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
@@ -334,15 +352,26 @@ export function Composer({
             })}
           </div>
         )}
-        {pending.length > 0 && !supportsImages && (
+        {pending.some((p) => p.mimeType !== PDF_TYPE) && !supportsImages && (
           <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">
             このモデルは画像入力に対応していません。画像は無視されるか、エラーになる場合があります。
+          </p>
+        )}
+        {/*
+          PDF は窓口で決まる。OpenRouter はモデルが読めなければ上流で
+          文字に起こすのでどのモデルでも届くが、画像だけの窓口へは
+          送れない（送る前に外れる）。黙って外れると、読まれたつもりで
+          答えを待つことになる
+        */}
+        {pending.some((p) => p.mimeType === PDF_TYPE) && !supportsPdf && (
+          <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">
+            このモデルには PDF を渡せません。PDF は外して送られます。
           </p>
         )}
         <input
           ref={fileInputRef}
           type="file"
-          accept={[...IMAGE_ACCEPT, ...TEXT_FILE_ACCEPT].join(",")}
+          accept={[...IMAGE_ACCEPT, ...PDF_ACCEPT, ...TEXT_FILE_ACCEPT].join(",")}
           multiple
           hidden
           onChange={(e) => {
@@ -450,7 +479,7 @@ export function Composer({
             disabled={pending.length >= MAX_ATTACHMENTS}
             title={
               supportsImages
-                ? "画像・テキストファイルを添付（貼り付け・ドラッグ&ドロップも可）"
+                ? "画像・PDF・テキストファイルを添付（貼り付け・ドラッグ&ドロップも可）"
                 : "このモデルは画像入力に対応していません（添付は可能ですが無視されます）"
             }
             aria-label="ファイルを添付"
@@ -497,7 +526,7 @@ export function Composer({
               disabled={!canSend || uploading || loadingPages}
               title={
                 uploading
-                  ? "画像をアップロード中…"
+                  ? "添付をアップロード中…"
                   : loadingPages
                     ? "ページを読み込み中…"
                     : "送信"

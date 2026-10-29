@@ -33,7 +33,34 @@ export const IMAGE_ACCEPT = [
   ".gif",
 ];
 
-/** 1ファイルあたりの上限。これ以上はクライアント側で縮小してから送る。 */
+/** PDF の MIME。添付の器に入る、画像でない唯一の形式。 */
+export const PDF_TYPE = "application/pdf";
+
+/**
+ * 添付（R2 に置いてモデルへ渡す）として受け入れる MIME。
+ *
+ * 画像のほかは PDF だけ。テキストファイルは本文に入れる（lib/text-file.ts）
+ * が、PDF は中身を文字として読み出せない（ブラウザで取り出すと図・表・
+ * スキャンの頁が落ちる）。OpenRouter と Poe は PDF を `file` の要素として
+ * 受け取り、モデルが読めなければ上流の側で文字に起こすので、ファイルの
+ * まま渡す。
+ */
+export const ALLOWED_ATTACHMENT_TYPES = [...ALLOWED_IMAGE_TYPES, PDF_TYPE];
+
+/** 画像として描ける添付か（PDF は札として出し、拡大表示に入れない）。 */
+export function isImageType(mimeType: string): boolean {
+  return ALLOWED_IMAGE_TYPES.includes(mimeType);
+}
+
+/**
+ * PDF のファイル選択に渡す `accept`。画像と同じ理由で拡張子も並べる。
+ */
+export const PDF_ACCEPT = [PDF_TYPE, ".pdf"];
+
+/**
+ * 1ファイルあたりの上限。画像はこれを超えるとクライアント側で縮小して
+ * から送る。PDF は縮められないので、超えたら断る。
+ */
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 /** 1メッセージに添付できる枚数の上限。 */
@@ -182,6 +209,19 @@ export function isRunwareModel(modelId: string | null | undefined): boolean {
  */
 export function supportsWebSearch(modelId: string | null | undefined): boolean {
   return providerOf(modelId) === "openrouter";
+}
+
+/**
+ * PDF の添付をモデルへ渡せる窓口か。
+ *
+ * `file` の要素を受けると文書にあるのは OpenRouter と Poe だけ。Runware と
+ * API易の画像モデルは依頼文と画像しか受け取らない。渡せない窓口へは
+ * PDF を R2 から読みもしない（`expandAttachments`）——読んでも組み立ての
+ * 段で捨てるだけで、10MB の PDF なら実行体のメモリを無駄に食う。
+ */
+export function acceptsPdf(modelId: string | null | undefined): boolean {
+  const provider = providerOf(modelId);
+  return provider === "openrouter" || provider === "poe";
 }
 
 /** 窓口の表示名。エラー文言と画面の両方で使う。 */

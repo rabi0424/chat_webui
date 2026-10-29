@@ -683,11 +683,34 @@ describe("1本担当", () => {
       ...(attemptJob(["w1"]) as unknown as Record<string, unknown>),
       model: "runware:m",
     } as never);
-    expect(expand.mock.calls[0][1]).toEqual({ latestUserOnly: true });
+    expect(expand.mock.calls[0][1]).toMatchObject({
+      latestUserOnly: true,
+      // 画像だけの窓口へは PDF も読まない
+      pdf: false,
+    });
     expand.mockClear();
     // 会話を送る窓口では、履歴の画像も読む
     await runAttemptJob(attemptJob(["w2"]));
-    expect(expand.mock.calls[0][1]).toEqual({ latestUserOnly: false });
+    expect(expand.mock.calls[0][1]).toMatchObject({
+      latestUserOnly: false,
+      pdf: true,
+    });
+  });
+
+  it("PDF の上限は、同時に投げる本数で割る", async () => {
+    // 本文の JSON は1本ごとに組むので、同じ PDF が同時に本数ぶん
+    // メモリに並ぶ。合計を単発の生成と同じに保つ（PDF_BUDGET_BYTES）
+    const gen = await import("../../app/lib/generation.server");
+    const { PDF_BUDGET_BYTES } = await import("../../app/lib/upstream-shape");
+    const expand = vi.mocked(gen.expandAttachments);
+    expand.mockClear();
+    await runAttemptJob({
+      ...(attemptJob(["p1"]) as unknown as Record<string, unknown>),
+      workerConcurrency: 4,
+    } as never);
+    expect(expand.mock.calls[0][1]).toMatchObject({
+      pdfBudgetBytes: Math.floor(PDF_BUDGET_BYTES / 4),
+    });
   });
 
   it(

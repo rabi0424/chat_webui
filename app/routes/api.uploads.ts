@@ -1,8 +1,8 @@
 import type { Route } from "./+types/api.uploads";
 import { createAttachment, sweepOrphanAttachments } from "../lib/db.server";
 import { matchesDeclared } from "../lib/image-signature";
+import { ALLOWED_ATTACHMENT_TYPES, PDF_TYPE } from "../lib/constants";
 import {
-  ALLOWED_IMAGE_TYPES,
   MAX_UPLOAD_BYTES,
   StorageUnavailableError,
   deleteFiles,
@@ -13,7 +13,7 @@ import { cloudflareContext } from "../lib/cloudflare-context";
 import { apiError, apiJson, requireMethod, type UploadResponse } from "../lib/api-types";
 
 /**
- * 画像のアップロード。R2へ実体を保存し、D1にメタデータ行を作って
+ * 添付（画像・PDF）のアップロード。R2へ実体を保存し、D1にメタデータ行を作って
  * 添付IDを返す。この時点ではまだどのメッセージにも属さず、
  * 送信時に `generate` がユーザーメッセージへ紐づける。
  */
@@ -36,10 +36,10 @@ export async function action({ request, context }: Route.ActionArgs) {
     return apiError("file は必須です", 400);
   }
 
-  const mimeType = file.type.split(";")[0].trim().toLowerCase();
-  if (!ALLOWED_IMAGE_TYPES.includes(mimeType)) {
+  const mimeType = declaredType(file);
+  if (!ALLOWED_ATTACHMENT_TYPES.includes(mimeType)) {
     return apiError(
-      `対応していない形式です（${ALLOWED_IMAGE_TYPES.join(" / ")} のみ）`,
+      `対応していない形式です（${ALLOWED_ATTACHMENT_TYPES.join(" / ")} のみ）`,
       415,
     );
   }
@@ -52,7 +52,12 @@ export async function action({ request, context }: Route.ActionArgs) {
   // （File.type）だけで、詐称すれば中身が画像でないものを画像として
   // 保存し、画像として配信できた
   if (!matchesDeclared(buffer, mimeType)) {
-    return apiError("画像として読めないファイルです", 415);
+    return apiError(
+      mimeType === PDF_TYPE
+        ? "PDF として読めないファイルです"
+        : "画像として読めないファイルです",
+      415,
+    );
   }
   // 実サイズも検証する（Content-Length は信用しない）
   if (buffer.byteLength > MAX_UPLOAD_BYTES) {
@@ -94,4 +99,23 @@ export async function action({ request, context }: Route.ActionArgs) {
     name: attachment.name,
     size: attachment.size,
   });
+}
+
+/**
+ * ブラウザが申告した形式。
+ *
+ * PDF は申告が空で届くことがある（OS に拡張子の登録が無い環境、
+ * 一部のファイル共有アプリから渡したもの）。そのときだけ拡張子で補う。
+ * 中身は後で `matchesDeclared` が確かめるので、名前を偽っても PDF で
+ * ないものは通らない。
+ */
+function declaredType(file: File): string {
+  const mime = file.type.split(";")[0].trim().toLowerCase();
+  if (
+    (mime === "" || mime === "application/octet-stream") &&
+    file.name.toLowerCase().endsWith(".pdf")
+  ) {
+    return PDF_TYPE;
+  }
+  return mime;
 }

@@ -1,4 +1,4 @@
-/** メッセージに添付された画像。実体は /api/files/:id で取得する。 */
+/** メッセージに添付された画像・PDF。実体は /api/files/:id で取得する。 */
 export interface UiAttachment {
   id: string;
   mimeType: string;

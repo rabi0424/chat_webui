@@ -1,4 +1,4 @@
-import { providerOf } from "./constants";
+import { MAX_UPLOAD_BYTES, providerOf } from "./constants";
 
 /**
  * 上流が「直近のユーザー発言の画像だけ」を使う窓口か。
@@ -24,3 +24,20 @@ export function usesLatestUserImagesOnly(job: {
   if (provider === "runware") return true;
   return provider === "apiyi" && !!job.imageOutput;
 }
+
+/**
+ * 1回の依頼に載せる PDF の合計（バイト。base64 にする前の大きさ）。
+ *
+ * PDF は画像と違って縮められず、1つが上限の 10MB まである。しかも履歴の
+ * 添付は**毎ターン全部**送り直す。base64 にすると 4/3 倍になり、それを
+ * 本文の JSON に組み込み、送るためにもう一度バイト列にする——10MB の
+ * PDF 1つで、実行体のメモリ（128MB）のうち 50MB 前後が一時に埋まる。
+ * PDF を何本も添えた会話をそのまま組むと、メモリを使い切って実行ごと
+ * 落とされ、応答は「中断」で終わる。
+ *
+ * 上限は1ファイルの上限と同じにする（最大の PDF 1本はいつでも載る）。
+ * 超えたぶんは**古い発言の PDF から**読まずに落とす。今の発言で添えた
+ * PDF がいちばん読まれるべきもので、古いものはたいてい既に答えの中で
+ * 使われている。
+ */
+export const PDF_BUDGET_BYTES = MAX_UPLOAD_BYTES;

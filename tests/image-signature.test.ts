@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { matchesDeclared, sniffImageFormat } from "../app/lib/image-signature";
+import {
+  looksLikePdf,
+  matchesDeclared,
+  sniffImageFormat,
+} from "../app/lib/image-signature";
 
 /**
  * 中身が申告どおりの画像か。
@@ -66,5 +70,39 @@ describe("申告との突き合わせ", () => {
 
   it("知らない形式の申告は通さない", () => {
     expect(matchesDeclared(PNG, "image/svg+xml")).toBe(false);
+  });
+});
+
+describe("PDF", () => {
+  const enc = (s: string) => new TextEncoder().encode(s).buffer;
+  const PDF = enc("%PDF-1.7\n%âãÏÓ\n1 0 obj");
+
+  it("%PDF- で始まるものは PDF として通す", () => {
+    expect(looksLikePdf(PDF)).toBe(true);
+    expect(matchesDeclared(PDF, "application/pdf")).toBe(true);
+  });
+
+  /** これが防ぎたかったところ（画像と同じ）。 */
+  it("PDF でないものを PDF と申告しても通さない", () => {
+    expect(matchesDeclared(HTML, "application/pdf")).toBe(false);
+    expect(matchesDeclared(PNG, "application/pdf")).toBe(false);
+    expect(matchesDeclared(enc("%PDF"), "application/pdf")).toBe(false); // 途中で切れている
+    expect(matchesDeclared(new ArrayBuffer(0), "application/pdf")).toBe(false);
+  });
+
+  it("PDF を画像と申告しても通さない", () => {
+    expect(matchesDeclared(PDF, "image/png")).toBe(false);
+  });
+
+  /*
+   * 手前に余計なものが付いた PDF も、ビューアは開く。先頭だけを見ると
+   * 開ける PDF が断られる。境目の両側を確かめる（1024 バイトの内に
+   * 目印が収まるか）
+   */
+  it("先頭 1024 バイトの中に目印があれば通し、外なら通さない", () => {
+    const inside = enc(`${" ".repeat(1024 - 5)}%PDF-`);
+    const outside = enc(`${" ".repeat(1024 - 4)}%PDF-`);
+    expect(looksLikePdf(inside)).toBe(true);
+    expect(looksLikePdf(outside)).toBe(false);
   });
 });
