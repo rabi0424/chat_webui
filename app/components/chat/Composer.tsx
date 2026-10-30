@@ -42,6 +42,8 @@ import {
 import { hostLabel } from "../../lib/page-url";
 import type { PendingAttachment } from "./use-attachments";
 import { PDF_TILE, PdfCardBody } from "./PdfCard";
+import { formatJpy } from "./message-parts";
+import { OCR_USD_PER_PAGE, type OcrEstimate } from "../../lib/pdf-ocr";
 import {
   countLines,
   snapSelectionOutsideTokens,
@@ -77,6 +79,11 @@ export function Composer({
   onRemovePending,
   supportsImages,
   supportsPdf,
+  pdfReading,
+  pdfOcr,
+  onTogglePdfOcr,
+  retryOn,
+  usdJpy,
   fileInputRef,
   onPickFiles,
   onOpenFilePicker,
@@ -113,6 +120,18 @@ export function Composer({
   supportsImages: boolean;
   /** 選んでいるモデルの窓口へ PDF を渡せるか（acceptsPdf）。 */
   supportsPdf: boolean;
+  /**
+   * 次に送るとき、OpenRouter が文字に起こす PDF の数と OCR の見積もり
+   * （モデルが PDF をそのまま読めないとき）。起こされないなら null。
+   */
+  pdfReading: { count: number; estimate: OcrEstimate; counting: boolean } | null;
+  /** 有料の OCR を選んでいるか（既定は無料の文字起こし）。 */
+  pdfOcr: boolean;
+  onTogglePdfOcr: () => void;
+  /** 「成功するまで生成」が効いているか（そのときは OCR を使わない）。 */
+  retryOn: boolean;
+  /** 見積もりを円で出すための為替（無ければドルで出す）。 */
+  usdJpy: number | null;
   fileInputRef: RefObject<HTMLInputElement | null>;
   onPickFiles: (files: File[]) => void;
   onOpenFilePicker: () => void;
@@ -368,6 +387,15 @@ export function Composer({
             このモデルには PDF を渡せません。PDF は外して送られます。
           </p>
         )}
+        {pdfReading && (
+          <PdfReadingNotice
+            reading={pdfReading}
+            ocr={pdfOcr}
+            onToggle={onTogglePdfOcr}
+            retryOn={retryOn}
+            usdJpy={usdJpy}
+          />
+        )}
         <input
           ref={fileInputRef}
           type="file"
@@ -539,6 +567,75 @@ export function Composer({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * PDF をそのまま読めないモデルへ送るときの知らせと、読み取り方の切り替え。
+ *
+ * 黙って文字起こしに回すと、図やスキャンの頁が読まれていないことに
+ * 気づけない（モデルは届いた文字だけで、もっともらしく答える）。有料の
+ * OCR を選べるようにし、選ぶ前に額が分かるようにする。額は**送るたび**
+ * にかかる——履歴の PDF も毎ターン読み直されるので、それも書く。
+ */
+function PdfReadingNotice({
+  reading,
+  ocr,
+  onToggle,
+  retryOn,
+  usdJpy,
+}: {
+  reading: { count: number; estimate: OcrEstimate; counting: boolean };
+  ocr: boolean;
+  onToggle: () => void;
+  retryOn: boolean;
+  usdJpy: number | null;
+}) {
+  const { estimate } = reading;
+  const money = (usd: number) =>
+    usdJpy != null ? formatJpy(usd * usdJpy) : `$${usd.toFixed(4)}`;
+  /*
+   * 額の言い方。頁数が分からない PDF があるときは、分かったぶんだけの額を
+   * 「以上」と言い、単価を添える（0 頁として黙って足すと、かからない
+   * ように見える）
+   */
+  const cost = reading.counting
+    ? "頁数を数えています…"
+    : estimate.unknown === 0
+      ? `${estimate.pages.toLocaleString()}頁で1回 約${money(estimate.usd)}`
+      : estimate.pages > 0
+        ? `1回 約${money(estimate.usd)}以上（頁数が分からない PDF が${estimate.unknown}件）`
+        : `頁数が分からないため額は出せません。1頁 約${money(OCR_USD_PER_PAGE)}`;
+  return (
+    <div
+      data-testid="pdf-reading"
+      className="mx-4 mt-2 rounded-lg bg-neutral-50 px-3 py-2 text-xs leading-5 text-ink-2 dark:bg-white/5"
+    >
+      {ocr ? (
+        <p>
+          このモデルは PDF をそのまま読めないため、
+          <span className="font-medium text-ink">有料の OCR</span>
+          で読み取って渡します（{cost}。PDF が会話に残っているあいだは、送るたびにかかります）。
+          {retryOn && (
+            <span className="block text-amber-600 dark:text-amber-400">
+              「成功するまで生成」では OCR を使わず、無料の文字起こしで送ります（試行の数だけかかるため）。
+            </span>
+          )}
+        </p>
+      ) : (
+        <p>
+          このモデルは PDF をそのまま読めないため、文字を起こして渡します（無料）。スキャンした頁や図の中の文字は届きません。
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-pressed={ocr}
+        className="mt-1 rounded px-1.5 py-0.5 font-medium text-accent-ink hover:bg-hover"
+      >
+        {ocr ? "無料の文字起こしに戻す" : `有料の OCR で読む（${cost}）`}
+      </button>
     </div>
   );
 }

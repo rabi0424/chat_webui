@@ -421,6 +421,39 @@ describe("司令役を回す", () => {
   );
 
   it(
+    "有料の OCR の指定は担当へ渡さない（試行の数だけ読み取り代がかかるため）",
+    async () => {
+      onTick = (n) => {
+        if (n >= 2) {
+          tickResult = {
+            stopRequested: false,
+            applied: true,
+            running: 0,
+            finished: [
+              { id: "a1", kind: "success", detail: null, wait_ms: null, message_id: "m1" },
+              { id: "a2", kind: "success", detail: null, wait_ms: null, message_id: "m2" },
+            ] as never,
+          };
+        }
+      };
+      await runRetryGenerationJob(
+        {
+          ...(job as unknown as Record<string, unknown>),
+          pdfOcr: true,
+          // 隣の申告は渡っている（渡し方そのものが壊れていないこと）
+          nativePdf: true,
+        } as never,
+        retry,
+        null,
+      );
+      const sent = spawnedJobs[0] as Record<string, unknown>;
+      expect(sent.nativePdf).toBe(true);
+      expect(sent).not.toHaveProperty("pdfOcr");
+    },
+    20_000,
+  );
+
+  it(
     "見出しの行を失ったら、起こすのをやめて確定も書かない",
     async () => {
       tickResult = { ...idle, applied: false };

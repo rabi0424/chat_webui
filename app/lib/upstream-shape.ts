@@ -41,3 +41,31 @@ export function usesLatestUserImagesOnly(job: {
  * 使われている。
  */
 export const PDF_BUDGET_BYTES = MAX_UPLOAD_BYTES;
+
+/**
+ * 上限の内に載せる PDF を選ぶ。
+ *
+ * groups は発言ごとの PDF（古い発言から順、発言の中は添付の順）。
+ * **新しい発言から**数え、入らないものは飛ばす（打ち切らない——大きい
+ * 1つより古い小さい PDF まで落とさないため）。同じ PDF を2つの発言が
+ * 指していても、実体は1度しか載らないので1度だけ数える。
+ *
+ * 上流へ組み立てる側（expandAttachments）と、入力欄の OCR の見積もりが
+ * 同じものを使う。ここに置くのは、クライアントからも読めるため
+ * （generation.server はサーバー専用）。
+ */
+export function pickPdfsWithinBudget(
+  groups: { id: string; size: number }[][],
+  budget: number,
+): Set<string> {
+  const picked = new Set<string>();
+  let room = budget;
+  for (let i = groups.length - 1; i >= 0; i--) {
+    for (const { id, size } of groups[i]) {
+      if (picked.has(id) || size > room) continue;
+      room -= size;
+      picked.add(id);
+    }
+  }
+  return picked;
+}

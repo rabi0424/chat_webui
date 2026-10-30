@@ -18,6 +18,7 @@ import {
   isPdfFile,
   prepareImage,
 } from "../../lib/image";
+import { countPdfPages } from "../../lib/pdf-pages";
 import type { UiAttachment } from "../../lib/types";
 import type { UploadResponse } from "../../lib/api-types";
 
@@ -30,6 +31,8 @@ export interface PendingAttachment {
   mimeType: string;
   name: string;
   size: number;
+  /** PDF の頁数（OCR の見積もり）。数え終わるまで・分からなければ undefined。 */
+  pages?: number;
   status: "uploading" | "ready" | "error";
   id?: string;
   error?: string;
@@ -59,6 +62,16 @@ export async function uploadAttachment(file: File): Promise<UiAttachment> {
     : await prepareImage(file);
   const form = new FormData();
   form.append("file", prepared);
+  /*
+   * 頁数は端末で数えて添える（OCR の見積もり）。サーバーでは数えない
+   * ——Workers の無料枠の CPU（1回 10ms）では 10MB の PDF を読み解けない。
+   * 数えられなくてもアップロードは止めない（見積もりが「頁数不明」に
+   * なるだけ）。
+   */
+  if (pdf) {
+    const pages = await countPdfPages(await file.arrayBuffer()).catch(() => null);
+    if (pages != null) form.append("pages", String(pages));
+  }
   const res = await fetch("/api/uploads", { method: "POST", body: form });
   const body = (await res.json().catch(() => null)) as
     | (Partial<UploadResponse> & { error?: string })
@@ -73,6 +86,7 @@ export async function uploadAttachment(file: File): Promise<UiAttachment> {
     mimeType: body.mimeType ?? prepared.type,
     name: body.name ?? file.name,
     size: body.size ?? file.size,
+    ...(body.pages != null ? { pages: body.pages } : {}),
   };
 }
 
@@ -166,6 +180,7 @@ export function useAttachments({
                     id: uploaded.id,
                     size: uploaded.size,
                     mimeType: uploaded.mimeType,
+                    pages: uploaded.pages,
                   }
                 : p,
             ),
@@ -214,6 +229,7 @@ export function useAttachments({
             localId: crypto.randomUUID(),
             previewUrl: `/api/files/${a.id}`,
             mimeType: a.mimeType,
+            pages: a.pages,
             name: a.name ?? "生成画像",
             size: a.size,
             status: "ready",

@@ -56,9 +56,10 @@ beforeEach(() => {
 const PDF = new TextEncoder().encode("%PDF-1.7\n1 0 obj\n");
 const HTML = new TextEncoder().encode("<html><script>alert(1)</script>");
 
-async function upload(file: File) {
+async function upload(file: File, pages?: string) {
   const form = new FormData();
   form.append("file", file);
+  if (pages != null) form.append("pages", pages);
   const res = await action({
     request: new Request("https://example.test/api/uploads", {
       method: "POST",
@@ -69,6 +70,14 @@ async function upload(file: File) {
     context: { get: () => ({ ctx: { waitUntil: () => {} } }) },
   } as never);
   return { res, body: (await res.json()) as Record<string, unknown> };
+}
+
+/** 置かれた添付の行の頁数。 */
+function storedPages(id: unknown): number | null | undefined {
+  const row = sqlite
+    .prepare("SELECT pages FROM attachments WHERE id = ?")
+    .get(String(id)) as { pages: number | null } | undefined;
+  return row?.pages;
 }
 
 /** 置かれた添付の行の型。 */
@@ -122,5 +131,36 @@ describe("PDF のアップロード", () => {
     const { res, body } = await upload(new File([png], "a.png", { type: "image/png" }));
     expect(res.status).toBe(200);
     expect(storedType(body.id)).toBe("image/png");
+  });
+});
+
+describe("PDF の頁数（OCR の見積もり）", () => {
+  const file = () => new File([PDF], "資料.pdf", { type: "application/pdf" });
+
+  it("端末が数えた頁数を、行に残して返す", async () => {
+    const { body } = await upload(file(), "12");
+    expect(body.pages).toBe(12);
+    expect(storedPages(body.id)).toBe(12);
+  });
+
+  it("数えられなかった（送られてこない）なら持たない", async () => {
+    const { body } = await upload(file());
+    expect(body.pages).toBeNull();
+    expect(storedPages(body.id)).toBeNull();
+  });
+
+  it("数でないもの・0・あり得ない大きさは持たない", async () => {
+    for (const bad of ["abc", "0", "-3", "1e308", "1.5", "9999999"]) {
+      const { res, body } = await upload(file(), bad);
+      // 見積もりのための申告なので、アップロード自体は止めない
+      expect(res.status).toBe(200);
+      expect(storedPages(body.id), bad).toBeNull();
+    }
+  });
+
+  it("画像に付いてきた頁数は持たない", async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]);
+    const { body } = await upload(new File([png], "a.png", { type: "image/png" }), "4");
+    expect(storedPages(body.id)).toBeNull();
   });
 });

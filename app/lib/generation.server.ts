@@ -25,9 +25,14 @@ import {
   type ModelProvider,
 } from "./constants";
 import { buildGenerationPayload, type ParamsState } from "./params";
+import { PDF_PARSER_FREE, PDF_PARSER_OCR } from "./pdf-ocr";
 import { RETRY_ATTEMPT_DEADLINE_MS, type RetryConfig } from "./retry";
 import { classifyUpstreamFailure } from "./upstream-outcome";
-import { PDF_BUDGET_BYTES, usesLatestUserImagesOnly } from "./upstream-shape";
+import {
+  PDF_BUDGET_BYTES,
+  pickPdfsWithinBudget,
+  usesLatestUserImagesOnly,
+} from "./upstream-shape";
 import { isFetchableImageUrl, looksLikeImageUrl } from "./image-url";
 import { sniffImageFormat } from "./image-signature";
 import { readBounded } from "./read-bounded";
@@ -68,23 +73,25 @@ const WEB_SERVER_TOOLS = [
 ];
 
 /**
- * PDF を読めないモデルへ渡すときの、OpenRouter 側の文字起こし。
+ * PDF を読めないモデルへ渡すときの、OpenRouter 側の読み取りの指定。
  *
  * 指定しないと、OpenRouter は**有料の OCR**（1,000頁あたり $2）へ落とす。
  * 頁数に応じて黙って課金され、しかも履歴の PDF は毎ターン送り直すので、
- * 同じ PDF の起こし代が往復のたびに積もる。無料の起こし（Workers AI で
- * Markdown にするもの）を明示する。スキャンした頁の文字は拾えないが、
- * それが要るならモデルを PDF を読めるものに替えればよい（そのときは
- * この指定を外し、モデルがそのまま読む）。
+ * 同じ PDF の読み取り代が往復のたびに積もる。既定は無料の文字起こし
+ * （Workers AI で Markdown にするもの）で、利用者が入力欄の知らせから
+ * OCR を選んだときだけ OCR にする（`pdfOcr`。lib/pdf-ocr）。
  *
- * 読めるモデルへこれを渡すと、モデルが読める PDF をわざわざ文字だけに
- * 落とすことになる（図や表の見た目が届かない）ので、渡すのは
+ * 読めるモデルへはどちらも渡さない。モデルが読める PDF をわざわざ文字
+ * だけに落とすことになる（図や表の見た目が届かない）ので、渡すのは
  * `nativePdf` が立っていないときだけ。
  */
-const OPENROUTER_PDF_PARSER = {
-  id: "file-parser",
-  pdf: { engine: "cloudflare-ai" },
-};
+function pdfParserOf(job: GenerationJob, messages: OutgoingMessage[]) {
+  if (job.nativePdf || !hasPdfPart(messages)) return null;
+  return {
+    id: "file-parser",
+    pdf: { engine: job.pdfOcr ? PDF_PARSER_OCR : PDF_PARSER_FREE },
+  };
+}
 
 /**
  * 1応答あたりに保存する参照元の上限。
@@ -171,23 +178,22 @@ export async function expandAttachments(
   const byId = new Map(rows.map((a) => [a.id, a]));
 
   /*
-   * どの PDF を載せるかは、読む前に行の大きさ（size）で決める。新しい
-   * 発言から数え、上限を超えるものは R2 から読みもしない。同じ PDF を
-   * 2つの発言が指していても、実体は1度しか載らないので1度だけ数える。
+   * どの PDF を載せるかは、読む前に行の大きさ（size）で決める。上限を
+   * 超えるものは R2 から読みもしない。選び方は入力欄の OCR の見積もりと
+   * 同じ関数（pickPdfsWithinBudget）——別々に書くと、見積もりに入った
+   * PDF が実際には送られない（またはその逆）ことが黙って起きる。
    */
-  const pdfIncluded = new Set<string>();
-  if (opts.pdf) {
-    let room = opts.pdfBudgetBytes ?? PDF_BUDGET_BYTES;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      for (const id of idsOf(messages[i], i)) {
-        const a = byId.get(id);
-        if (!a || a.mime_type !== PDF_TYPE || pdfIncluded.has(id)) continue;
-        if (a.size > room) continue;
-        room -= a.size;
-        pdfIncluded.add(id);
-      }
-    }
-  }
+  const pdfIncluded = opts.pdf
+    ? pickPdfsWithinBudget(
+        messages.map((m, i) =>
+          idsOf(m, i).flatMap((id) => {
+            const a = byId.get(id);
+            return a && a.mime_type === PDF_TYPE ? [{ id, size: a.size }] : [];
+          }),
+        ),
+        opts.pdfBudgetBytes ?? PDF_BUDGET_BYTES,
+      )
+    : new Set<string>();
   const usable = (id: string): boolean => {
     const a = byId.get(id);
     if (!a) return false;
@@ -836,9 +842,16 @@ export interface GenerationJob {
    * PDF をモデルがそのまま読めるか（OpenRouter のモデル一覧の
    * input_modalities に "file" がある）。webTools と同じく、一覧を
    * 持っているクライアントが申告する。未指定は「読めない」とみなす
-   * （OPENROUTER_PDF_PARSER）。
+   * （pdfParserOf）。
    */
   nativePdf?: boolean;
+  /**
+   * PDF を読めないモデルへ、無料の文字起こしではなく有料の OCR で渡すか
+   * （利用者が入力欄で選ぶ）。「成功するまで生成」の1本担当へは**写さない**
+   * （AttemptJob に無い）——試行の数だけ同じ PDF の OCR 代がかかり、
+   * 入力欄の見積もり（1回ぶん）と桁が変わるため。
+   */
+  pdfOcr?: boolean;
   /** 成功するまで生成するモード。無効なら undefined。 */
   retry?: RetryConfig;
   /**
@@ -945,6 +958,7 @@ export async function requestUpstream(
     );
   }
 
+  const pdfParser = pdfParserOf(job, messages);
   const send = (tools: boolean) => {
     onRequest();
     return openRouterChatRequest(
@@ -958,9 +972,7 @@ export async function requestUpstream(
         // 画像を出せるモデルでも、明示しないとテキストしか返らない
         ...(job.imageOutput ? { modalities: ["image", "text"] } : {}),
         ...(tools ? { tools: WEB_SERVER_TOOLS } : {}),
-        ...(!job.nativePdf && hasPdfPart(messages)
-          ? { plugins: [OPENROUTER_PDF_PARSER] }
-          : {}),
+        ...(pdfParser ? { plugins: [pdfParser] } : {}),
         ...buildGenerationPayload(job.paramsState, "openrouter"),
       },
       opts.connectTimeoutMs,

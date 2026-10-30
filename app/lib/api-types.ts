@@ -131,6 +131,8 @@ export interface UploadResponse {
   mimeType: string;
   name: string | null;
   size: number;
+  /** PDF の頁数（申告どおり）。画像・数えられなかった PDF は null。 */
+  pages: number | null;
 }
 
 /** 貼られたリンクの中身（本文の取り出しはブラウザ側で行う）。 */

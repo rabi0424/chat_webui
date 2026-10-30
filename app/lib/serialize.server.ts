@@ -54,6 +54,7 @@ export function toUiMessage(m: PathMessage): UiMessage {
             size: a.size,
             kind: a.kind,
             hasThumb: a.thumb_at != null,
+            ...(a.pages != null ? { pages: a.pages } : {}),
           }))
         : undefined,
   };

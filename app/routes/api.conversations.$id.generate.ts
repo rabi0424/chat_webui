@@ -29,6 +29,8 @@ interface GenerateBody {
    * 読めないモデルへは OpenRouter 側の無料の文字起こしを指定する。
    */
   nativePdf?: boolean;
+  /** PDF を読めないモデルへ、有料の OCR で渡すか（入力欄で選ぶ）。 */
+  pdfOcr?: boolean;
   params?: ParamsState | null;
   /** LLMへ送る完全なメッセージ列（システムプロンプト含む）。 */
   messages: ChatMessage[];
@@ -167,6 +169,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         webTools: body.webTools === true,
         imageOutput: body.imageOutput === true,
         nativePdf: body.nativePdf === true,
+        pdfOcr: body.pdfOcr === true,
         retry: retry ?? undefined,
         workerConcurrency: settings.retryWorkerConcurrency,
         dailyDoSecondsBudget: settings.dailyDoSecondsBudget,

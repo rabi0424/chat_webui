@@ -544,13 +544,14 @@ describe("PDF の添付", () => {
 });
 
 describe("PDF を読めないモデルへの文字起こしの指定（OpenRouter）", () => {
-  const job = (nativePdf: boolean | undefined) =>
+  const job = (nativePdf: boolean | undefined, pdfOcr?: boolean) =>
     ({
       conversationId: "c",
       assistantMessageId: "a",
       model: "vendor/m",
       web: false,
       nativePdf,
+      pdfOcr,
       paramsState: null,
       messages: [],
     }) as unknown as Parameters<typeof requestUpstream>[0];
@@ -576,6 +577,19 @@ describe("PDF を読めないモデルへの文字起こしの指定（OpenRoute
     expect(pluginsOf()).toEqual([
       { id: "file-parser", pdf: { engine: "cloudflare-ai" } },
     ]);
+  });
+
+  it("OCR を選んでいれば、有料の OCR を指定する", async () => {
+    await requestUpstream(job(false, true), await withPdf(), () => {});
+    expect(pluginsOf()).toEqual([
+      { id: "file-parser", pdf: { engine: "mistral-ocr" } },
+    ]);
+  });
+
+  it("OCR を選んでいても、読めるモデルには指定しない", async () => {
+    // 読める PDF を OCR の文字に落とすうえに、読み取り代までかかる
+    await requestUpstream(job(true, true), await withPdf(), () => {});
+    expect(pluginsOf()).toBeUndefined();
   });
 
   it("読めるモデルには指定しない（モデルがそのまま読む）", async () => {
