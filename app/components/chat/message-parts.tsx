@@ -11,6 +11,8 @@ import { useCopied } from "../../lib/use-copied";
 import type { UiAttachment, UiCitation, UiMessage } from "../../lib/types";
 import { ensureThumbnail } from "../../lib/thumbnail";
 import { GLASS_PANEL, MSG_ICON_ACTION } from "../../lib/ui";
+import { PDF_TYPE } from "../../lib/constants";
+import { PDF_TILE, PdfCardBody } from "./PdfCard";
 import { faviconUrl } from "../../lib/csp";
 import {
   IconCheck,
@@ -32,11 +34,12 @@ export function formatJpy(jpy: number): string {
   return `¥${jpy.toFixed(4)}`;
 }
 
-/** メッセージに添付された画像の表示（タップで原寸表示）。 */
+/** メッセージに添付された画像（タップで原寸表示）と PDF（タップで開く）の表示。 */
 export function MessageImages({
   attachments,
   onOpen,
   onLoad,
+  openable = true,
 }: {
   attachments: UiAttachment[];
   /** 拡大表示を開く。渡すのは画像のURL（本文の中の画像と同じ入口）。 */
@@ -50,43 +53,70 @@ export function MessageImages({
    * 読み位置が跳ぶ）。追従していたなら、ここで貼り直す。
    */
   onLoad?: () => void;
+  /**
+   * PDF を開けるか。選択モード中は開かない——画像の拡大表示と同じで、
+   * 行を選ぶつもりのタップで別のタブまで開くと、戻ったときには行も
+   * 選ばれている（監査 C-8）。
+   */
+  openable?: boolean;
 }) {
   return (
     <div className="mb-1.5 flex flex-wrap items-end justify-end gap-1.5">
-      {attachments.map((a) => (
-        <button
-          key={a.id}
-          type="button"
-          onClick={() => onOpen(`/api/files/${a.id}`)}
-          // 拡大表示から隣へ払うときの並び（lib/lightbox-gallery）
-          data-lightbox-src={`/api/files/${a.id}`}
-          title={a.name ?? "画像"}
+      {attachments.map((a) =>
+        a.mimeType === PDF_TYPE ? (
           /*
-            読み込みが終わるまでの下敷き。高さゼロから一気に伸びるのを
-            防ぐぶん、跳ぶ量が小さくなる（縦横は分からないので、
-            正方形に近い最小の箱だけ置く）
+            PDF はブラウザの表示に任せる（別のタブ）。拡大表示（Lightbox）は
+            画像を描く部品で、PDF を渡すと壊れた画像になる。払って隣へ
+            進む並びにも入れない（data-lightbox-src を付けない）
           */
-          className="grid min-h-24 min-w-24 place-items-center overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 transition hover:opacity-90 active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-900"
-        >
-          <img
-            src={`/api/files/${a.id}`}
-            alt={a.name ?? "添付画像"}
-            loading="lazy"
-            /*
-              生成画像は、たいてい最初にここで（作った端末で）表示される。
-              このとき縮小版を作って置けば、あとで開く画像一覧は最初から
-              軽い（lib/thumbnail.ts）。
-            */
-            onLoad={(e) => {
-              onLoad?.();
-              if (a.kind === "generated" && !a.hasThumb) {
-                void ensureThumbnail(a.id, e.currentTarget);
-              }
+          <a
+            key={a.id}
+            href={`/api/files/${a.id}`}
+            target="_blank"
+            rel="noopener"
+            onClick={(e) => {
+              if (!openable) e.preventDefault();
             }}
-            className="max-h-56 max-w-[min(16rem,60vw)] object-contain"
-          />
-        </button>
-      ))}
+            title={a.name ?? "PDF"}
+            className={`block ${PDF_TILE} overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 transition hover:opacity-90 active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-900`}
+          >
+            <PdfCardBody name={a.name} size={a.size} />
+          </a>
+        ) : (
+          <button
+            key={a.id}
+            type="button"
+            onClick={() => onOpen(`/api/files/${a.id}`)}
+            // 拡大表示から隣へ払うときの並び（lib/lightbox-gallery）
+            data-lightbox-src={`/api/files/${a.id}`}
+            title={a.name ?? "画像"}
+            /*
+              読み込みが終わるまでの下敷き。高さゼロから一気に伸びるのを
+              防ぐぶん、跳ぶ量が小さくなる（縦横は分からないので、
+              正方形に近い最小の箱だけ置く）
+            */
+            className="grid min-h-24 min-w-24 place-items-center overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 transition hover:opacity-90 active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            <img
+              src={`/api/files/${a.id}`}
+              alt={a.name ?? "添付画像"}
+              loading="lazy"
+              /*
+                生成画像は、たいてい最初にここで（作った端末で）表示される。
+                このとき縮小版を作って置けば、あとで開く画像一覧は最初から
+                軽い（lib/thumbnail.ts）。
+              */
+              onLoad={(e) => {
+                onLoad?.();
+                if (a.kind === "generated" && !a.hasThumb) {
+                  void ensureThumbnail(a.id, e.currentTarget);
+                }
+              }}
+              className="max-h-56 max-w-[min(16rem,60vw)] object-contain"
+            />
+          </button>
+        ),
+      )}
     </div>
   );
 }

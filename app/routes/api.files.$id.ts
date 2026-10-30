@@ -2,9 +2,11 @@ import type { Route } from "./+types/api.files.$id";
 import { getAttachment } from "../lib/db.server";
 import { getFile, isStorageConfigured } from "../lib/r2.server";
 import { apiError } from "../lib/api-types";
+import { PDF_TYPE } from "../lib/constants";
 
 /**
- * 添付画像の配信。R2キーは外に出さず、添付IDで引く。
+ * 添付（画像・PDF）の配信。R2キーは外に出さず、添付IDで引く。
+ * PDF も inline で返し、開く・保存するはブラウザの表示に任せる。
  * アプリ全体が Cloudflare Access の背後にあるため、ここでの追加認証は不要。
  */
 export async function loader({ params }: Route.LoaderArgs) {
@@ -34,7 +36,8 @@ export async function loader({ params }: Route.LoaderArgs) {
       // 添付は不変。個人利用なので共有キャッシュには載せない
       "Cache-Control": "private, max-age=31536000, immutable",
       "Content-Disposition": `inline; filename="${encodeURIComponent(
-        attachment.name ?? "image",
+        attachment.name ??
+          (attachment.mime_type === PDF_TYPE ? "document.pdf" : "image"),
       )}"`,
     },
   });

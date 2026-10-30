@@ -32,9 +32,14 @@ import {
   DEFAULT_MODEL,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
   MAX_TITLE_LENGTH,
+  PDF_TYPE,
   PROVIDER_LABELS,
+  acceptsPdf,
+  providerOf,
   supportsWebSearch,
 } from "../lib/constants";
+import { PDF_BUDGET_BYTES, pickPdfsWithinBudget } from "../lib/upstream-shape";
+import { estimateOcr } from "../lib/pdf-ocr";
 import {
   PULL_IGNORE_SELECTOR,
   PULL_MAX_PX,
@@ -49,7 +54,7 @@ import { recordModelUse } from "../lib/recent-models";
 import { invalidateChat, putCachedChat } from "../lib/chat-cache";
 import { pathTagOf, rememberPathTag, reuseUnchangedRows } from "../lib/polling";
 import { readRetryConfig, type RetryConfig } from "../lib/retry";
-import { isAcceptedImage } from "../lib/image";
+import { isAcceptedAttachment } from "../lib/image";
 import { ModelPicker } from "./ModelPicker";
 import { ParamsEditor } from "./ParamsEditor";
 import { RetrySettings } from "./RetrySettings";
@@ -61,7 +66,7 @@ import {
 } from "./chat/use-generation-tracking";
 import {
   useAttachments,
-  uploadImage,
+  uploadAttachment,
   type PendingAttachment,
 } from "./chat/use-attachments";
 import { type EditingState } from "./chat/MessageEditor";
@@ -276,6 +281,14 @@ export function Chat({
   /** 未送信の添付。本文と同じく端末に残し、画面の作り直しでも失わない。 */
   const attachKey = `chat-webui:draft-files:${draftScope}`;
   const pasteKey = `chat-webui:draft-pastes:${draftScope}`;
+  /**
+   * PDF を読めないモデルへ、有料の OCR で渡すか（入力欄の知らせで選ぶ）。
+   * 会話ごとに端末へ控える。会話の途中で既定に戻ると、選んだつもりの
+   * OCR が次の送信から黙って無料の文字起こしに変わる。逆に端末全体で
+   * 覚えると、別の会話で PDF を添えたときに知らないうちに課金される。
+   */
+  const pdfOcrKey = `chat-webui:pdf-ocr:${draftScope}`;
+  const [pdfOcr, setPdfOcr] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 分岐直後などの控えめなトースト。数秒で自動的に消える。 */
@@ -576,6 +589,7 @@ export function Chat({
     move("chat-webui:draft");
     move("chat-webui:draft-files");
     move("chat-webui:draft-pastes");
+    move("chat-webui:pdf-ocr");
     setDraftScope(convId);
   }
 
@@ -840,16 +854,25 @@ export function Chat({
     try {
       const saved = JSON.parse(
         localStorage.getItem(attachKey) ?? "[]",
-      ) as { id: string; name: string; size: number }[];
+      ) as {
+        id: string;
+        name: string;
+        size: number;
+        mimeType?: string;
+        pages?: number;
+      }[];
       const restored = saved
         .filter((a) => a && typeof a.id === "string")
         .slice(0, MAX_ATTACHMENTS)
         .map(
           (a): PendingAttachment => ({
             localId: crypto.randomUUID(),
-            previewUrl: `/api/files/${a.id}`,
+            // 型を控えていない下書きは、PDF を添付できる前のもの（＝画像）
+            mimeType: typeof a.mimeType === "string" ? a.mimeType : "image/*",
+            previewUrl: a.mimeType === PDF_TYPE ? "" : `/api/files/${a.id}`,
             name: a.name ?? "画像",
             size: Number(a.size) || 0,
+            pages: typeof a.pages === "number" ? a.pages : undefined,
             status: "ready",
             id: a.id,
           }),
@@ -857,6 +880,12 @@ export function Chat({
       if (restored.length > 0) setPending(restored);
     } catch {
       // 壊れていれば無視する
+    }
+    try {
+      // 描画の中で読むとサーバー描画と食い違う（端末にしか無い値）ので、ここで戻す
+      if (localStorage.getItem(pdfOcrKey) === "1") setPdfOcr(true);
+    } catch {
+      // 読めなければ既定（無料の文字起こし）
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -935,7 +964,13 @@ export function Chat({
   useEffect(() => {
     const ready = pending
       .filter((p) => p.status === "ready" && p.id)
-      .map((p) => ({ id: p.id!, name: p.name, size: p.size }));
+      .map((p) => ({
+        id: p.id!,
+        name: p.name,
+        size: p.size,
+        mimeType: p.mimeType,
+        pages: p.pages,
+      }));
     try {
       if (ready.length > 0) {
         localStorage.setItem(attachKey, JSON.stringify(ready));
@@ -1143,7 +1178,7 @@ export function Chat({
   }
 
   /**
-   * 受け取ったファイルを、画像とテキストに振り分ける。
+   * 受け取ったファイルを、添付（画像・PDF）とテキストに振り分ける。
    *
    * 落とす・選ぶ・貼るの3つの入口が同じ振り分けを通る。片方の入口だけ
    * に書くと、同じファイルが「落とすと入るのに選ぶと弾かれる」という
@@ -1579,12 +1614,68 @@ export function Chat({
     [models, model],
   );
 
+  /**
+   * 次に送るときに OpenRouter が文字に起こす PDF（モデルが PDF を読めない
+   * とき）と、その OCR の見積もり。起こされないなら null。
+   *
+   * 数えるのは**実際に送るもの**——区切り線より後の発言の PDF と、入力欄の
+   * PDF を、上流へ組み立てる側と同じ関数（pickPdfsWithinBudget）で選ぶ。
+   * 履歴の PDF も入れるのは、毎ターン送り直してそのたびに読み直される
+   * ため（入力欄の PDF だけを数えると、2通目から「かからない」ように
+   * 見える）。
+   */
+  const pdfReading = useMemo(() => {
+    if (providerOf(model) !== "openrouter") return null;
+    if (selectedModel?.inputModalities.includes("file")) return null;
+    const pdfOf = (a: { mimeType: string }) => a.mimeType === PDF_TYPE;
+    const groups = [
+      ...contextWindow(messages)
+        .filter((m) => m.role === "user")
+        .map((m) =>
+          (m.attachments ?? [])
+            .filter(pdfOf)
+            .map((a) => ({ id: a.id, size: a.size, pages: a.pages })),
+        ),
+      // 入力欄の PDF は、アップロードの途中から数える（知らせが送る直前に
+      // 出ても選び直す暇が無い）。失敗したものは送られない
+      pending
+        .filter((p) => pdfOf(p) && p.status !== "error")
+        .map((p) => ({ id: p.id ?? p.localId, size: p.size, pages: p.pages })),
+    ];
+    const picked = pickPdfsWithinBudget(groups, PDF_BUDGET_BYTES);
+    if (picked.size === 0) return null;
+    const seen = new Set<string>();
+    const sent = groups.flat().filter((p) => {
+      if (!picked.has(p.id) || seen.has(p.id)) return false;
+      seen.add(p.id);
+      return true;
+    });
+    return {
+      count: sent.length,
+      estimate: estimateOcr(sent),
+      // 頁数はアップロードの返事で分かる。それまでを「分からない」と
+      // 言うと、数え終わる前の一瞬だけ「額は出せません」が出る
+      counting: pending.some((p) => pdfOf(p) && p.status === "uploading"),
+    };
+  }, [model, selectedModel, messages, pending]);
+
+  const togglePdfOcr = useStableCallback(() => {
+    const next = !pdfOcr;
+    setPdfOcr(next);
+    try {
+      if (next) localStorage.setItem(pdfOcrKey, "1");
+      else localStorage.removeItem(pdfOcrKey);
+    } catch {
+      // 控えられなくても、この画面のあいだは選んだとおりに送る
+    }
+  });
+
   /** 画像入力に対応したモデルか。Poeも supports_images を返すので同じ扱い。 */
   const supportsImages =
     !selectedModel || selectedModel.inputModalities.includes("image");
 
   /**
-   * 編集中メッセージへの画像追加。縮小 → アップロードし、完了したものから
+   * 編集中メッセージへの画像・PDF の追加。（画像は縮小 →）アップロードし、完了したものから
    * editing.attachments に加える（表示は /api/files/:id 経由）。
    */
   async function addEditFiles(files: File[]) {
@@ -1592,7 +1683,9 @@ export function Chat({
     if (!current) return;
     const room =
       MAX_ATTACHMENTS - current.attachments.length - current.uploads;
-    const images = files.filter(isAcceptedImage).slice(0, Math.max(0, room));
+    const images = files
+      .filter(isAcceptedAttachment)
+      .slice(0, Math.max(0, room));
     if (images.length === 0) {
       if (files.length > 0 && room <= 0) {
         setError(`添付は1メッセージあたり${MAX_ATTACHMENTS}枚までです。`);
@@ -1605,7 +1698,7 @@ export function Chat({
     for (const file of images) {
       try {
         // 入力欄からの追加と同じ手順（縮小 → アップロード）を使う
-        const uploaded = await uploadImage(file);
+        const uploaded = await uploadAttachment(file);
         setEditing((prev) =>
           prev
             ? {
@@ -1654,7 +1747,7 @@ export function Chat({
   /** 入力欄への貼り付け（スクショの直接添付・ファイル・長い文・リンク）。 */
   function onPaste(e: React.ClipboardEvent) {
     const files = [...e.clipboardData.files];
-    if (files.some(isAcceptedImage) || files.some(isTextFile)) {
+    if (files.some(isAcceptedAttachment) || files.some(isTextFile)) {
       e.preventDefault();
       receiveFiles(files);
       return;
@@ -1942,6 +2035,8 @@ export function Chat({
             supportsWebSearch(gen.model) &&
             (genInfo?.supportedParameters.includes("tools") ?? false),
           imageOutput: genInfo?.outputModalities.includes("image") ?? false,
+          nativePdf: genInfo?.inputModalities.includes("file") ?? false,
+          pdfOcr,
           params: gen.params,
           parentId: persistInfo.parentId,
           userContent: persistInfo.userContent,
@@ -2070,9 +2165,10 @@ export function Chat({
       .filter((p) => p.status === "ready" && p.id)
       .map((p) => ({
         id: p.id!,
-        mimeType: "image/*",
+        mimeType: p.mimeType,
         name: p.name,
         size: p.size,
+        ...(p.pages != null ? { pages: p.pages } : {}),
       }));
     const attachmentIds = attachments.map((a) => a.id);
 
@@ -2891,6 +2987,12 @@ export function Chat({
             pending={pending}
             onRemovePending={removePending}
             supportsImages={supportsImages}
+            supportsPdf={acceptsPdf(model)}
+            pdfReading={pdfReading}
+            pdfOcr={pdfOcr}
+            onTogglePdfOcr={togglePdfOcr}
+            retryOn={retryConfig != null}
+            usdJpy={usdJpy}
             fileInputRef={fileInputRef}
             onPickFiles={receiveFiles}
             onOpenFilePicker={openFilePicker}

@@ -29,10 +29,13 @@ import {
 } from "react";
 import type { UiAttachment } from "../../lib/types";
 import {
-  ALLOWED_IMAGE_TYPES,
+  IMAGE_ACCEPT,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
+  PDF_ACCEPT,
+  PDF_TYPE,
 } from "../../lib/constants";
-import { isAcceptedImage } from "../../lib/image";
+import { isAcceptedAttachment } from "../../lib/image";
+import { PDF_TILE, PdfCardBody } from "./PdfCard";
 import { PROSE_INPUT } from "../../lib/ui";
 import { isImeKeystroke } from "../../lib/ime";
 import { applyMention, parseMention, stripMention } from "../../lib/mention";
@@ -131,14 +134,20 @@ export function MessageEditor({
           {editing.attachments.map((a) => (
             <div
               key={a.id}
-              className="group/att relative h-16 w-16 overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700"
-              title={a.name ?? "画像"}
+              className={`group/att relative ${
+                a.mimeType === PDF_TYPE ? PDF_TILE : "h-16 w-16"
+              } overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700`}
+              title={a.name ?? (a.mimeType === PDF_TYPE ? "PDF" : "画像")}
             >
-              <img
-                src={`/api/files/${a.id}`}
-                alt={a.name ?? "添付画像"}
-                className="h-full w-full object-cover"
-              />
+              {a.mimeType === PDF_TYPE ? (
+                <PdfCardBody name={a.name} size={a.size} />
+              ) : (
+                <img
+                  src={`/api/files/${a.id}`}
+                  alt={a.name ?? "添付画像"}
+                  className="h-full w-full object-cover"
+                />
+              )}
               <button
                 type="button"
                 onClick={() =>
@@ -195,7 +204,7 @@ export function MessageEditor({
         }}
         onPaste={(e) => {
           const files = [...e.clipboardData.files];
-          if (files.some(isAcceptedImage)) {
+          if (files.some(isAcceptedAttachment)) {
             e.preventDefault();
             onAddFiles(files);
           }
@@ -220,7 +229,7 @@ export function MessageEditor({
         <input
           ref={fileInputRef}
           type="file"
-          accept={ALLOWED_IMAGE_TYPES.join(",")}
+          accept={[...IMAGE_ACCEPT, ...PDF_ACCEPT].join(",")}
           multiple
           hidden
           onChange={(e) => {
@@ -232,8 +241,8 @@ export function MessageEditor({
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={full}
-          aria-label="画像を追加"
-          title="画像を追加"
+          aria-label="画像・PDFを追加"
+          title="画像・PDFを追加"
           className="grid h-8 w-8 place-items-center rounded-full text-ink-2 hover:bg-hover disabled:opacity-30"
         >
           <IconPlus className="h-4.5 w-4.5" />

@@ -24,6 +24,13 @@ interface GenerateBody {
   webTools?: boolean;
   /** 画像を出力できるモデルか（OpenRouterでは modalities の指定が要る）。 */
   imageOutput?: boolean;
+  /**
+   * PDF をモデルがそのまま読めるか（input_modalities に "file"）。
+   * 読めないモデルへは OpenRouter 側の無料の文字起こしを指定する。
+   */
+  nativePdf?: boolean;
+  /** PDF を読めないモデルへ、有料の OCR で渡すか（入力欄で選ぶ）。 */
+  pdfOcr?: boolean;
   params?: ParamsState | null;
   /** LLMへ送る完全なメッセージ列（システムプロンプト含む）。 */
   messages: ChatMessage[];
@@ -31,7 +38,7 @@ interface GenerateBody {
   parentId?: string | null;
   /** 新規のユーザー発言。再生成のときは null。 */
   userContent?: string | null;
-  /** 新規のユーザー発言に添付する画像（アップロード済みの添付ID）。 */
+  /** 新規のユーザー発言に添付する画像・PDF（アップロード済みの添付ID）。 */
   userAttachmentIds?: string[];
 }
 
@@ -161,6 +168,8 @@ export async function action({ request, params, context }: Route.ActionArgs) {
         web: body.web === true,
         webTools: body.webTools === true,
         imageOutput: body.imageOutput === true,
+        nativePdf: body.nativePdf === true,
+        pdfOcr: body.pdfOcr === true,
         retry: retry ?? undefined,
         workerConcurrency: settings.retryWorkerConcurrency,
         dailyDoSecondsBudget: settings.dailyDoSecondsBudget,

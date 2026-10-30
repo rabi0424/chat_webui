@@ -26,6 +26,8 @@ import {
 } from "./settings";
 import { MAX_TITLE_LENGTH, providerOf } from "./constants";
 import {
+  ATTACHMENT_COPY_SQL,
+  ATTACHMENT_INSERT_SQL,
   CLEAR_CONVERSATION_BOT_SQL,
   CONVERSATIONS_LATEST_SQL,
   CONVERSATIONS_SIDEBAR_SQL,
@@ -390,6 +392,8 @@ export interface AttachmentRow {
   prompt: string | null;
   /** 縮小版（一覧のサムネイル）を置いた時刻。無ければ NULL。 */
   thumb_at: number | null;
+  /** PDF の頁数（端末の申告）。画像と、数えられなかった PDF は NULL。 */
+  pages: number | null;
 }
 
 /** 中断とみなす「生成中」の行か。札だけを作る経路も同じ判定を使う。 */
@@ -1190,6 +1194,7 @@ export async function createAttachment(params: {
   mimeType: string;
   name: string | null;
   size: number;
+  pages?: number | null;
 }): Promise<AttachmentRow> {
   const d = await db();
   const row: AttachmentRow = {
@@ -1205,12 +1210,19 @@ export async function createAttachment(params: {
     favorite: 0,
     prompt: null,
     thumb_at: null,
+    pages: params.pages ?? null,
   };
   await d
-    .prepare(
-      "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at) VALUES (?, NULL, NULL, ?, ?, ?, ?, ?)",
+    .prepare(ATTACHMENT_INSERT_SQL)
+    .bind(
+      row.id,
+      row.r2_key,
+      row.mime_type,
+      row.name,
+      row.size,
+      row.created_at,
+      row.pages,
     )
-    .bind(row.id, row.r2_key, row.mime_type, row.name, row.size, row.created_at)
     .run();
   return row;
 }
@@ -1323,14 +1335,8 @@ function linkAttachmentStatements(
           )
           .bind(target.messageId, target.conversationId, now + i, a.id)
       : d
-          .prepare(
-            // prompt と favorite も複製する。落とすと、画像一覧は同じ実体の
-            // うち最も新しい行（＝この複製）を代表として出すため、
-            // 一覧から依頼文が消え、お気に入りも外れて見える。
-            // thumb_at も写す——落とすと、この複製が代表になった一覧は
-            // 縮小版が無いと見なして、原寸を読んで作り直す（監査 S-10）
-            "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind, prompt, favorite, thumb_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          )
+          // 何を写すか（と写さないと何が壊れるか）は ATTACHMENT_COPY_SQL に
+          .prepare(ATTACHMENT_COPY_SQL)
           .bind(
             crypto.randomUUID(),
             target.messageId,
@@ -1344,6 +1350,7 @@ function linkAttachmentStatements(
             a.prompt ?? null,
             a.favorite ?? 0,
             a.thumb_at ?? null,
+            a.pages ?? null,
           ),
   );
 }

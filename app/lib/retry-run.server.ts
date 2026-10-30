@@ -21,7 +21,7 @@
  */
 import { env } from "cloudflare:workers";
 import { fetchPoeRunPoints, type ChatMessage } from "./openrouter.server";
-import { bareModelName, providerOf } from "./constants";
+import { acceptsPdf, bareModelName, providerOf } from "./constants";
 import type { ParamsState } from "./params";
 import {
   RETRY_ALARM_WALL_MS,
@@ -44,7 +44,7 @@ import {
   type RetryConfig,
 } from "./retry";
 import { planRetrySlots } from "./retry-slots";
-import { usesLatestUserImagesOnly } from "./upstream-shape";
+import { PDF_BUDGET_BYTES, usesLatestUserImagesOnly } from "./upstream-shape";
 import { checkMonthlyLimit } from "./limit.server";
 import {
   appendRetrySuccess,
@@ -94,6 +94,7 @@ export interface AttemptJob {
   web: boolean;
   webTools?: boolean;
   imageOutput?: boolean;
+  nativePdf?: boolean;
   /** 担当1つが同時に投げる本数の上書き（0/未指定で自動）。 */
   workerConcurrency?: number;
   paramsState: ParamsState | null;
@@ -190,6 +191,7 @@ async function spawnAttempt(
     web: job.web,
     webTools: job.webTools,
     imageOutput: job.imageOutput,
+    nativePdf: job.nativePdf,
     workerConcurrency: job.workerConcurrency,
     paramsState: job.paramsState,
     messages: job.messages,
@@ -818,9 +820,14 @@ export async function runAttemptJob(job: AttemptJob): Promise<void> {
   let messages: OutgoingMessage[];
   try {
     // 画像だけの窓口は直近の発言の画像しか使わないので、履歴の画像は
-    // 読まない（担当の実行体ごとに読み直すので、無駄がその数だけ積もる）
+    // 読まない（担当の実行体ごとに読み直すので、無駄がその数だけ積もる）。
+    // PDF の上限は同時に投げる本数で割る。本文の JSON は1本ごとに
+    // 組み立てるので、同じ PDF が同時に本数ぶんメモリに並ぶ
+    // （PDF_BUDGET_BYTES）。合計を単発の生成と同じに保つ
     messages = await expandAttachments(job.messages, {
       latestUserOnly: usesLatestUserImagesOnly(job),
+      pdf: acceptsPdf(job.model),
+      pdfBudgetBytes: Math.floor(PDF_BUDGET_BYTES / plan.concurrency),
     });
   } catch (e) {
     await giveUp(queue, `添付の読み出しに失敗しました: ${(e as Error).message}`);

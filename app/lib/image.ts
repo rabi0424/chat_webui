@@ -12,10 +12,29 @@ const MAX_EDGE = 2048;
 /** これ以下のサイズなら再エンコードせずそのまま送る。 */
 const REENCODE_THRESHOLD_BYTES = 512 * 1024;
 
-import { ALLOWED_IMAGE_TYPES } from "./constants";
+import { ALLOWED_IMAGE_TYPES, PDF_TYPE } from "./constants";
 
 export function isAcceptedImage(file: File): boolean {
   return ALLOWED_IMAGE_TYPES.includes(file.type.split(";")[0].toLowerCase());
+}
+
+/**
+ * PDF か。申告（`File.type`）が空のときは拡張子で見る——OS に登録が
+ * 無いと PDF でも型が空で届き、申告だけを見ると「添付できない形式」と
+ * 弾かれる。サーバーも同じ補い方をし、中身（`%PDF-`）で確かめる。
+ */
+export function isPdfFile(file: File): boolean {
+  const mime = file.type.split(";")[0].trim().toLowerCase();
+  if (mime === PDF_TYPE) return true;
+  return (
+    (mime === "" || mime === "application/octet-stream") &&
+    file.name.toLowerCase().endsWith(".pdf")
+  );
+}
+
+/** 添付（R2 に置く）として受け取るファイルか。 */
+export function isAcceptedAttachment(file: File): boolean {
+  return isAcceptedImage(file) || isPdfFile(file);
 }
 
 function loadImage(file: File): Promise<HTMLImageElement> {

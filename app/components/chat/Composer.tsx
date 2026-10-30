@@ -19,6 +19,8 @@ import {
 import {
   IMAGE_ACCEPT,
   MAX_ATTACHMENTS_PER_MESSAGE as MAX_ATTACHMENTS,
+  PDF_ACCEPT,
+  PDF_TYPE,
 } from "../../lib/constants";
 import { TEXT_FILE_ACCEPT } from "../../lib/text-file";
 import { formatBytes } from "../../lib/image";
@@ -39,6 +41,9 @@ import {
 } from "../icons";
 import { hostLabel } from "../../lib/page-url";
 import type { PendingAttachment } from "./use-attachments";
+import { PDF_TILE, PdfCardBody } from "./PdfCard";
+import { formatJpy } from "./message-parts";
+import { OCR_USD_PER_PAGE, type OcrEstimate } from "../../lib/pdf-ocr";
 import {
   countLines,
   snapSelectionOutsideTokens,
@@ -73,6 +78,12 @@ export function Composer({
   pending,
   onRemovePending,
   supportsImages,
+  supportsPdf,
+  pdfReading,
+  pdfOcr,
+  onTogglePdfOcr,
+  retryOn,
+  usdJpy,
   fileInputRef,
   onPickFiles,
   onOpenFilePicker,
@@ -107,6 +118,20 @@ export function Composer({
   onRemovePending: (localId: string) => void;
   /** 選んでいるモデルが画像入力に対応しているか。 */
   supportsImages: boolean;
+  /** 選んでいるモデルの窓口へ PDF を渡せるか（acceptsPdf）。 */
+  supportsPdf: boolean;
+  /**
+   * 次に送るとき、OpenRouter が文字に起こす PDF の数と OCR の見積もり
+   * （モデルが PDF をそのまま読めないとき）。起こされないなら null。
+   */
+  pdfReading: { count: number; estimate: OcrEstimate; counting: boolean } | null;
+  /** 有料の OCR を選んでいるか（既定は無料の文字起こし）。 */
+  pdfOcr: boolean;
+  onTogglePdfOcr: () => void;
+  /** 「成功するまで生成」が効いているか（そのときは OCR を使わない）。 */
+  retryOn: boolean;
+  /** 見積もりを円で出すための為替（無ければドルで出す）。 */
+  usdJpy: number | null;
   fileInputRef: RefObject<HTMLInputElement | null>;
   onPickFiles: (files: File[]) => void;
   onOpenFilePicker: () => void;
@@ -191,7 +216,9 @@ export function Composer({
             {pending.map((p) => (
               <div
                 key={p.localId}
-                className={`group/att relative h-16 w-16 overflow-hidden rounded-xl border ${
+                className={`group/att relative ${
+                  p.mimeType === PDF_TYPE ? PDF_TILE : "h-16 w-16"
+                } overflow-hidden rounded-xl border ${
                   p.status === "error"
                     ? "border-red-300 dark:border-red-800"
                     : "border-neutral-200 dark:border-neutral-700"
@@ -202,13 +229,23 @@ export function Composer({
                     : `${p.name}（${formatBytes(p.size)}）`
                 }
               >
-                <img
-                  src={p.previewUrl}
-                  alt={p.name}
-                  className={`h-full w-full object-cover ${
-                    p.status === "ready" ? "" : "opacity-40"
-                  }`}
-                />
+                {p.mimeType === PDF_TYPE ? (
+                  <span
+                    className={`block h-full w-full ${
+                      p.status === "ready" ? "" : "opacity-40"
+                    }`}
+                  >
+                    <PdfCardBody name={p.name} size={p.size} />
+                  </span>
+                ) : (
+                  <img
+                    src={p.previewUrl}
+                    alt={p.name}
+                    className={`h-full w-full object-cover ${
+                      p.status === "ready" ? "" : "opacity-40"
+                    }`}
+                  />
+                )}
                 {p.status === "uploading" && (
                   <span className="absolute inset-0 grid place-items-center">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-300 border-t-accent" />
@@ -334,15 +371,35 @@ export function Composer({
             })}
           </div>
         )}
-        {pending.length > 0 && !supportsImages && (
+        {pending.some((p) => p.mimeType !== PDF_TYPE) && !supportsImages && (
           <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">
             このモデルは画像入力に対応していません。画像は無視されるか、エラーになる場合があります。
           </p>
         )}
+        {/*
+          PDF は窓口で決まる。OpenRouter はモデルが読めなければ上流で
+          文字に起こすのでどのモデルでも届くが、画像だけの窓口へは
+          送れない（送る前に外れる）。黙って外れると、読まれたつもりで
+          答えを待つことになる
+        */}
+        {pending.some((p) => p.mimeType === PDF_TYPE) && !supportsPdf && (
+          <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">
+            このモデルには PDF を渡せません。PDF は外して送られます。
+          </p>
+        )}
+        {pdfReading && (
+          <PdfReadingNotice
+            reading={pdfReading}
+            ocr={pdfOcr}
+            onToggle={onTogglePdfOcr}
+            retryOn={retryOn}
+            usdJpy={usdJpy}
+          />
+        )}
         <input
           ref={fileInputRef}
           type="file"
-          accept={[...IMAGE_ACCEPT, ...TEXT_FILE_ACCEPT].join(",")}
+          accept={[...IMAGE_ACCEPT, ...PDF_ACCEPT, ...TEXT_FILE_ACCEPT].join(",")}
           multiple
           hidden
           onChange={(e) => {
@@ -450,7 +507,7 @@ export function Composer({
             disabled={pending.length >= MAX_ATTACHMENTS}
             title={
               supportsImages
-                ? "画像・テキストファイルを添付（貼り付け・ドラッグ&ドロップも可）"
+                ? "画像・PDF・テキストファイルを添付（貼り付け・ドラッグ&ドロップも可）"
                 : "このモデルは画像入力に対応していません（添付は可能ですが無視されます）"
             }
             aria-label="ファイルを添付"
@@ -497,7 +554,7 @@ export function Composer({
               disabled={!canSend || uploading || loadingPages}
               title={
                 uploading
-                  ? "画像をアップロード中…"
+                  ? "添付をアップロード中…"
                   : loadingPages
                     ? "ページを読み込み中…"
                     : "送信"
@@ -510,6 +567,75 @@ export function Composer({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * PDF をそのまま読めないモデルへ送るときの知らせと、読み取り方の切り替え。
+ *
+ * 黙って文字起こしに回すと、図やスキャンの頁が読まれていないことに
+ * 気づけない（モデルは届いた文字だけで、もっともらしく答える）。有料の
+ * OCR を選べるようにし、選ぶ前に額が分かるようにする。額は**送るたび**
+ * にかかる——履歴の PDF も毎ターン読み直されるので、それも書く。
+ */
+function PdfReadingNotice({
+  reading,
+  ocr,
+  onToggle,
+  retryOn,
+  usdJpy,
+}: {
+  reading: { count: number; estimate: OcrEstimate; counting: boolean };
+  ocr: boolean;
+  onToggle: () => void;
+  retryOn: boolean;
+  usdJpy: number | null;
+}) {
+  const { estimate } = reading;
+  const money = (usd: number) =>
+    usdJpy != null ? formatJpy(usd * usdJpy) : `$${usd.toFixed(4)}`;
+  /*
+   * 額の言い方。頁数が分からない PDF があるときは、分かったぶんだけの額を
+   * 「以上」と言い、単価を添える（0 頁として黙って足すと、かからない
+   * ように見える）
+   */
+  const cost = reading.counting
+    ? "頁数を数えています…"
+    : estimate.unknown === 0
+      ? `${estimate.pages.toLocaleString()}頁で1回 約${money(estimate.usd)}`
+      : estimate.pages > 0
+        ? `1回 約${money(estimate.usd)}以上（頁数が分からない PDF が${estimate.unknown}件）`
+        : `頁数が分からないため額は出せません。1頁 約${money(OCR_USD_PER_PAGE)}`;
+  return (
+    <div
+      data-testid="pdf-reading"
+      className="mx-4 mt-2 rounded-lg bg-neutral-50 px-3 py-2 text-xs leading-5 text-ink-2 dark:bg-white/5"
+    >
+      {ocr ? (
+        <p>
+          このモデルは PDF をそのまま読めないため、
+          <span className="font-medium text-ink">有料の OCR</span>
+          で読み取って渡します（{cost}。PDF が会話に残っているあいだは、送るたびにかかります）。
+          {retryOn && (
+            <span className="block text-amber-600 dark:text-amber-400">
+              「成功するまで生成」では OCR を使わず、無料の文字起こしで送ります（試行の数だけかかるため）。
+            </span>
+          )}
+        </p>
+      ) : (
+        <p>
+          このモデルは PDF をそのまま読めないため、文字を起こして渡します（無料）。スキャンした頁や図の中の文字は届きません。
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-pressed={ocr}
+        className="mt-1 rounded px-1.5 py-0.5 font-medium text-accent-ink hover:bg-hover"
+      >
+        {ocr ? "無料の文字起こしに戻す" : `有料の OCR で読む（${cost}）`}
+      </button>
     </div>
   );
 }

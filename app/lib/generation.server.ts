@@ -17,15 +17,22 @@ import {
   runwareImageRequest,
 } from "./runware.server";
 import {
+  PDF_TYPE,
   PROVIDER_LABELS,
+  acceptsPdf,
   bareModelName,
   providerOf,
   type ModelProvider,
 } from "./constants";
 import { buildGenerationPayload, type ParamsState } from "./params";
+import { PDF_PARSER_FREE, PDF_PARSER_OCR } from "./pdf-ocr";
 import { RETRY_ATTEMPT_DEADLINE_MS, type RetryConfig } from "./retry";
 import { classifyUpstreamFailure } from "./upstream-outcome";
-import { usesLatestUserImagesOnly } from "./upstream-shape";
+import {
+  PDF_BUDGET_BYTES,
+  pickPdfsWithinBudget,
+  usesLatestUserImagesOnly,
+} from "./upstream-shape";
 import { isFetchableImageUrl, looksLikeImageUrl } from "./image-url";
 import { sniffImageFormat } from "./image-signature";
 import { readBounded } from "./read-bounded";
@@ -66,6 +73,27 @@ const WEB_SERVER_TOOLS = [
 ];
 
 /**
+ * PDF を読めないモデルへ渡すときの、OpenRouter 側の読み取りの指定。
+ *
+ * 指定しないと、OpenRouter は**有料の OCR**（1,000頁あたり $2）へ落とす。
+ * 頁数に応じて黙って課金され、しかも履歴の PDF は毎ターン送り直すので、
+ * 同じ PDF の読み取り代が往復のたびに積もる。既定は無料の文字起こし
+ * （Workers AI で Markdown にするもの）で、利用者が入力欄の知らせから
+ * OCR を選んだときだけ OCR にする（`pdfOcr`。lib/pdf-ocr）。
+ *
+ * 読めるモデルへはどちらも渡さない。モデルが読める PDF をわざわざ文字
+ * だけに落とすことになる（図や表の見た目が届かない）ので、渡すのは
+ * `nativePdf` が立っていないときだけ。
+ */
+function pdfParserOf(job: GenerationJob, messages: OutgoingMessage[]) {
+  if (job.nativePdf || !hasPdfPart(messages)) return null;
+  return {
+    id: "file-parser",
+    pdf: { engine: job.pdfOcr ? PDF_PARSER_OCR : PDF_PARSER_FREE },
+  };
+}
+
+/**
  * 1応答あたりに保存する参照元の上限。
  * リンクを辿るほど増えるので、表示が本文を押しのけない程度で止める。
  */
@@ -88,6 +116,16 @@ type ContentPart =
       type: "image_url";
       image_url: { url: string };
       cache_control?: { type: "ephemeral" };
+    }
+  | {
+      /*
+       * PDF。OpenRouter と Poe はどちらもこの形で受ける（文書に載って
+       * いる形）。`file_data` は data: URL で、公開 URL は渡せない——
+       * 実体は Access の背後にあり、上流からは取りに来られない。
+       */
+      type: "file";
+      file: { filename: string; file_data: string };
+      cache_control?: { type: "ephemeral" };
     };
 
 export interface OutgoingMessage {
@@ -96,11 +134,11 @@ export interface OutgoingMessage {
 }
 
 /**
- * 添付画像を data: URL へ展開する。
+ * 添付を data: URL へ展開する（画像は `image_url`、PDF は `file`）。
  *
  * アプリは Cloudflare Access の背後にあり、外部（LLMプロバイダ）から
  * 画像URLを取得させられないため、実体をbase64で埋め込んで送る。
- * 読み出せなかった画像は黙って除外する（残りのやり取りは成立させる）。
+ * 読み出せなかった添付は黙って除外する（残りのやり取りは成立させる）。
  */
 export async function expandAttachments(
   messages: ChatMessage[],
@@ -110,6 +148,13 @@ export async function expandAttachments(
      * それより前の発言は添付を外した文字だけで返す。
      */
     latestUserOnly?: boolean;
+    /**
+     * PDF を読むか（acceptsPdf）。渡せない窓口では読まずに落とす。
+     * 未指定は読まない——読むと決めた側だけが大きな実体を抱える。
+     */
+    pdf?: boolean;
+    /** PDF の合計の上限（PDF_BUDGET_BYTES）。 */
+    pdfBudgetBytes?: number;
   } = {},
 ): Promise<OutgoingMessage[]> {
   let latestUser = -1;
@@ -132,12 +177,35 @@ export async function expandAttachments(
   const rows = await getAttachments(messages.flatMap(idsOf));
   const byId = new Map(rows.map((a) => [a.id, a]));
 
+  /*
+   * どの PDF を載せるかは、読む前に行の大きさ（size）で決める。上限を
+   * 超えるものは R2 から読みもしない。選び方は入力欄の OCR の見積もりと
+   * 同じ関数（pickPdfsWithinBudget）——別々に書くと、見積もりに入った
+   * PDF が実際には送られない（またはその逆）ことが黙って起きる。
+   */
+  const pdfIncluded = opts.pdf
+    ? pickPdfsWithinBudget(
+        messages.map((m, i) =>
+          idsOf(m, i).flatMap((id) => {
+            const a = byId.get(id);
+            return a && a.mime_type === PDF_TYPE ? [{ id, size: a.size }] : [];
+          }),
+        ),
+        opts.pdfBudgetBytes ?? PDF_BUDGET_BYTES,
+      )
+    : new Set<string>();
+  const usable = (id: string): boolean => {
+    const a = byId.get(id);
+    if (!a) return false;
+    return a.mime_type === PDF_TYPE ? pdfIncluded.has(id) : true;
+  };
+
   // 同じ添付を2つの発言が指していても、実体は1度だけ読む
   const urls = new Map<string, Promise<string | null>>();
   const limit = createConcurrencyLimit(R2_READ_CONCURRENCY);
   const read = (id: string): Promise<string | null> => {
     const a = byId.get(id);
-    if (!a) return Promise.resolve(null);
+    if (!a || !usable(id)) return Promise.resolve(null);
     let url = urls.get(id);
     if (!url) {
       url = limit(async () => {
@@ -159,7 +227,9 @@ export async function expandAttachments(
 
   // 読み出しは全部先に投げ、並びは発言と添付の順のまま組み立てる
   // （読み終わった順に並べると、依頼文の「図1／図2」と画像がずれる）
-  const pending = messages.map((m, i) => idsOf(m, i).map(read));
+  const pending = messages.map((m, i) =>
+    idsOf(m, i).map((id) => ({ id, url: read(id) })),
+  );
   const out: OutgoingMessage[] = [];
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
@@ -168,9 +238,20 @@ export async function expandAttachments(
       continue;
     }
     const parts: ContentPart[] = [];
-    for (const url of await Promise.all(pending[i])) {
-      if (url) parts.push({ type: "image_url", image_url: { url } });
-    }
+    const urlsHere = await Promise.all(pending[i].map((p) => p.url));
+    pending[i].forEach(({ id }, n) => {
+      const url = urlsHere[n];
+      if (!url) return;
+      const a = byId.get(id)!;
+      parts.push(
+        a.mime_type === PDF_TYPE
+          ? {
+              type: "file",
+              file: { filename: a.name || "document.pdf", file_data: url },
+            }
+          : { type: "image_url", image_url: { url } },
+      );
+    });
     // 画像 → テキストの順（Anthropicの推奨。他社も同等に扱う）
     if (m.content) parts.push({ type: "text", text: m.content });
     out.push({
@@ -179,6 +260,13 @@ export async function expandAttachments(
     });
   }
   return out;
+}
+
+/** 送るメッセージに PDF が載っているか（解析の指定を足すかどうか）。 */
+export function hasPdfPart(messages: OutgoingMessage[]): boolean {
+  return messages.some(
+    (m) => typeof m.content !== "string" && m.content.some((p) => p.type === "file"),
+  );
 }
 
 /**
@@ -215,15 +303,22 @@ function createConcurrencyLimit(n: number) {
  * このジョブの上流に合わせて添付を展開する。
  *
  * 画像だけの窓口は直近のユーザー発言の画像しか使わない（imageRequestOf）
- * ので、それより前の画像は R2 から読みもしない。
+ * ので、それより前の画像は R2 から読みもしない。PDF を受けない窓口へは
+ * PDF を読まない。
  */
-export function expandAttachmentsFor(job: {
-  model: string;
-  imageOutput?: boolean;
-  messages: ChatMessage[];
-}): Promise<OutgoingMessage[]> {
+export function expandAttachmentsFor(
+  job: {
+    model: string;
+    imageOutput?: boolean;
+    messages: ChatMessage[];
+  },
+  /** PDF の合計の上限。同じ中身で何本も同時に投げる担当が縮める。 */
+  pdfBudgetBytes: number = PDF_BUDGET_BYTES,
+): Promise<OutgoingMessage[]> {
   return expandAttachments(job.messages, {
     latestUserOnly: usesLatestUserImagesOnly(job),
+    pdf: acceptsPdf(job.model),
+    pdfBudgetBytes,
   });
 }
 
@@ -307,6 +402,8 @@ export function imageRequestOf(messages: OutgoingMessage[]): {
       if (part.text) texts.push(part.text);
       continue;
     }
+    // 画像だけの窓口へは PDF を渡せない（そもそも読んでいないはず）
+    if (part.type !== "image_url") continue;
     const decoded = decodeDataUrl(part.image_url.url);
     // 読めなかったものは両方から落とす（並び順を揃えるため）
     if (!decoded) continue;
@@ -741,6 +838,20 @@ export interface GenerationJob {
   webTools?: boolean;
   /** 画像を出力できるモデルか（OpenRouterでは modalities の指定が要る）。 */
   imageOutput?: boolean;
+  /**
+   * PDF をモデルがそのまま読めるか（OpenRouter のモデル一覧の
+   * input_modalities に "file" がある）。webTools と同じく、一覧を
+   * 持っているクライアントが申告する。未指定は「読めない」とみなす
+   * （pdfParserOf）。
+   */
+  nativePdf?: boolean;
+  /**
+   * PDF を読めないモデルへ、無料の文字起こしではなく有料の OCR で渡すか
+   * （利用者が入力欄で選ぶ）。「成功するまで生成」の1本担当へは**写さない**
+   * （AttemptJob に無い）——試行の数だけ同じ PDF の OCR 代がかかり、
+   * 入力欄の見積もり（1回ぶん）と桁が変わるため。
+   */
+  pdfOcr?: boolean;
   /** 成功するまで生成するモード。無効なら undefined。 */
   retry?: RetryConfig;
   /**
@@ -847,6 +958,7 @@ export async function requestUpstream(
     );
   }
 
+  const pdfParser = pdfParserOf(job, messages);
   const send = (tools: boolean) => {
     onRequest();
     return openRouterChatRequest(
@@ -860,6 +972,7 @@ export async function requestUpstream(
         // 画像を出せるモデルでも、明示しないとテキストしか返らない
         ...(job.imageOutput ? { modalities: ["image", "text"] } : {}),
         ...(tools ? { tools: WEB_SERVER_TOOLS } : {}),
+        ...(pdfParser ? { plugins: [pdfParser] } : {}),
         ...buildGenerationPayload(job.paramsState, "openrouter"),
       },
       opts.connectTimeoutMs,

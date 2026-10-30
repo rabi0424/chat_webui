@@ -1,4 +1,4 @@
-/** メッセージに添付された画像。実体は /api/files/:id で取得する。 */
+/** メッセージに添付された画像・PDF。実体は /api/files/:id で取得する。 */
 export interface UiAttachment {
   id: string;
   mimeType: string;
@@ -8,6 +8,8 @@ export interface UiAttachment {
   kind?: "upload" | "generated";
   /** 縮小版（一覧のサムネイル）が R2 にあるか。無ければ表示側で作る。 */
   hasThumb?: boolean;
+  /** PDF の頁数（OCR の見積もりに使う）。分からなければ undefined。 */
+  pages?: number;
 }
 
 /**

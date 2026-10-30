@@ -469,7 +469,38 @@ CREATE INDEX IF NOT EXISTS idx_perf_builds_last ON perf_builds(last_at);
   `
 ALTER TABLE retry_attempts ADD COLUMN started_at INTEGER;
 `,
+  // v25: PDF の頁数（端末が数えて申告する。画像と、数えられなかった PDF は
+  // NULL）。有料の OCR は頁ごとに課金されるので、送る前の見積もりに使う。
+  // サーバーでは数えない——Workers の無料枠は1回 10ms の CPU で、10MB の
+  // PDF を読み解くには足りない。
+  `
+ALTER TABLE attachments ADD COLUMN pages INTEGER;
+`,
 ];
+
+/**
+ * アップロード直後の添付（まだどの発言にも属さない）を置く。
+ * バインドは (id, r2_key, mime_type, name, size, created_at, pages)。
+ */
+export const ATTACHMENT_INSERT_SQL =
+  "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, pages) VALUES (?, NULL, NULL, ?, ?, ?, ?, ?, ?)";
+
+/**
+ * 別の発言に属している添付を、新しい発言のために複製する（編集して
+ * 再送信・分岐）。R2 の実体は共有する。
+ *
+ * prompt と favorite も複製する。落とすと、画像一覧は同じ実体のうち
+ * 最も新しい行（＝この複製）を代表として出すため、一覧から依頼文が消え、
+ * お気に入りも外れて見える。thumb_at も写す——落とすと、この複製が代表に
+ * なった一覧は縮小版が無いと見なして、原寸を読んで作り直す（監査 S-10）。
+ * pages も写す——落とすと、分岐した先で PDF の頁数が分からなくなり、
+ * OCR の見積もりが「頁数不明」になる。
+ *
+ * バインドは (id, message_id, conversation_id, r2_key, mime_type, name,
+ * size, created_at, kind, prompt, favorite, thumb_at, pages)。
+ */
+export const ATTACHMENT_COPY_SQL =
+  "INSERT INTO attachments (id, message_id, conversation_id, r2_key, mime_type, name, size, created_at, kind, prompt, favorite, thumb_at, pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 /**
  * 縮小版を置いたことを記す。実体を共有する行（フォーク先）にもまとめて

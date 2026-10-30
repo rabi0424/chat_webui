@@ -72,6 +72,7 @@ export function UserMessage({
                 タップ自体は行の選択として通す。
               */
               onOpen={selecting ? () => {} : openImage}
+              openable={!selecting}
               onLoad={followBottom}
             />
           )}
